@@ -7,9 +7,10 @@
 //! above each tier's detected size to trigger spills, then reduce workload size
 //! until measurements converge to stable values.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 use crate::cache::CacheInfo;
 use crate::formatting::{serialize_round_2dp, serialize_round_3dp};
@@ -58,13 +59,7 @@ pub enum CacheTier {
 impl CacheTier {
     /// Returns all tiers in calibration order
     pub fn all_tiers() -> &'static [CacheTier] {
-        &[
-            CacheTier::L1,
-            CacheTier::L2,
-            CacheTier::L3,
-            CacheTier::Dram,
-            CacheTier::FullDram,
-        ]
+        &[CacheTier::L1, CacheTier::L2, CacheTier::L3, CacheTier::Dram, CacheTier::FullDram]
     }
 
     /// Display name for the tier
@@ -98,17 +93,17 @@ pub struct CalibrationConfig {
     pub max_probe_time_ms: u64,
     /// Minimum samplesbefore checking convergence (default: 50)
     pub min_samples: u32,
-/// Page size for calibration allocation: "regular"/"4kb", "large"/"2mb", "huge"/"1gb"
+    /// Page size for calibration allocation: "regular"/"4kb", "large"/"2mb", "huge"/"1gb"
     pub page_size: String,
 }
 
 impl Default for CalibrationConfig {
     fn default() -> Self {
         Self {
-            convergence_threshold: 0.001,     // 0.1% relative error for convergence
-            max_probe_time_ms: 2000,          // 2 seconds per probe max
-            min_samples: 50,                  // Minimum samples before convergence check
-            page_size: "large".to_string(),   // Default: 2MB large pages (matches main tests)
+            convergence_threshold: 0.001,   // 0.1% relative error for convergence
+            max_probe_time_ms: 2000,        // 2 seconds per probe max
+            min_samples: 50,                // Minimum samples before convergence check
+            page_size: "large".to_string(), // Default: 2MB large pages (matches main tests)
         }
     }
 }
@@ -146,14 +141,8 @@ impl CpuSignature {
     pub fn from_cache_info(cache_info: &CacheInfo) -> Self {
         // Get CPU vendor and brand from raw_cpuid
         let cpuid = raw_cpuid::CpuId::new();
-        let vendor = cpuid
-            .get_vendor_info()
-            .map(|v| v.as_str().to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
-        let brand = cpuid
-            .get_processor_brand_string()
-            .map(|b| b.as_str().trim().to_string())
-            .unwrap_or_else(|| "Unknown".to_string());
+        let vendor = cpuid.get_vendor_info().map(|v| v.as_str().to_string()).unwrap_or_else(|| "Unknown".to_string());
+        let brand = cpuid.get_processor_brand_string().map(|b| b.as_str().trim().to_string()).unwrap_or_else(|| "Unknown".to_string());
 
         Self {
             vendor,
@@ -166,7 +155,6 @@ impl CpuSignature {
             l3_human: format_size(cache_info.l3_cache),
         }
     }
-
 }
 
 // ============================================================================
@@ -218,20 +206,13 @@ fn default_page_size() -> String {
 impl CalibrationResults {
     /// Create new empty results
     pub fn new(cpu_signature: CpuSignature) -> Self {
-        Self {
-            timestamp: Utc::now(),
-            cpu_signature,
-            tiers: HashMap::new(),
-            total_time_ms: 0,
-            page_size: "large".to_string(),
-        }
+        Self { timestamp: Utc::now(), cpu_signature, tiers: HashMap::new(), total_time_ms: 0, page_size: "large".to_string() }
     }
 
     /// Add a tier result
     pub fn add_tier_result(&mut self, result: TierCalibrationResult) {
         self.tiers.insert(result.tier, result);
     }
-
 }
 
 // ============================================================================
@@ -261,22 +242,12 @@ impl Default for OnlineStats {
 impl OnlineStats {
     /// Create a new empty statistics accumulator
     pub fn new() -> Self {
-        Self {
-            count: 0,
-            mean: 0.0,
-            m2: 0.0,
-            samples: Vec::new(),
-        }
+        Self { count: 0, mean: 0.0, m2: 0.0, samples: Vec::new() }
     }
 
     /// Create with pre-allocated capacity for samples
     pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            count: 0,
-            mean: 0.0,
-            m2: 0.0,
-            samples: Vec::with_capacity(capacity),
-        }
+        Self { count: 0, mean: 0.0, m2: 0.0, samples: Vec::with_capacity(capacity) }
     }
 
     /// Add a new sample using Welford's online algorithm
@@ -284,7 +255,7 @@ impl OnlineStats {
         self.count += 1;
         self.samples.push(value);
 
-// Welford's algorithm for numerically stable mean/variance
+        // Welford's algorithm for numerically stable mean/variance
         let delta = value - self.mean;
         self.mean += delta / self.count as f64;
         let delta2 = value - self.mean;
@@ -329,7 +300,6 @@ impl OnlineStats {
     pub fn samples(&self) -> &[f64] {
         &self.samples
     }
-
 }
 
 // ============================================================================
@@ -356,10 +326,7 @@ impl StatisticsAnalyzer {
     /// Compute statistics from a slice of samples
     pub fn analyze(samples: &[f64]) -> ProbeStatistics {
         if samples.is_empty() {
-            return ProbeStatistics {
-                median_ns: 0.0,
-                spread_ratio: 0.0,
-            };
+            return ProbeStatistics { median_ns: 0.0, spread_ratio: 0.0 };
         }
 
         // Sort samples for percentile calculation
@@ -374,10 +341,7 @@ impl StatisticsAnalyzer {
         // Calculate spread ratio (P95/P5)
         let spread_ratio = if p5_ns > 0.0 { p95_ns / p5_ns } else { 0.0 };
 
-        ProbeStatistics {
-            median_ns,
-            spread_ratio,
-        }
+        ProbeStatistics { median_ns, spread_ratio }
     }
 
     /// Calculate percentile using linear interpolation
@@ -403,21 +367,20 @@ impl StatisticsAnalyzer {
             sorted[lower] * (1.0 - frac) + sorted[upper] * frac
         }
     }
-
 }
 
 // ============================================================================
 // Probe Engine
 // ============================================================================
 
-use crate::memory::{MemoryAllocator, MemoryBuffer};
+#[cfg(target_arch = "x86_64")]
+use std::arch::x86_64::__rdtscp;
+use std::time::Instant;
+
 use crate::memory::allocator::{AllocationConfig, PageSizeLevel, PageSizePreference};
 use crate::memory::backend::BackendType;
 use crate::memory::buffer::MemoryType;
-use std::time::Instant;
-
-#[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::__rdtscp;
+use crate::memory::{MemoryAllocator, MemoryBuffer};
 
 /// The page size a calibration asks for, from its `page_size` (`maxpage=`): "regular"/"4kb",
 /// "huge"/"1gb", else 2 MiB ("large"/"2mb", the default).
@@ -451,9 +414,9 @@ fn allocate_calibration_buffer(size: usize, page: PageSizeLevel) -> Result<(Memo
 /// which doesn't say to what, and a page size can't be read back after the fact. Each large-page
 /// request carries its page's alignment, which is how it gets that page size (without it the
 /// kernel silently gives smaller pages, TODO 87); 4 KiB needs none.
-fn allocate_stepping_down<T>(size: usize, page: PageSizeLevel,
-                             mut allocate: impl FnMut(&AllocationConfig) -> Result<T, crate::memory::backend::AllocError>)
-                             -> Result<(T, PageSizeLevel), String> {
+fn allocate_stepping_down<T>(
+    size: usize, page: PageSizeLevel, mut allocate: impl FnMut(&AllocationConfig) -> Result<T, crate::memory::backend::AllocError>,
+) -> Result<(T, PageSizeLevel), String> {
     let mut refused = Vec::new();
     for level in [PageSizeLevel::Huge, PageSizeLevel::Large, PageSizeLevel::Regular].into_iter().filter(|&l| l <= page) {
         let config = AllocationConfig {
@@ -470,8 +433,12 @@ fn allocate_stepping_down<T>(size: usize, page: PageSizeLevel,
                 if refused.is_empty() {
                     log::info!("Calibration buffer: {} bytes on {} pages", size, page_size_name(page_size_str(level)));
                 } else {
-                    log::warn!("Calibration buffer: {} bytes on {} pages, after {} refused", size,
-                               page_size_name(page_size_str(level)), refused.join("; "));
+                    log::warn!(
+                        "Calibration buffer: {} bytes on {} pages, after {} refused",
+                        size,
+                        page_size_name(page_size_str(level)),
+                        refused.join("; ")
+                    );
                 }
                 return Ok((buffer, level));
             }
@@ -502,14 +469,7 @@ pub struct ProbeEngine {
 impl ProbeEngine {
     /// Create a new probe engine
     pub fn new(tsc_frequency_ghz: f64) -> Self {
-        Self {
-            tsc_frequency_ghz,
-            memory_buffer: None,
-            external_ptr: None,
-            max_working_set: 0,
-            initialized: false,
-            page_obtained: None,
-        }
+        Self { tsc_frequency_ghz, memory_buffer: None, external_ptr: None, max_working_set: 0, initialized: false, page_obtained: None }
     }
 
     /// The page size its own buffer got, where it allocated one.
@@ -530,7 +490,7 @@ impl ProbeEngine {
                 // Setup pointer-chase pattern
                 let base = buffer.as_mut_ptr() as *mut u64;
                 let len = max_size / std::mem::size_of::<u64>();
-                
+
                 unsafe {
                     Self::setup_pointer_chase(base, len, 0);
                 }
@@ -539,8 +499,7 @@ impl ProbeEngine {
                 self.max_working_set = max_size;
                 self.initialized = true;
 
-                log::info!("ProbeEngine: Initialized with {} byte buffer ({} u64 elements)",
-                    max_size, len);
+                log::info!("ProbeEngine: Initialized with {} byte buffer ({} u64 elements)", max_size, len);
                 Ok(())
             }
             Err(e) => Err(e),
@@ -578,11 +537,7 @@ impl ProbeEngine {
     /// Get the base pointer for probe operations.
     /// Returns the external buffer pointer if set, otherwise the owned buffer.
     fn get_base_ptr(&mut self) -> *mut u64 {
-        if let Some(ext) = self.external_ptr {
-            ext
-        } else {
-            self.memory_buffer.as_mut().unwrap().as_mut_ptr() as *mut u64
-        }
+        if let Some(ext) = self.external_ptr { ext } else { self.memory_buffer.as_mut().unwrap().as_mut_ptr() as *mut u64 }
     }
 
     /// Setup random pointer-chasing pattern in memory
@@ -628,11 +583,11 @@ impl ProbeEngine {
         }
 
         let base = self.get_base_ptr();
-        
+
         // Limit workload to what we have allocated
         let actual_size = workload_size.min(self.max_working_set);
         let working_set_u64 = actual_size / std::mem::size_of::<u64>();
-        
+
         if working_set_u64 < 8 {
             return Vec::new();
         }
@@ -720,7 +675,7 @@ pub struct SweepProbe {
     pub size: usize,
     pub median_ns: f64,
     pub spread: f64,
-    pub window_stddev: f64,// Stability metric from sliding window
+    pub window_stddev: f64, // Stability metric from sliding window
 }
 
 // ============================================================================
@@ -760,15 +715,10 @@ pub struct CalibrationTest {
 }
 
 impl CalibrationTest {
-
     /// Create with custom configuration
     pub fn with_config(cache_info: CacheInfo, config: CalibrationConfig) -> Self {
         let tsc_frequency_ghz = cache_info.tsc_frequency_ghz;
-        Self {
-            cache_info,
-            tsc_frequency_ghz,
-            config,
-        }
+        Self { cache_info, tsc_frequency_ghz, config }
     }
 
     /// Get tier size from cache info
@@ -804,10 +754,12 @@ impl CalibrationTest {
         let start_time = Instant::now();
 
         log::info!("Starting adaptive cache calibration (sweep mode)...");
-        log::info!("  L1D: {} KB, L2: {} KB, L3: {} MB",
+        log::info!(
+            "  L1D: {} KB, L2: {} KB, L3: {} MB",
             self.cache_info.per_core_l1d / 1024,
             self.cache_info.per_core_l2 / 1024,
-            self.cache_info.l3_cache / (1024 * 1024));
+            self.cache_info.l3_cache / (1024 * 1024)
+        );
 
         let l1_size = self.cache_info.per_core_l1d;
         let l2_size = self.cache_info.per_core_l2;
@@ -824,7 +776,7 @@ impl CalibrationTest {
 
         Ok(results)
     }
-    
+
     /// Run extended calibration (allocates its own memory)
     pub fn run_extended(&self) -> Result<CalibrationResults, String> {
         let max_working_set = self.get_tier_size(CacheTier::FullDram);
@@ -846,10 +798,12 @@ impl CalibrationTest {
         let start_time = Instant::now();
 
         log::info!("Starting extended cache calibration (phase 1 + phase 2)...");
-        log::info!("  L1D: {} KB, L2: {} KB, L3: {} MB",
+        log::info!(
+            "  L1D: {} KB, L2: {} KB, L3: {} MB",
             self.cache_info.per_core_l1d / 1024,
             self.cache_info.per_core_l2 / 1024,
-            self.cache_info.l3_cache / (1024 * 1024));
+            self.cache_info.l3_cache / (1024 * 1024)
+        );
 
         let l1_size = self.cache_info.per_core_l1d;
         let l2_size = self.cache_info.per_core_l2;
@@ -861,8 +815,13 @@ impl CalibrationTest {
         let tipping_points = self.find_tipping_points(&sweep_results);
 
         for (size, lat_before, lat_after) in &tipping_points {
-            log::info!("  Tipping point at {}: {:.1}ns → {:.1}ns ({:.1}x jump)",
-                format_size(*size), lat_before, lat_after, lat_after / lat_before);
+            log::info!(
+                "  Tipping point at {}: {:.1}ns → {:.1}ns ({:.1}x jump)",
+                format_size(*size),
+                lat_before,
+                lat_after,
+                lat_after / lat_before
+            );
         }
 
         let tp_sizes: Vec<usize> = tipping_points.iter().map(|(s, _, _)| *s).collect();
@@ -887,17 +846,24 @@ impl CalibrationTest {
         let fine_l1 = self.run_fine_sweep(probe_engine, l1_cap / 2, l1_cap, fine_step, repeats, "L1→L2");
         let fine_l2 = self.run_fine_sweep(probe_engine, l2_cap / 2, l2_cap, fine_step, repeats, "L2→L3");
         let fine_l3 = self.run_fine_sweep(probe_engine, l3_cap / 2, l3_cap, fine_step, repeats, "L3→DRAM");
-        
+
         // Build results using phase 2 data
         let cpu_signature = CpuSignature::from_cache_info(&self.cache_info);
         let mut results = CalibrationResults::new(cpu_signature);
-        
+
         log::info!("\n═══ Final Selection ═══");
-        
+
         // L1: Largest size where ALL repeats are stable, below TP1
         if let Some(fp) = Self::find_largest_reliable(&fine_l1, stable_spread) {
-            log::info!("L1: {} @ {:.1}ns ({}/{} stable, worst_spread={:.2}x, consistency={:.2}ns)",
-                format_size(fp.size), fp.overall_median_ns, fp.stable_count, fp.repeats, fp.worst_spread, fp.latency_consistency);
+            log::info!(
+                "L1: {} @ {:.1}ns ({}/{} stable, worst_spread={:.2}x, consistency={:.2}ns)",
+                format_size(fp.size),
+                fp.overall_median_ns,
+                fp.stable_count,
+                fp.repeats,
+                fp.worst_spread,
+                fp.latency_consistency
+            );
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::L1,
                 optimal_size: fp.size,
@@ -910,15 +876,27 @@ impl CalibrationTest {
         } else if let Some(probe) = self.find_largest_stable_in_range(&sweep_results, 0, l1_cap, 1.5, 2.0) {
             log::warn!("L1: Phase 2 failed, using phase 1 fallback: {} @ {:.1}ns", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
-                tier: CacheTier::L1, optimal_size: probe.size, median_latency_ns: probe.median_ns,
-                spread_ratio: probe.spread, probes_attempted: sweep_results.len() as u32, converged: false, fallback_used: true,
+                tier: CacheTier::L1,
+                optimal_size: probe.size,
+                median_latency_ns: probe.median_ns,
+                spread_ratio: probe.spread,
+                probes_attempted: sweep_results.len() as u32,
+                converged: false,
+                fallback_used: true,
             });
         }
-        
+
         // L2: Largest reliable below L2 cap
         if let Some(fp) = Self::find_largest_reliable(&fine_l2, stable_spread) {
-            log::info!("L2: {} @ {:.1}ns ({}/{} stable, worst_spread={:.2}x, consistency={:.2}ns)",
-                format_size(fp.size), fp.overall_median_ns, fp.stable_count, fp.repeats, fp.worst_spread, fp.latency_consistency);
+            log::info!(
+                "L2: {} @ {:.1}ns ({}/{} stable, worst_spread={:.2}x, consistency={:.2}ns)",
+                format_size(fp.size),
+                fp.overall_median_ns,
+                fp.stable_count,
+                fp.repeats,
+                fp.worst_spread,
+                fp.latency_consistency
+            );
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::L2,
                 optimal_size: fp.size,
@@ -931,15 +909,27 @@ impl CalibrationTest {
         } else if let Some(probe) = self.find_largest_stable_in_range(&sweep_results, tp_l1_l2, l2_cap, 1.5, 2.0) {
             log::warn!("L2: Phase 2 failed, using phase 1 fallback: {} @ {:.1}ns", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
-                tier: CacheTier::L2, optimal_size: probe.size, median_latency_ns: probe.median_ns,
-                spread_ratio: probe.spread, probes_attempted: sweep_results.len() as u32, converged: false, fallback_used: true,
+                tier: CacheTier::L2,
+                optimal_size: probe.size,
+                median_latency_ns: probe.median_ns,
+                spread_ratio: probe.spread,
+                probes_attempted: sweep_results.len() as u32,
+                converged: false,
+                fallback_used: true,
             });
         }
-        
+
         // L3: Largest reliable below L3 cap
         if let Some(fp) = Self::find_largest_reliable(&fine_l3, stable_spread) {
-            log::info!("L3: {} @ {:.1}ns ({}/{} stable, worst_spread={:.2}x, consistency={:.2}ns)",
-                format_size(fp.size), fp.overall_median_ns, fp.stable_count, fp.repeats, fp.worst_spread, fp.latency_consistency);
+            log::info!(
+                "L3: {} @ {:.1}ns ({}/{} stable, worst_spread={:.2}x, consistency={:.2}ns)",
+                format_size(fp.size),
+                fp.overall_median_ns,
+                fp.stable_count,
+                fp.repeats,
+                fp.worst_spread,
+                fp.latency_consistency
+            );
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::L3,
                 optimal_size: fp.size,
@@ -952,11 +942,16 @@ impl CalibrationTest {
         } else if let Some(probe) = self.find_largest_stable_in_range(&sweep_results, tp_l2_l3, l3_cap, 2.0, 5.0) {
             log::warn!("L3: Phase 2 failed, using phase 1 fallback: {} @ {:.1}ns", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
-                tier: CacheTier::L3, optimal_size: probe.size, median_latency_ns: probe.median_ns,
-                spread_ratio: probe.spread, probes_attempted: sweep_results.len() as u32, converged: false, fallback_used: true,
+                tier: CacheTier::L3,
+                optimal_size: probe.size,
+                median_latency_ns: probe.median_ns,
+                spread_ratio: probe.spread,
+                probes_attempted: sweep_results.len() as u32,
+                converged: false,
+                fallback_used: true,
             });
         }
-        
+
         // DRAM + FullDRAM: Use phase 1 data (fine-grain not needed for DRAM)
         // DRAM: Moderate size — 2x tipping point cap to differentiate from FullDRAM
         let total_cache = l3_size + l2_size + l1_size;
@@ -966,47 +961,69 @@ impl CalibrationTest {
         if let Some(probe) = self.find_largest_stable_in_range(&sweep_results, dram_min, dram_max, 2.0, 8.0) {
             log::info!("DRAM: {} @ {:.1}ns (from phase 1)", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
-                tier: CacheTier::Dram, optimal_size: probe.size, median_latency_ns: probe.median_ns,
-                spread_ratio: probe.spread, probes_attempted: sweep_results.len() as u32, converged: true, fallback_used: false,
+                tier: CacheTier::Dram,
+                optimal_size: probe.size,
+                median_latency_ns: probe.median_ns,
+                spread_ratio: probe.spread,
+                probes_attempted: sweep_results.len() as u32,
+                converged: true,
+                fallback_used: false,
             });
         } else if let Some(probe) = self.find_largest_stable_in_range(&sweep_results, dram_min, usize::MAX, 2.0, 8.0) {
             log::info!("DRAM: {} @ {:.1}ns (from phase 1, extended range)", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
-                tier: CacheTier::Dram, optimal_size: probe.size, median_latency_ns: probe.median_ns,
-                spread_ratio: probe.spread, probes_attempted: sweep_results.len() as u32, converged: true, fallback_used: false,
+                tier: CacheTier::Dram,
+                optimal_size: probe.size,
+                median_latency_ns: probe.median_ns,
+                spread_ratio: probe.spread,
+                probes_attempted: sweep_results.len() as u32,
+                converged: true,
+                fallback_used: false,
             });
         }
         // FullDRAM: Largest available (maximum memory pressure / TLB stress)
         if let Some(probe) = self.find_largest_stable(&sweep_results, l3_size * 2) {
             log::info!("FullDRAM: {} @ {:.1}ns (from phase 1)", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
-                tier: CacheTier::FullDram, optimal_size: probe.size, median_latency_ns: probe.median_ns,
-                spread_ratio: probe.spread, probes_attempted: sweep_results.len() as u32, converged: true, fallback_used: false,
+                tier: CacheTier::FullDram,
+                optimal_size: probe.size,
+                median_latency_ns: probe.median_ns,
+                spread_ratio: probe.spread,
+                probes_attempted: sweep_results.len() as u32,
+                converged: true,
+                fallback_used: false,
             });
         }
-        
+
         // The page size the buffer got, where the engine allocated it, else the one asked for
         results.page_size = probe_engine.page_obtained().map_or_else(|| self.config.page_size.clone(), |p| page_size_str(p).to_string());
         results.total_time_ms = start_time.elapsed().as_millis() as u64;
         log::info!("Extended calibration complete in {}ms", results.total_time_ms);
         Ok(results)
     }
-    
+
     /// Run fine-grain sweep around a tipping point with multiple repeats per size
-    fn run_fine_sweep(&self, probe_engine: &mut ProbeEngine, min_size: usize, max_size: usize, step_factor: f64, repeats: u32, label: &str) -> Vec<FineProbe> {
+    fn run_fine_sweep(
+        &self, probe_engine: &mut ProbeEngine, min_size: usize, max_size: usize, step_factor: f64, repeats: u32, label: &str,
+    ) -> Vec<FineProbe> {
         let mut results = Vec::new();
         let mut current_size = min_size.max(4096);
-        
-        log::info!("  Fine sweep {}: {} to {} ({}x steps, {} repeats each)",
-            label, format_size(min_size), format_size(max_size), step_factor, repeats);
-        log::info!("  {:>10} {:>8} {:>6} {:>10} {:>10} {:>10}",
-            "Size", "Median", "Stbl", "Worst Spr", "Consistency", "Latencies");
-        
+
+        log::info!(
+            "  Fine sweep {}: {} to {} ({}x steps, {} repeats each)",
+            label,
+            format_size(min_size),
+            format_size(max_size),
+            step_factor,
+            repeats
+        );
+        log::info!("  {:>10} {:>8} {:>6} {:>10} {:>10} {:>10}", "Size", "Median", "Stbl", "Worst Spr", "Consistency", "Latencies");
+
         while current_size <= max_size {
             let mut median_latencies = Vec::new();
             let mut stable_count = 0u32;
             let mut worst_spread = 0.0f64;
-            
+
             for _rep in 0..repeats {
                 let samples = probe_engine.probe(current_size, &self.config);
                 if !samples.is_empty() {
@@ -1020,11 +1037,11 @@ impl CalibrationTest {
                     }
                 }
             }
-            
+
             if !median_latencies.is_empty() {
                 median_latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 let overall_median = median_latencies[median_latencies.len() / 2];
-                
+
                 // Consistency: std dev of median latencies across repeats
                 let mean_lat = median_latencies.iter().sum::<f64>() / median_latencies.len() as f64;
                 let consistency = if median_latencies.len() > 1 {
@@ -1032,13 +1049,26 @@ impl CalibrationTest {
                 } else {
                     0.0
                 };
-                
+
                 let lat_strs: Vec<String> = median_latencies.iter().map(|l| format!("{:.1}", l)).collect();
-                let stable_marker = if stable_count == repeats { "✓✓✓" } else if stable_count > 0 { "✓~" } else { "~~~" };
-                
-                log::info!("  {:>10} {:>6.1}ns {:>6} {:>9.2}x {:>9.2}ns  [{}]",
-                    format_size(current_size), overall_median, stable_marker, worst_spread, consistency, lat_strs.join(", "));
-                
+                let stable_marker = if stable_count == repeats {
+                    "✓✓✓"
+                } else if stable_count > 0 {
+                    "✓~"
+                } else {
+                    "~~~"
+                };
+
+                log::info!(
+                    "  {:>10} {:>6.1}ns {:>6} {:>9.2}x {:>9.2}ns  [{}]",
+                    format_size(current_size),
+                    overall_median,
+                    stable_marker,
+                    worst_spread,
+                    consistency,
+                    lat_strs.join(", ")
+                );
+
                 results.push(FineProbe {
                     size: current_size,
                     repeats,
@@ -1048,93 +1078,89 @@ impl CalibrationTest {
                     latency_consistency: consistency,
                 });
             }
-            
+
             let next_size = ((current_size as f64) * step_factor) as usize;
             current_size = next_size.max(current_size + 4096);
         }
-        
+
         results
     }
-    
+
     /// Find the largest size where ALL repeats were stable
     fn find_largest_reliable(fine_probes: &[FineProbe], max_spread: f64) -> Option<FineProbe> {
-        fine_probes.iter()
-            .filter(|fp| fp.is_reliable() && fp.worst_spread < max_spread)
-            .max_by_key(|fp| fp.size)
-            .cloned()
+        fine_probes.iter().filter(|fp| fp.is_reliable() && fp.worst_spread < max_spread).max_by_key(|fp| fp.size).cloned()
     }
 
     /// Run a continuous sweep from small to large sizes
     /// Collects comprehensive stats for each probe to enable accurate tier detection
     fn run_sweep(&self, probe_engine: &mut ProbeEngine, l1_size: usize, _l2_size: usize, l3_size: usize) -> Vec<SweepProbe> {
         let mut results = Vec::new();
-        
+
         // Start at 1/4 of L1 (well within L1)
         let min_size = (l1_size / 4).max(4096);
         // End at 4x L3 or buffer max
         let max_size = (l3_size * 4).min(probe_engine.max_working_set());
-        
+
         log::info!("Running calibration sweep: {} to {}", format_size(min_size), format_size(max_size));
-        log::info!("  {:>4} {:>10} {:>8} {:>7} {:>8} {:>6} {:>7} {:>6}",
-            "#", "Size", "Median", "Spread", "Deriv", "Ratio", "WinSD", "Stbl");
-        
+        log::info!(
+            "  {:>4} {:>10} {:>8} {:>7} {:>8} {:>6} {:>7} {:>6}",
+            "#",
+            "Size",
+            "Median",
+            "Spread",
+            "Deriv",
+            "Ratio",
+            "WinSD",
+            "Stbl"
+        );
+
         // Use multiplicative steps - ~15% increase per step
         let step_factor = 1.15;
-        
+
         let mut current_size = min_size;
         let mut probe_num = 0;
         let mut prev_latency: Option<f64> = None;
         let mut prev_size: Option<usize> = None;
-        
+
         // For sliding window stability calculation
         let mut recent_latencies: Vec<f64> = Vec::new();
         const WINDOW_SIZE: usize = 5;
-        
+
         while current_size <= max_size {
             probe_num += 1;
-            
+
             let samples = probe_engine.probe(current_size, &self.config);
 
             if !samples.is_empty() {
                 let stats = StatisticsAnalyzer::analyze(&samples);
-                
+
                 // Calculate derivative (latency change per size doubling)
                 let derivative = if let (Some(prev_lat), Some(prev_sz)) = (prev_latency, prev_size) {
                     let lat_change = stats.median_ns - prev_lat;
                     let size_ratio = (current_size as f64) / (prev_sz as f64);
-                    if size_ratio > 1.0 {
-                        lat_change / size_ratio.ln()
-                    } else {
-                        0.0
-                    }
+                    if size_ratio > 1.0 { lat_change / size_ratio.ln() } else { 0.0 }
                 } else {
                     0.0
                 };
-                
+
                 // Calculate ratio to previous
-                let ratio = if let Some(prev) = prev_latency {
-                    stats.median_ns / prev
-                } else {
-                    1.0
-                };
-                
+                let ratio = if let Some(prev) = prev_latency { stats.median_ns / prev } else { 1.0 };
+
                 // Update sliding window for stability calculation
                 recent_latencies.push(stats.median_ns);
                 if recent_latencies.len() > WINDOW_SIZE {
                     recent_latencies.remove(0);
                 }
-                
+
                 // Calculate stability (std dev of recent latencies in window)
                 let window_stddev = if recent_latencies.len() >= 3 {
                     let mean = recent_latencies.iter().sum::<f64>() / recent_latencies.len() as f64;
-                    let variance = recent_latencies.iter()
-                        .map(|x| (x - mean).powi(2))
-                        .sum::<f64>() / recent_latencies.len() as f64;
+                    let variance = recent_latencies.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / recent_latencies.len() as f64;
                     variance.sqrt()
                 } else {
                     0.0
                 };
-                
+
                 // Determine if this is a stable region (low CV in window)
                 let is_stable = if recent_latencies.len() >= 3 {
                     let mean = recent_latencies.iter().sum::<f64>() / recent_latencies.len() as f64;
@@ -1142,79 +1168,90 @@ impl CalibrationTest {
                 } else {
                     true
                 };
-                
+
                 let stable_marker = if is_stable { "✓" } else { "~" };
-                
-                log::info!("  {:>4}: {:>10} {:>6.1}ns {:>6.2}x {:>+7.1} {:>5.2}x {:>6.2} {:>6}",
-                    probe_num, format_size(current_size), 
-                    stats.median_ns, stats.spread_ratio,
-                    derivative, ratio, window_stddev, stable_marker);
-                
+
+                log::info!(
+                    "  {:>4}: {:>10} {:>6.1}ns {:>6.2}x {:>+7.1} {:>5.2}x {:>6.2} {:>6}",
+                    probe_num,
+                    format_size(current_size),
+                    stats.median_ns,
+                    stats.spread_ratio,
+                    derivative,
+                    ratio,
+                    window_stddev,
+                    stable_marker
+                );
+
                 prev_latency = Some(stats.median_ns);
                 prev_size = Some(current_size);
-                
-                results.push(SweepProbe {
-                    size: current_size,
-                    median_ns: stats.median_ns,
-                    spread: stats.spread_ratio,
-window_stddev,
-                });
+
+                results.push(SweepProbe { size: current_size, median_ns: stats.median_ns, spread: stats.spread_ratio, window_stddev });
             }
-            
+
             // Next size - ensure we make progress
             let next_size = ((current_size as f64) * step_factor) as usize;
             current_size = next_size.max(current_size + 4096);
         }
-        
+
         log::info!("Sweep complete: {} probes collected", results.len());
         results
     }
-    
+
     /// Analyze sweep results to find optimal sizes for each tier
     /// Selection criteria: within tier bounds (CPUID), most stable measurements
     fn analyze_sweep(&self, sweep: &[SweepProbe], l1_size: usize, l2_size: usize, l3_size: usize) -> CalibrationResults {
         let cpu_signature = CpuSignature::from_cache_info(&self.cache_info);
         let mut results = CalibrationResults::new(cpu_signature);
-        
+
         if sweep.is_empty() {
             log::error!("No sweep data to analyze!");
             return results;
         }
-        
+
         log::info!("Analyzing sweep data for tier boundaries...");
-        
+
         // Find tipping points by looking for latency jumps
         let tipping_points = self.find_tipping_points(sweep);
-        
+
         for (size, lat_before, lat_after) in &tipping_points {
-            log::info!("  Tipping point at {}: {:.1}ns → {:.1}ns ({:.1}x jump)",
-                format_size(*size), lat_before, lat_after, lat_after / lat_before);
+            log::info!(
+                "  Tipping point at {}: {:.1}ns → {:.1}ns ({:.1}x jump)",
+                format_size(*size),
+                lat_before,
+                lat_after,
+                lat_after / lat_before
+            );
         }
-        
+
         // Selection strategy: Use tipping points to define tier boundaries,
         // then find the LARGEST STABLE probe within each tier.
         // This maximizes working set utilization while avoiding spill to next tier.
-        
+
         // Extract tipping point sizes (sorted by size)
         let tp_sizes: Vec<usize> = tipping_points.iter().map(|(s, _, _)| *s).collect();
-        
+
         // Assign tipping points to tier transitions
         // TP[0] = L1→L2, TP[1] = L2→L3, TP[2] = L3→DRAM
         let tp_l1_l2 = tp_sizes.first().copied().unwrap_or(l1_size);
         let tp_l2_l3 = tp_sizes.get(1).copied().unwrap_or(l2_size);
         let tp_l3_dram = tp_sizes.get(2).copied().unwrap_or(l3_size);
-        
-        log::info!("Tier boundaries: L1<{}, L2<{}, L3<{}", 
-            format_size(tp_l1_l2), format_size(tp_l2_l3), format_size(tp_l3_dram));
-        
+
+        log::info!("Tier boundaries: L1<{}, L2<{}, L3<{}", format_size(tp_l1_l2), format_size(tp_l2_l3), format_size(tp_l3_dram));
+
         // Stability thresholds for "stable enough"
         let stable_spread = 1.5;
         let stable_winsd = 2.0;
-        
+
         // L1: Largest stable probe below TP1
         if let Some(probe) = self.find_largest_stable_in_range(sweep, 0, tp_l1_l2, stable_spread, stable_winsd) {
-            log::info!("L1: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})", 
-                format_size(probe.size), probe.median_ns, probe.spread, probe.window_stddev);
+            log::info!(
+                "L1: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
+                format_size(probe.size),
+                probe.median_ns,
+                probe.spread,
+                probe.window_stddev
+            );
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::L1,
                 optimal_size: probe.size,
@@ -1225,11 +1262,16 @@ window_stddev,
                 fallback_used: false,
             });
         }
-        
+
         // L2: Largest stable probe between TP1 and TP2
         if let Some(probe) = self.find_largest_stable_in_range(sweep, tp_l1_l2, tp_l2_l3, stable_spread, stable_winsd) {
-            log::info!("L2: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})", 
-                format_size(probe.size), probe.median_ns, probe.spread, probe.window_stddev);
+            log::info!(
+                "L2: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
+                format_size(probe.size),
+                probe.median_ns,
+                probe.spread,
+                probe.window_stddev
+            );
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::L2,
                 optimal_size: probe.size,
@@ -1240,11 +1282,16 @@ window_stddev,
                 fallback_used: false,
             });
         }
-        
+
         // L3: Largest stable probe between TP2 and TP3
         if let Some(probe) = self.find_largest_stable_in_range(sweep, tp_l2_l3, tp_l3_dram, stable_spread, stable_winsd) {
-            log::info!("L3: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})", 
-                format_size(probe.size), probe.median_ns, probe.spread, probe.window_stddev);
+            log::info!(
+                "L3: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
+                format_size(probe.size),
+                probe.median_ns,
+                probe.spread,
+                probe.window_stddev
+            );
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::L3,
                 optimal_size: probe.size,
@@ -1269,7 +1316,7 @@ window_stddev,
                 });
             }
         }
-        
+
         // DRAM: Moderate size above the L3→DRAM tipping point.
         // Use 2x the tipping point as cap — large enough to be firmly in DRAM,
         // but not so large it overlaps with FullDRAM (which uses the largest available).
@@ -1277,11 +1324,21 @@ window_stddev,
         let dram_min = tp_l3_dram.max(total_cache);
         let dram_max = tp_l3_dram * 2; // 2x tipping point — moderate DRAM working set
         let dram_max = dram_max.max(dram_min + 1); // Ensure max > min
-        log::info!("DRAM range: {} to {} (total cache={}, TP3={})",
-            format_size(dram_min), format_size(dram_max), format_size(total_cache), format_size(tp_l3_dram));
+        log::info!(
+            "DRAM range: {} to {} (total cache={}, TP3={})",
+            format_size(dram_min),
+            format_size(dram_max),
+            format_size(total_cache),
+            format_size(tp_l3_dram)
+        );
         if let Some(probe) = self.find_largest_stable_in_range(sweep, dram_min, dram_max, 2.0, 8.0) {
-            log::info!("DRAM: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})", 
-                format_size(probe.size), probe.median_ns, probe.spread, probe.window_stddev);
+            log::info!(
+                "DRAM: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
+                format_size(probe.size),
+                probe.median_ns,
+                probe.spread,
+                probe.window_stddev
+            );
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::Dram,
                 optimal_size: probe.size,
@@ -1293,8 +1350,13 @@ window_stddev,
             });
         } else if let Some(probe) = self.find_largest_stable_in_range(sweep, dram_min, usize::MAX, 2.0, 8.0) {
             // Fallback: no probes in capped range, use any stable DRAM probe
-            log::info!("DRAM: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2}) [extended range]", 
-                format_size(probe.size), probe.median_ns, probe.spread, probe.window_stddev);
+            log::info!(
+                "DRAM: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2}) [extended range]",
+                format_size(probe.size),
+                probe.median_ns,
+                probe.spread,
+                probe.window_stddev
+            );
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::Dram,
                 optimal_size: probe.size,
@@ -1305,11 +1367,16 @@ window_stddev,
                 fallback_used: false,
             });
         }
-        
+
         // FullDRAM: Largest stable size above 2x L3
         if let Some(probe) = self.find_largest_stable(sweep, l3_size * 2) {
-            log::info!("FullDRAM: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})", 
-                format_size(probe.size), probe.median_ns, probe.spread, probe.window_stddev);
+            log::info!(
+                "FullDRAM: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
+                format_size(probe.size),
+                probe.median_ns,
+                probe.spread,
+                probe.window_stddev
+            );
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::FullDram,
                 optimal_size: probe.size,
@@ -1320,85 +1387,83 @@ window_stddev,
                 fallback_used: false,
             });
         }
-        
+
         results
     }
-    
+
     /// Find tipping points where latency jumps significantly
     /// A true tipping point is where we transition from one stable latency region to another
     /// We expect 3-4 real transitions: L1→L2, L2→L3, L3→DRAM, (optionally DRAM→HighTLB)
     fn find_tipping_points(&self, sweep: &[SweepProbe]) -> Vec<(usize, f64, f64)> {
         let mut tipping_points = Vec::new();
-        
+
         if sweep.len() < 6 {
             return tipping_points;
         }
-        
+
         // Calculate latency derivative (rate of change) for each point
         let mut derivatives: Vec<f64> = vec![0.0];
         for i in 1..sweep.len() {
-            let lat_change = sweep[i].median_ns - sweep[i-1].median_ns;
-            let size_ratio = (sweep[i].size as f64) / (sweep[i-1].size as f64);
+            let lat_change = sweep[i].median_ns - sweep[i - 1].median_ns;
+            let size_ratio = (sweep[i].size as f64) / (sweep[i - 1].size as f64);
             let derivative = lat_change / size_ratio.ln();
             derivatives.push(derivative);
         }
-        
+
         // Find transitions with stricter criteria
         for i in 4..sweep.len() {
-            let prev_lat_avg = (sweep[i-3].median_ns + sweep[i-2].median_ns + sweep[i-1].median_ns) / 3.0;
+            let prev_lat_avg = (sweep[i - 3].median_ns + sweep[i - 2].median_ns + sweep[i - 1].median_ns) / 3.0;
             let curr_lat = sweep[i].median_ns;
             let latency_ratio = curr_lat / prev_lat_avg;
-            
+
             // Only report significant transitions (>1.4x latency jump)
             if latency_ratio < 1.4 {
                 continue;
             }
-            
-            let transition_size = sweep[i-1].size;
-            
+
+            let transition_size = sweep[i - 1].size;
+
             // Avoid duplicate tipping points (within 3x size of each other)
             let dominated = tipping_points.iter().any(|(s, _, _)| {
                 let ratio = (*s as f64) / (transition_size as f64);
                 ratio > 0.33 && ratio < 3.0
             });
-            
+
             if !dominated {
                 tipping_points.push((transition_size, prev_lat_avg, curr_lat));
             }
         }
-        
+
         tipping_points
     }
-    
+
     /// Find the largest stable probe within a size range
     /// Stable = spread < max_spread AND window_stddev < max_winsd
-    fn find_largest_stable_in_range(&self, sweep: &[SweepProbe], min_size: usize, max_size: usize, max_spread: f64, max_winsd: f64) -> Option<SweepProbe> {
-        sweep.iter()
-            .filter(|p| {
-                p.size >= min_size && 
-                p.size < max_size &&
-                p.spread < max_spread &&
-                p.window_stddev < max_winsd
-            })
+    fn find_largest_stable_in_range(
+        &self, sweep: &[SweepProbe], min_size: usize, max_size: usize, max_spread: f64, max_winsd: f64,
+    ) -> Option<SweepProbe> {
+        sweep
+            .iter()
+            .filter(|p| p.size >= min_size && p.size < max_size && p.spread < max_spread && p.window_stddev < max_winsd)
             .max_by_key(|p| p.size)
             .cloned()
     }
-    
+
     /// Find the largest stable size (for FullDRAM)
     /// Stable = spread < 2.0
     fn find_largest_stable(&self, sweep: &[SweepProbe], min_size: usize) -> Option<SweepProbe> {
-        sweep.iter()
-            .filter(|p| p.size >= min_size && p.spread < 2.0)
-            .max_by_key(|p| p.size)
-            .cloned()
+        sweep.iter().filter(|p| p.size >= min_size && p.spread < 2.0).max_by_key(|p| p.size).cloned()
     }
 
     /// Writes calibration results to `out` in a formatted table
     pub fn display_results(results: &CalibrationResults, cache_info: &CacheInfo, out: &mut dyn std::io::Write) -> std::io::Result<()> {
         writeln!(out, "\n📊 Cache Calibration Results")?;
         writeln!(out, "═══════════════════════════════════════════════════════════════════════════════")?;
-        writeln!(out, "{:<10} {:>12} {:>12} {:>8} {:>12} {:>10} {:>12}",
-            "Tier", "CPU Size", "Calibrated", "%", "Latency", "Spread", "Status")?;
+        writeln!(
+            out,
+            "{:<10} {:>12} {:>12} {:>8} {:>12} {:>10} {:>12}",
+            "Tier", "CPU Size", "Calibrated", "%", "Latency", "Spread", "Status"
+        )?;
         writeln!(out, "───────────────────────────────────────────────────────────────────────────────")?;
 
         for tier in CacheTier::all_tiers() {
@@ -1411,15 +1476,11 @@ window_stddev,
                     CacheTier::Dram => cache_info.l3_cache * 2,
                     CacheTier::FullDram => cache_info.l3_cache * 4,
                 };
-                
+
                 let cpu_size_str = format_size(cpu_size);
                 let calibrated_str = format_size(result.optimal_size);
-                let percentage = if cpu_size > 0 {
-                    (result.optimal_size as f64 / cpu_size as f64) * 100.0
-                } else {
-                    0.0
-                };
-                
+                let percentage = if cpu_size > 0 { (result.optimal_size as f64 / cpu_size as f64) * 100.0 } else { 0.0 };
+
                 let status = if result.fallback_used {
                     "⚠️ Fallback"
                 } else if result.converged {
@@ -1428,20 +1489,23 @@ window_stddev,
                     "⚡ OK"
                 };
 
-                writeln!(out, "{:<10} {:>12} {:>12} {:>7.0}% {:>10.1}ns {:>10.2}x {:>12}",
+                writeln!(
+                    out,
+                    "{:<10} {:>12} {:>12} {:>7.0}% {:>10.1}ns {:>10.2}x {:>12}",
                     tier.name(),
                     cpu_size_str,
                     calibrated_str,
                     percentage,
                     result.median_latency_ns,
                     result.spread_ratio,
-                    status)?;
+                    status
+                )?;
             }
         }
 
         writeln!(out, "───────────────────────────────────────────────────────────────────────────────")?;
         writeln!(out, "Total calibration time: {}ms", results.total_time_ms)?;
-        
+
         // Check if DRAM and FullDRAM have similar latencies
         let dram_lat = results.tiers.get(&CacheTier::Dram).map(|r| r.median_latency_ns);
         let full_lat = results.tiers.get(&CacheTier::FullDram).map(|r| r.median_latency_ns);
@@ -1582,7 +1646,13 @@ impl SealCalibration {
 #[cfg(test)]
 pub(crate) fn test_seal_calibration(width_bits: u32) -> SealCalibration {
     let timing = |bits, ms: f64| SealWidthTiming {
-        bits, fill_mib_s: 20000.0, check_mib_s: 30000.0, ms, ms_min: ms - 1.0, ms_q3: ms + 0.5, ms_max: ms + 1.0,
+        bits,
+        fill_mib_s: 20000.0,
+        check_mib_s: 30000.0,
+        ms,
+        ms_min: ms - 1.0,
+        ms_q3: ms + 0.5,
+        ms_max: ms + 1.0,
     };
     SealCalibration {
         timestamp: Utc::now(),
@@ -1645,13 +1715,18 @@ pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCal
     use crate::seal::{SealKernel, SealPattern, SealWidth};
     let page = calibration_page_size(page_size);
     let bytes = (cache_info.l3_cache * SEAL_L3_MULTIPLE).max(SEAL_MIN_BYTES).next_multiple_of(page.bytes());
-    let kernels: Vec<SealKernel> = [SealWidth::W128, SealWidth::W256, SealWidth::W512].into_iter()
+    let kernels: Vec<SealKernel> = [SealWidth::W128, SealWidth::W256, SealWidth::W512]
+        .into_iter()
         .filter(|w| w.resolve().is_ok())
         .map(|w| SealKernel::new(SealPattern::Tmr, w))
         .collect();
-    log::info!("Seal width calibration: tmr at {:?} bits, {} (asking for {} pages), {} timed runs each",
-        kernels.iter().map(|k| k.width.bits()).collect::<Vec<_>>(), format_size(bytes),
-        page_size_name(page_size_str(page)), SEAL_RUNS);
+    log::info!(
+        "Seal width calibration: tmr at {:?} bits, {} (asking for {} pages), {} timed runs each",
+        kernels.iter().map(|k| k.width.bits()).collect::<Vec<_>>(),
+        format_size(bytes),
+        page_size_name(page_size_str(page)),
+        SEAL_RUNS
+    );
 
     let (buffer, obtained) = allocate_calibration_buffer(bytes, page)?;
     let (ptr, words) = (buffer.as_mut_ptr() as *mut u64, bytes / 8);
@@ -1678,12 +1753,16 @@ pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCal
     }
     drop(buffer);
     if bad > 0 {
-        return Err(format!("the seal's check found {bad} bad words in memory it had just written: memory errors, so \
-                            the timings aren't the seal's own; stabilize the memory, then calibrate"));
+        return Err(format!(
+            "the seal's check found {bad} bad words in memory it had just written: memory errors, so \
+                            the timings aren't the seal's own; stabilize the memory, then calibrate"
+        ));
     }
 
     let mib = bytes as f64 / crate::constants::MB_F64;
-    let widths: Vec<SealWidthTiming> = kernels.iter().zip(&times)
+    let widths: Vec<SealWidthTiming> = kernels
+        .iter()
+        .zip(&times)
         .map(|(kernel, (fills, checks))| SealWidthTiming::from_runs(kernel.width.bits(), mib, fills, checks))
         .collect();
     let (width_bits, fastest_bits) = choose_seal_width(&widths).ok_or("no seal width to measure")?;
@@ -1707,8 +1786,14 @@ pub fn display_seal_calibration(seal: &SealCalibration, cache_info: &CacheInfo, 
         0 => String::new(),
         l3 => format!(", {:.0} × L3", seal.buffer_bytes as f64 / l3 as f64),
     };
-    writeln!(out, "\n📊 Seal Width Calibration ({}, 1 thread, {}{l3}, {} pages; median of {} runs after a warm-up)",
-        seal.pattern, format_size(seal.buffer_bytes as usize), page_size_name(&seal.page_size), seal.runs)?;
+    writeln!(
+        out,
+        "\n📊 Seal Width Calibration ({}, 1 thread, {}{l3}, {} pages; median of {} runs after a warm-up)",
+        seal.pattern,
+        format_size(seal.buffer_bytes as usize),
+        page_size_name(&seal.page_size),
+        seal.runs
+    )?;
     writeln!(out, "═══════════════════════════════════════════════════════════════════════════════")?;
     writeln!(out, "{:<8} {:>13} {:>13} {:>28}", "Width", "Fill", "Check", "Fill + check")?;
     writeln!(out, "───────────────────────────────────────────────────────────────────────────────")?;
@@ -1717,11 +1802,18 @@ pub fn display_seal_calibration(seal: &SealCalibration, cache_info: &CacheInfo, 
     }
     writeln!(out, "───────────────────────────────────────────────────────────────────────────────")?;
     match seal.widths.iter().find(|w| w.bits == seal.fastest_bits) {
-        Some(fastest) if seal.fastest_bits != seal.width_bits => writeln!(out,
+        Some(fastest) if seal.fastest_bits != seal.width_bits => writeln!(
+            out,
             "Seal width: {}: the fastest is {} ({}), but {}'s median is within {:.1} ms (the tighter of {}'s upper quartile \
              and its median + {:.0}%), so the narrower (less power, same speed)",
-            seal.width_bits, fastest.bits, seal_time(fastest), seal.width_bits, fastest.same_speed_bound(), fastest.bits,
-            SEAL_SAME_SPEED * 100.0)?,
+            seal.width_bits,
+            fastest.bits,
+            seal_time(fastest),
+            seal.width_bits,
+            fastest.same_speed_bound(),
+            fastest.bits,
+            SEAL_SAME_SPEED * 100.0
+        )?,
         _ => writeln!(out, "Seal width: {}, the fastest", seal.width_bits)?,
     }
     writeln!(out)?;
@@ -1752,12 +1844,12 @@ mod tests {
     #[test]
     fn test_online_stats_welford() {
         let mut stats = OnlineStats::new();
-        
+
         // Add samples: 1, 2, 3, 4, 5
         for i in 1..=5 {
             stats.add_sample(i as f64);
         }
-        
+
         assert_eq!(stats.count(), 5);
         assert!((stats.variance() - 2.5).abs() < 0.001); // Sample variance of 1,2,3,4,5
         assert!((stats.std_dev() - 1.5811).abs() < 0.01);
@@ -1767,7 +1859,7 @@ mod tests {
     fn test_online_stats_single_sample() {
         let mut stats = OnlineStats::new();
         stats.add_sample(42.0);
-        
+
         assert_eq!(stats.count(), 1);
         assert_eq!(stats.variance(), 0.0); // Variance undefined for n=1, returns 0
     }
@@ -1776,7 +1868,7 @@ mod tests {
     fn test_statistics_analyzer_basic() {
         let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0];
         let stats = StatisticsAnalyzer::analyze(&samples);
-        
+
         assert!((stats.median_ns - 3.0).abs() < 0.001);
     }
 
@@ -1785,7 +1877,7 @@ mod tests {
         // 100 samples from 1 to 100
         let samples: Vec<f64> = (1..=100).map(|x| x as f64).collect();
         let stats = StatisticsAnalyzer::analyze(&samples);
-        
+
         // P50 should be around 50.5
         assert!((stats.median_ns - 50.5).abs() < 0.1);
         // P5 ≈ 5.95 and P95 ≈ 95.05 (linear interpolation), seen through their ratio
@@ -1797,7 +1889,7 @@ mod tests {
         // Uniform distribution: spread ratio should be close to P95/P5
         let samples: Vec<f64> = (1..=100).map(|x| x as f64).collect();
         let stats = StatisticsAnalyzer::analyze(&samples);
-        
+
         // P95/P5 ≈ 95/5 ≈ 19 (but with interpolation it's different)
         assert!(stats.spread_ratio > 10.0);
         assert!(stats.spread_ratio < 25.0);
@@ -1808,7 +1900,7 @@ mod tests {
         // Create bimodal distribution: half at 10, half at 100
         let mut samples = vec![10.0; 50];
         samples.extend(vec![100.0; 50]);
-        
+
         let stats = StatisticsAnalyzer::analyze(&samples);
 
         // Bimodal should fail the fine sweep's stability cut (spread < 1.5)
@@ -1829,7 +1921,7 @@ mod tests {
     fn test_statistics_analyzer_empty() {
         let samples: Vec<f64> = vec![];
         let stats = StatisticsAnalyzer::analyze(&samples);
-        
+
         assert_eq!(stats.median_ns, 0.0);
         assert_eq!(stats.spread_ratio, 0.0);
     }
@@ -1912,8 +2004,9 @@ mod tests {
     /// calibration records and its report names.
     #[test]
     fn a_calibration_buffer_steps_down_and_says_what_it_got() {
-        use crate::memory::backend::AllocError;
         use PageSizeLevel::{Huge, Large, Regular};
+
+        use crate::memory::backend::AllocError;
         const SIZE: usize = 64 << 20;
         // The page size got, and the requests made: each its page size and alignment
         let allocate = |page, granted: &[PageSizeLevel]| {
@@ -1939,8 +2032,9 @@ mod tests {
 
         // Named as the report names them, and as maxpage= asks for them (2 MiB by default)
         assert_eq!([Regular, Large, Huge].map(|p| page_size_name(page_size_str(p))), ["4KB regular", "2MB large", "1GB huge"]);
-        for (maxpage, page) in [("regular", Regular), ("4KB", Regular), ("large", Large), ("2mb", Large), ("huge", Huge),
-                                ("1gb", Huge), ("unknown", Large)] {
+        for (maxpage, page) in
+            [("regular", Regular), ("4KB", Regular), ("large", Large), ("2mb", Large), ("huge", Huge), ("1gb", Huge), ("unknown", Large)]
+        {
             assert_eq!(calibration_page_size(maxpage), page, "{maxpage}");
         }
         for page in [Regular, Large, Huge] {

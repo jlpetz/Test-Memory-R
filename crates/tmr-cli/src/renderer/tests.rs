@@ -6,9 +6,9 @@
 
 use tmr::frontend::{
     CacheInfo, CpuInfo, CpuPerformance, CpuTopologyEntry, CpuTopologyReport, LatencyLevelSummary, LatencyPercentiles,
-    LatencyTestSummaryReport, LatencyThreadResult, PerformanceByCpuReport, PerformanceByPhysicalCoreReport,
-    PerformanceByThreadReport, PhysicalCorePerformance, SystemInfoReport, ThreadPerformance, ThreadTiming, ThreadTimingReport,
-    TopologySummary, TscCalibrationInfo, WheaCounts,
+    LatencyTestSummaryReport, LatencyThreadResult, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
+    PhysicalCorePerformance, SystemInfoReport, ThreadPerformance, ThreadTiming, ThreadTimingReport, TopologySummary, TscCalibrationInfo,
+    WheaCounts,
 };
 use tmr::test_support;
 

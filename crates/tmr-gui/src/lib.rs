@@ -247,8 +247,10 @@ mod tests {
         assert_eq!(exit_status(&Ok(SessionEnd::RestartChosen), false), RunStatus::Passed, "the restart chosen");
         assert_eq!(exit_status(&Ok(SessionEnd::RestartChosen), true), RunStatus::NotRun, "the question unanswered");
         let stopped = Ok(SessionEnd::Stopped(tmr::session::Stopped::Invalid("bad value".to_string())));
-        assert_eq!((exit_status(&stopped, false), exit_status(&Err("bad value".to_string()), false)),
-                   (RunStatus::NotRun, RunStatus::NotRun));
+        assert_eq!(
+            (exit_status(&stopped, false), exit_status(&Err("bad value".to_string()), false)),
+            (RunStatus::NotRun, RunStatus::NotRun)
+        );
     }
 
     /// The window's end: the session's status whatever became of the window, interrupted past the
@@ -262,10 +264,16 @@ mod tests {
         assert_eq!(closed(None, true, true, None), ended(3, None), "a session that outlived the grace");
         assert_eq!(closed(None, true, false, None), ended(2, None), "closed before Start");
         assert_eq!(closed(failed(), false, false, None), ended(2, Some("The window couldn't open: Unspecified error (0x80004005)")));
-        assert_eq!(closed(failed(), true, false, None), ended(2, Some("The window failed: Unspecified error (0x80004005)")),
-                   "failed before Start");
-        assert_eq!(closed(failed(), true, true, Some(0)), ended(0, Some("The window failed: Unspecified error (0x80004005)")),
-                   "failed during a run that passed: the run's status");
+        assert_eq!(
+            closed(failed(), true, false, None),
+            ended(2, Some("The window failed: Unspecified error (0x80004005)")),
+            "failed before Start"
+        );
+        assert_eq!(
+            closed(failed(), true, true, Some(0)),
+            ended(0, Some("The window failed: Unspecified error (0x80004005)")),
+            "failed during a run that passed: the run's status"
+        );
         assert_eq!(closed(failed(), true, true, None), ended(3, Some("The window failed: Unspecified error (0x80004005)")));
     }
 }

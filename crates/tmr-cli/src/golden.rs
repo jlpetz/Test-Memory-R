@@ -108,7 +108,8 @@ pub(crate) fn mask_stamps(text: &str) -> String {
 pub(crate) fn mask_plan(text: &str) -> String {
     let text = mask_stamps(text);
     // The tests whose chunk a cache sizes: their rows' second cell is the name
-    let sized_by_cache: Vec<&str> = text.lines()
+    let sized_by_cache: Vec<&str> = text
+        .lines()
         .filter(|l| ["(L1", "(L2", "(L3", "(DRAM"].iter().any(|cache| l.contains(cache)))
         .filter_map(|l| l.split_whitespace().nth(1))
         .collect();
@@ -160,8 +161,11 @@ pub(crate) fn mask_run(text: &str) -> String {
             let headers = cells(&lines[i + 1]);
             // A latency table's figures have no unit to know them by: each of its decimals is one
             let latency = headers.iter().any(|h| h == "P50");
-            let mut rows: Vec<String> = lines[i + 3..end].iter()
-                .map(|l| cells(l).into_iter().map(|c| if latency && decimal(&c) { "#".to_string() } else { c }).collect::<Vec<_>>().join(" | "))
+            let mut rows: Vec<String> = lines[i + 3..end]
+                .iter()
+                .map(|l| {
+                    cells(l).into_iter().map(|c| if latency && decimal(&c) { "#".to_string() } else { c }).collect::<Vec<_>>().join(" | ")
+                })
                 .collect();
             if headers.first().is_some_and(|h| h == "Thread") {
                 rows.sort();
@@ -191,8 +195,7 @@ fn thread_of(line: &str) -> Option<usize> {
 fn mask_shape(text: &str, shape: &str, with: &str) -> String {
     let (text, shape): (Vec<char>, Vec<char>) = (text.chars().collect(), shape.chars().collect());
     let fits = |at: usize| {
-        text.len() - at >= shape.len()
-            && shape.iter().zip(&text[at..]).all(|(&s, &c)| if s == '9' { c.is_ascii_digit() } else { s == c })
+        text.len() - at >= shape.len() && shape.iter().zip(&text[at..]).all(|(&s, &c)| if s == '9' { c.is_ascii_digit() } else { s == c })
     };
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -283,9 +286,14 @@ impl log::Log for Logger {
             log::Level::Debug => "36",
             log::Level::Trace => "35",
         };
-        crate::console::print_above(&format!("\x1b[{}m[{} {} {}]\x1b[0m {}\n", colour,
-            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), record.level(), record.module_path().unwrap_or("unknown"),
-            record.args()));
+        crate::console::print_above(&format!(
+            "\x1b[{}m[{} {} {}]\x1b[0m {}\n",
+            colour,
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            record.level(),
+            record.module_path().unwrap_or("unknown"),
+            record.args()
+        ));
     }
 
     fn flush(&self) {}
@@ -318,22 +326,33 @@ mod tests {
             std::thread::spawn(|| log::warn!("from a thread")).join().unwrap();
         });
         let text = mask_stamps(&text);
-        assert_eq!(text, "plain\nabove\n\x1b[32m[<stamp> INFO tmr_cli::golden::tests]\x1b[0m a record\n\
-                          \x1b[33m[<stamp> WARN tmr_cli::golden::tests]\x1b[0m from a thread\n");
+        assert_eq!(
+            text,
+            "plain\nabove\n\x1b[32m[<stamp> INFO tmr_cli::golden::tests]\x1b[0m a record\n\
+                          \x1b[33m[<stamp> WARN tmr_cli::golden::tests]\x1b[0m from a thread\n"
+        );
     }
 
     /// `mask_run` masks the figures that change between runs and keeps the rest.
     #[test]
     fn masks_keep_labels_counts_and_byte_counts() {
         assert_eq!(mask_figures("✅ 0.4s, 3 errors (bit 17) + 0 seal, Cycles 🟢 1/1"), "✅ #s, 3 errors (bit 17) + 0 seal, Cycles 🟢 1/1");
-        assert_eq!(mask_figures("   Test: 1.2s, 0.00 GiB @ 1234 MiB/s, 163.84K ops @ 1.23M ops/s, P50: 75.3ns, Spread: 1.20x"),
-                   "   Test: #s, 0.00 GiB @ # MiB/s, 163.84K ops @ # ops/s, P50: #ns, Spread: #x");
-        assert_eq!(mask_figures("Mem-StuckBit256_A, Bench-Verify-TMR-10, +0.0s -1.5s +12.3, 640.00 KiB +0.00 B, 1.0, 512, extent=64.00 KiB"),
-                   "Mem-StuckBit256_A, Bench-Verify-TMR-10, #s #s #, 640.00 KiB +0.00 B, 1.0, 512, extent=64.00 KiB");
-        assert_eq!(mask_figures("[Thread 0] ReadLatency - 1000 samples | P1=72.3 P99.9=112.5 | Spread=1.08x"),
-                   "[Thread 0] ReadLatency - 1000 samples | P1=# P99.9=# | Spread=#x");
-        assert_eq!(mask_figures("idx 8709 (address 0x1f2e3d4c5b60): expected 0x5555, got 0x5557"),
-                   "idx 8709 (address <addr>): expected 0x5555, got 0x5557");
+        assert_eq!(
+            mask_figures("   Test: 1.2s, 0.00 GiB @ 1234 MiB/s, 163.84K ops @ 1.23M ops/s, P50: 75.3ns, Spread: 1.20x"),
+            "   Test: #s, 0.00 GiB @ # MiB/s, 163.84K ops @ # ops/s, P50: #ns, Spread: #x"
+        );
+        assert_eq!(
+            mask_figures("Mem-StuckBit256_A, Bench-Verify-TMR-10, +0.0s -1.5s +12.3, 640.00 KiB +0.00 B, 1.0, 512, extent=64.00 KiB"),
+            "Mem-StuckBit256_A, Bench-Verify-TMR-10, #s #s #, 640.00 KiB +0.00 B, 1.0, 512, extent=64.00 KiB"
+        );
+        assert_eq!(
+            mask_figures("[Thread 0] ReadLatency - 1000 samples | P1=72.3 P99.9=112.5 | Spread=1.08x"),
+            "[Thread 0] ReadLatency - 1000 samples | P1=# P99.9=# | Spread=#x"
+        );
+        assert_eq!(
+            mask_figures("idx 8709 (address 0x1f2e3d4c5b60): expected 0x5555, got 0x5557"),
+            "idx 8709 (address <addr>): expected 0x5555, got 0x5557"
+        );
         let table = "------------\n    Thread  Time  Cycles  \n------------\n         1  0.1s  1  \n         0  12.0s  1  \n       Avg  6.0s  1.0  \n------------\nafter";
         assert_eq!(mask_run(table), "-\nThread | Time | Cycles\n-\n0 | #s | 1\n1 | #s | 1\nAvg | #s | 1.0\n-\nafter");
         let latency = "------------\n    Thread  Samples   P50  Spread  \n------------\n         1     1000  72.5   1.08x  \n------------";
@@ -342,7 +361,10 @@ mod tests {
         let plan = "------------\n    #  Test  \n------------\n    2  Mem-B  \n    1  Mem-A  \n------------";
         assert_eq!(mask_run(plan), "-\n# | Test\n-\n2 | Mem-B\n1 | Mem-A\n-");
         let workers = "before\n[Thread 1] Running x\n[Thread 0] Running x\nstep 2, thread 0: idx 7\nThread 0 reported 1 errors\nafter";
-        assert_eq!(mask_run(workers), "before\n[Thread 0] Running x\nstep 2, thread 0: idx 7\nThread 0 reported 1 errors\n[Thread 1] Running x\nafter");
+        assert_eq!(
+            mask_run(workers),
+            "before\n[Thread 0] Running x\nstep 2, thread 0: idx 7\nThread 0 reported 1 errors\n[Thread 1] Running x\nafter"
+        );
         assert_eq!(mask_run("[2026-10-22 19:30:01 INFO tmr] Runtime: 00:00:03"), "[<stamp> INFO tmr] Runtime: <hms>");
     }
 }

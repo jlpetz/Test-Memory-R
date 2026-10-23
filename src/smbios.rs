@@ -8,6 +8,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
+
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -177,15 +178,7 @@ fn read_cpu_registry_info() -> (String, u32) {
     let subkey = b"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\0";
 
     let mut hkey = HKEY::default();
-    let result = unsafe {
-        RegOpenKeyExA(
-            HKEY_LOCAL_MACHINE,
-            PCSTR::from_raw(subkey.as_ptr()),
-            Some(0),
-            KEY_READ,
-            &mut hkey,
-        )
-    };
+    let result = unsafe { RegOpenKeyExA(HKEY_LOCAL_MACHINE, PCSTR::from_raw(subkey.as_ptr()), Some(0), KEY_READ, &mut hkey) };
 
     if result.is_err() {
         log::debug!("Failed to open CPU registry key: {:?}", result);
@@ -215,16 +208,8 @@ fn read_cpu_registry_info() -> (String, u32) {
     let rev_name = b"Update Revision\0";
     let mut rev_buf = [0u8; 8];
     let mut rev_size = 8u32;
-    let result = unsafe {
-        RegQueryValueExA(
-            hkey,
-            PCSTR::from_raw(rev_name.as_ptr()),
-            None,
-            None,
-            Some(rev_buf.as_mut_ptr()),
-            Some(&mut rev_size),
-        )
-    };
+    let result =
+        unsafe { RegQueryValueExA(hkey, PCSTR::from_raw(rev_name.as_ptr()), None, None, Some(rev_buf.as_mut_ptr()), Some(&mut rev_size)) };
     if result.is_ok() && rev_size >= 4 {
         // Microcode revision is stored as a little-endian value.
         // The high DWORD (bytes 4-7) contains the actual revision.
@@ -292,9 +277,15 @@ fn parse_smbios(raw: &[u8]) -> SmbiosData {
         let (strings, next_offset) = parse_string_table(table, string_start);
 
         let end_preview = (next_offset + 8).min(table.len());
-        log::debug!("SMBIOS: Type {} at offset {}, formatted_len={}, strings={:?}, next_offset={}, bytes_at_next={:02X?}",
-            struct_type, offset, struct_len, strings, next_offset,
-            &table[next_offset..end_preview]);
+        log::debug!(
+            "SMBIOS: Type {} at offset {}, formatted_len={}, strings={:?}, next_offset={}, bytes_at_next={:02X?}",
+            struct_type,
+            offset,
+            struct_len,
+            strings,
+            next_offset,
+            &table[next_offset..end_preview]
+        );
 
         match struct_type {
             0 if !found_type0 => {
@@ -309,29 +300,30 @@ fn parse_smbios(raw: &[u8]) -> SmbiosData {
                 // Type 16: Physical Memory Array — fallback for when Type 17 is absent
                 if formatted.len() >= 0x0F {
                     // Offset 0x07: Maximum Capacity in KB (u32), 0x80000000 means use extended
-                    let max_cap_kb = u32::from_le_bytes([
-                        formatted[0x07], formatted[0x08], formatted[0x09], formatted[0x0A],
-                    ]);
+                    let max_cap_kb = u32::from_le_bytes([formatted[0x07], formatted[0x08], formatted[0x09], formatted[0x0A]]);
                     if max_cap_kb == 0x80000000 && formatted.len() >= 0x17 {
                         // Extended Maximum Capacity at offset 0x0F (u64, in bytes)
                         type16_capacity_bytes = u64::from_le_bytes([
-                            formatted[0x0F], formatted[0x10], formatted[0x11], formatted[0x12],
-                            formatted[0x13], formatted[0x14], formatted[0x15], formatted[0x16],
+                            formatted[0x0F], formatted[0x10], formatted[0x11], formatted[0x12], formatted[0x13], formatted[0x14],
+                            formatted[0x15], formatted[0x16],
                         ]);
                     } else if max_cap_kb != 0x80000000 {
                         type16_capacity_bytes = (max_cap_kb as u64) * 1024;
                     }
                     // Offset 0x0D: Number of Memory Devices (u16)
                     let device_count = u16::from_le_bytes([formatted[0x0D], formatted[0x0E]]);
-                    log::debug!("SMBIOS Type 16: capacity={} bytes, devices={}",
-                        type16_capacity_bytes, device_count);
+                    log::debug!("SMBIOS Type 16: capacity={} bytes, devices={}", type16_capacity_bytes, device_count);
                 }
             }
             17 => {
                 if struct_len >= 0x0E {
                     let size_field = u16::from_le_bytes([formatted[0x0C], formatted[0x0D]]);
-                    log::debug!("SMBIOS Type 17: len={}, size_field=0x{:04X}, bytes={:02X?}",
-                        struct_len, size_field, &formatted[..struct_len]);
+                    log::debug!(
+                        "SMBIOS Type 17: len={}, size_field=0x{:04X}, bytes={:02X?}",
+                        struct_len,
+                        size_field,
+                        &formatted[..struct_len]
+                    );
                 }
                 if let Some(module) = parse_type17_memory(formatted, &strings) {
                     data.memory_modules.push(module);
@@ -349,19 +341,19 @@ fn parse_smbios(raw: &[u8]) -> SmbiosData {
     // This happens on VMs (e.g. EC2) with buggy firmware: Type 17 says size=0x7FFF
     // (use extended) but extended size is 0. Type 16 has the correct total.
     if !data.memory_modules.is_empty() && type16_capacity_bytes > 0 {
-        let modules_needing_fixup: Vec<usize> = data.memory_modules.iter()
-            .enumerate()
-            .filter(|(_, m)| m.capacity_bytes == 0)
-            .map(|(i, _)| i)
-            .collect();
+        let modules_needing_fixup: Vec<usize> =
+            data.memory_modules.iter().enumerate().filter(|(_, m)| m.capacity_bytes == 0).map(|(i, _)| i).collect();
         if !modules_needing_fixup.is_empty() {
             let per_module = type16_capacity_bytes / modules_needing_fixup.len() as u64;
             for idx in modules_needing_fixup {
                 data.memory_modules[idx].capacity_bytes = per_module;
                 data.memory_modules[idx].capacity_human = format_capacity(per_module);
             }
-            log::debug!("SMBIOS: Fixed up {} module(s) with capacity from Type 16 ({})",
-                data.memory_modules.len(), format_capacity(type16_capacity_bytes));
+            log::debug!(
+                "SMBIOS: Fixed up {} module(s) with capacity from Type 16 ({})",
+                data.memory_modules.len(),
+                format_capacity(type16_capacity_bytes)
+            );
         }
     }
 
@@ -389,8 +381,7 @@ fn parse_smbios(raw: &[u8]) -> SmbiosData {
         let total_gb = data.total_memory_bytes() as f64 / (1024.0 * 1024.0 * 1024.0);
         format!("{} module(s), {:.1} GB total", data.memory_modules.len(), total_gb)
     };
-    log::info!("SMBIOS: BIOS={}, System={}, UUID={}, Memory={}",
-        bios_str, sys_str, uuid_str, mem_str);
+    log::info!("SMBIOS: BIOS={}, System={}, UUID={}, Memory={}", bios_str, sys_str, uuid_str, mem_str);
 
     data
 }
@@ -444,10 +435,7 @@ fn get_string(strings: &[String], index: u8) -> String {
     if index == 0 {
         return String::new();
     }
-    strings
-        .get((index - 1) as usize)
-        .cloned()
-        .unwrap_or_default()
+    strings.get((index - 1) as usize).cloned().unwrap_or_default()
 }
 
 /// Parse Type 0: BIOS Information
@@ -496,11 +484,22 @@ fn parse_type1_system(formatted: &[u8], strings: &[String], system: &mut SystemI
         // UUID format per SMBIOS spec: first 3 fields are little-endian
         system.uuid = format!(
             "{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
-            uuid[3], uuid[2], uuid[1], uuid[0],
-            uuid[5], uuid[4],
-            uuid[7], uuid[6],
-            uuid[8], uuid[9],
-            uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15],
+            uuid[3],
+            uuid[2],
+            uuid[1],
+            uuid[0],
+            uuid[5],
+            uuid[4],
+            uuid[7],
+            uuid[6],
+            uuid[8],
+            uuid[9],
+            uuid[10],
+            uuid[11],
+            uuid[12],
+            uuid[13],
+            uuid[14],
+            uuid[15],
         );
     }
 }
@@ -525,9 +524,7 @@ fn parse_type17_memory(formatted: &[u8], strings: &[String]) -> Option<MemoryMod
         // Extended size at offset 0x1C (u32, in MB) — for modules > 32GB
         // Some VMs set 0x7FFF but leave extended size as 0 (buggy firmware)
         if formatted.len() >= 0x20 {
-            let ext_size_mb = u32::from_le_bytes([
-                formatted[0x1C], formatted[0x1D], formatted[0x1E], formatted[0x1F],
-            ]);
+            let ext_size_mb = u32::from_le_bytes([formatted[0x1C], formatted[0x1D], formatted[0x1E], formatted[0x1F]]);
             (ext_size_mb as u64) * 1024 * 1024
         } else {
             0
@@ -544,11 +541,7 @@ fn parse_type17_memory(formatted: &[u8], strings: &[String]) -> Option<MemoryMod
     let memory_type = formatted.get(0x12).copied().unwrap_or(0);
 
     // Offset 0x15: Speed in MT/s (u16) — guard for short structs
-    let speed_mts = if formatted.len() >= 0x17 {
-        u16::from_le_bytes([formatted[0x15], formatted[0x16]])
-    } else {
-        0
-    };
+    let speed_mts = if formatted.len() >= 0x17 { u16::from_le_bytes([formatted[0x15], formatted[0x16]]) } else { 0 };
 
     // String references (all guarded for short structs)
     // 0x10: Device Locator
@@ -556,26 +549,10 @@ fn parse_type17_memory(formatted: &[u8], strings: &[String]) -> Option<MemoryMod
     // 0x18: Serial Number
     // 0x19: Asset Tag
     // 0x1A: Part Number
-    let locator = if formatted.len() > 0x10 {
-        get_string(strings, formatted[0x10])
-    } else {
-        String::new()
-    };
-    let manufacturer = if formatted.len() > 0x17 {
-        get_string(strings, formatted[0x17])
-    } else {
-        String::new()
-    };
-    let serial_number = if formatted.len() > 0x18 {
-        get_string(strings, formatted[0x18])
-    } else {
-        String::new()
-    };
-    let part_number = if formatted.len() > 0x1A {
-        get_string(strings, formatted[0x1A])
-    } else {
-        String::new()
-    };
+    let locator = if formatted.len() > 0x10 { get_string(strings, formatted[0x10]) } else { String::new() };
+    let manufacturer = if formatted.len() > 0x17 { get_string(strings, formatted[0x17]) } else { String::new() };
+    let serial_number = if formatted.len() > 0x18 { get_string(strings, formatted[0x18]) } else { String::new() };
+    let part_number = if formatted.len() > 0x1A { get_string(strings, formatted[0x1A]) } else { String::new() };
 
     Some(MemoryModule {
         locator,
@@ -598,15 +575,20 @@ mod tests {
         // Integration test: should succeed on any Windows machine
         let data = SmbiosData::detect();
         // UUID should be non-empty on real hardware or VMs
-        assert!(!data.system.uuid.is_empty() || data.system.manufacturer.is_empty(),
-            "Expected UUID or empty SMBIOS on this system");
+        assert!(!data.system.uuid.is_empty() || data.system.manufacturer.is_empty(), "Expected UUID or empty SMBIOS on this system");
         println!("BIOS: {} {}", data.bios.vendor, data.bios.version);
         println!("System: {} {} UUID={}", data.system.manufacturer, data.system.product_name, data.system.uuid);
         println!("Memory modules: {}", data.memory_modules.len());
         for m in &data.memory_modules {
-            println!("  {} {} {} {} {}MT/s {:.1}GB",
-                m.locator, m.manufacturer, m.serial_number, m.part_number,
-                m.speed_mts, m.capacity_bytes as f64 / (1024.0 * 1024.0 * 1024.0));
+            println!(
+                "  {} {} {} {} {}MT/s {:.1}GB",
+                m.locator,
+                m.manufacturer,
+                m.serial_number,
+                m.part_number,
+                m.speed_mts,
+                m.capacity_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+            );
         }
         println!("Memory fingerprint: {}", data.memory_fingerprint());
     }

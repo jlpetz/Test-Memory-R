@@ -40,25 +40,14 @@ pub(crate) struct ThreadShare {
 
 /// Each thread's share and node, in thread order. The node comes from the CPU the thread is
 /// pinned to (`cpu_list`), not from its index.
-pub(crate) fn thread_shares(
-    thread_blocks: &HashMap<usize, Vec<BlockInfo>>,
-    runtime_config: &crate::RuntimeConfig,
-) -> Vec<ThreadShare> {
+pub(crate) fn thread_shares(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runtime_config: &crate::RuntimeConfig) -> Vec<ThreadShare> {
     let mut shares: Vec<ThreadShare> = thread_blocks
         .iter()
         .map(|(&thread_id, blocks)| {
-            let cpu_id = runtime_config
-                .cpu_list
-                .as_ref()
-                .and_then(|list| list.get(thread_id))
-                .copied()
-                .unwrap_or(thread_id);
+            let cpu_id = runtime_config.cpu_list.as_ref().and_then(|list| list.get(thread_id)).copied().unwrap_or(thread_id);
             let numa_node = get_numa_node_for_cpu(cpu_id);
             let bytes: usize = blocks.iter().map(|b| b.size_bytes).sum();
-            log::debug!(
-                "Thread {thread_id} → CPU {cpu_id} → NUMA {numa_node} ({} MiB)",
-                bytes / BYTES_PER_MIB_USIZE
-            );
+            log::debug!("Thread {thread_id} → CPU {cpu_id} → NUMA {numa_node} ({} MiB)", bytes / BYTES_PER_MIB_USIZE);
             ThreadShare { thread_id, bytes, numa_node }
         })
         .collect();
@@ -94,10 +83,7 @@ pub(crate) fn allowed_page_sizes(runtime_config: &crate::RuntimeConfig) -> Resul
     let min = PageSizeLevel::from_config_str(&alloc.min_page_size);
     let mut max = PageSizeLevel::from_config_str(&alloc.max_page_size);
     if min > max {
-        return Err(format!(
-            "minpage={} is above maxpage={}",
-            alloc.min_page_size, alloc.max_page_size
-        ));
+        return Err(format!("minpage={} is above maxpage={}", alloc.min_page_size, alloc.max_page_size));
     }
     if !runtime_config.large_pages_available {
         if min > PageSizeLevel::Regular {
@@ -194,11 +180,7 @@ impl Source {
 /// to it before each remote 1 GiB pass (`pad_to_huge_boundary`). Returns the first 4 KiB refusal,
 /// as `fill_regular` does.
 pub(crate) fn fill_all(
-    fill: &mut impl Fill,
-    pages: PageSizes,
-    sizing: &crate::memory::allocator::BlockSizing,
-    nodes: u32,
-    who: &str,
+    fill: &mut impl Fill, pages: PageSizes, sizing: &crate::memory::allocator::BlockSizing, nodes: u32, who: &str,
 ) -> Result<Option<(usize, u32)>, String> {
     let sources = std::iter::once(Source::Local).chain((1..nodes).map(|step| Source::Remote { step, nodes }));
     for source in sources {
@@ -280,12 +262,7 @@ fn pad_to_huge_boundary(fill: &mut impl Fill, source: Source, floor: usize, who:
 /// Every request is traced at info: a ✅ line per size granted, logged whenever the pool's size
 /// drops and at the end, and a ❌ line per refusal.
 pub(crate) fn fill_ladder(
-    fill: &mut impl Fill,
-    page: PageSizeLevel,
-    top: usize,
-    floor: usize,
-    source: Source,
-    who: &str,
+    fill: &mut impl Fill, page: PageSizeLevel, top: usize, floor: usize, source: Source, who: &str,
 ) -> Result<(), String> {
     let label = page_label(page);
     let mut rung: HashMap<Option<u32>, usize> = HashMap::new();
@@ -353,9 +330,7 @@ fn bytes_above(fill: &impl Fill, i: usize, page: PageSizeLevel) -> usize {
     match page {
         PageSizeLevel::Huge => 0,
         PageSizeLevel::Large => fill.bytes_at(i, PageSizeLevel::Huge),
-        PageSizeLevel::Regular => {
-            fill.bytes_at(i, PageSizeLevel::Huge) + fill.bytes_at(i, PageSizeLevel::Large)
-        }
+        PageSizeLevel::Regular => fill.bytes_at(i, PageSizeLevel::Huge) + fill.bytes_at(i, PageSizeLevel::Large),
     }
 }
 
@@ -450,10 +425,7 @@ pub(crate) fn warn_remote(who: &str, remote: &RemoteMemory) {
     let pairs: Vec<String> = remote
         .iter()
         .map(|(&(home, source), &(bytes, threads))| {
-            format!(
-                "{:.2} GiB for {threads} NUMA {home} thread(s) from NUMA {source}",
-                bytes as f64 / HUGE_PAGE_SIZE_USIZE as f64
-            )
+            format!("{:.2} GiB for {threads} NUMA {home} thread(s) from NUMA {source}", bytes as f64 / HUGE_PAGE_SIZE_USIZE as f64)
         })
         .collect();
     log::warn!(
@@ -554,12 +526,8 @@ mod tests {
     fn a_refusal_halves_the_rung_and_the_same_thread_retries() {
         let mut fill = pools(&[Some(0); 2], 8 * GIB, &[(Some(0), 6)]);
         fill_ladder(&mut fill, PageSizeLevel::Huge, 4 * GIB, GIB, Source::Local, "test").unwrap();
-        let asked: Vec<(usize, usize, bool)> =
-            fill.requests.iter().map(|&(i, len, ok)| (i, len / GIB, ok)).collect();
-        assert_eq!(
-            asked,
-            vec![(0, 4, true), (1, 4, false), (1, 2, true), (1, 2, false), (1, 1, false)]
-        );
+        let asked: Vec<(usize, usize, bool)> = fill.requests.iter().map(|&(i, len, ok)| (i, len / GIB, ok)).collect();
+        assert_eq!(asked, vec![(0, 4, true), (1, 4, false), (1, 2, true), (1, 2, false), (1, 1, false)]);
         assert_eq!(fill.filled, vec![4 * GIB, 2 * GIB]);
     }
 
@@ -575,14 +543,15 @@ mod tests {
         }
         assert_eq!(fill.filled, vec![3 * GIB; 4]);
         // Node 0's last two pages came from node 1, asked for by name after the local passes.
-        let from_node_1: Vec<usize> = fill.requests.iter().zip(&fill.asked)
+        let from_node_1: Vec<usize> = fill
+            .requests
+            .iter()
+            .zip(&fill.asked)
             .filter(|&(&(i, _, ok), &node)| ok && node == Some(1) && fill.nodes[i] == Some(0))
             .map(|(&(i, _, _), _)| i)
             .collect();
         assert_eq!(from_node_1, vec![0, 1]);
-        let first_remote = fill.asked.iter().zip(&fill.requests)
-            .position(|(&node, &(i, _, _))| node != fill.nodes[i])
-            .unwrap();
+        let first_remote = fill.asked.iter().zip(&fill.requests).position(|(&node, &(i, _, _))| node != fill.nodes[i]).unwrap();
         assert!(fill.requests[..first_remote].iter().all(|&(i, _, _)| fill.asked[i].is_some()));
         assert!(fill.asked[..first_remote].iter().zip(&fill.requests).all(|(&node, &(i, _, _))| node == fill.nodes[i]));
         assert_eq!(remote.label(Some(1)), "NUMA 1 for NUMA 0");

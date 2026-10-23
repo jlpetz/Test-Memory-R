@@ -7,21 +7,20 @@
 //! (`tmr::frontend`). The large-page restart is asked on the console (`prompts.rs`).
 
 mod run;
-mod setup;
-mod ticker;
-#[cfg(test)]
-mod tests;
 #[cfg(test)]
 mod run_tests;
+mod setup;
+#[cfg(test)]
+mod tests;
+mod ticker;
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub(crate) use setup::show_end;
-
 use tmr::frontend::{Event, Frontend, ProgressTracker, Reporter, RestartChoice};
 
-use crate::renderer::{create_console_reporter, ConsoleRenderer};
+use crate::renderer::{ConsoleRenderer, create_console_reporter};
 
 /// The console's frontend: the run's events as text, and the ticker.
 #[derive(Default)]

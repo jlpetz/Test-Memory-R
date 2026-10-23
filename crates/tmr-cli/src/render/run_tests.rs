@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use tmr::frontend::{ErrorMode, Event, Frontend, RestartChoice, Run, RunStatus};
-use tmr::test_support::{default_plan, FakeCycle, Flip, GoldenRun, TestRunOverrides};
+use tmr::test_support::{FakeCycle, Flip, GoldenRun, TestRunOverrides, default_plan};
 
 use super::CliFrontend;
 use crate::golden::{capture, capture_with_debug, check, mask_plan, mask_run, mask_stamps};
@@ -81,7 +81,8 @@ fn events_come_in_order_with_the_log_records() {
     // The events and the run's own records: the workers' order among themselves is the
     // scheduler's
     let order = |text: &str| -> Vec<String> {
-        mask_stamps(text).lines()
+        mask_stamps(text)
+            .lines()
             .filter(|line| line.starts_with('<') || line.contains(" tmr::runner]") || line.contains(" tmr::layout]"))
             .map(|line| line.split_once("\x1b[0m ").map_or(line, |(_, message)| message).to_string())
             .collect()
@@ -92,22 +93,43 @@ fn events_come_in_order_with_the_log_records() {
     };
     let text = fake_cycle(ErrorMode::Log, Flip::Verify);
     let verify_errors = "Thread 0 reported 1 memory errors in test 'Bench-Verify-TMR-10' (1 failed checks, 0 not reproduced on rescan)";
-    assert_eq!(order(&text), ["<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>",
-                              "<StepFinished 3, 0 errors>", "<StepFinished 4, 0 errors>", "<SealStage FinalCheck>"]);
+    assert_eq!(order(&text), [
+        "<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>", "<StepFinished 3, 0 errors>",
+        "<StepFinished 4, 0 errors>", "<SealStage FinalCheck>"
+    ]);
     let text = fake_cycle(ErrorMode::Halt, Flip::Verify);
-    assert_eq!(order(&text), ["<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>",
-                              "Halting test suite due to memory errors"]);
+    assert_eq!(order(&text), [
+        "<SealStage SealAll>",
+        "<StepFinished 1, 0 errors>",
+        verify_errors,
+        "<StepFinished 2, 1 errors>",
+        "Halting test suite due to memory errors"
+    ]);
     let text = fake_cycle(ErrorMode::Log, Flip::VerifyAndSealed);
-    assert_eq!(order(&text), ["<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>",
-                              "<StepFinished 3, 0 errors>", "<StepFinished 4, 0 errors>", "<SealStage FinalCheck>",
-                              "The final seal check of cycle 1 found 1 errors"]);
+    assert_eq!(order(&text), [
+        "<SealStage SealAll>",
+        "<StepFinished 1, 0 errors>",
+        verify_errors,
+        "<StepFinished 2, 1 errors>",
+        "<StepFinished 3, 0 errors>",
+        "<StepFinished 4, 0 errors>",
+        "<SealStage FinalCheck>",
+        "The final seal check of cycle 1 found 1 errors"
+    ]);
 
     let overrides = TestRunOverrides { plan: Some(default_plan()), sequence_override: Some("W 2Q"), ..Default::default() };
     let (run, fe): (_, Arc<dyn Frontend>) = (GoldenRun::new(overrides), Arc::new(Recording));
     let (status, text) = capture(|| run.run(&fe));
     assert_eq!(status, RunStatus::NotRun);
-    assert_eq!(order(&text), ["<MemoryPlan>", "🧵 Thread Memory Layout:", "  Total threads: 4", "  Allocation per thread: 0.00 GiB",
-                              "  Total planned allocation: 0.02 GiB", "Using the built-in suite, plan stability", "<NotRun>"]);
+    assert_eq!(order(&text), [
+        "<MemoryPlan>",
+        "🧵 Thread Memory Layout:",
+        "  Total threads: 4",
+        "  Allocation per thread: 0.00 GiB",
+        "  Total planned allocation: 0.02 GiB",
+        "Using the built-in suite, plan stability",
+        "<NotRun>"
+    ]);
 
     // How many Debug records came between two events
     let debug_between = |text: &str, first: &str, second: &str| -> usize {
@@ -154,11 +176,19 @@ fn the_plan_prints_as_its_golden() {
 fn what_stops_a_run_prints_as_its_golden() {
     let stability = Some(default_plan());
     let cases = [
-        ("a filter no test of the plan matches", TestRunOverrides { plan: stability, single_test_filter: Some("Nope-*"), ..Default::default() }),
+        ("a filter no test of the plan matches", TestRunOverrides {
+            plan: stability,
+            single_test_filter: Some("Nope-*"),
+            ..Default::default()
+        }),
         ("a filter no test matches", TestRunOverrides { single_test_filter: Some("Nope-*"), ..Default::default() }),
         ("a sequence that doesn't parse", TestRunOverrides { plan: stability, sequence_override: Some("W 2Q"), ..Default::default() }),
-        ("a verify of the fill alone in a mode the cycle keys",
-         TestRunOverrides { plan: stability, pattern_mode_override: Some(0), test_reps_override: Some(0), ..Default::default() }),
+        ("a verify of the fill alone in a mode the cycle keys", TestRunOverrides {
+            plan: stability,
+            pattern_mode_override: Some(0),
+            test_reps_override: Some(0),
+            ..Default::default()
+        }),
         ("a seal that doesn't parse", TestRunOverrides { plan: stability, seal_override: Some("bogus"), ..Default::default() }),
     ];
     let mut text = String::new();

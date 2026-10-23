@@ -10,17 +10,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::TimeZone;
-
 use tmr::frontend::{
-    CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorMode, Frontend, LiveFigures, MemoryModule, MemoryStatus,
-    NotRun, PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
-    PhysicalCorePerformance, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealCalibrationState, SealOp,
-    Selection, Setup, Stage, StepConfigLine, StepReport, TestSnapshot, TestSummary, ThreadPerformance, WheaCounts,
+    CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorMode, Frontend, LiveFigures, MemoryModule, MemoryStatus, NotRun,
+    PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport, PhysicalCorePerformance,
+    ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealCalibrationState, SealOp, Selection, Setup, Stage, StepConfigLine,
+    StepReport, TestSnapshot, TestSummary, ThreadPerformance, WheaCounts,
 };
 use tmr::session::{SessionEnd, Stopped};
 use tmr::test_support::failing_bits;
 
-use super::{draw_when_due, setup, ticker, CliFrontend};
+use super::{CliFrontend, draw_when_due, setup, ticker};
 use crate::golden::{capture, check};
 
 const GIB: u64 = 1 << 30;
@@ -29,12 +28,14 @@ const GIB: u64 = 1 << 30;
 #[test]
 fn events_print_as_their_golden() {
     let fe = CliFrontend::new();
-    let left_out = |names: &[&str]| Run::LeftOut {
-        tests: names.iter().map(|name| (name.to_string(), "no AVX-512F".to_string())).collect(),
-    };
+    let left_out =
+        |names: &[&str]| Run::LeftOut { tests: names.iter().map(|name| (name.to_string(), "no AVX-512F".to_string())).collect() };
     let verdict = |outcome, status, memory_errors, whea| Run::SuiteEnded { outcome, status, memory_errors, whea };
-    let suite = |seed, transfer_bits, transfer_source| {
-        Run::SuiteStarted { progress: Arc::new(ProgressTracker::new()), seed, transfer_bits, transfer_source }
+    let suite = |seed, transfer_bits, transfer_source| Run::SuiteStarted {
+        progress: Arc::new(ProgressTracker::new()),
+        seed,
+        transfer_bits,
+        transfer_source,
     };
     let no_whea = WheaCounts::default();
     let cases = vec![
@@ -42,8 +43,13 @@ fn events_print_as_their_golden() {
         ("every test left out", Run::NotRun(NotRun::NothingLeftToRun)),
         ("allocation failed", Run::NotRun(NotRun::Allocation("thread 2: no memory left for its span".to_string()))),
         ("two tests left out", left_out(&["Mem-SimpleV2-512", "Mem-MirrorV2-512"])),
-        ("seven tests left out", left_out(&["Lat-L1-Read-512", "Lat-L1-Write-512", "Lat-L1-Copy-512", "Lat-L2-Read-512",
-                                            "Lat-L2-Write-512", "Lat-L2-Copy-512", "Spd-Read-512"])),
+        (
+            "seven tests left out",
+            left_out(&[
+                "Lat-L1-Read-512", "Lat-L1-Write-512", "Lat-L1-Copy-512", "Lat-L2-Read-512", "Lat-L2-Write-512", "Lat-L2-Copy-512",
+                "Spd-Read-512",
+            ]),
+        ),
         ("WHEA monitored", Run::WheaMonitoring(Ok(()))),
         ("WHEA not monitored", Run::WheaMonitoring(Err("the System event log can't be read".to_string()))),
         ("allocation between the default page sizes", Run::AllocationStarting { min: PageSizeLevel::Large, max: PageSizeLevel::Huge }),
@@ -53,21 +59,39 @@ fn events_print_as_their_golden() {
         ("the suite starts, its transfer width unknown", suite(7, None, "none")),
         ("a cycle of a limit", Run::CycleStarted { cycle: 2, limit: Some(3) }),
         ("a cycle with no limit", Run::CycleStarted { cycle: 41, limit: None }),
-        ("memory sealed", Run::SealStage { op: SealOp::SealAll, kernel: "tm5-512".to_string(), bytes: 24 * GIB, errors: 0,
-                                           bits: Default::default(), duration: Duration::from_millis(1250) }),
-        ("a final check that found errors", Run::SealStage { op: SealOp::FinalCheck, kernel: "tmr-256".to_string(), bytes: 24 * GIB,
-                                                             errors: 2, bits: failing_bits(1 << 5), duration: Duration::from_millis(1180) }),
+        ("memory sealed", Run::SealStage {
+            op: SealOp::SealAll,
+            kernel: "tm5-512".to_string(),
+            bytes: 24 * GIB,
+            errors: 0,
+            bits: Default::default(),
+            duration: Duration::from_millis(1250),
+        }),
+        ("a final check that found errors", Run::SealStage {
+            op: SealOp::FinalCheck,
+            kernel: "tmr-256".to_string(),
+            bytes: 24 * GIB,
+            errors: 2,
+            bits: failing_bits(1 << 5),
+            duration: Duration::from_millis(1180),
+        }),
         ("a step unsealed, ended by its time limit, with a WHEA event and repetitions", Run::StepFinished(Box::new(step()))),
-        ("WHEA after the monitor's last tick", Run::LateWhea(vec![
-            "⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)".to_string(),
-            "⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)".to_string(),
-        ])),
+        (
+            "WHEA after the monitor's last tick",
+            Run::LateWhea(vec![
+                "⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)".to_string(),
+                "⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)".to_string(),
+            ]),
+        ),
         ("the CPU performance summary", Run::CpuPerformance(Box::new(cpu_performance()))),
-        ("the CPU performance summary, no rows", Run::CpuPerformance(Box::new(CpuPerformanceSummary {
-            by_thread: PerformanceByThreadReport { threads: Vec::new(), pinned: true, whea: no_whea },
-            by_cpu: PerformanceByCpuReport { cpus: Vec::new(), whea: no_whea },
-            by_core: PerformanceByPhysicalCoreReport { cores: Vec::new(), whea: no_whea },
-        }))),
+        (
+            "the CPU performance summary, no rows",
+            Run::CpuPerformance(Box::new(CpuPerformanceSummary {
+                by_thread: PerformanceByThreadReport { threads: Vec::new(), pinned: true, whea: no_whea },
+                by_cpu: PerformanceByCpuReport { cpus: Vec::new(), whea: no_whea },
+                by_core: PerformanceByPhysicalCoreReport { cores: Vec::new(), whea: no_whea },
+            })),
+        ),
         ("passed", verdict(RunOutcome::Completed, RunStatus::Passed, 0, no_whea)),
         ("passed on the time limit", verdict(RunOutcome::TimeLimit, RunStatus::Passed, 0, no_whea)),
         ("errors", verdict(RunOutcome::Completed, RunStatus::Failed, 3, no_whea)),
@@ -165,12 +189,7 @@ fn snapshot() -> ProgressSnapshot {
             time_limit: Some(Duration::from_secs(600)),
             finished: false,
             publishes: true,
-            live: LiveFigures {
-                published: true,
-                bytes: 285 * GIB,
-                bytes_per_sec: 19108.7 * 1024.0 * 1024.0,
-                ..Default::default()
-            },
+            live: LiveFigures { published: true, bytes: 285 * GIB, bytes_per_sec: 19108.7 * 1024.0 * 1024.0, ..Default::default() },
         }),
     }
 }
@@ -260,7 +279,8 @@ fn cpu_performance() -> CpuPerformanceSummary {
             total_errors: u64::from(t == 3),
         })
         .collect::<Vec<_>>();
-    let cpus = threads.iter()
+    let cpus = threads
+        .iter()
         .map(|t| CpuPerformance {
             cpu_id: t.cpu_id,
             physical_core_id: t.physical_core_id,
@@ -298,39 +318,63 @@ fn setup_events_print_as_their_golden() {
     let args = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
     let selection = |error_mode, pinned, cpus_to_skip, avoid_smt_doubling, cycles, duration_secs| {
         Setup::Selection(Box::new(Selection {
-            error_mode, threads: 3, available: 6, cputype: "cores".to_string(), cpu_list: vec![2, 4, 6], pinned, cpus_to_skip,
-            avoid_smt_doubling, cycles, duration_secs, simd: "SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2".to_string(),
+            error_mode,
+            threads: 3,
+            available: 6,
+            cputype: "cores".to_string(),
+            cpu_list: vec![2, 4, 6],
+            pinned,
+            cpus_to_skip,
+            avoid_smt_doubling,
+            cycles,
+            duration_secs,
+            simd: "SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2".to_string(),
         }))
     };
-    let large_pages = |usable, min_page: &str, min_needs_large| Setup::LargePageStatus { usable, min_page: min_page.to_string(), min_needs_large };
+    let large_pages =
+        |usable, min_page: &str, min_needs_large| Setup::LargePageStatus { usable, min_page: min_page.to_string(), min_needs_large };
     let topology = |smt_p_cores, e_cores_skipped_first| Setup::CpuTopology {
-        report: Box::new(crate::renderer::tests::cpu_topology_report()), smt_p_cores, e_cores_skipped_first,
+        report: Box::new(crate::renderer::tests::cpu_topology_report()),
+        smt_p_cores,
+        e_cores_skipped_first,
     };
     let cases = vec![
         ("a test filter", Setup::TestFilter { pattern: "Mem-Mirror*,Lat-L3-*".to_string() }),
         ("the quick test", Setup::QuickTest),
-        ("every parameter note", Setup::ParamNotes(vec![
-            ParamNote::MinPage("regular".to_string()), ParamNote::MaxPage("large".to_string()),
-            ParamNote::Block("hugechunk", "2GiB".to_string()), ParamNote::Block("blkround", "down".to_string()),
-            ParamNote::Topology("windowsv2"), ParamNote::SkipCores(1), ParamNote::PinningOff,
-        ])),
+        (
+            "every parameter note",
+            Setup::ParamNotes(vec![
+                ParamNote::MinPage("regular".to_string()),
+                ParamNote::MaxPage("large".to_string()),
+                ParamNote::Block("hugechunk", "2GiB".to_string()),
+                ParamNote::Block("blkround", "down".to_string()),
+                ParamNote::Topology("windowsv2"),
+                ParamNote::SkipCores(1),
+                ParamNote::PinningOff,
+            ]),
+        ),
         ("the header of a release build", Setup::StartupHeader {
-            command_line: args(&["tmr.exe", "memory=50%", "cputype=cores", "cpus=100%", "skip-cores=0", "cycles=1"]), release: true,
+            command_line: args(&["tmr.exe", "memory=50%", "cputype=cores", "cpus=100%", "skip-cores=0", "cycles=1"]),
+            release: true,
         }),
         ("the header of a debug build", Setup::StartupHeader { command_line: args(&["tmr.exe"]), release: false }),
         ("the parameters, given and defaults", Setup::StartupParams {
-            rust_log: "info".to_string(), rust_backtrace: None, explicit: args(&["memory=50%", "--startup-debug"]),
+            rust_log: "info".to_string(),
+            rust_backtrace: None,
+            explicit: args(&["memory=50%", "--startup-debug"]),
             defaults: args(&["cputype=threads (default)", "errors=log (default)"]),
         }),
         ("the parameters, a backtrace set and none given", Setup::StartupParams {
-            rust_log: "debug".to_string(), rust_backtrace: Some("1".to_string()), explicit: Vec::new(), defaults: Vec::new(),
+            rust_log: "debug".to_string(),
+            rust_backtrace: Some("1".to_string()),
+            explicit: Vec::new(),
+            defaults: Vec::new(),
         }),
         ("cores", Setup::CpuType { cputype: "cores".to_string(), avoid_smt: true }),
         ("threads", Setup::CpuType { cputype: "threads".to_string(), avoid_smt: false }),
         ("a core range left out", Setup::CpuFilter { lo: 0, hi: 7 }),
         ("a share of the CPUs", Setup::CpuCount { percent: 50, available: 6, threads: 3 }),
-        ("pinned, a CPU skipped, SMT doubling avoided, both limits",
-         selection(ErrorMode::Log, true, 1, true, Some(3), Some(600))),
+        ("pinned, a CPU skipped, SMT doubling avoided, both limits", selection(ErrorMode::Log, true, 1, true, Some(3), Some(600))),
         ("unpinned, halting, cycles only", selection(ErrorMode::Halt, false, 0, false, Some(1), None)),
         ("panicking, time only", selection(ErrorMode::Panic, true, 0, false, None, Some(60))),
         ("no limits", selection(ErrorMode::Log, true, 0, false, None, None)),
@@ -352,9 +396,15 @@ fn setup_events_print_as_their_golden() {
         ("a hybrid's topology, E-cores skipped first", topology(Some(2), true)),
         ("a hybrid's topology, no P-core with SMT", topology(Some(0), false)),
         ("a topology with no hybrid notes", topology(None, false)),
-        ("the memory status", Setup::MemoryStatus(Some(MemoryStatus {
-            total_phys: 64 * GIB - 600 * (1 << 20), avail_phys: 51 * GIB, total_page_file: 72 * GIB, avail_page_file: 58 * GIB,
-        }))),
+        (
+            "the memory status",
+            Setup::MemoryStatus(Some(MemoryStatus {
+                total_phys: 64 * GIB - 600 * (1 << 20),
+                avail_phys: 51 * GIB,
+                total_page_file: 72 * GIB,
+                avail_page_file: 58 * GIB,
+            })),
+        ),
         ("no memory status, on stderr", Setup::MemoryStatus(None)),
         ("the system", Setup::SystemInfo {
             report: Box::new(crate::renderer::tests::system_info_report()),
@@ -405,13 +455,20 @@ fn session_ends_print_as_their_golden() {
         ("the restart chosen", SessionEnd::RestartChosen),
         ("a command", SessionEnd::Command(tmr::commands::Command::Version)),
         ("unknown flags", SessionEnd::Stopped(Stopped::UnknownFlags(vec!["--latency-test".to_string(), "-x".to_string()]))),
-        ("an invalid parameter, on stderr", SessionEnd::Stopped(Stopped::Invalid(
-            "❌ Unknown parameter: colour\n💡 Run with --help to see all valid parameters".to_string()))),
-        ("an invalid memory override", SessionEnd::Stopped(Stopped::MemoryOverride {
-            spec: "lots".to_string(), error: "Invalid memory format: lots".to_string(),
-        })),
-        ("CPUs that can't be selected, on stderr", SessionEnd::Stopped(Stopped::CpuSelection(
-            "cpus=8 asks for 8 threads, but only 6 CPUs are available".to_string()))),
+        (
+            "an invalid parameter, on stderr",
+            SessionEnd::Stopped(Stopped::Invalid(
+                "❌ Unknown parameter: colour\n💡 Run with --help to see all valid parameters".to_string(),
+            )),
+        ),
+        (
+            "an invalid memory override",
+            SessionEnd::Stopped(Stopped::MemoryOverride { spec: "lots".to_string(), error: "Invalid memory format: lots".to_string() }),
+        ),
+        (
+            "CPUs that can't be selected, on stderr",
+            SessionEnd::Stopped(Stopped::CpuSelection("cpus=8 asks for 8 threads, but only 6 CPUs are available".to_string())),
+        ),
     ];
     let mut text = String::new();
     for (case, end) in cases {

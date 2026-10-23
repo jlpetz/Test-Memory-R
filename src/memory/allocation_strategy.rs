@@ -38,10 +38,10 @@
 /// ```
 ///
 /// # Why Failure Mode Testing?
-/// 
+///
 /// The `-from-total` and `-target` modes allow testing how the memory allocator
 /// handles unrealistic or impossible allocation requests:
-/// 
+///
 /// - **Memory pressure testing**: See how system behaves under extreme memory pressure
 /// - **Allocation failure paths**: Test error handling when allocations fail
 /// - **Edge case validation**: Validate system behavior at memory limits
@@ -54,31 +54,32 @@
 /// - Make system unresponsive due to memory pressure  
 /// - Trigger out-of-memory conditions
 /// - Cause test crashes or hangs
-/// 
+///
 /// Use these modes only for development/testing purposes!
-use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX, GetPhysicallyInstalledSystemMemory};
-use crate::constants::{BYTES_PER_GIB, BYTES_PER_MIB, gib_to_bytes, bytes_to_gib_f64};
+use windows::Win32::System::SystemInformation::{GetPhysicallyInstalledSystemMemory, GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+use crate::constants::{BYTES_PER_GIB, BYTES_PER_MIB, bytes_to_gib_f64, gib_to_bytes};
 
 /// Memory information gathered from the system
 #[derive(Debug, Clone)]
 pub struct SystemMemoryInfo {
     /// Total physically installed RAM (from GetPhysicallyInstalledSystemMemory)
     pub total_installed_bytes: u64,
-    
+
     /// Total physical memory available to OS (from GlobalMemoryStatusEx)
     pub total_physical_bytes: u64,
-    
+
     /// Currently available physical memory (from GlobalMemoryStatusEx)
     pub available_physical_bytes: u64,
-    
+
     /// Currently used physical memory (calculated)
     pub used_physical_bytes: u64,
-    
+
     /// Total virtual memory (page file + physical)
     pub total_virtual_bytes: u64,
-    
+
     /// Available virtual memory
-    
+
     /// Memory load percentage (0-100)
     pub memory_load_percent: u32,
 }
@@ -99,10 +100,7 @@ impl SystemMemoryInfo {
             };
 
             // Get current memory status
-            let mut mem_status = MEMORYSTATUSEX {
-                dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
-                ..Default::default()
-            };
+            let mut mem_status = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
 
             if GlobalMemoryStatusEx(&mut mem_status).is_err() {
                 return Err("Failed to get current memory status".to_string());
@@ -121,7 +119,7 @@ impl SystemMemoryInfo {
         }
     }
 
-// Note: Detailed memory analysis is now shown in consolidated memory report instead
+    // Note: Detailed memory analysis is now shown in consolidated memory report instead
 }
 
 /// Enhanced allocation modes with clear semantics
@@ -130,30 +128,22 @@ pub enum AllocationMode {
     /// Reserve from currently available memory (standard/default behavior, matches TM5)
     /// Examples: "memory=4GiB-from-available", "memory=15%-from-available", "memory=1024MB-from-available"
     /// This is what TM5 configs use - reserves from currently available memory
-    ReserveFromAvailable {
-        reserve: ReserveAmount,
-    },
-    
+    ReserveFromAvailable { reserve: ReserveAmount },
+
     /// Reserve from total installed memory (for failure mode testing - unrealistic configs)
     /// Examples: "memory=8GiB-from-total", "memory=20%-from-total", "memory=2048MB-from-total"
     /// WARNING: Can create unrealistic allocations that may fail - intended for testing failure modes
-    ReserveFromTotal {
-        reserve: ReserveAmount,
-    },
-    
+    ReserveFromTotal { reserve: ReserveAmount },
+
     /// Allocate specific amount regardless of available memory (for failure mode testing)
     /// Examples: "memory=16GiB-target", "memory=80%-target", "memory=8192MB-target"
     /// WARNING: Can request more than available - intended for testing failure modes
-    AllocateTarget {
-        target: ReserveAmount,
-    },
-    
+    AllocateTarget { target: ReserveAmount },
+
     /// Legacy TM5 compatibility mode (reserves MB from available memory, like original TM5)
     /// Examples: "memory=2048MB", "memory=1024MB-legacy"
     /// This is the standard TM5 behavior - reserves from available memory
-    LegacyTM5 {
-        reserve_mb: u32,
-    },
+    LegacyTM5 { reserve_mb: u32 },
 }
 
 /// Amount specification with multiple unit support
@@ -161,7 +151,7 @@ pub enum AllocationMode {
 pub enum ReserveAmount {
     /// Absolute amount in bytes
     Bytes(u64),
-    
+
     /// Percentage (0.0 to 100.0)
     Percentage(f64),
 }
@@ -171,38 +161,38 @@ impl ReserveAmount {
     /// Supports: "8GiB", "2048MB", "20%", "16384MB", "4GB", etc.
     pub fn parse(s: &str) -> Result<Self, String> {
         let s = s.trim().to_lowercase();
-        
+
         if s.ends_with('%') {
-            let percent_str = &s[..s.len()-1];
+            let percent_str = &s[..s.len() - 1];
             match percent_str.parse::<f64>() {
                 Ok(pct) if (0.0..=100.0).contains(&pct) => Ok(ReserveAmount::Percentage(pct)),
                 Ok(_) => Err(format!("Percentage must be between 0-100, got {}", percent_str)),
                 Err(_) => Err(format!("Invalid percentage format: {}", s)),
             }
         } else if s.ends_with("gib") || s.ends_with("gb") {
-            let num_str = if s.ends_with("gib") { &s[..s.len()-3] } else { &s[..s.len()-2] };
+            let num_str = if s.ends_with("gib") { &s[..s.len() - 3] } else { &s[..s.len() - 2] };
             match num_str.parse::<f64>() {
                 Ok(gib) => {
                     let bytes = if s.ends_with("gib") {
-                        gib_to_bytes(gib)  // GiB (binary)
+                        gib_to_bytes(gib) // GiB (binary)
                     } else {
-                        (gib * 1000.0 * 1000.0 * 1000.0) as u64  // GB (decimal)
+                        (gib * 1000.0 * 1000.0 * 1000.0) as u64 // GB (decimal)
                     };
                     Ok(ReserveAmount::Bytes(bytes))
-                },
+                }
                 Err(_) => Err(format!("Invalid GiB/GB format: {}", s)),
             }
         } else if s.ends_with("mib") || s.ends_with("mb") {
-            let num_str = if s.ends_with("mib") { &s[..s.len()-3] } else { &s[..s.len()-2] };
+            let num_str = if s.ends_with("mib") { &s[..s.len() - 3] } else { &s[..s.len() - 2] };
             match num_str.parse::<f64>() {
                 Ok(mib) => {
                     let bytes = if s.ends_with("mib") {
-                        (mib * 1024.0 * 1024.0) as u64  // MiB (binary)
+                        (mib * 1024.0 * 1024.0) as u64 // MiB (binary)
                     } else {
-                        (mib * 1000.0 * 1000.0) as u64  // MB (decimal)
+                        (mib * 1000.0 * 1000.0) as u64 // MB (decimal)
                     };
                     Ok(ReserveAmount::Bytes(bytes))
-                },
+                }
                 Err(_) => Err(format!("Invalid MiB/MB format: {}", s)),
             }
         } else {
@@ -213,7 +203,7 @@ impl ReserveAmount {
             }
         }
     }
-    
+
     /// Calculate actual bytes based on a reference value
     pub fn calculate_bytes(&self, reference_bytes: u64) -> u64 {
         match self {
@@ -327,7 +317,13 @@ impl ShareRounding {
         match self.direction {
             RoundDirection::Up => up,
             RoundDirection::Down => down,
-            RoundDirection::Nearest => if (bytes - down) * 2 >= step { up } else { down },
+            RoundDirection::Nearest => {
+                if (bytes - down) * 2 >= step {
+                    up
+                } else {
+                    down
+                }
+            }
         }
     }
 
@@ -383,7 +379,7 @@ impl AllocationMode {
             let amount_str = if allocation_part.contains("-legacy") {
                 allocation_part.split("-legacy").next().unwrap()
             } else {
-                &allocation_part[..allocation_part.len()-2] // Remove "mb"
+                &allocation_part[..allocation_part.len() - 2] // Remove "mb"
             };
             match amount_str.parse::<u32>() {
                 Ok(mb) => AllocationMode::LegacyTM5 { reserve_mb: mb },
@@ -397,7 +393,7 @@ impl AllocationMode {
 
         Ok(allocation_mode)
     }
-    
+
     /// Size the test allocation for `thread_count` workers with identical blocks.
     ///
     /// The reserve comes off the mode's reference figure (currently available, or total
@@ -405,7 +401,9 @@ impl AllocationMode {
     /// Rounding up comes out of the reserve, so `reserve_bytes` is what is actually left to the OS.
     /// It may take all of the reserve but no more: a round that would pass the reference figure
     /// steps down to a smaller step instead (`ShareRounding::fit`, `rounding_asked`).
-    pub fn calculate_allocation_with_threads(&self, mem_info: &SystemMemoryInfo, thread_count: usize, rounding: ShareRounding) -> AllocationResult {
+    pub fn calculate_allocation_with_threads(
+        &self, mem_info: &SystemMemoryInfo, thread_count: usize, rounding: ShareRounding,
+    ) -> AllocationResult {
         let (reference_bytes, reference_name, requested_reserve_bytes, target_bytes, base_type) = match self {
             AllocationMode::ReserveFromAvailable { reserve } => (
                 mem_info.available_physical_bytes,
@@ -425,8 +423,11 @@ impl AllocationMode {
                 // Expressed as a reserve: whatever the target leaves of total installed memory.
                 let target_bytes = target.calculate_bytes(mem_info.total_installed_bytes);
                 if target_bytes > mem_info.total_installed_bytes {
-                    log::warn!("memory={} is more than the {:.2} GiB installed; asking for all of it instead",
-                              self.describe_spec(), bytes_to_gib_f64(mem_info.total_installed_bytes));
+                    log::warn!(
+                        "memory={} is more than the {:.2} GiB installed; asking for all of it instead",
+                        self.describe_spec(),
+                        bytes_to_gib_f64(mem_info.total_installed_bytes)
+                    );
                 }
                 (
                     mem_info.total_installed_bytes,
@@ -436,13 +437,9 @@ impl AllocationMode {
                     "Target Allocation",
                 )
             }
-            AllocationMode::LegacyTM5 { reserve_mb } => (
-                mem_info.available_physical_bytes,
-                "available",
-                (*reserve_mb as u64) * BYTES_PER_MIB,
-                None,
-                "Legacy TM5 (from available)",
-            ),
+            AllocationMode::LegacyTM5 { reserve_mb } => {
+                (mem_info.available_physical_bytes, "available", (*reserve_mb as u64) * BYTES_PER_MIB, None, "Legacy TM5 (from available)")
+            }
         };
 
         let base_allocation_bytes = reference_bytes.saturating_sub(requested_reserve_bytes);
@@ -452,30 +449,36 @@ impl AllocationMode {
         let (per_thread_bytes, used) = rounding.fit(per_thread_raw_bytes, thread_count as u64, reference_bytes);
         let rounding_asked = (used != rounding).then_some(rounding);
         if rounding_asked.is_some() {
-            log::warn!("blkround={} to {} MiB would take {} threads × {:.3} GiB, more than the {:.3} GiB {}; rounding {} to {} MiB instead",
-                      rounding.direction,
-                      rounding.step_bytes / BYTES_PER_MIB,
-                      thread_count,
-                      bytes_to_gib_f64(rounding.apply(per_thread_raw_bytes)),
-                      bytes_to_gib_f64(reference_bytes),
-                      reference_name,
-                      used.direction,
-                      used.step_bytes / BYTES_PER_MIB);
+            log::warn!(
+                "blkround={} to {} MiB would take {} threads × {:.3} GiB, more than the {:.3} GiB {}; rounding {} to {} MiB instead",
+                rounding.direction,
+                rounding.step_bytes / BYTES_PER_MIB,
+                thread_count,
+                bytes_to_gib_f64(rounding.apply(per_thread_raw_bytes)),
+                bytes_to_gib_f64(reference_bytes),
+                reference_name,
+                used.direction,
+                used.step_bytes / BYTES_PER_MIB
+            );
         }
         let allocation_bytes = per_thread_bytes * thread_count as u64;
         let reserve_bytes = reference_bytes.saturating_sub(allocation_bytes);
 
-        log::info!("Thread-aware allocation: {} threads × {:.3} GiB → rounded {} to {:.3} GiB each ({} MiB step)",
-                  thread_count,
-                  bytes_to_gib_f64(per_thread_raw_bytes),
-                  used.direction,
-                  bytes_to_gib_f64(per_thread_bytes),
-                  used.step_bytes / BYTES_PER_MIB);
-        log::info!("Total allocation: {:.3} GiB → {:.3} GiB; reserve {:.3} GiB requested, {:.3} GiB left",
-                  bytes_to_gib_f64(base_allocation_bytes),
-                  bytes_to_gib_f64(allocation_bytes),
-                  bytes_to_gib_f64(requested_reserve_bytes),
-                  bytes_to_gib_f64(reserve_bytes));
+        log::info!(
+            "Thread-aware allocation: {} threads × {:.3} GiB → rounded {} to {:.3} GiB each ({} MiB step)",
+            thread_count,
+            bytes_to_gib_f64(per_thread_raw_bytes),
+            used.direction,
+            bytes_to_gib_f64(per_thread_bytes),
+            used.step_bytes / BYTES_PER_MIB
+        );
+        log::info!(
+            "Total allocation: {:.3} GiB → {:.3} GiB; reserve {:.3} GiB requested, {:.3} GiB left",
+            bytes_to_gib_f64(base_allocation_bytes),
+            bytes_to_gib_f64(allocation_bytes),
+            bytes_to_gib_f64(requested_reserve_bytes),
+            bytes_to_gib_f64(reserve_bytes)
+        );
 
         AllocationResult {
             allocation_bytes,
@@ -491,12 +494,7 @@ impl AllocationMode {
             rounding_direction: used.direction,
             rounding_asked,
             per_thread_bytes,
-            allocation_type: format!(
-                "{} [thread-aware ({}×{:.2} GiB)]",
-                base_type,
-                thread_count,
-                bytes_to_gib_f64(per_thread_bytes)
-            ),
+            allocation_type: format!("{} [thread-aware ({}×{:.2} GiB)]", base_type, thread_count, bytes_to_gib_f64(per_thread_bytes)),
         }
     }
 }
@@ -506,10 +504,10 @@ impl AllocationMode {
 pub struct AllocationResult {
     /// Total bytes to allocate for testing
     pub allocation_bytes: u64,
-    
+
     /// Bytes reserved (not used for testing)
     pub reserve_bytes: u64,
-    
+
     /// Reference bytes used for calculation (total/available)
     pub reference_bytes: u64,
 
@@ -553,7 +551,6 @@ pub struct AllocationResult {
 pub struct EnhancedMemoryStrategy {
     /// How to calculate memory allocation amount
     pub allocation_mode: AllocationMode,
-
     // ExtentMode and ChunkMode removed - these are test configuration concerns, not allocation strategy concerns
 }
 
@@ -561,9 +558,7 @@ impl Default for EnhancedMemoryStrategy {
     fn default() -> Self {
         Self {
             // Post-boot optimized: Reserve only 10% from available (aggressive testing)
-            allocation_mode: AllocationMode::ReserveFromAvailable { 
-                reserve: ReserveAmount::Percentage(10.0)
-            },
+            allocation_mode: AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(10.0) },
         }
     }
 }
@@ -600,29 +595,17 @@ impl EnhancedMemoryStrategy {
                     rounding.step_bytes / BYTES_PER_MIB
                 ));
             }
-            return Err(format!(
-                "memory={} leaves nothing to test once the reserve is taken",
-                self.describe_spec()
-            ));
+            return Err(format!("memory={} leaves nothing to test once the reserve is taken", self.describe_spec()));
         }
 
         // Create per-thread blocks with identical sizes (thread-aware allocation ensures this)
         let blocks = (0..thread_count)
-            .map(|thread_id| crate::layout::BlockInfo {
-                size_bytes: allocation_result.per_thread_bytes as usize,
-                thread_id,
-            })
+            .map(|thread_id| crate::layout::BlockInfo { size_bytes: allocation_result.per_thread_bytes as usize, thread_id })
             .collect();
-        
-        Ok(crate::layout::EnhancedMemoryLayout {
-            system_memory_info: mem_info,
-            allocation_result,
-            blocks,
-            strategy: self.clone(),
-        })
+
+        Ok(crate::layout::EnhancedMemoryLayout { system_memory_info: mem_info, allocation_result, blocks, strategy: self.clone() })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -638,22 +621,10 @@ mod tests {
 
     #[test]
     fn test_allocation_mode_parsing() {
-        assert!(matches!(
-            AllocationMode::parse("8GiB-from-total"), 
-            Ok(AllocationMode::ReserveFromTotal { .. })
-        ));
-        assert!(matches!(
-            AllocationMode::parse("20%-from-available"), 
-            Ok(AllocationMode::ReserveFromAvailable { .. })
-        ));
-        assert!(matches!(
-            AllocationMode::parse("16GiB-target"), 
-            Ok(AllocationMode::AllocateTarget { .. })
-        ));
-        assert!(matches!(
-            AllocationMode::parse("2048MB"), 
-            Ok(AllocationMode::LegacyTM5 { reserve_mb: 2048 })
-        ));
+        assert!(matches!(AllocationMode::parse("8GiB-from-total"), Ok(AllocationMode::ReserveFromTotal { .. })));
+        assert!(matches!(AllocationMode::parse("20%-from-available"), Ok(AllocationMode::ReserveFromAvailable { .. })));
+        assert!(matches!(AllocationMode::parse("16GiB-target"), Ok(AllocationMode::AllocateTarget { .. })));
+        assert!(matches!(AllocationMode::parse("2048MB"), Ok(AllocationMode::LegacyTM5 { reserve_mb: 2048 })));
     }
 
     fn mem_info_55_25_gib_available() -> SystemMemoryInfo {
@@ -760,10 +731,8 @@ mod tests {
 
     #[test]
     fn test_legacy_conversion() {
-        // Test ReserveFromAvailable with percentage  
-        let mode = AllocationMode::ReserveFromAvailable { 
-            reserve: ReserveAmount::Percentage(70.0) 
-        };
+        // Test ReserveFromAvailable with percentage
+        let mode = AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(70.0) };
         assert!(matches!(mode, AllocationMode::ReserveFromAvailable { .. }));
 
         // Test LegacyTM5 conversion

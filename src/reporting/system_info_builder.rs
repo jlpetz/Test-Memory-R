@@ -1,6 +1,6 @@
-/// System info report builder - converts TMR's internal system info to reporting format
-use crate::reporting::models::{SystemInfoReport, CpuInfo, CacheInfo, TscCalibrationInfo};
 use crate::cache::SystemInfo;
+/// System info report builder - converts TMR's internal system info to reporting format
+use crate::reporting::models::{CacheInfo, CpuInfo, SystemInfoReport, TscCalibrationInfo};
 
 /// Build a SystemInfoReport from TMR's internal system info
 pub fn build_system_info_report(system_info: &SystemInfo, simd_caps: &str) -> SystemInfoReport {
@@ -8,12 +8,11 @@ pub fn build_system_info_report(system_info: &SystemInfo, simd_caps: &str) -> Sy
 
     // Build TSC calibration info
     let tsc = &cache.tsc_info;
-    let (samples, calibration_time_ms, std_dev_ghz, converged) =
-        if let Some(ref stats) = tsc.calibration_stats {
-            (stats.samples, stats.calibration_time_ms, stats.std_dev_ghz(), stats.converged)
-        } else {
-            (0, 0, 0.0, false)
-        };
+    let (samples, calibration_time_ms, std_dev_ghz, converged) = if let Some(ref stats) = tsc.calibration_stats {
+        (stats.samples, stats.calibration_time_ms, stats.std_dev_ghz(), stats.converged)
+    } else {
+        (0, 0, 0.0, false)
+    };
 
     SystemInfoReport {
         cpu_info: CpuInfo {

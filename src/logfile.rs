@@ -70,15 +70,16 @@ pub fn open(path: &str) {
 /// Adds `record`'s line to the log file, without colours, when there is one.
 pub fn write(record: &log::Record) {
     if let Some(file) = FILE.get()
-        && let Ok(mut file) = file.lock() {
-            let _ = writeln!(
-                file,
-                "[{} {} {}] {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-                record.level(),
-                record.module_path().unwrap_or("unknown"),
-                record.args()
-            );
-            let _ = file.flush();
-        }
+        && let Ok(mut file) = file.lock()
+    {
+        let _ = writeln!(
+            file,
+            "[{} {} {}] {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            record.level(),
+            record.module_path().unwrap_or("unknown"),
+            record.args()
+        );
+        let _ = file.flush();
+    }
 }

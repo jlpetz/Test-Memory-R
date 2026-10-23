@@ -1,9 +1,10 @@
+use std::time::Duration;
+
 /// Formatting logic for transforming raw data into presentation-ready format
 /// This layer handles all the "how to format" decisions
 use super::models::*;
 use crate::constants::BYTES_PER_MIB;
 use crate::whea::WheaCounts;
-use std::time::Duration;
 
 /// Footer for the tables whose CPU columns are marked ⚠️ when pinning is off.
 const UNPINNED_CPU_NOTE: &str = "⚠️ Pinning is off: the OS moves threads between CPUs. \
@@ -13,7 +14,7 @@ const UNPINNED_CPU_NOTE: &str = "⚠️ Pinning is off: the OS moves threads bet
 pub trait ReportFormatter: Send + Sync {
     /// Format bytes into human-readable string
     fn format_bytes(&self, bytes: u64) -> String;
-    
+
     /// Format bytes with specific precision
     fn format_bytes_precise(&self, bytes: u64, precision: usize) -> String;
 
@@ -22,10 +23,10 @@ pub trait ReportFormatter: Send + Sync {
 
     /// Format duration
     fn format_duration(&self, duration: Duration) -> String;
-    
+
     /// Prepare CPU info table
     fn prepare_cpu_info_table(&self, cpu_info: &CpuInfo) -> TableData;
-    
+
     /// Prepare cache info table
     fn prepare_cache_info_table(&self, cache_info: &CacheInfo) -> TableData;
 
@@ -34,47 +35,50 @@ pub trait ReportFormatter: Send + Sync {
 
     /// Prepare thread timing deviation table
     fn prepare_thread_timing_table(&self, report: &ThreadTimingReport) -> TableData;
-    
-    
+
     /// Prepare performance by thread table
     fn prepare_performance_by_thread_table(&self, report: &PerformanceByThreadReport) -> TableData;
-    
+
     /// Prepare performance by CPU table
     fn prepare_performance_by_cpu_table(&self, report: &PerformanceByCpuReport) -> TableData;
-    
+
     /// Prepare performance by physical core table
     fn prepare_performance_by_physical_core_table(&self, report: &PerformanceByPhysicalCoreReport) -> TableData;
-    
+
     /// Prepare CPU topology table
     fn prepare_cpu_topology_table(&self, report: &CpuTopologyReport) -> TableData;
-    
+
     /// Prepare consolidated memory report table
     fn prepare_consolidated_memory_table(&self, report: &ConsolidatedMemoryReport) -> TableData;
-    
+
     /// Format the extent mode, with the calculated size for cache targets
-    fn format_extent_mode_with_size(&self, mode: &crate::tests::ExtentMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String;
+    fn format_extent_mode_with_size(
+        &self, mode: &crate::tests::ExtentMode, cache_info: &crate::cache::CacheInfo, thread_count: usize,
+    ) -> String;
     fn format_chunk_mode(&self, mode: &crate::tests::ChunkMode) -> String;
     /// Format chunk mode, appending the resolved byte size for `Cache` targets.
     ///
     /// `Cache` specs hide a real behavioural detail: `L1`/`L2` divide by *active threads per
     /// core*, so `Cache (L2)` resolves to a different size with and without SMT. Absolute
     /// specs are self-explanatory and are left as-is.
-    fn format_chunk_mode_with_size(&self, mode: &crate::tests::ChunkMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String;
+    fn format_chunk_mode_with_size(
+        &self, mode: &crate::tests::ChunkMode, cache_info: &crate::cache::CacheInfo, thread_count: usize,
+    ) -> String;
 
     /// Prepare test configuration table
     fn prepare_test_configuration_table(&self, report: &TestConfigurationReport) -> TableData;
-    
+
     /// Prepare cycle report table
     #[expect(dead_code, reason = "TODO #29: the per-cycle report is to be revived, not deleted (from TODO #69 F)")]
     fn prepare_cycle_report_table(&self, report: &CycleReport) -> TableData;
-    
+
     /// Prepare final test summary tables
     fn prepare_final_summary_overview_table(&self, report: &FinalTestSummaryReport) -> TableData;
     fn prepare_final_summary_performance_table(&self, report: &FinalTestSummaryReport) -> TableData;
     fn prepare_errors_by_step_table(&self, report: &FinalTestSummaryReport) -> TableData;
     fn prepare_intermediate_table(&self, report: &FinalTestSummaryReport) -> TableData;
     fn prepare_failing_bits_table(&self, report: &FinalTestSummaryReport) -> TableData;
-    
+
     /// The allocation report's tables (TODO 81)
     fn prepare_allocation_nodes_table(&self, report: &AllocationReport) -> TableData;
     fn prepare_allocation_commits_table(&self, report: &AllocationReport) -> TableData;
@@ -100,9 +104,7 @@ impl Default for DefaultFormatter {
 
 impl DefaultFormatter {
     pub fn new() -> Self {
-        Self {
-            use_binary_units: true,
-        }
+        Self { use_binary_units: true }
     }
 
     /// The `Pass` cell: the verdict for a row, and the only place in a table that uses an emoji.
@@ -236,10 +238,7 @@ fn page_name(page: crate::memory::allocator::PageSizeLevel) -> &'static str {
 
 /// Requests in order as their sizes in MB, a run of equal ones written once with `×count`, and
 /// a 1 GiB or 2 MiB one from a node other than `home` tagged `@node`: `1024×2+128×4@0`.
-fn commit_signature<'a>(
-    commits: impl Iterator<Item = &'a crate::memory::stitched::Commit>,
-    home: Option<u32>,
-) -> String {
+fn commit_signature<'a>(commits: impl Iterator<Item = &'a crate::memory::stitched::Commit>, home: Option<u32>) -> String {
     use crate::memory::allocator::PageSizeLevel;
     let mut runs: Vec<(String, usize)> = Vec::new();
     for c in commits {
@@ -254,19 +253,12 @@ fn commit_signature<'a>(
             _ => runs.push((label, 1)),
         }
     }
-    runs.iter()
-        .map(|(label, count)| if *count == 1 { label.clone() } else { format!("{label}×{count}") })
-        .collect::<Vec<_>>()
-        .join("+")
+    runs.iter().map(|(label, count)| if *count == 1 { label.clone() } else { format!("{label}×{count}") }).collect::<Vec<_>>().join("+")
 }
 
 /// The fairness dimensions a report shows: Remote only where memory can be remote.
 fn shown_dimensions(report: &AllocationReport) -> Vec<&DimensionFairness> {
-    report
-        .fairness
-        .iter()
-        .filter(|d| report.numa_nodes > 1 || d.dimension != FairnessDimension::Remote)
-        .collect()
+    report.fairness.iter().filter(|d| report.numa_nodes > 1 || d.dimension != FairnessDimension::Remote).collect()
 }
 
 /// A dimension's name, the same as its column in the node and thread tables.
@@ -308,7 +300,7 @@ impl ReportFormatter for DefaultFormatter {
     fn format_bytes(&self, bytes: u64) -> String {
         self.format_bytes_precise(bytes, 2)
     }
-    
+
     fn format_bytes_precise(&self, bytes: u64, precision: usize) -> String {
         let (value, unit) = if self.use_binary_units {
             // Binary units (GiB, MiB, KiB)
@@ -333,12 +325,12 @@ impl ReportFormatter for DefaultFormatter {
                 (bytes as f64, "B")
             }
         };
-        
+
         format!("{:.precision$} {}", value, unit, precision = precision)
     }
 
     fn format_bytes_signed(&self, bytes: i64) -> String {
-        let sign = if bytes >= 0 { "+" } else { "" };  // Negative sign is automatic
+        let sign = if bytes >= 0 { "+" } else { "" }; // Negative sign is automatic
         let abs_bytes = bytes.unsigned_abs();
         let (value, unit) = if self.use_binary_units {
             // Binary units (GiB, MiB, KiB)
@@ -367,7 +359,7 @@ impl ReportFormatter for DefaultFormatter {
         if bytes >= 0 {
             format!("{}{:.2} {}", sign, value, unit)
         } else {
-            format!("{:.2} {}", value, unit)  // Negative sign already in value
+            format!("{:.2} {}", value, unit) // Negative sign already in value
         }
     }
 
@@ -377,7 +369,7 @@ impl ReportFormatter for DefaultFormatter {
         let minutes = (total_secs % 3600) / 60;
         let seconds = total_secs % 60;
         let millis = duration.subsec_millis();
-        
+
         if hours > 0 {
             format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
         } else if minutes > 0 {
@@ -386,83 +378,53 @@ impl ReportFormatter for DefaultFormatter {
             format!("{}.{:03}s", seconds, millis)
         }
     }
-    
+
     fn prepare_cpu_info_table(&self, cpu_info: &CpuInfo) -> TableData {
         TableData::new()
             .with_title("CPU Information")
             .add_header("Property", ColumnAlignment::Left)
             .add_header("Value", ColumnAlignment::Left)
-            .add_row(vec![
-                "CPU".to_string(),
-                format!("{} ({})", cpu_info.brand, cpu_info.vendor),
-            ])
+            .add_row(vec!["CPU".to_string(), format!("{} ({})", cpu_info.brand, cpu_info.vendor)])
             .add_row(vec![
                 "Architecture".to_string(),
-                format!("Family {}, Model {}, Stepping {}", 
-                    cpu_info.family, cpu_info.model, cpu_info.stepping),
+                format!("Family {}, Model {}, Stepping {}", cpu_info.family, cpu_info.model, cpu_info.stepping),
             ])
             .add_row(vec![
                 "Cores".to_string(),
-                format!("{} physical, {} logical{}", 
+                format!(
+                    "{} physical, {} logical{}",
                     cpu_info.physical_cores,
                     cpu_info.logical_cores,
                     if cpu_info.has_hyperthreading { " (HT enabled)" } else { "" }
                 ),
             ])
-            .add_row(vec![
-                "SIMD Support".to_string(),
-                cpu_info.simd_capabilities.join(", "),
-            ])
+            .add_row(vec!["SIMD Support".to_string(), cpu_info.simd_capabilities.join(", ")])
     }
-    
+
     fn prepare_cache_info_table(&self, cache_info: &CacheInfo) -> TableData {
         TableData::new()
             .with_title(format!("Cache Architecture ({})", cache_info.detection_method))
             .add_header("Cache Level", ColumnAlignment::Left)
             .add_header("Total Size", ColumnAlignment::Right)
             .add_header("Per Core", ColumnAlignment::Right)
-            .add_row(vec![
-                "L1 Data".to_string(),
-                self.format_bytes(cache_info.l1_data_total),
-                self.format_bytes(cache_info.per_core_l1d),
-            ])
+            .add_row(vec!["L1 Data".to_string(), self.format_bytes(cache_info.l1_data_total), self.format_bytes(cache_info.per_core_l1d)])
             .add_row(vec![
                 "L1 Instruction".to_string(),
                 self.format_bytes(cache_info.l1_instruction_total),
                 self.format_bytes(cache_info.per_core_l1i),
             ])
-            .add_row(vec![
-                "L2".to_string(),
-                self.format_bytes(cache_info.l2_total),
-                self.format_bytes(cache_info.per_core_l2),
-            ])
-            .add_row(vec![
-                "L3 (Shared)".to_string(),
-                self.format_bytes(cache_info.l3_total),
-                "-".to_string(),
-            ])
-            .add_row(vec![
-                "Cache Line Size".to_string(),
-                format!("{} bytes", cache_info.cache_line_size),
-                "-".to_string(),
-            ])
+            .add_row(vec!["L2".to_string(), self.format_bytes(cache_info.l2_total), self.format_bytes(cache_info.per_core_l2)])
+            .add_row(vec!["L3 (Shared)".to_string(), self.format_bytes(cache_info.l3_total), "-".to_string()])
+            .add_row(vec!["Cache Line Size".to_string(), format!("{} bytes", cache_info.cache_line_size), "-".to_string()])
     }
 
     fn prepare_tsc_info_table(&self, tsc_info: &TscCalibrationInfo) -> TableData {
         // Use clear status indicators: ✅ = good, ❌ = bad/unreliable
-        let converge_status = if tsc_info.converged {
-            "✅ Converged"
-        } else {
-            "❌ Timed out (not converged)"
-        };
+        let converge_status = if tsc_info.converged { "✅ Converged" } else { "❌ Timed out (not converged)" };
 
         // Invariant TSC = constant rate (good for timing)
         // Variable TSC = rate changes with CPU state (unreliable for timing!)
-        let invariant_str = if tsc_info.is_invariant {
-            "✅ Invariant (constant rate)"
-        } else {
-            "❌ Variable (unreliable for timing!)"
-        };
+        let invariant_str = if tsc_info.is_invariant { "✅ Invariant (constant rate)" } else { "❌ Variable (unreliable for timing!)" };
 
         // Round to nearest MHz for "likely" frequency display
         let freq_mhz = tsc_info.frequency_ghz * 1000.0;
@@ -473,34 +435,16 @@ impl ReportFormatter for DefaultFormatter {
             .with_title("TSC Calibration")
             .add_header("Property", ColumnAlignment::Left)
             .add_header("Value", ColumnAlignment::Right)
-            .add_row(vec![
-                "Measured Freq".to_string(),
-                format!("{:.6} GHz", tsc_info.frequency_ghz),
-            ])
-            .add_row(vec![
-                "Likely Freq".to_string(),
-                format!("{:.0} MHz ({:.3} GHz)", rounded_mhz, rounded_ghz),
-            ])
-            .add_row(vec![
-                "Detection Method".to_string(),
-                tsc_info.detection_method.clone(),
-            ])
-            .add_row(vec![
-                "TSC Type".to_string(),
-                invariant_str.to_string(),
-            ])
-            .add_row(vec![
-                "Confidence".to_string(),
-                format!("{:.0}%", tsc_info.confidence_percent),
-            ])
+            .add_row(vec!["Measured Freq".to_string(), format!("{:.6} GHz", tsc_info.frequency_ghz)])
+            .add_row(vec!["Likely Freq".to_string(), format!("{:.0} MHz ({:.3} GHz)", rounded_mhz, rounded_ghz)])
+            .add_row(vec!["Detection Method".to_string(), tsc_info.detection_method.clone()])
+            .add_row(vec!["TSC Type".to_string(), invariant_str.to_string()])
+            .add_row(vec!["Confidence".to_string(), format!("{:.0}%", tsc_info.confidence_percent)])
             .add_row(vec![
                 "Calibration".to_string(),
                 format!("{} samples in {}ms ({})", tsc_info.samples, tsc_info.calibration_time_ms, converge_status),
             ])
-            .add_row(vec![
-                "Std Deviation".to_string(),
-                format!("{:.6} GHz", tsc_info.std_dev_ghz),
-            ])
+            .add_row(vec!["Std Deviation".to_string(), format!("{:.6} GHz", tsc_info.std_dev_ghz)])
     }
 
     fn prepare_thread_timing_table(&self, report: &ThreadTimingReport) -> TableData {
@@ -560,13 +504,10 @@ impl ReportFormatter for DefaultFormatter {
             let avg_runtime = report.average_elapsed_ms;
             let total_data: u64 = report.thread_timings.iter().map(|t| t.data_bytes).sum();
             let avg_data = total_data / report.thread_timings.len() as u64;
-            let avg_speed = report.thread_timings.iter()
-                .map(|t| t.throughput_mib_s)
-                .sum::<f64>() / report.thread_timings.len() as f64;
+            let avg_speed = report.thread_timings.iter().map(|t| t.throughput_mib_s).sum::<f64>() / report.thread_timings.len() as f64;
             let total_errors: u64 = report.thread_timings.iter().map(|t| t.errors).sum();
-            let avg_cycles = report.thread_timings.iter()
-                .map(|t| t.cycles_completed as f64)
-                .sum::<f64>() / report.thread_timings.len() as f64;
+            let avg_cycles =
+                report.thread_timings.iter().map(|t| t.cycles_completed as f64).sum::<f64>() / report.thread_timings.len() as f64;
 
             let mut row = vec![
                 "Avg".to_string(),
@@ -684,16 +625,10 @@ impl ReportFormatter for DefaultFormatter {
         table = self.with_verdict_headers(table, has_whea);
 
         // Calculate averages for variance
-        let avg_time_ms = if !report.cpus.is_empty() {
-            report.cpus.iter().map(|c| c.total_time_ms).sum::<u128>() / report.cpus.len() as u128
-        } else {
-            0
-        };
-        let avg_bytes = if !report.cpus.is_empty() {
-            report.cpus.iter().map(|c| c.total_bytes).sum::<u64>() / report.cpus.len() as u64
-        } else {
-            0
-        };
+        let avg_time_ms =
+            if !report.cpus.is_empty() { report.cpus.iter().map(|c| c.total_time_ms).sum::<u128>() / report.cpus.len() as u128 } else { 0 };
+        let avg_bytes =
+            if !report.cpus.is_empty() { report.cpus.iter().map(|c| c.total_bytes).sum::<u64>() / report.cpus.len() as u64 } else { 0 };
         let avg_speed = if !report.cpus.is_empty() {
             report.cpus.iter().map(|c| c.throughput_mib_s).sum::<f64>() / report.cpus.len() as f64
         } else {
@@ -761,11 +696,8 @@ impl ReportFormatter for DefaultFormatter {
         } else {
             0
         };
-        let avg_bytes = if !report.cores.is_empty() {
-            report.cores.iter().map(|c| c.total_bytes).sum::<u64>() / report.cores.len() as u64
-        } else {
-            0
-        };
+        let avg_bytes =
+            if !report.cores.is_empty() { report.cores.iter().map(|c| c.total_bytes).sum::<u64>() / report.cores.len() as u64 } else { 0 };
         let avg_speed = if !report.cores.is_empty() {
             report.cores.iter().map(|c| c.throughput_mib_s).sum::<f64>() / report.cores.len() as f64
         } else {
@@ -773,10 +705,7 @@ impl ReportFormatter for DefaultFormatter {
         };
 
         for core in &report.cores {
-            let cpu_list = core.logical_cpus.iter()
-                .map(|cpu| cpu.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
+            let cpu_list = core.logical_cpus.iter().map(|cpu| cpu.to_string()).collect::<Vec<_>>().join(",");
 
             let dev_time_ms = core.total_time_ms as i128 - avg_time_ms as i128;
             let dev_bytes = core.total_bytes as i64 - avg_bytes as i64;
@@ -827,7 +756,7 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("SMT", ColumnAlignment::Center)
             .add_header("Status", ColumnAlignment::Center)
             .add_header(if report.pinned { "Thread ID" } else { "Thread ID ⚠️" }, ColumnAlignment::Right);
-        
+
         for cpu in &report.cpus {
             table = table.add_row(vec![
                 format!("{}", cpu.logical_cpu),
@@ -840,16 +769,14 @@ impl ReportFormatter for DefaultFormatter {
                 cpu.thread_id.map(|id| id.to_string()).unwrap_or_else(|| "-".to_string()),
             ]);
         }
-        
+
         // Add summary as footer
-        let mut summary_parts = vec![
-            format!("Total: {} logical CPUs, {} physical cores", 
-                report.summary.total_logical, report.summary.total_physical),
-        ];
-        
+        let mut summary_parts =
+            vec![format!("Total: {} logical CPUs, {} physical cores", report.summary.total_logical, report.summary.total_physical)];
+
         if report.summary.is_hybrid {
             summary_parts.push("Hybrid CPU Architecture Detected!".to_string());
-            
+
             if report.summary.performance_cores > 0 && report.summary.efficiency_cores > 0 {
                 summary_parts.push(format!(
                     "P-cores: {} ({} logical), E-cores: {} ({} logical)",
@@ -860,7 +787,7 @@ impl ReportFormatter for DefaultFormatter {
                 ));
             }
         }
-        
+
         if report.summary.smt_excluded_count > 0 {
             summary_parts.push(format!(
                 "Assigned: {}, Available: {}, SMT Excluded: {}, Skipped: {}",
@@ -872,9 +799,7 @@ impl ReportFormatter for DefaultFormatter {
         } else {
             summary_parts.push(format!(
                 "Assigned: {}, Available: {}, Skipped: {}",
-                report.summary.assigned_count,
-                report.summary.available_count,
-                report.summary.skipped_count
+                report.summary.assigned_count, report.summary.available_count, report.summary.skipped_count
             ));
         }
         if !report.pinned {
@@ -883,8 +808,7 @@ impl ReportFormatter for DefaultFormatter {
 
         table.with_footer(summary_parts.join("\n"))
     }
-    
-    
+
     fn prepare_consolidated_memory_table(&self, report: &ConsolidatedMemoryReport) -> TableData {
         let mut table = TableData::new()
             .with_title("Memory Status & Allocation Plan")
@@ -892,7 +816,7 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Amount", ColumnAlignment::Right)
             .add_header("Relative", ColumnAlignment::Right)
             .add_header("Relative Info", ColumnAlignment::Left);
-        
+
         // System memory overview
         table = table
             .add_row(vec![
@@ -925,15 +849,10 @@ impl ReportFormatter for DefaultFormatter {
                 "-".to_string(),
                 "Physical + Page file".to_string(),
             ]);
-        
+
         // Allocation planning section separator
-        table = table.add_row(vec![
-            "".to_string(),
-            "".to_string(), 
-            "".to_string(),
-            "".to_string(),
-        ]);
-        
+        table = table.add_row(vec!["".to_string(), "".to_string(), "".to_string(), "".to_string()]);
+
         // Percentages are of the spec's reference: available, or total installed
         let of_reference = |bytes: u64| format!("{:.1}%", bytes as f64 / report.reference_bytes as f64 * 100.0);
         let relative_info = format!("of {}", report.reference_name);
@@ -945,10 +864,10 @@ impl ReportFormatter for DefaultFormatter {
         // When the rounding asked for would pass the reference: what was asked, and that it did not fit
         let rounding_note = match &report.rounding_asked {
             None => report.rounding_direction.clone(),
-            Some((step, direction)) if *direction == report.rounding_direction => format!(
-                "{} ({} step exceeds {})", report.rounding_direction, self.format_bytes(*step), report.reference_name),
-            Some((_, direction)) => format!(
-                "{} ({} exceeds {})", report.rounding_direction, direction, report.reference_name),
+            Some((step, direction)) if *direction == report.rounding_direction => {
+                format!("{} ({} step exceeds {})", report.rounding_direction, self.format_bytes(*step), report.reference_name)
+            }
+            Some((_, direction)) => format!("{} ({} exceeds {})", report.rounding_direction, direction, report.reference_name),
         };
 
         table = table.add_row(vec![
@@ -969,24 +888,14 @@ impl ReportFormatter for DefaultFormatter {
         }
 
         table
-            .add_row(vec![
-                "Threads".to_string(),
-                report.thread_count.to_string(),
-                "-".to_string(),
-                "".to_string(),
-            ])
+            .add_row(vec!["Threads".to_string(), report.thread_count.to_string(), "-".to_string(), "".to_string()])
             .add_row(vec![
                 "Per Thread Raw".to_string(),
                 self.format_bytes_precise(report.per_thread_raw_bytes, 3),
                 "-".to_string(),
                 "".to_string(),
             ])
-            .add_row(vec![
-                "Per Thread Round To".to_string(),
-                self.format_bytes(report.rounding_step_bytes),
-                "-".to_string(),
-                rounding_note,
-            ])
+            .add_row(vec!["Per Thread Round To".to_string(), self.format_bytes(report.rounding_step_bytes), "-".to_string(), rounding_note])
             .add_row(vec![
                 "Per Thread Rounded".to_string(),
                 self.format_bytes_precise(report.per_thread_bytes, 3),
@@ -1012,14 +921,14 @@ impl ReportFormatter for DefaultFormatter {
                 "Threads × per-thread rounding".to_string(),
             ])
     }
-    
-    fn format_extent_mode_with_size(&self, mode: &crate::tests::ExtentMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String {
+
+    fn format_extent_mode_with_size(
+        &self, mode: &crate::tests::ExtentMode, cache_info: &crate::cache::CacheInfo, thread_count: usize,
+    ) -> String {
         use crate::tests::ExtentMode;
         match mode {
             ExtentMode::FullAllocation => "FullAllocation".to_string(),
-            ExtentMode::Absolute { size_bytes } => {
-                self.format_bytes(*size_bytes as u64)
-            }
+            ExtentMode::Absolute { size_bytes } => self.format_bytes(*size_bytes as u64),
             ExtentMode::CacheTotal { fraction } => {
                 // Naive sum-of-tiers — no thread division (CacheTotal is intentionally coarse).
                 // The same total the test sizes from (`calculate_extent_size`).
@@ -1055,12 +964,19 @@ impl ReportFormatter for DefaultFormatter {
                 format!("Cache ({})", target.name())
             }
             ChunkMode::Tm5Block { window, divisor, granularity } => {
-                format!("TM5 block (.cfg window {}/{}, {} lock)", self.format_bytes(*window as u64), divisor, self.format_bytes(*granularity as u64))
+                format!(
+                    "TM5 block (.cfg window {}/{}, {} lock)",
+                    self.format_bytes(*window as u64),
+                    divisor,
+                    self.format_bytes(*granularity as u64)
+                )
             }
         }
     }
 
-    fn format_chunk_mode_with_size(&self, mode: &crate::tests::ChunkMode, cache_info: &crate::cache::CacheInfo, thread_count: usize) -> String {
+    fn format_chunk_mode_with_size(
+        &self, mode: &crate::tests::ChunkMode, cache_info: &crate::cache::CacheInfo, thread_count: usize,
+    ) -> String {
         use crate::tests::ChunkMode;
         match mode {
             // Show the resolved size: `Cache (L2)` alone hides the SMT divisor (L1/L2 divide by
@@ -1077,7 +993,6 @@ impl ReportFormatter for DefaultFormatter {
             other => self.format_chunk_mode(other),
         }
     }
-
 
     fn prepare_test_configuration_table(&self, report: &TestConfigurationReport) -> TableData {
         let mut table = TableData::new()
@@ -1109,11 +1024,11 @@ impl ReportFormatter for DefaultFormatter {
             table = table.add_row(row);
         }
 
-        let steps = if report.step_count != report.test_count { format!(" | Steps per cycle: {}", report.step_count) } else { String::new() };
-        table.with_footer(format!("Suite Timing: {} | Total Tests: {}{}",
-                                   report.suite_timing, report.test_count, steps))
+        let steps =
+            if report.step_count != report.test_count { format!(" | Steps per cycle: {}", report.step_count) } else { String::new() };
+        table.with_footer(format!("Suite Timing: {} | Total Tests: {}{}", report.suite_timing, report.test_count, steps))
     }
-    
+
     fn prepare_cycle_report_table(&self, report: &CycleReport) -> TableData {
         // Not wired up yet (TODO #29): nothing calls `report_cycle`. Kept deliberately for a
         // between-cycle report, and kept in step with the final per-test table below so reinstating
@@ -1144,7 +1059,7 @@ impl ReportFormatter for DefaultFormatter {
 
         table.with_footer(format!("Cycle Time: {}s", report.duration_secs))
     }
-    
+
     fn prepare_final_summary_overview_table(&self, report: &FinalTestSummaryReport) -> TableData {
         // Both error sources fail the run: a WHEA event means the hardware reported a fault whether
         // or not a verify read could see it. First row, because it is the answer the whole table
@@ -1155,32 +1070,15 @@ impl ReportFormatter for DefaultFormatter {
             .with_title("Final Test Summary - Overview")
             .add_header("Metric", ColumnAlignment::Left)
             .add_header("Value", ColumnAlignment::Right)
-            .add_row(vec![
-                "Result".to_string(),
-                if passed { "PASS ✅".to_string() } else { "FAIL ❌".to_string() },
-            ])
-            .add_row(vec![
-                "Runtime (HH:MM:SS)".to_string(),
-                report.total_runtime.clone(),
-            ])
-            .add_row(vec![
-                "Cycles Completed".to_string(),
-                report.cycles_completed.to_string(),
-            ])
-            .add_row(vec![
-                "Total Data Processed".to_string(),
-                format!("{:.2} GiB", report.total_data_processed_gib),
-            ])
+            .add_row(vec!["Result".to_string(), if passed { "PASS ✅".to_string() } else { "FAIL ❌".to_string() }])
+            .add_row(vec!["Runtime (HH:MM:SS)".to_string(), report.total_runtime.clone()])
+            .add_row(vec!["Cycles Completed".to_string(), report.cycles_completed.to_string()])
+            .add_row(vec!["Total Data Processed".to_string(), format!("{:.2} GiB", report.total_data_processed_gib)])
             .add_row(vec![
                 "Overall Throughput".to_string(),
-                format!("{:.1} MiB/s ({:.2} GiB/s)", 
-                        report.overall_throughput_mib_s, 
-                        report.overall_throughput_gib_s),
+                format!("{:.1} MiB/s ({:.2} GiB/s)", report.overall_throughput_mib_s, report.overall_throughput_gib_s),
             ])
-            .add_row(vec![
-                "Total Errors".to_string(),
-                report.total_errors.to_string(),
-            ])
+            .add_row(vec!["Total Errors".to_string(), report.total_errors.to_string()])
             .add_row(vec![
                 // Its time and data are the Intermediate Operations table's
                 "Seal".to_string(),
@@ -1202,7 +1100,7 @@ impl ReportFormatter for DefaultFormatter {
                 },
             ])
     }
-    
+
     fn prepare_final_summary_performance_table(&self, report: &FinalTestSummaryReport) -> TableData {
         // Check if any test has latency data
         let has_latency = report.per_test_summaries.iter().any(|t| t.latency_samples.is_some());
@@ -1347,18 +1245,24 @@ impl ReportFormatter for DefaultFormatter {
             table = table.add_row(row);
         }
         if let Some(seal) = report.seal.as_ref().filter(|s| s.final_check_errors > 0) {
-            table = table.add_row(vec!["end".to_string(), "Final seal check".to_string(), "-".to_string(), seal.final_check_errors.to_string()]);
+            table = table.add_row(vec![
+                "end".to_string(),
+                "Final seal check".to_string(),
+                "-".to_string(),
+                seal.final_check_errors.to_string(),
+            ]);
         }
-        table.with_footer("Seal: found by the seal check before the step's chunks (TM5 test 0); a mirror's own errors are its seal check after it.".to_string())
+        table.with_footer(
+            "Seal: found by the seal check before the step's chunks (TM5 test 0); a mirror's own errors are its seal check after it."
+                .to_string(),
+        )
     }
 
     /// Which bits failed, by test, the seal's checks, and over all of them when there's more than
     /// one row (TODO 97)
     fn prepare_failing_bits_table(&self, report: &FinalTestSummaryReport) -> TableData {
-        let mut rows: Vec<(String, &crate::failing_bits::FailingBits)> = report.per_test_summaries.iter()
-            .filter(|t| !t.failing_bits.is_empty())
-            .map(|t| (t.name.clone(), &t.failing_bits))
-            .collect();
+        let mut rows: Vec<(String, &crate::failing_bits::FailingBits)> =
+            report.per_test_summaries.iter().filter(|t| !t.failing_bits.is_empty()).map(|t| (t.name.clone(), &t.failing_bits)).collect();
         if !report.seal_failing_bits.is_empty() {
             rows.push(("Seal".to_string(), &report.seal_failing_bits));
         }
@@ -1374,9 +1278,12 @@ impl ReportFormatter for DefaultFormatter {
         for (name, bits) in rows {
             table = table.add_row(vec![name, bits.detail()]);
         }
-        table.with_footer("A failed check counts each bit its differences had; a bad word, each bit it had wrong. Every bit is in the results JSON.".to_string())
+        table.with_footer(
+            "A failed check counts each bit its differences had; a bad word, each bit it had wrong. Every bit is in the results JSON."
+                .to_string(),
+        )
     }
-    
+
     fn prepare_allocation_nodes_table(&self, report: &AllocationReport) -> TableData {
         let multi = report.numa_nodes > 1;
         let mut title = format!("Memory Allocation ({}, {:.2} s)", report.allocator, report.elapsed.as_secs_f64());
@@ -1393,13 +1300,9 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("2 MiB", ColumnAlignment::Right)
             .add_header("4 KiB", ColumnAlignment::Right);
         if multi {
-            table = table
-                .add_header("Local", ColumnAlignment::Right)
-                .add_header("Remote", ColumnAlignment::Right);
+            table = table.add_header("Local", ColumnAlignment::Right).add_header("Remote", ColumnAlignment::Right);
         }
-        table = table
-            .add_header("Requests", ColumnAlignment::Right)
-            .add_header("Refused", ColumnAlignment::Right);
+        table = table.add_header("Requests", ColumnAlignment::Right).add_header("Refused", ColumnAlignment::Right);
 
         let mut total = AllocationNode {
             numa_node: None,
@@ -1472,12 +1375,7 @@ impl ReportFormatter for DefaultFormatter {
                     format!("{} for {}", node_cell(g.numa_node), node_cell(g.home_node))
                 });
             }
-            cells.extend([
-                count_or_dash(g.granted),
-                count_or_dash(g.refused),
-                g.threads.to_string(),
-                self.bytes_or_dash(g.granted_bytes),
-            ]);
+            cells.extend([count_or_dash(g.granted), count_or_dash(g.refused), g.threads.to_string(), self.bytes_or_dash(g.granted_bytes)]);
             table = table.add_row(cells);
         }
         table
@@ -1485,9 +1383,7 @@ impl ReportFormatter for DefaultFormatter {
 
     fn prepare_allocation_threads_table(&self, report: &AllocationReport) -> TableData {
         let multi = report.numa_nodes > 1;
-        let mut table = TableData::new()
-            .with_title("Threads")
-            .add_header("Thread", ColumnAlignment::Right);
+        let mut table = TableData::new().with_title("Threads").add_header("Thread", ColumnAlignment::Right);
         if multi {
             table = table.add_header("Node", ColumnAlignment::Right);
         }
@@ -1497,9 +1393,7 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("2 MiB", ColumnAlignment::Right)
             .add_header("4 KiB", ColumnAlignment::Right);
         if multi {
-            table = table
-                .add_header("Local", ColumnAlignment::Right)
-                .add_header("Remote", ColumnAlignment::Right);
+            table = table.add_header("Local", ColumnAlignment::Right).add_header("Remote", ColumnAlignment::Right);
         }
         table = table.add_header("Status", ColumnAlignment::Left);
 
@@ -1539,12 +1433,8 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Granted", ColumnAlignment::Right)
             .add_header("Refused", ColumnAlignment::Left);
         for t in &report.threads {
-            let signature = |page, refused: bool| {
-                commit_signature(
-                    t.commits.iter().filter(|c| c.page == page && c.refused == refused),
-                    t.numa_node,
-                )
-            };
+            let signature =
+                |page, refused: bool| commit_signature(t.commits.iter().filter(|c| c.page == page && c.refused == refused), t.numa_node);
             let mut cells = vec![t.thread_id.to_string()];
             cells.extend(PAGES.iter().map(|&page| {
                 let s = signature(page, false);
@@ -1604,9 +1494,7 @@ impl ReportFormatter for DefaultFormatter {
         for d in shown_dimensions(report) {
             let worst = d.cells.iter().map(|c| c.badness).fold(0.0, f64::max);
             let worst_cell = if worst > 0.0 {
-                let at: Vec<usize> = (0..d.cells.len())
-                    .filter(|&i| d.cells[i].badness >= worst * (1.0 - 1e-9))
-                    .collect();
+                let at: Vec<usize> = (0..d.cells.len()).filter(|&i| d.cells[i].badness >= worst * (1.0 - 1e-9)).collect();
                 let ids: Vec<usize> = at.iter().map(|&i| report.threads[i].thread_id).collect();
                 let first = d.cells[at[0]].deviation;
                 let mut deviation = self.deviation_text(d.dimension, first);

@@ -49,11 +49,13 @@ pub fn resolve_skip_spec(spec: &str, total_cores: usize) -> (usize, Option<(usiz
     let s = spec.trim();
     // Inclusive id range to exclude.
     if let Some((a, b)) = s.split_once('-')
-        && let (Ok(a), Ok(b)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>()) {
+        && let (Ok(a), Ok(b)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>())
+    {
         return (0, Some((a, b)));
     }
     if let Some(pct) = s.strip_suffix('%')
-        && let Ok(p) = pct.trim().parse::<u32>() {
+        && let Ok(p) = pct.trim().parse::<u32>()
+    {
         // Round to nearest, and never skip every core.
         let n = ((total_cores as u32 * p + 50) / 100) as usize;
         return (n.min(total_cores.saturating_sub(1)), None);
@@ -85,7 +87,11 @@ pub fn apply_cpu_stride(pool: &[usize], count: usize, stride_spec: &str) -> Resu
         return Err(format!(
             "cpu-stride={} cannot place {} threads in {} available CPU(s): needs a span of {} \
              (last thread would land at index {}). Reduce cpus= or lower the stride.",
-            stride_spec, count, pool.len(), needed_span, (count - 1) * stride
+            stride_spec,
+            count,
+            pool.len(),
+            needed_span,
+            (count - 1) * stride
         ));
     }
 
@@ -103,11 +109,7 @@ pub fn apply_cpu_stride(pool: &[usize], count: usize, stride_spec: &str) -> Resu
 /// one-thread-per-P-core, then one-per-E-core, then SMT siblings. Spacing currently applies to
 /// the non-hybrid path; on hybrid parts the core-type ordering already spreads the assignment.
 pub fn calculate_thread_allocation(
-    requested_threads: usize,
-    cpus_to_skip: usize,
-    avoid_smt_doubling: bool,
-    excluded_range: Option<(usize, usize)>,
-    stride_spec: &str,
+    requested_threads: usize, cpus_to_skip: usize, avoid_smt_doubling: bool, excluded_range: Option<(usize, usize)>, stride_spec: &str,
 ) -> Result<(usize, Vec<usize>), String> {
     let topology = get_cpu_topology();
     let is_hybrid = is_hybrid_cpu(topology);
@@ -116,21 +118,23 @@ pub fn calculate_thread_allocation(
     let mut cores_map: HashMap<usize, Vec<(usize, CoreType)>> = HashMap::new();
     for cpu in topology {
         if let Some((lo, hi)) = excluded_range
-            && cpu.physical_core_id >= lo && cpu.physical_core_id <= hi {
+            && cpu.physical_core_id >= lo
+            && cpu.physical_core_id <= hi
+        {
             continue; // filtered out before any spacing/count logic sees it
         }
-        cores_map.entry(cpu.physical_core_id)
-            .or_default()
-            .push((cpu.logical_id, cpu.core_type));
+        cores_map.entry(cpu.physical_core_id).or_default().push((cpu.logical_id, cpu.core_type));
     }
 
     // Separate P-cores and E-cores
-    let mut p_cores: Vec<_> = cores_map.iter()
+    let mut p_cores: Vec<_> = cores_map
+        .iter()
         .filter(|(_, cpus)| cpus.iter().any(|(_, t)| matches!(t, CoreType::Performance(_))))
         .map(|(id, cpus)| (*id, cpus.clone()))
         .collect();
 
-    let mut e_cores: Vec<_> = cores_map.iter()
+    let mut e_cores: Vec<_> = cores_map
+        .iter()
         .filter(|(_, cpus)| cpus.iter().any(|(_, t)| matches!(t, CoreType::Efficiency(_))))
         .map(|(id, cpus)| (*id, cpus.clone()))
         .collect();
@@ -160,7 +164,9 @@ pub fn calculate_thread_allocation(
 
         // Pass 1: Take first thread from each P-core
         for (_, logical_cpus) in &p_cores_vec {
-            if selected_cpus.len() >= requested_threads { break; }
+            if selected_cpus.len() >= requested_threads {
+                break;
+            }
             if let Some((cpu_id, _)) = logical_cpus.first() {
                 selected_cpus.push(*cpu_id);
             }
@@ -168,7 +174,9 @@ pub fn calculate_thread_allocation(
 
         // Pass 2: Take first thread from each E-core
         for (_, logical_cpus) in &e_cores_vec {
-            if selected_cpus.len() >= requested_threads { break; }
+            if selected_cpus.len() >= requested_threads {
+                break;
+            }
             if let Some((cpu_id, _)) = logical_cpus.first() {
                 selected_cpus.push(*cpu_id);
             }
@@ -178,13 +186,17 @@ pub fn calculate_thread_allocation(
         if !avoid_smt_doubling && selected_cpus.len() < requested_threads {
             for (_, logical_cpus) in &p_cores_vec {
                 for (cpu_id, _) in logical_cpus.iter().skip(1) {
-                    if selected_cpus.len() >= requested_threads { break; }
+                    if selected_cpus.len() >= requested_threads {
+                        break;
+                    }
                     selected_cpus.push(*cpu_id);
                 }
             }
             for (_, logical_cpus) in &e_cores_vec {
                 for (cpu_id, _) in logical_cpus.iter().skip(1) {
-                    if selected_cpus.len() >= requested_threads { break; }
+                    if selected_cpus.len() >= requested_threads {
+                        break;
+                    }
                     selected_cpus.push(*cpu_id);
                 }
             }
@@ -199,9 +211,8 @@ pub fn calculate_thread_allocation(
 
         // Stage 2: apply spacing across the available pool. The primary pass takes the first
         // logical CPU of each selected physical core.
-        let first_cpu_pool: Vec<usize> = cores_to_use.iter()
-            .filter_map(|pc| cores_map.get(pc).and_then(|l| l.first()).map(|(id, _)| *id))
-            .collect();
+        let first_cpu_pool: Vec<usize> =
+            cores_to_use.iter().filter_map(|pc| cores_map.get(pc).and_then(|l| l.first()).map(|(id, _)| *id)).collect();
 
         let primary_count = requested_threads.min(first_cpu_pool.len());
         let strided = apply_cpu_stride(&first_cpu_pool, primary_count, stride_spec)?;
@@ -212,14 +223,17 @@ pub fn calculate_thread_allocation(
         if !avoid_smt_doubling && selected_cpus.len() < requested_threads {
             let chosen: Vec<usize> = selected_cpus.clone();
             for primary in &chosen {
-                if let Some((_, logical_cpus)) = cores_map.iter()
-                    .find(|(_, l)| l.first().map(|(id, _)| id == primary).unwrap_or(false)) {
+                if let Some((_, logical_cpus)) = cores_map.iter().find(|(_, l)| l.first().map(|(id, _)| id == primary).unwrap_or(false)) {
                     for (cpu_id, _) in logical_cpus.iter().skip(1) {
-                        if selected_cpus.len() >= requested_threads { break; }
+                        if selected_cpus.len() >= requested_threads {
+                            break;
+                        }
                         selected_cpus.push(*cpu_id);
                     }
                 }
-                if selected_cpus.len() >= requested_threads { break; }
+                if selected_cpus.len() >= requested_threads {
+                    break;
+                }
             }
         }
     }

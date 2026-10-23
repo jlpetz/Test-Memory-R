@@ -1,14 +1,10 @@
 // Add this to your runner.rs file to centralize topology detection
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use raw_cpuid::CpuId;
 
+use raw_cpuid::CpuId;
 use windows::Win32::System::SystemInformation::{
-    GetLogicalProcessorInformationEx,
-    RelationNumaNode, RelationNumaNodeEx,
-    GROUP_AFFINITY,
-    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+    GROUP_AFFINITY, GetLogicalProcessorInformationEx, RelationNumaNode, RelationNumaNodeEx, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
 };
 
 // Global cached topology - computed only once
@@ -20,15 +16,15 @@ pub struct CpuTopologyInfo {
     pub physical_core_id: usize,
     pub numa_node: u32,
     pub is_hyperthreaded: bool,
-    pub core_type: CoreType,              // New field
-    pub threads_on_this_core: usize,      // New field
-    pub efficiency_class: u8,             // New field (raw Windows value)
+    pub core_type: CoreType,         // New field
+    pub threads_on_this_core: usize, // New field
+    pub efficiency_class: u8,        // New field (raw Windows value)
 }
 // Clean enum design for core types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoreType {
-    Performance(u8),  // Performance tier (0 = highest)
-    Efficiency(u8),   // Efficiency tier (0 = most efficient)
+    Performance(u8), // Performance tier (0 = highest)
+    Efficiency(u8),  // Efficiency tier (0 = most efficient)
     Unknown,
 }
 
@@ -49,7 +45,6 @@ pub struct EnhancedCpuInfo {
     pub logical_processor_index: u32,
     pub scheduling_class: u8,
 }
-
 
 // Modern NUMA information structure
 #[derive(Debug, Clone)]
@@ -147,7 +142,7 @@ pub fn set_core_priority(priority: CorePriority) {
 pub fn get_cpu_topology() -> &'static Vec<CpuTopologyInfo> {
     CPU_TOPOLOGY.get_or_init(|| {
         let method = TOPOLOGY_METHOD.get().copied().unwrap_or(TopologyDetectionMethod::Auto);
-        
+
         log::info!("Detecting CPU topology using method: {:?}", method);
         let start = std::time::Instant::now();
 
@@ -155,26 +150,30 @@ pub fn get_cpu_topology() -> &'static Vec<CpuTopologyInfo> {
 
         let elapsed = start.elapsed();
         log::info!("CPU topology detection completed in {:?}", elapsed);
-        
+
         // Log summary
-        let physical_cores = topology.iter()
-            .map(|cpu| cpu.physical_core_id)
-            .collect::<std::collections::HashSet<_>>()
-            .len();
-        let p_cores = topology.iter()
+        let physical_cores = topology.iter().map(|cpu| cpu.physical_core_id).collect::<std::collections::HashSet<_>>().len();
+        let p_cores = topology
+            .iter()
             .filter(|cpu| matches!(cpu.core_type, CoreType::Performance(_)))
             .map(|cpu| cpu.physical_core_id)
             .collect::<std::collections::HashSet<_>>()
             .len();
-        let e_cores = topology.iter()
+        let e_cores = topology
+            .iter()
             .filter(|cpu| matches!(cpu.core_type, CoreType::Efficiency(_)))
             .map(|cpu| cpu.physical_core_id)
             .collect::<std::collections::HashSet<_>>()
             .len();
-            
-        log::info!("Topology: {} physical cores ({} P-cores, {} E-cores, {} Unknown)",
-                  physical_cores, p_cores, e_cores, physical_cores - p_cores - e_cores);
-        
+
+        log::info!(
+            "Topology: {} physical cores ({} P-cores, {} E-cores, {} Unknown)",
+            physical_cores,
+            p_cores,
+            e_cores,
+            physical_cores - p_cores - e_cores
+        );
+
         topology
     })
 }
@@ -197,67 +196,54 @@ pub fn logical_cpu_ids() -> Vec<usize> {
 /// 2-way SMT and mislabeled cores on non-SMT (e.g. AMD EPYC) or non-2-way-SMT parts.
 /// Falls back to the logical id (a sane 1:1 default) if the CPU isn't found.
 pub fn get_physical_core_for_cpu(cpu_id: usize) -> usize {
-    get_cpu_topology()
-        .iter()
-        .find(|cpu| cpu.logical_id == cpu_id)
-        .map(|cpu| cpu.physical_core_id)
-        .unwrap_or(cpu_id)
+    get_cpu_topology().iter().find(|cpu| cpu.logical_id == cpu_id).map(|cpu| cpu.physical_core_id).unwrap_or(cpu_id)
 }
-
 
 pub fn get_numa_node_for_cpu(cpu_id: usize) -> u32 {
     static NUMA_TOPOLOGY: OnceLock<NumaTopology> = OnceLock::new();
-    
+
     let topology = NUMA_TOPOLOGY.get_or_init(|| {
         discover_numa_topology().unwrap_or_else(|e| {
             log::warn!("Failed to discover NUMA topology: {}", e);
-            NumaTopology {
-                cpu_to_node: HashMap::new(),
-            }
+            NumaTopology { cpu_to_node: HashMap::new() }
         })
     });
-    
+
     topology.cpu_to_node.get(&(cpu_id as u32)).copied().unwrap_or(0)
 }
 
 pub fn is_hybrid_cpu(topology: &[CpuTopologyInfo]) -> bool {
     // Note: This now takes topology as a parameter instead of detecting it
-    let efficiency_classes: std::collections::HashSet<_> = topology
-        .iter()
-        .map(|cpu| cpu.efficiency_class)
-        .collect();
-    
+    let efficiency_classes: std::collections::HashSet<_> = topology.iter().map(|cpu| cpu.efficiency_class).collect();
+
     // Count cores by type
     let mut p_cores = 0;
     let mut e_cores = 0;
     let mut unknown_cores = 0;
-    
+
     let mut counted_physical = std::collections::HashSet::new();
     for cpu in topology {
         if !counted_physical.contains(&cpu.physical_core_id) {
             counted_physical.insert(cpu.physical_core_id);
             match cpu.core_type {
-				CoreType::Performance(_) => p_cores += 1,
-				CoreType::Efficiency(_) => e_cores += 1,
-				CoreType::Unknown => unknown_cores += 1,
+                CoreType::Performance(_) => p_cores += 1,
+                CoreType::Efficiency(_) => e_cores += 1,
+                CoreType::Unknown => unknown_cores += 1,
             }
         }
     }
-    
-    log::debug!("Core type distribution: P-cores={}, E-cores={}, Unknown={}", 
-              p_cores, e_cores, unknown_cores);
+
+    log::debug!("Core type distribution: P-cores={}, E-cores={}, Unknown={}", p_cores, e_cores, unknown_cores);
     log::debug!("Efficiency classes found: {:?}", efficiency_classes);
-    
+
     // Consider it hybrid if:
     // 1. We have more than one efficiency class (excluding 0xFF which means "not specified")
     // 2. OR we have both P and E cores identified
-    let has_multiple_classes = efficiency_classes.len() > 1 && 
-                              !efficiency_classes.iter().all(|&c| c == 0xFF);
+    let has_multiple_classes = efficiency_classes.len() > 1 && !efficiency_classes.iter().all(|&c| c == 0xFF);
     let has_both_core_types = p_cores > 0 && e_cores > 0;
-    
-    log::debug!("is_hybrid_cpu: multiple_classes={}, both_types={}", 
-              has_multiple_classes, has_both_core_types);
-    
+
+    log::debug!("is_hybrid_cpu: multiple_classes={}, both_types={}", has_multiple_classes, has_both_core_types);
+
     has_multiple_classes || has_both_core_types
 }
 
@@ -316,9 +302,12 @@ pub fn detect_cpu_topology_auto() -> Vec<CpuTopologyInfo> {
             "Every core is typed the same: neither Windows nor the CPU reports core types, but Windows \
              gives {} a higher priority. On most CPUs that is only the preferred cores. On a hybrid that \
              doesn't report its types (a Ryzen 8500G's Zen 4 and Zen 4c cores, for one), add \
-             core-priority=hybrid to make those P-cores and the rest E-cores.", core_list(&top)),
-        (true, None) if !classes_vary(&efficiency) && amd.is_none() => log::warn!(
-            "core-priority=hybrid, but Windows gives every core the same priority: every core is typed the same"),
+             core-priority=hybrid to make those P-cores and the rest E-cores.",
+            core_list(&top)
+        ),
+        (true, None) if !classes_vary(&efficiency) && amd.is_none() => {
+            log::warn!("core-priority=hybrid, but Windows gives every core the same priority: every core is typed the same")
+        }
         _ => {}
     }
     for cpu in &mut topology {
@@ -381,16 +370,19 @@ fn types_by_class(classes_by_core: &HashMap<usize, u8>) -> HashMap<usize, CoreTy
     classes.sort_unstable();
     classes.dedup();
     let top = classes.last().copied();
-    classes_by_core.iter().map(|(&core, &class)| {
-        let core_type = if class == 0xFF {
-            CoreType::Unknown
-        } else if Some(class) == top {
-            CoreType::Performance(0)
-        } else {
-            CoreType::Efficiency(classes.iter().position(|&c| c == class).unwrap_or(0) as u8)
-        };
-        (core, core_type)
-    }).collect()
+    classes_by_core
+        .iter()
+        .map(|(&core, &class)| {
+            let core_type = if class == 0xFF {
+                CoreType::Unknown
+            } else if Some(class) == top {
+                CoreType::Performance(0)
+            } else {
+                CoreType::Efficiency(classes.iter().position(|&c| c == class).unwrap_or(0) as u8)
+            };
+            (core, core_type)
+        })
+        .collect()
 }
 
 /// Each physical core's type. From the efficiency class Windows reports when it varies (Intel's
@@ -404,18 +396,20 @@ fn types_by_class(classes_by_core: &HashMap<usize, u8>) -> HashMap<usize, CoreTy
 /// (CPPC) ranking, and reading it as types made a Ryzen 5 8600G "2 P-cores + 4 E-cores" and a
 /// Ryzen 7 5700X "2 + 6". A Ryzen 5 8500G's ranking looks the same and is its real Zen 4 and
 /// Zen 4c cores (cores 0 and 4 sustain 5.2 GHz, the rest 3.5), hence the opt-in.
-pub fn classify_core_types(efficiency: &HashMap<usize, u8>, amd: Option<&HashMap<usize, u8>>,
-                           priority: Option<&HashMap<usize, u8>>) -> HashMap<usize, CoreType> {
-    let hit = types_from_efficiency(efficiency)
-        .or_else(|| amd.map(types_from_amd))
-        .or_else(|| priority.and_then(types_from_priority));
-    efficiency.keys().map(|&core| {
-        let core_type = match &hit {
-            Some(types) => types.get(&core).copied().unwrap_or(CoreType::Unknown),
-            None => CoreType::Performance(0),
-        };
-        (core, core_type)
-    }).collect()
+pub fn classify_core_types(
+    efficiency: &HashMap<usize, u8>, amd: Option<&HashMap<usize, u8>>, priority: Option<&HashMap<usize, u8>>,
+) -> HashMap<usize, CoreType> {
+    let hit = types_from_efficiency(efficiency).or_else(|| amd.map(types_from_amd)).or_else(|| priority.and_then(types_from_priority));
+    efficiency
+        .keys()
+        .map(|&core| {
+            let core_type = match &hit {
+                Some(types) => types.get(&core).copied().unwrap_or(CoreType::Unknown),
+                None => CoreType::Performance(0),
+            };
+            (core, core_type)
+        })
+        .collect()
 }
 
 /// The efficiency-class detector (`topology=windows`, Auto's first step): None when every core
@@ -434,14 +428,16 @@ fn types_from_priority(priority: &HashMap<usize, u8>) -> Option<HashMap<usize, C
 /// The AMD detector (`topology=amd`, Auto's second step): `amd_cpuid_core_types`'s 0 is
 /// performance, 1 efficiency.
 fn types_from_amd(amd: &HashMap<usize, u8>) -> HashMap<usize, CoreType> {
-    amd.iter().map(|(&core, &t)| {
-        let core_type = match t {
-            0 => CoreType::Performance(0),
-            1 => CoreType::Efficiency(0),
-            _ => CoreType::Unknown,
-        };
-        (core, core_type)
-    }).collect()
+    amd.iter()
+        .map(|(&core, &t)| {
+            let core_type = match t {
+                0 => CoreType::Performance(0),
+                1 => CoreType::Efficiency(0),
+                _ => CoreType::Unknown,
+            };
+            (core, core_type)
+        })
+        .collect()
 }
 
 /// The L3 detector (`topology=cpuid`): the cores with the most L3 are P-cores, the rest E.
@@ -458,14 +454,19 @@ fn types_from_l3(topology: &[CpuTopologyInfo]) -> Option<HashMap<usize, CoreType
 fn types_by_l3(sizes: &HashMap<usize, Option<usize>>) -> Option<HashMap<usize, CoreType>> {
     let distinct: HashSet<usize> = sizes.values().flatten().copied().collect();
     let most = *distinct.iter().max()?;
-    (distinct.len() > 1).then(|| sizes.iter().map(|(&core, &l3)| {
-        let core_type = match l3 {
-            Some(l3) if l3 == most => CoreType::Performance(0),
-            Some(_) => CoreType::Efficiency(0),
-            None => CoreType::Unknown,
-        };
-        (core, core_type)
-    }).collect())
+    (distinct.len() > 1).then(|| {
+        sizes
+            .iter()
+            .map(|(&core, &l3)| {
+                let core_type = match l3 {
+                    Some(l3) if l3 == most => CoreType::Performance(0),
+                    Some(_) => CoreType::Efficiency(0),
+                    None => CoreType::Unknown,
+                };
+                (core, core_type)
+            })
+            .collect()
+    })
 }
 
 /// AMD's type for each physical core, from CPUID leaf 0x80000026 (Extended CPU Topology): EAX bit 30
@@ -498,19 +499,23 @@ fn read_on_each_core<T: Send>(topology: &[CpuTopologyInfo], what: &str, read: im
         first_cpu.entry(cpu.physical_core_id).or_insert(cpu.logical_id);
     }
     std::thread::scope(|scope| {
-        scope.spawn(|| {
-            let mut values = HashMap::new();
-            for (&core, &logical) in &first_cpu {
-                let target = GROUP_AFFINITY { Mask: 1usize << (logical % 64), Group: (logical / 64) as u16, Reserved: [0; 3] };
-                // SAFETY: this thread's own pseudo-handle, and a GROUP_AFFINITY that outlives the call
-                if !unsafe { SetThreadGroupAffinity(GetCurrentThread(), &target, None) }.as_bool() {
-                    log::warn!("Could not pin to logical CPU {logical} to read its {what}");
-                    return None;
+        scope
+            .spawn(|| {
+                let mut values = HashMap::new();
+                for (&core, &logical) in &first_cpu {
+                    let target = GROUP_AFFINITY { Mask: 1usize << (logical % 64), Group: (logical / 64) as u16, Reserved: [0; 3] };
+                    // SAFETY: this thread's own pseudo-handle, and a GROUP_AFFINITY that outlives the call
+                    if !unsafe { SetThreadGroupAffinity(GetCurrentThread(), &target, None) }.as_bool() {
+                        log::warn!("Could not pin to logical CPU {logical} to read its {what}");
+                        return None;
+                    }
+                    values.insert(core, read());
                 }
-                values.insert(core, read());
-            }
-            Some(values)
-        }).join().ok().flatten()
+                Some(values)
+            })
+            .join()
+            .ok()
+            .flatten()
     })
 }
 
@@ -519,7 +524,8 @@ fn read_on_each_core<T: Send>(topology: &[CpuTopologyInfo], what: &str, read: im
 /// one" encoding; adding 1 to each read a 16 MiB L3 as 34.5 MiB). None for a core that lists no L3.
 fn l3_sizes(topology: &[CpuTopologyInfo]) -> Option<HashMap<usize, Option<usize>>> {
     read_on_each_core(topology, "L3 size", || {
-        CpuId::new().get_cache_parameters()?
+        CpuId::new()
+            .get_cache_parameters()?
             .find(|cache| cache.level() == 3)
             .map(|c| c.associativity() * c.physical_line_partitions() * c.coherency_line_size() * c.sets())
     })
@@ -527,21 +533,16 @@ fn l3_sizes(topology: &[CpuTopologyInfo]) -> Option<HashMap<usize, Option<usize>
 
 pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
     let mut topology = Vec::new();
-    
+
     unsafe {
         use windows::Win32::System::SystemInformation::{
-            GetLogicalProcessorInformationEx, RelationProcessorCore,
-            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+            GetLogicalProcessorInformationEx, RelationProcessorCore, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
         };
-        
+
         // First get the buffer size
         let mut buffer_size = 0u32;
-        let _ = GetLogicalProcessorInformationEx(
-            RelationProcessorCore,
-            None,
-            &mut buffer_size,
-        );
-        
+        let _ = GetLogicalProcessorInformationEx(RelationProcessorCore, None, &mut buffer_size);
+
         if buffer_size == 0 {
             log::warn!("GetLogicalProcessorInformationEx returned 0 buffer size");
             // Fallback for single core or error
@@ -558,7 +559,7 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
             }
             return topology;
         }
-        
+
         // ALIGNMENT: u64-backed, not u8 — `SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX` contains
         // `KAFFINITY` (u64) so it needs 8-byte alignment, which `Vec<u8>` does not guarantee.
         // See the same note in `memory/privileges.rs`. The walk below is still in BYTES, so it
@@ -569,7 +570,9 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
             RelationProcessorCore,
             Some(buffer.as_mut_ptr() as *mut SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX),
             &mut buffer_size,
-        ).is_ok() {
+        )
+        .is_ok()
+        {
             let base = buffer.as_ptr() as *const u8;
             let mut offset = 0;
             let mut physical_core_id = 0;
@@ -578,25 +581,25 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
 
             while offset < buffer_size as usize {
                 let info = &*(base.add(offset) as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX);
-                
+
                 if info.Relationship == RelationProcessorCore {
                     let core_info = &info.Anonymous.Processor;
                     let group_count = core_info.GroupCount;
                     let efficiency_class = core_info.EfficiencyClass;
-                    
+
                     log::debug!("Physical Core {}: EfficiencyClass = {}", physical_core_id, efficiency_class);
-                    
+
                     // The cores only; a detector types them (`detect_cpu_topology_with`). Typing
                     // class 0 as E-cores here made every uniform CPU read as all E-cores.
                     let core_type = CoreType::Unknown;
-                    
+
                     let mut logical_processors = Vec::new();
-                    
+
                     // Collect all logical processors for this physical core
                     for group_mask in &core_info.GroupMask[..group_count as usize] {
                         let group = group_mask.Group;
                         let mask = group_mask.Mask;
-                        
+
                         for bit in 0..64 {
                             if (mask & (1u64 << bit) as usize) != 0 {
                                 let logical_id = (group as usize * 64) + bit;
@@ -604,14 +607,18 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
                             }
                         }
                     }
-                    
+
                     // Create topology entries for each logical processor
                     let threads_on_this_core = logical_processors.len();
                     let is_hyperthreaded = threads_on_this_core > 1;
-                    
-                    log::debug!("  Physical Core {} has {} logical processors, type: {:?}", 
-                              physical_core_id, threads_on_this_core, core_type);
-                    
+
+                    log::debug!(
+                        "  Physical Core {} has {} logical processors, type: {:?}",
+                        physical_core_id,
+                        threads_on_this_core,
+                        core_type
+                    );
+
                     for logical_id in logical_processors {
                         topology.push(CpuTopologyInfo {
                             logical_id,
@@ -623,86 +630,73 @@ pub fn detect_cpu_topology() -> Vec<CpuTopologyInfo> {
                             efficiency_class,
                         });
                     }
-                    
+
                     physical_core_id += 1;
                 }
-                
+
                 offset += info.Size as usize;
             }
         }
     }
-    
+
     // Sort by logical ID for consistent display
     topology.sort_by_key(|cpu| cpu.logical_id);
-    
+
     // Log summary of efficiency classes found
-    let efficiency_classes: std::collections::HashSet<_> = topology
-        .iter()
-        .map(|cpu| cpu.efficiency_class)
-        .collect();
+    let efficiency_classes: std::collections::HashSet<_> = topology.iter().map(|cpu| cpu.efficiency_class).collect();
     log::info!("Detected efficiency classes: {:?}", efficiency_classes);
-    
+
     topology
 }
-
 
 /// The CPUs at startup (TODO 29: `Setup::CpuTopology`): each CPU's core, type and NUMA node, and
 /// what the run does with it (skips it, assigns it a thread, leaves it out as an assigned core's SMT
 /// sibling, or leaves it free), `cpu_list` being the threads' CPUs. On a hybrid CPU, also how many
 /// of its P-cores have SMT (`None` on one that isn't), and whether skipping took E-cores first.
-pub fn startup_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool, pinned: bool)
-                        -> (crate::reporting::models::CpuTopologyReport, Option<usize>, bool) {
-    use crate::reporting::models::{CpuTopologyReport, CpuTopologyEntry, TopologySummary};
+pub fn startup_topology(
+    cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool, pinned: bool,
+) -> (crate::reporting::models::CpuTopologyReport, Option<usize>, bool) {
+    use crate::reporting::models::{CpuTopologyEntry, CpuTopologyReport, TopologySummary};
 
     let topology = get_cpu_topology();
     let is_hybrid = is_hybrid_cpu(topology);
 
     // Build set of physical cores that have assigned CPUs (for SMT exclusion marking)
     let assigned_physical_cores: std::collections::HashSet<usize> = if avoid_smt {
-        cpu_list.iter()
-            .filter_map(|&cpu_id| {
-                topology.iter()
-                    .find(|c| c.logical_id == cpu_id)
-                    .map(|c| c.physical_core_id)
-            })
-            .collect()
+        cpu_list.iter().filter_map(|&cpu_id| topology.iter().find(|c| c.logical_id == cpu_id).map(|c| c.physical_core_id)).collect()
     } else {
         std::collections::HashSet::new()
     };
-    
+
     // First, identify which physical cores are being skipped
     let mut skipped_physical_cores = std::collections::HashSet::new();
     if cpus_to_skip > 0 {
         // Group by physical core, prioritizing E-cores for skipping
         let mut cores_by_type: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
         let mut cores_map: std::collections::HashMap<usize, (Vec<usize>, CoreType)> = std::collections::HashMap::new();
-        
+
         for cpu in topology {
-            cores_map.entry(cpu.physical_core_id)
-                .or_insert_with(|| (Vec::new(), cpu.core_type))
-                .0.push(cpu.logical_id);
+            cores_map.entry(cpu.physical_core_id).or_insert_with(|| (Vec::new(), cpu.core_type)).0.push(cpu.logical_id);
         }
-        
+
         // Separate cores by type
         for (core_id, (_, core_type)) in &cores_map {
             let type_key = match core_type {
                 CoreType::Performance(_) => "performance",
-                CoreType::Efficiency(_) => "efficiency", 
+                CoreType::Efficiency(_) => "efficiency",
                 CoreType::Unknown => "unknown",
             };
-            cores_by_type.entry(type_key)
-                .or_default()
-                .push(*core_id);
+            cores_by_type.entry(type_key).or_default().push(*core_id);
         }
-        
+
         // Sort core IDs
         for cores in cores_by_type.values_mut() {
             cores.sort();
         }
-        
+
         // Skip E-cores first, then P-cores
         let mut remaining_to_skip = cpus_to_skip;
-        
+
         // Skip efficiency cores first
         if let Some(e_cores) = cores_by_type.get("efficiency") {
             for &core_id in e_cores.iter().take(remaining_to_skip) {
@@ -710,16 +704,17 @@ pub fn startup_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool
                 remaining_to_skip = remaining_to_skip.saturating_sub(1);
             }
         }
-        
+
         // Then skip performance cores if needed
         if remaining_to_skip > 0
-            && let Some(p_cores) = cores_by_type.get("performance") {
-                for &core_id in p_cores.iter().take(remaining_to_skip) {
-                    skipped_physical_cores.insert(core_id);
-                }
+            && let Some(p_cores) = cores_by_type.get("performance")
+        {
+            for &core_id in p_cores.iter().take(remaining_to_skip) {
+                skipped_physical_cores.insert(core_id);
             }
+        }
     }
-    
+
     let mut skipped_count = 0;
     let mut assigned_count = 0;
     let mut available_count = 0;
@@ -737,7 +732,7 @@ pub fn startup_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool
             match cpu_info.core_type {
                 CoreType::Performance(_) => p_core_count += 1,
                 CoreType::Efficiency(_) => e_core_count += 1,
-                CoreType::Unknown => {},
+                CoreType::Unknown => {}
             }
         }
 
@@ -756,7 +751,7 @@ pub fn startup_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool
             available_count += 1;
             ("Available", None)
         };
-        
+
         cpu_entries.push(CpuTopologyEntry {
             logical_cpu: cpu_info.logical_id,
             physical_core: cpu_info.physical_core_id,
@@ -768,17 +763,14 @@ pub fn startup_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool
             thread_id,
         });
     }
-    
+
     // Calculate summary data
     let total_logical = topology.len();
-    let total_physical = topology.iter()
-        .map(|cpu| cpu.physical_core_id)
-        .collect::<std::collections::HashSet<_>>()
-        .len();
-    
+    let total_physical = topology.iter().map(|cpu| cpu.physical_core_id).collect::<std::collections::HashSet<_>>().len();
+
     let performance_logical = topology.iter().filter(|c| matches!(c.core_type, CoreType::Performance(_))).count();
     let efficiency_logical = topology.iter().filter(|c| matches!(c.core_type, CoreType::Efficiency(_))).count();
-    
+
     let summary = TopologySummary {
         is_hybrid,
         total_logical,
@@ -792,16 +784,13 @@ pub fn startup_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool
         skipped_count,
         smt_excluded_count,
     };
-    
-    let report = CpuTopologyReport {
-        cpus: cpu_entries,
-        summary,
-        pinned,
-    };
-    
+
+    let report = CpuTopologyReport { cpus: cpu_entries, summary, pinned };
+
     // Additional SMT usage information for hybrid CPUs
     let p_cores_with_smt = is_hybrid.then(|| {
-        topology.iter()
+        topology
+            .iter()
             .filter(|t| matches!(t.core_type, CoreType::Performance(_)) && t.is_hyperthreaded)
             .map(|t| t.physical_core_id)
             .collect::<std::collections::HashSet<_>>()
@@ -813,25 +802,17 @@ pub fn startup_topology(cpu_list: &[usize], cpus_to_skip: usize, avoid_smt: bool
 
 pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> {
     unsafe {
-        use windows::Win32::System::SystemInformation::{
-            GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION,
-        };
-        
+        use windows::Win32::System::SystemInformation::{GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION};
+
         let mut buffer_length = 0u32;
-        
+
         // First call to get required buffer size
-        let _ = GetSystemCpuSetInformation(
-            None,
-            0,
-            &mut buffer_length,
-            None,
-            None,
-        );
-        
+        let _ = GetSystemCpuSetInformation(None, 0, &mut buffer_length, None, None);
+
         if buffer_length == 0 {
             return Err("Failed to get buffer size for CPU set information".to_string());
         }
-        
+
         // Allocate buffer. ALIGNMENT: u64-backed (see `memory/privileges.rs`); the walk below
         // stays in BYTES via an explicit `*const u8` base.
         let mut buffer = vec![0u64; (buffer_length as usize).div_ceil(std::mem::size_of::<u64>())];
@@ -864,10 +845,10 @@ pub fn get_system_cpu_set_information() -> Result<Vec<EnhancedCpuInfo>, String> 
                 logical_processor_index: info.Anonymous.CpuSet.Group as u32 * 64 + info.Anonymous.CpuSet.LogicalProcessorIndex as u32,
                 scheduling_class: info.Anonymous.CpuSet.Anonymous2.SchedulingClass,
             });
-            
+
             offset += info.Size as usize;
         }
-        
+
         Ok(cpu_infos)
     }
 }
@@ -881,23 +862,17 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
         let mut relation = RelationNumaNodeEx;
         let mut buffer_size = 0u32;
 
-        let _ = GetLogicalProcessorInformationEx(
-            relation,
-            None,
-            &mut buffer_size,
-        );
+        let _ = GetLogicalProcessorInformationEx(relation, None, &mut buffer_size);
         if buffer_size == 0 {
             // Before RelationNumaNodeEx existed: primary groups only
             relation = RelationNumaNode;
             let _ = GetLogicalProcessorInformationEx(relation, None, &mut buffer_size);
         }
-        
+
         if buffer_size == 0 {
-            return Ok(NumaTopology {
-                cpu_to_node: (0..num_cpus::get() as u32).map(|cpu| (cpu, 0)).collect(),
-            });
+            return Ok(NumaTopology { cpu_to_node: (0..num_cpus::get() as u32).map(|cpu| (cpu, 0)).collect() });
         }
-        
+
         // ALIGNMENT: u64-backed (see `memory/privileges.rs`); the walk below stays in BYTES
         // via an explicit `*const u8` base.
         let mut buffer = vec![0u64; (buffer_size as usize).div_ceil(std::mem::size_of::<u64>())];
@@ -906,7 +881,8 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
             relation,
             Some(buffer.as_mut_ptr() as *mut SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX),
             &mut buffer_size,
-        ).map_err(|e| format!("Failed to get NUMA topology: {:?}", e))?;
+        )
+        .map_err(|e| format!("Failed to get NUMA topology: {:?}", e))?;
 
         let base = buffer.as_ptr() as *const u8;
         let mut cpu_to_node = HashMap::new();
@@ -914,7 +890,7 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
 
         while offset < buffer_size as usize {
             let info = &*(base.add(offset) as *const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX);
-            
+
             // Both requests return their nodes as RelationNumaNode records
             if info.Relationship == RelationNumaNode {
                 let numa_info = &info.Anonymous.NumaNode;
@@ -930,10 +906,10 @@ pub fn discover_numa_topology() -> Result<NumaTopology, String> {
                     }
                 }
             }
-            
+
             offset += info.Size as usize;
         }
-        
+
         Ok(NumaTopology { cpu_to_node })
     }
 }
@@ -951,9 +927,15 @@ pub fn debug_topology_detection(out: &mut dyn std::io::Write) -> std::io::Result
         }
         let count = |pred: fn(&CoreType) -> bool| by_core.values().filter(|(t, _)| pred(t)).count();
         writeln!(out, "\n--- topology={} ---", method.name())?;
-        writeln!(out, "  {} logical CPUs, {} cores: P={}, E={}, Unknown={}", topology.len(), by_core.len(),
-                 count(|t| matches!(t, CoreType::Performance(_))), count(|t| matches!(t, CoreType::Efficiency(_))),
-                 count(|t| matches!(t, CoreType::Unknown)))?;
+        writeln!(
+            out,
+            "  {} logical CPUs, {} cores: P={}, E={}, Unknown={}",
+            topology.len(),
+            by_core.len(),
+            count(|t| matches!(t, CoreType::Performance(_))),
+            count(|t| matches!(t, CoreType::Efficiency(_))),
+            count(|t| matches!(t, CoreType::Unknown))
+        )?;
         cores = by_core.keys().copied().collect();
         cores.sort_unstable();
         for core in &cores {
@@ -970,8 +952,14 @@ pub fn debug_topology_detection(out: &mut dyn std::io::Write) -> std::io::Result
     writeln!(out, "  {:>5} {:>17} {:>14} {:>9}", "Core", "Efficiency class", "Core priority", "L3 MiB")?;
     for core in &cores {
         let l3 = l3.get(core).copied().flatten().map_or("-".to_string(), |b| format!("{:.1}", b as f64 / (1 << 20) as f64));
-        writeln!(out, "  {:>5} {:>17} {:>14} {:>9}", core, efficiency.get(core).map_or("-".to_string(), |c| c.to_string()),
-                 priority.get(core).map_or("-".to_string(), |c| c.to_string()), l3)?;
+        writeln!(
+            out,
+            "  {:>5} {:>17} {:>14} {:>9}",
+            core,
+            efficiency.get(core).map_or("-".to_string(), |c| c.to_string()),
+            priority.get(core).map_or("-".to_string(), |c| c.to_string()),
+            l3
+        )?;
     }
     writeln!(out, "\n=== End Debug ===")?;
     Ok(())
@@ -980,19 +968,17 @@ pub fn debug_topology_detection(out: &mut dyn std::io::Write) -> std::io::Result
 /// `--show-topology`: each physical core's type, scheduling class, NUMA node and logical CPUs.
 pub fn show_complete_topology_mapping(out: &mut dyn std::io::Write) -> std::io::Result<()> {
     let topology = get_cpu_topology();
-    
+
     writeln!(out, "\n=== Complete CPU Topology Mapping ===")?;
     writeln!(out, "Physical → Type      → Sched → NUMA → Logical CPUs")?;
     writeln!(out, "-------------------------------------------------------")?;
-    
+
     // Group by physical core
     let mut cores_map: HashMap<usize, (CoreType, Vec<usize>)> = HashMap::new();
     for cpu in topology {
-        cores_map.entry(cpu.physical_core_id)
-            .or_insert((cpu.core_type, Vec::new()))
-            .1.push(cpu.logical_id);
+        cores_map.entry(cpu.physical_core_id).or_insert((cpu.core_type, Vec::new())).1.push(cpu.logical_id);
     }
-    
+
     // Scheduling classes by CPU (a core's first CPU stands for it)
     let mut cpu_sched_map: HashMap<usize, u8> = HashMap::new();
     if let Ok(cpu_sets) = get_system_cpu_set_information() {
@@ -1000,32 +986,22 @@ pub fn show_complete_topology_mapping(out: &mut dyn std::io::Write) -> std::io::
             cpu_sched_map.insert(cpu_set.logical_processor_index as usize, cpu_set.scheduling_class);
         }
     }
-    
+
     // Sort by physical core ID
     let mut sorted_cores: Vec<_> = cores_map.into_iter().collect();
     sorted_cores.sort_by_key(|(id, _)| *id);
-    
+
     for (phys_core, (core_type, mut logicals)) in sorted_cores {
         logicals.sort();
-        let logical_str = logicals.iter()
-            .map(|l| l.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        
-        let sched_class = cpu_sched_map.get(&logicals[0])
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "?".to_string());
-        
+        let logical_str = logicals.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(",");
+
+        let sched_class = cpu_sched_map.get(&logicals[0]).map(|s| s.to_string()).unwrap_or_else(|| "?".to_string());
+
         let numa_node = get_numa_node_for_cpu(logicals[0]);
-        
-        writeln!(out, "Core {} → {:9} →   {}   →  {}  → [{}]", 
-                phys_core, 
-                core_type.display_name(),
-                sched_class,
-                numa_node,
-                logical_str)?;
+
+        writeln!(out, "Core {} → {:9} →   {}   →  {}  → [{}]", phys_core, core_type.display_name(), sched_class, numa_node, logical_str)?;
     }
-    
+
     writeln!(out, "\nLegend:")?;
     writeln!(out, "  Sched: Scheduling class (higher = performance priority)")?;
     writeln!(out, "  NUMA: Non-Uniform Memory Access node")?;
@@ -1034,9 +1010,12 @@ pub fn show_complete_topology_mapping(out: &mut dyn std::io::Write) -> std::io::
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_core_types, core_list, detect_cpu_topology, detect_cpu_topology_with, l3_sizes, ranked_only, types_by_l3,
-                CorePriority, CoreType, TopologyDetectionMethod};
     use std::collections::HashMap;
+
+    use super::{
+        CorePriority, CoreType, TopologyDetectionMethod, classify_core_types, core_list, detect_cpu_topology, detect_cpu_topology_with,
+        l3_sizes, ranked_only, types_by_l3,
+    };
 
     fn by_core(values: &[u8]) -> HashMap<usize, u8> {
         values.iter().copied().enumerate().collect()
@@ -1108,7 +1087,7 @@ mod tests {
     /// every core a type, one entry per logical CPU in every processor group.
     #[test]
     fn detection_types_every_core_here() {
-        use windows::Win32::System::Threading::{GetActiveProcessorCount, ALL_PROCESSOR_GROUPS};
+        use windows::Win32::System::Threading::{ALL_PROCESSOR_GROUPS, GetActiveProcessorCount};
         // SAFETY: a plain query
         let cpus = unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) } as usize;
         for method in TopologyDetectionMethod::ALL {

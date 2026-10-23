@@ -16,9 +16,8 @@ use crate::failing_bits::FailingBits;
 use crate::memory::allocator::PageSizeLevel::{self, Huge, Large};
 use crate::memory::stitched::{Commit, Run, ThreadSpan};
 use crate::progress::TestSummary;
-use crate::reporting::models::{AllocationReport, ConsolidatedMemoryReport, FinalTestSummaryReport, TestConfigurationReport};
-
 pub use crate::reporting::converters::create_thread_timing_report;
+use crate::reporting::models::{AllocationReport, ConsolidatedMemoryReport, FinalTestSummaryReport, TestConfigurationReport};
 pub use crate::runner::TestRunOverrides;
 pub use crate::runner::test_support::{FakeCycle, Flip, GoldenRun};
 
@@ -33,8 +32,12 @@ pub fn default_plan() -> &'static crate::plans::Plan {
 /// Runs the detections, which log what they found at their first use, wherever that is: before a
 /// capture of what a test prints, so no golden depends on which test ran first.
 pub fn detect() {
-    let _ = (crate::tests::get_system_info(), crate::smbios::get_smbios(), crate::pattern::transfer_beat(),
-             crate::cpu_topology::get_cpu_topology());
+    let _ = (
+        crate::tests::get_system_info(),
+        crate::smbios::get_smbios(),
+        crate::pattern::transfer_beat(),
+        crate::cpu_topology::get_cpu_topology(),
+    );
 }
 
 /// The bits of a check that found `mask` wrong
@@ -54,14 +57,19 @@ pub fn check_golden(dir: &Path, name: &str, text: &str) {
         std::fs::write(&path, text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         return;
     }
-    let golden = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{}: {e}; `TMR_BLESS=1 cargo test` writes it", path.display()));
+    let golden = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}; `TMR_BLESS=1 cargo test` writes it", path.display()));
     if golden != text {
         let (want, got): (Vec<&str>, Vec<&str>) = (golden.split('\n').collect(), text.split('\n').collect());
         let at = want.iter().zip(&got).position(|(a, b)| a != b).unwrap_or(want.len().min(got.len()));
-        panic!("{name}: line {} differs from its golden ({} lines, now {}):\n  golden: {:?}\n  now:    {:?}\n\
+        panic!(
+            "{name}: line {} differs from its golden ({} lines, now {}):\n  golden: {:?}\n  now:    {:?}\n\
                 `TMR_BLESS=1 cargo test` rewrites the golden. The text now:\n{text}",
-               at + 1, want.len(), got.len(), want.get(at).unwrap_or(&""), got.get(at).unwrap_or(&""));
+            at + 1,
+            want.len(),
+            got.len(),
+            want.get(at).unwrap_or(&""),
+            got.get(at).unwrap_or(&"")
+        );
     }
 }
 
@@ -91,7 +99,7 @@ pub fn consolidated_memory_report() -> ConsolidatedMemoryReport {
 /// seal, the width). Its tests' sizes don't depend on this machine's caches: absolute and full
 /// extents, absolute chunks. The CLI's plan-only golden has a sealed plan (`GoldenRun`).
 pub fn test_configuration_report() -> TestConfigurationReport {
-    use crate::reporting::converters::{create_test_configuration_report_v2, PlanSequence};
+    use crate::reporting::converters::{PlanSequence, create_test_configuration_report_v2};
     let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
     let cache_info = crate::cache::CacheInfo::default();
     let suite = crate::runner::create_test_definitions(&cache_info);

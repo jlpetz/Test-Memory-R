@@ -26,44 +26,28 @@ pub const DEFAULT: &str = "stability";
 /// pattern tests, then the access-shape ones. CacheBust is left out (it works mostly inside the
 /// caches), as are the flush variants (at these chunk sizes eviction already reaches DRAM).
 const STABILITY: &[&str] = &[
-    "Mem-StuckBitAuto",
-    "Mem-SimpleV2-Auto",
-    "Mem-SimpleNT-Auto",
-    "Mem-MovingInv",
-    "Mem-ModuloX",
-    "Mem-Sequence",
-    "Mem-Random",
-    "Mem-RefreshAuto",
-    "Mem-MirrorV2-Auto",
-    "Mem-Stride",
-    "Mem-BlockMove",
+    "Mem-StuckBitAuto", "Mem-SimpleV2-Auto", "Mem-SimpleNT-Auto", "Mem-MovingInv", "Mem-ModuloX", "Mem-Sequence", "Mem-Random",
+    "Mem-RefreshAuto", "Mem-MirrorV2-Auto", "Mem-Stride", "Mem-BlockMove",
 ];
 
 /// The families with width variants, every width side by side (128, 256, 512 and Auto; there are
 /// no scalar ones since TODO 99): one run, so every width tests the same memory in the same few
 /// seconds of each cycle.
 const WIDTHS: &[&str] = &[
-    "Mem-StuckBit128", "Mem-StuckBit256", "Mem-StuckBit512", "Mem-StuckBitAuto",
-    "Mem-SimpleNT-128", "Mem-SimpleNT-256", "Mem-SimpleNT-512", "Mem-SimpleNT-Auto",
-    "Mem-Refresh128", "Mem-Refresh256", "Mem-Refresh512", "Mem-RefreshAuto",
-    "Mem-SimpleV2-128", "Mem-SimpleV2-256", "Mem-SimpleV2-512", "Mem-SimpleV2-Auto",
-    "Mem-MirrorV2-128", "Mem-MirrorV2-256", "Mem-MirrorV2-512", "Mem-MirrorV2-Auto",
+    "Mem-StuckBit128", "Mem-StuckBit256", "Mem-StuckBit512", "Mem-StuckBitAuto", "Mem-SimpleNT-128", "Mem-SimpleNT-256",
+    "Mem-SimpleNT-512", "Mem-SimpleNT-Auto", "Mem-Refresh128", "Mem-Refresh256", "Mem-Refresh512", "Mem-RefreshAuto", "Mem-SimpleV2-128",
+    "Mem-SimpleV2-256", "Mem-SimpleV2-512", "Mem-SimpleV2-Auto", "Mem-MirrorV2-128", "Mem-MirrorV2-256", "Mem-MirrorV2-512",
+    "Mem-MirrorV2-Auto",
 ];
 
 /// Unloaded latency (one dependent access at a time, the figure other tools report), bandwidth,
 /// and the write that skips the cache.
 const PERF: &[&str] = &[
-    "Lat-L1-Read", "Lat-L1-Write", "Lat-L1-Copy",
-    "Lat-L2-Read", "Lat-L2-Write", "Lat-L2-Copy",
-    "Lat-L3-Read", "Lat-L3-Write", "Lat-L3-Copy",
-    "Lat-DRAM-Read", "Lat-DRAM-Write", "Lat-DRAM-Copy",
-    "Lat-DRAMFull-Read", "Lat-DRAMFull-Write", "Lat-DRAMFull-Copy",
-    "Spd-L1-Read-Auto", "Spd-L1-Write-Auto", "Spd-L1-Copy-Auto",
-    "Spd-L2-Read-Auto", "Spd-L2-Write-Auto", "Spd-L2-Copy-Auto",
-    "Spd-L3-Read-Auto", "Spd-L3-Write-Auto", "Spd-L3-Copy-Auto",
-    "Spd-DRAMSmall-Read-Auto", "Spd-DRAMSmall-Write-Auto", "Spd-DRAMSmall-Copy-Auto",
-    "Spd-DRAMFull-Read-Auto", "Spd-DRAMFull-Write-Auto", "Spd-DRAMFull-Copy-Auto",
-    "Lat-NTW-DRAM-Write-Auto",
+    "Lat-L1-Read", "Lat-L1-Write", "Lat-L1-Copy", "Lat-L2-Read", "Lat-L2-Write", "Lat-L2-Copy", "Lat-L3-Read", "Lat-L3-Write",
+    "Lat-L3-Copy", "Lat-DRAM-Read", "Lat-DRAM-Write", "Lat-DRAM-Copy", "Lat-DRAMFull-Read", "Lat-DRAMFull-Write", "Lat-DRAMFull-Copy",
+    "Spd-L1-Read-Auto", "Spd-L1-Write-Auto", "Spd-L1-Copy-Auto", "Spd-L2-Read-Auto", "Spd-L2-Write-Auto", "Spd-L2-Copy-Auto",
+    "Spd-L3-Read-Auto", "Spd-L3-Write-Auto", "Spd-L3-Copy-Auto", "Spd-DRAMSmall-Read-Auto", "Spd-DRAMSmall-Write-Auto",
+    "Spd-DRAMSmall-Copy-Auto", "Spd-DRAMFull-Read-Auto", "Spd-DRAMFull-Write-Auto", "Spd-DRAMFull-Copy-Auto", "Lat-NTW-DRAM-Write-Auto",
 ];
 
 pub const PLANS: &[Plan] = &[

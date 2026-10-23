@@ -12,14 +12,13 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::{load_config, ErrorMode};
 use crate::commands::Command;
 use crate::config::{CpuPinningConfig, MemoryAllocationConfig};
-use crate::cpu_topology::{get_cpu_topology, is_hybrid_cpu, CoreType};
+use crate::cpu_topology::{CoreType, get_cpu_topology, is_hybrid_cpu};
 use crate::frontend::{CacheCalibrationState, Frontend, ParamNote, RestartChoice, SealCalibrationState, Selection, Setup};
 use crate::memory::allocation_strategy::EnhancedMemoryStrategy;
-use crate::params;
-use crate::runner::{detect_runtime_capabilities, run_tests_with_layout_and_timing_filtered, RunStatus, TestSuiteTiming};
+use crate::runner::{RunStatus, TestSuiteTiming, detect_runtime_capabilities, run_tests_with_layout_and_timing_filtered};
+use crate::{ErrorMode, load_config, params};
 
 /// `--ram-latency`: the 6 DRAM latency tests, DRAM-* and DRAMFull-* (TODO 92)
 pub(crate) const RAM_LATENCY_FILTER: &str = "Lat-DRAM-*,Lat-DRAMFull-*";
@@ -121,20 +120,18 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     // Validate that all -- flags are recognized before processing
     // This catches typos and deprecated flags early with helpful error messages
     let known_flags = [
-        "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-cache-ext",
-        "--calibrate-seal", "--calibrate-all", "--calibration-file", "--output", "--no-calibration", "--yes", "--no-save",
-        "--create-demo-configs", "--compare-results", "--debug-topology",
-        "--show-topology", "--setup-large-pages", "--startup-debug", "--disable-pinning",
-        "--help", "-h", "-?", "--version", "-v"
+        "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-cache-ext", "--calibrate-seal",
+        "--calibrate-all", "--calibration-file", "--output", "--no-calibration", "--yes", "--no-save", "--create-demo-configs",
+        "--compare-results", "--debug-topology", "--show-topology", "--setup-large-pages", "--startup-debug", "--disable-pinning",
+        "--help", "-h", "-?", "--version", "-v",
     ];
 
-    let unknown_flags: Vec<String> = args.iter()
+    let unknown_flags: Vec<String> = args
+        .iter()
         .filter(|arg| arg.starts_with("--") || arg.starts_with("-"))
         .filter(|arg| {
             // Check if it matches any known flag (handle --flag=value style)
-            !known_flags.iter().any(|known| {
-                arg.starts_with(known) || arg == known
-            })
+            !known_flags.iter().any(|known| arg.starts_with(known) || arg == known)
         })
         .cloned()
         .collect();
@@ -156,8 +153,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         // Inject ram-latency defaults
         let mut ram_latency_defaults = vec![
             ("memory", "10%-from-available"),
-            ("cpus", "50%"),  // Multi-threaded for realistic DRAM behavior
-            ("cycles", "1"),  // Single cycle for quick latency measurement
+            ("cpus", "50%"), // Multi-threaded for realistic DRAM behavior
+            ("cycles", "1"), // Single cycle for quick latency measurement
         ];
 
         for (key, default_value) in ram_latency_defaults.drain(..) {
@@ -180,8 +177,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         // Inject cache-latency defaults: single thread for clean measurements
         let mut cache_latency_defaults = vec![
             ("memory", "10%-from-available"),
-            ("cpus", "1"),  // Single physical core for diagnostic-quality measurements
-            ("cycles", "1"),  // Single cycle for quick latency measurement
+            ("cpus", "1"),   // Single physical core for diagnostic-quality measurements
+            ("cycles", "1"), // Single cycle for quick latency measurement
         ];
 
         for (key, default_value) in cache_latency_defaults.drain(..) {
@@ -201,13 +198,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         fe.event(Setup::QuickTest.into());
 
         // Inject quick-test defaults (only if not already specified)
-        let mut quick_defaults = vec![
-            ("memory", "60%-from-available"),
-            ("cycles", "1"),
-            ("skip-cores", "1"),
-            ("cpus", "100%"),
-            ("plan", "quick"),
-        ];
+        let mut quick_defaults =
+            vec![("memory", "60%-from-available"), ("cycles", "1"), ("skip-cores", "1"), ("cpus", "100%"), ("plan", "quick")];
         if !args.iter().any(|a| a.starts_with("plan=")) {
             plan_param = crate::plans::find("quick").ok();
         }
@@ -242,137 +234,141 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     let config_file = params::get_string(&validated_params, "config", "");
     let config_file = if config_file.is_empty() { None } else { Some(config_file) };
 
-	let (mut enhanced_memory_strategy, mut error_mode, mut suite_timing, mut cputype, mut cpus, mut pinning_config, mut alloc_config, config_opt) =
-		if let Some(ref config_path) = config_file {
-			let config = load_config(config_path)?;
-			(
-				config.to_memory_strategy(),
-				config.to_error_mode(),
-				config.to_test_suite_timing(),
-				config.system.cpu_config.cpu_type.clone(),
-				format!("{}%", config.system.cpu_config.usage_percent),
-				config.system.cpu_pinning.clone(),
-				config.system.memory_allocation.clone(), // Use the config's allocation settings
-				Some(config) // Keep the full config for test sequence
-			)
-		} else {
-			// Build config from validated command-line parameters
-			let (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config) =
-				build_config_from_validated_params(&validated_params, fe.as_ref())?;
-			(enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config, None)
-		};
+    let (
+        mut enhanced_memory_strategy,
+        mut error_mode,
+        mut suite_timing,
+        mut cputype,
+        mut cpus,
+        mut pinning_config,
+        mut alloc_config,
+        config_opt,
+    ) = if let Some(ref config_path) = config_file {
+        let config = load_config(config_path)?;
+        (
+            config.to_memory_strategy(),
+            config.to_error_mode(),
+            config.to_test_suite_timing(),
+            config.system.cpu_config.cpu_type.clone(),
+            format!("{}%", config.system.cpu_config.usage_percent),
+            config.system.cpu_pinning.clone(),
+            config.system.memory_allocation.clone(), // Use the config's allocation settings
+            Some(config),                            // Keep the full config for test sequence
+        )
+    } else {
+        // Build config from validated command-line parameters
+        let (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config) =
+            build_config_from_validated_params(&validated_params, fe.as_ref())?;
+        (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config, None)
+    };
 
-	// A config's SIMD width (TODO 99), unless width= gave one: a width this CPU lacks stops the run
-	if let Some(width) = config_opt.as_ref().and_then(|c| c.system.width.as_deref()) {
-		crate::simd::set_width(crate::simd::Width::parse(width)?, "the config's width")?;
-	}
+    // A config's SIMD width (TODO 99), unless width= gave one: a width this CPU lacks stops the run
+    if let Some(width) = config_opt.as_ref().and_then(|c| c.system.width.as_deref()) {
+        crate::simd::set_width(crate::simd::Width::parse(width)?, "the config's width")?;
+    }
 
-	// Apply CLI parameter overrides even when using a config file
-	// This allows: tmr.exe config=test.json cycles=1 skip-cores=0 memory=4GiB cpus=50%
-	if config_opt.is_some() {
-		let registry = params::get_registry();
+    // Apply CLI parameter overrides even when using a config file
+    // This allows: tmr.exe config=test.json cycles=1 skip-cores=0 memory=4GiB cpus=50%
+    if config_opt.is_some() {
+        let registry = params::get_registry();
 
-		// Apply overrides for each parameter (already validated)
-		for (key, value) in &validated_params {
-			// Only apply if this parameter can override config files
-			if !registry.can_override_config(key) {
-				continue;
-			}
+        // Apply overrides for each parameter (already validated)
+        for (key, value) in &validated_params {
+            // Only apply if this parameter can override config files
+            if !registry.can_override_config(key) {
+                continue;
+            }
 
-			// Apply the override based on parameter type
-			match key.as_str() {
-				"errors" => {
-					error_mode = match params::get_string(&validated_params, "errors", "log").to_lowercase().as_str() {
-						"halt" | "stop" => ErrorMode::Halt,
-						"panic" | "debug" => ErrorMode::Panic,
-						_ => ErrorMode::Log,
-					};
-					log::debug!("CLI override: error_mode = {:?}", error_mode);
-				}
-				"cycles" => {
-					let cycles = params::get_u32(&validated_params, "cycles", 3);
-					suite_timing.global_cycles = Some(cycles);
-					log::debug!("CLI override: global_cycles = {}", cycles);
-				}
-				"duration" => {
-					let duration = params::get_u32(&validated_params, "duration", 0);
-					suite_timing.global_duration_secs = Some(duration);
-					log::debug!("CLI override: global_duration_secs = {}", duration);
-				}
-				"memory" => {
-					if let params::ParamValue::String(memory_str) = value {
-						match parse_enhanced_memory_parameter(memory_str) {
-							Ok(strategy) => {
-								enhanced_memory_strategy = strategy;
-								log::debug!("CLI override: enhanced_memory_strategy");
-							}
-							Err(e) => {
-								return Ok(SessionEnd::Stopped(Stopped::MemoryOverride { spec: memory_str.clone(), error: e }));
-							}
-						}
-					}
-				}
-				"cpus" => {
-					cpus = params::get_string(&validated_params, "cpus", "100%");
-					log::debug!("CLI override: cpus = {}", cpus);
-				}
-				"cputype" => {
-					cputype = params::get_string(&validated_params, "cputype", "threads");
-					log::debug!("CLI override: cputype = {}", cputype);
-				}
-				"skip-cores" => {
-					// Stage 1 filter spec; resolved later against the real core count.
-					pinning_config.skip_spec = params::get_string(&validated_params, "skip-cores", "1");
-					log::debug!("CLI override: skip_spec = {}", pinning_config.skip_spec);
-				}
-				"cpu-stride" => {
-					// Stage 2 spacing spec.
-					pinning_config.stride_spec = params::get_string(&validated_params, "cpu-stride", "1");
-					log::debug!("CLI override: stride_spec = {}", pinning_config.stride_spec);
-				}
-				"--disable-pinning" => {
-					pinning_config.enable_pinning = false;
-					log::debug!("CLI override: enable_pinning = false");
-				}
-				"topology" => {
-					if let params::ParamValue::String(topology_str) = value {
-						use crate::cpu_topology::{set_topology_detection_method, TopologyDetectionMethod};
-						// Validated by the parameter's parser
-						let method = TopologyDetectionMethod::parse(topology_str).unwrap_or(TopologyDetectionMethod::Auto);
-						set_topology_detection_method(method);
-						log::debug!("CLI override: topology_detection_method = {:?}", method);
-					}
-				}
-				"minpage" => {
-					if let params::ParamValue::String(page_str) = value {
-						alloc_config.min_page_size = page_str.to_string();
-						log::debug!("CLI override: min_page_size = {}", page_str);
-					}
-				}
-				"maxpage" => {
-					if let params::ParamValue::String(page_str) = value {
-						alloc_config.max_page_size = page_str.to_string();
-						log::debug!("CLI override: max_page_size = {}", page_str);
-					}
-				}
-				"hugechunk" | "largechunk" | "largefloor" | "blkroundtarget" | "blkround" => {
-					if let params::ParamValue::String(v) = value {
-						alloc_config.set_block_param(key, v);
-						log::debug!("CLI override: {} = {}", key, v);
-					}
-				}
-				_ => {} // Ignore unknown overrides
-			}
-		}
-	}
+            // Apply the override based on parameter type
+            match key.as_str() {
+                "errors" => {
+                    error_mode = match params::get_string(&validated_params, "errors", "log").to_lowercase().as_str() {
+                        "halt" | "stop" => ErrorMode::Halt,
+                        "panic" | "debug" => ErrorMode::Panic,
+                        _ => ErrorMode::Log,
+                    };
+                    log::debug!("CLI override: error_mode = {:?}", error_mode);
+                }
+                "cycles" => {
+                    let cycles = params::get_u32(&validated_params, "cycles", 3);
+                    suite_timing.global_cycles = Some(cycles);
+                    log::debug!("CLI override: global_cycles = {}", cycles);
+                }
+                "duration" => {
+                    let duration = params::get_u32(&validated_params, "duration", 0);
+                    suite_timing.global_duration_secs = Some(duration);
+                    log::debug!("CLI override: global_duration_secs = {}", duration);
+                }
+                "memory" => {
+                    if let params::ParamValue::String(memory_str) = value {
+                        match parse_enhanced_memory_parameter(memory_str) {
+                            Ok(strategy) => {
+                                enhanced_memory_strategy = strategy;
+                                log::debug!("CLI override: enhanced_memory_strategy");
+                            }
+                            Err(e) => {
+                                return Ok(SessionEnd::Stopped(Stopped::MemoryOverride { spec: memory_str.clone(), error: e }));
+                            }
+                        }
+                    }
+                }
+                "cpus" => {
+                    cpus = params::get_string(&validated_params, "cpus", "100%");
+                    log::debug!("CLI override: cpus = {}", cpus);
+                }
+                "cputype" => {
+                    cputype = params::get_string(&validated_params, "cputype", "threads");
+                    log::debug!("CLI override: cputype = {}", cputype);
+                }
+                "skip-cores" => {
+                    // Stage 1 filter spec; resolved later against the real core count.
+                    pinning_config.skip_spec = params::get_string(&validated_params, "skip-cores", "1");
+                    log::debug!("CLI override: skip_spec = {}", pinning_config.skip_spec);
+                }
+                "cpu-stride" => {
+                    // Stage 2 spacing spec.
+                    pinning_config.stride_spec = params::get_string(&validated_params, "cpu-stride", "1");
+                    log::debug!("CLI override: stride_spec = {}", pinning_config.stride_spec);
+                }
+                "--disable-pinning" => {
+                    pinning_config.enable_pinning = false;
+                    log::debug!("CLI override: enable_pinning = false");
+                }
+                "topology" => {
+                    if let params::ParamValue::String(topology_str) = value {
+                        use crate::cpu_topology::{TopologyDetectionMethod, set_topology_detection_method};
+                        // Validated by the parameter's parser
+                        let method = TopologyDetectionMethod::parse(topology_str).unwrap_or(TopologyDetectionMethod::Auto);
+                        set_topology_detection_method(method);
+                        log::debug!("CLI override: topology_detection_method = {:?}", method);
+                    }
+                }
+                "minpage" => {
+                    if let params::ParamValue::String(page_str) = value {
+                        alloc_config.min_page_size = page_str.to_string();
+                        log::debug!("CLI override: min_page_size = {}", page_str);
+                    }
+                }
+                "maxpage" => {
+                    if let params::ParamValue::String(page_str) = value {
+                        alloc_config.max_page_size = page_str.to_string();
+                        log::debug!("CLI override: max_page_size = {}", page_str);
+                    }
+                }
+                "hugechunk" | "largechunk" | "largefloor" | "blkroundtarget" | "blkround" => {
+                    if let params::ParamValue::String(v) = value {
+                        alloc_config.set_block_param(key, v);
+                        log::debug!("CLI override: {} = {}", key, v);
+                    }
+                }
+                _ => {} // Ignore unknown overrides
+            }
+        }
+    }
 
     // Display startup mode and parameters
     // Display build type (helps identify performance issues in logs)
-    let build_type = if cfg!(debug_assertions) {
-        "Debug (unoptimized)"
-    } else {
-        "Release (optimized)"
-    };
+    let build_type = if cfg!(debug_assertions) { "Debug (unoptimized)" } else { "Release (optimized)" };
     fe.event(Setup::StartupHeader { command_line: args.clone(), release: !cfg!(debug_assertions) }.into());
     log::info!("TMR v{} starting - {} build on {}", crate::BUILD.version, build_type, std::env::consts::ARCH);
 
@@ -386,23 +382,23 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     let mut explicit_params = Vec::new();
     let mut default_params = Vec::new();
 
-	// Use centralized registry to check for recognized parameters
-	let registry = params::get_registry();
+    // Use centralized registry to check for recognized parameters
+    let registry = params::get_registry();
 
-	for arg in &args[1..] {
-		// Check if it's a recognized parameter or flag
-		let is_recognized = if arg.starts_with("--") {
-			registry.all_keys().contains(&arg.as_str())
-		} else if let Some(key) = arg.split('=').next() {
-			registry.all_keys().contains(&key)
-		} else {
-			false
-		};
+    for arg in &args[1..] {
+        // Check if it's a recognized parameter or flag
+        let is_recognized = if arg.starts_with("--") {
+            registry.all_keys().contains(&arg.as_str())
+        } else if let Some(key) = arg.split('=').next() {
+            registry.all_keys().contains(&key)
+        } else {
+            false
+        };
 
-		if is_recognized {
-			explicit_params.push(arg.clone());
-		}
-	}
+        if is_recognized {
+            explicit_params.push(arg.clone());
+        }
+    }
 
     // Add defaults that weren't explicitly set (only if no config file)
     if config_file.is_none() {
@@ -426,218 +422,209 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     fe.event(Setup::StartupParams { rust_log, rust_backtrace, explicit: explicit_params, defaults: default_params }.into());
 
     // Calculate CPU/thread count
-	// From TMR's topology, which covers every processor group (num_cpus sees only one: 64 CPUs)
-	let total_cpus = match cputype.as_str() {
-		"cores" => crate::cpu_topology::physical_core_count(),
-		_ => crate::cpu_topology::logical_cpu_ids().len(),
-	};
+    // From TMR's topology, which covers every processor group (num_cpus sees only one: 64 CPUs)
+    let total_cpus = match cputype.as_str() {
+        "cores" => crate::cpu_topology::physical_core_count(),
+        _ => crate::cpu_topology::logical_cpu_ids().len(),
+    };
 
-	// When using cores mode, we should automatically avoid SMT doubling
-	let avoid_smt = cputype == "cores";
-	fe.event(Setup::CpuType { cputype: cputype.clone(), avoid_smt }.into());
+    // When using cores mode, we should automatically avoid SMT doubling
+    let avoid_smt = cputype == "cores";
+    fe.event(Setup::CpuType { cputype: cputype.clone(), avoid_smt }.into());
 
-	// Stage 1 FILTER: resolve the skip-cores spec ("N" | "N%" | "A-B") into a leading-skip
-	// count and/or an excluded core-id range. The range form is how you isolate one memory
-	// domain on a multi-CCD part (e.g. skip-cores=0-7 tests only cores 8+).
-	let (resolved_skip, skip_excluded_range) =
-		crate::cpu_selection::resolve_skip_spec(&pinning_config.skip_spec, total_cpus);
-	pinning_config.cpus_to_skip = resolved_skip;
-	if let Some((lo, hi)) = skip_excluded_range {
-		fe.event(Setup::CpuFilter { lo, hi }.into());
-	}
-	// Cores removed by an excluded range shrink the available pool too.
-	let range_excluded_count = skip_excluded_range
-		.map(|(lo, hi)| {
-			let topo = get_cpu_topology();
-			if avoid_smt {
-				// cores mode: count distinct physical cores in the excluded range
-				topo.iter()
-					.filter(|c| c.physical_core_id >= lo && c.physical_core_id <= hi)
-					.map(|c| c.physical_core_id)
-					.collect::<std::collections::HashSet<_>>()
-					.len()
-			} else {
-				// threads mode: count logical CPUs on those cores
-				topo.iter()
-					.filter(|c| c.physical_core_id >= lo && c.physical_core_id <= hi)
-					.count()
-			}
-		})
-		.unwrap_or(0);
+    // Stage 1 FILTER: resolve the skip-cores spec ("N" | "N%" | "A-B") into a leading-skip
+    // count and/or an excluded core-id range. The range form is how you isolate one memory
+    // domain on a multi-CCD part (e.g. skip-cores=0-7 tests only cores 8+).
+    let (resolved_skip, skip_excluded_range) = crate::cpu_selection::resolve_skip_spec(&pinning_config.skip_spec, total_cpus);
+    pinning_config.cpus_to_skip = resolved_skip;
+    if let Some((lo, hi)) = skip_excluded_range {
+        fe.event(Setup::CpuFilter { lo, hi }.into());
+    }
+    // Cores removed by an excluded range shrink the available pool too.
+    let range_excluded_count = skip_excluded_range
+        .map(|(lo, hi)| {
+            let topo = get_cpu_topology();
+            if avoid_smt {
+                // cores mode: count distinct physical cores in the excluded range
+                topo.iter()
+                    .filter(|c| c.physical_core_id >= lo && c.physical_core_id <= hi)
+                    .map(|c| c.physical_core_id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+            } else {
+                // threads mode: count logical CPUs on those cores
+                topo.iter().filter(|c| c.physical_core_id >= lo && c.physical_core_id <= hi).count()
+            }
+        })
+        .unwrap_or(0);
 
-	// Calculate available CPUs after accounting for skipped cores
-	let available_cpus_before_range = if pinning_config.cpus_to_skip > 0 {
-		// Get topology to count logical CPUs on skipped physical cores
-		let topology = get_cpu_topology();
-		let mut cores_by_id: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-		for cpu in topology {
-			*cores_by_id.entry(cpu.physical_core_id).or_insert(0) += 1;
-		}
-		// Sort core IDs to determine which cores get skipped (E-cores first for hybrid)
-		let is_hybrid = is_hybrid_cpu(get_cpu_topology());
-		let mut sorted_cores: Vec<_> = cores_by_id.iter().collect();
-		if is_hybrid {
-			// For hybrid, E-cores are skipped first - sort by core type then ID
-			let topo = get_cpu_topology();
-			sorted_cores.sort_by(|a, b| {
-				let a_type = topo.iter().find(|c| c.physical_core_id == *a.0).map(|c| c.core_type);
-				let b_type = topo.iter().find(|c| c.physical_core_id == *b.0).map(|c| c.core_type);
-				// E-cores (Efficiency) should come first for skipping
-				match (a_type, b_type) {
-					(Some(CoreType::Efficiency(_)), Some(CoreType::Performance(_))) => std::cmp::Ordering::Less,
-					(Some(CoreType::Performance(_)), Some(CoreType::Efficiency(_))) => std::cmp::Ordering::Greater,
-					_ => a.0.cmp(b.0),
-				}
-			});
-		} else {
-			sorted_cores.sort_by_key(|(id, _)| *id);
-		}
-		// Count logical CPUs on skipped physical cores
-		let skipped_logical: usize = sorted_cores.iter()
-			.take(pinning_config.cpus_to_skip)
-			.map(|(_, count)| *count)
-			.sum();
-		let available = if avoid_smt {
-			// For cores mode, available = physical cores - skipped
-			total_cpus.saturating_sub(pinning_config.cpus_to_skip)
-		} else {
-			// For threads mode, available = logical threads - skipped logical
-			total_cpus.saturating_sub(skipped_logical)
-		};
-		available.max(1)
-	} else {
-		total_cpus
-	};
+    // Calculate available CPUs after accounting for skipped cores
+    let available_cpus_before_range = if pinning_config.cpus_to_skip > 0 {
+        // Get topology to count logical CPUs on skipped physical cores
+        let topology = get_cpu_topology();
+        let mut cores_by_id: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for cpu in topology {
+            *cores_by_id.entry(cpu.physical_core_id).or_insert(0) += 1;
+        }
+        // Sort core IDs to determine which cores get skipped (E-cores first for hybrid)
+        let is_hybrid = is_hybrid_cpu(get_cpu_topology());
+        let mut sorted_cores: Vec<_> = cores_by_id.iter().collect();
+        if is_hybrid {
+            // For hybrid, E-cores are skipped first - sort by core type then ID
+            let topo = get_cpu_topology();
+            sorted_cores.sort_by(|a, b| {
+                let a_type = topo.iter().find(|c| c.physical_core_id == *a.0).map(|c| c.core_type);
+                let b_type = topo.iter().find(|c| c.physical_core_id == *b.0).map(|c| c.core_type);
+                // E-cores (Efficiency) should come first for skipping
+                match (a_type, b_type) {
+                    (Some(CoreType::Efficiency(_)), Some(CoreType::Performance(_))) => std::cmp::Ordering::Less,
+                    (Some(CoreType::Performance(_)), Some(CoreType::Efficiency(_))) => std::cmp::Ordering::Greater,
+                    _ => a.0.cmp(b.0),
+                }
+            });
+        } else {
+            sorted_cores.sort_by_key(|(id, _)| *id);
+        }
+        // Count logical CPUs on skipped physical cores
+        let skipped_logical: usize = sorted_cores.iter().take(pinning_config.cpus_to_skip).map(|(_, count)| *count).sum();
+        let available = if avoid_smt {
+            // For cores mode, available = physical cores - skipped
+            total_cpus.saturating_sub(pinning_config.cpus_to_skip)
+        } else {
+            // For threads mode, available = logical threads - skipped logical
+            total_cpus.saturating_sub(skipped_logical)
+        };
+        available.max(1)
+    } else {
+        total_cpus
+    };
 
-	// Subtract cores removed by an excluded id-range to get the true Available pool.
-	let available_cpus = available_cpus_before_range
-		.saturating_sub(range_excluded_count)
-		.max(1);
+    // Subtract cores removed by an excluded id-range to get the true Available pool.
+    let available_cpus = available_cpus_before_range.saturating_sub(range_excluded_count).max(1);
 
-	// `cpus=` is RELATIVE to the post-filter Available pool: any value <= 100% is therefore
-	// always valid, which keeps configs portable across 4/6/8/16-core machines.
-	let threads = if cpus.ends_with('%') {
-		// Percentage of available CPUs
-		let percent = cpus.trim_end_matches('%').parse::<u32>().unwrap_or(100);
-		// Round to nearest instead of truncating: +50 before dividing by 100
-		let n = ((available_cpus as u32 * percent + 50) / 100).max(1).min(available_cpus as u32) as usize;
-		// Make the relative math explicit so `cpus=50%` after a skip isn't a surprise.
-		fe.event(Setup::CpuCount { percent, available: available_cpus, threads: n }.into());
-		n
-	} else {
-		// Absolute count
-		cpus.parse::<usize>().unwrap_or(available_cpus).min(available_cpus).max(1)
-	};
+    // `cpus=` is RELATIVE to the post-filter Available pool: any value <= 100% is therefore
+    // always valid, which keeps configs portable across 4/6/8/16-core machines.
+    let threads = if cpus.ends_with('%') {
+        // Percentage of available CPUs
+        let percent = cpus.trim_end_matches('%').parse::<u32>().unwrap_or(100);
+        // Round to nearest instead of truncating: +50 before dividing by 100
+        let n = ((available_cpus as u32 * percent + 50) / 100).max(1).min(available_cpus as u32) as usize;
+        // Make the relative math explicit so `cpus=50%` after a skip isn't a surprise.
+        fe.event(Setup::CpuCount { percent, available: available_cpus, threads: n }.into());
+        n
+    } else {
+        // Absolute count
+        cpus.parse::<usize>().unwrap_or(available_cpus).min(available_cpus).max(1)
+    };
 
-	// Selected even when pinning is off: the list also decides which NUMA node each thread's
-	// memory comes from, so a pinned/unpinned A/B differs in scheduling alone. The pool skips
-	// only the affinity call (`RuntimeConfig.pin_threads`).
-	// Override avoid_smt_doubling if cputype=cores
-	let effective_avoid_smt = pinning_config.avoid_smt_doubling || avoid_smt;
-	let (actual_threads, cpu_list) = match crate::cpu_selection::calculate_thread_allocation(
-		threads,
-		pinning_config.cpus_to_skip,
-		effective_avoid_smt,
-		skip_excluded_range,
-		&pinning_config.stride_spec,
-	) {
-		Ok(result) => result,
-		Err(e) => {
-			// Never silently right-size the request — tell the user and stop.
-			return Ok(SessionEnd::Stopped(Stopped::CpuSelection(e)));
-		}
-	};
+    // Selected even when pinning is off: the list also decides which NUMA node each thread's
+    // memory comes from, so a pinned/unpinned A/B differs in scheduling alone. The pool skips
+    // only the affinity call (`RuntimeConfig.pin_threads`).
+    // Override avoid_smt_doubling if cputype=cores
+    let effective_avoid_smt = pinning_config.avoid_smt_doubling || avoid_smt;
+    let (actual_threads, cpu_list) = match crate::cpu_selection::calculate_thread_allocation(
+        threads, pinning_config.cpus_to_skip, effective_avoid_smt, skip_excluded_range, &pinning_config.stride_spec,
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            // Never silently right-size the request — tell the user and stop.
+            return Ok(SessionEnd::Stopped(Stopped::CpuSelection(e)));
+        }
+    };
 
-	// Detect SIMD capabilities
+    // Detect SIMD capabilities
     let simd_caps = crate::detect_simd_capabilities();
-	fe.event(Setup::Selection(Box::new(Selection {
-		error_mode,
-		threads: actual_threads,
-		available: available_cpus,
-		cputype: cputype.clone(),
-		cpu_list: cpu_list.clone(),
-		pinned: pinning_config.enable_pinning,
-		cpus_to_skip: pinning_config.cpus_to_skip,
-		avoid_smt_doubling: pinning_config.avoid_smt_doubling,
-		cycles: suite_timing.global_cycles,
-		duration_secs: suite_timing.global_duration_secs,
-		simd: simd_caps.clone(),
-	})).into());
+    fe.event(
+        Setup::Selection(Box::new(Selection {
+            error_mode,
+            threads: actual_threads,
+            available: available_cpus,
+            cputype: cputype.clone(),
+            cpu_list: cpu_list.clone(),
+            pinned: pinning_config.enable_pinning,
+            cpus_to_skip: pinning_config.cpus_to_skip,
+            avoid_smt_doubling: pinning_config.avoid_smt_doubling,
+            cycles: suite_timing.global_cycles,
+            duration_secs: suite_timing.global_duration_secs,
+            simd: simd_caps.clone(),
+        }))
+        .into(),
+    );
 
-	fe.event(Setup::LargePageCheck.into());
+    fe.event(Setup::LargePageCheck.into());
 
-	// Check for restart needed scenario first
-	if crate::check_restart_needed() {
-		match fe.large_page_restart() {
-			RestartChoice::Exit => return Ok(SessionEnd::RestartChosen),
-			// The default minpage needs large pages, so say 4 KB for this run (TODO 88)
-			RestartChoice::Continue4K => alloc_config.min_page_size = "regular".to_string(),
-		}
-	} else {
-		// Normal large page setup flow
-		let large_page_diagnostic = crate::memory::diagnose_and_setup_large_pages();
-		fe.event(Setup::LargePageDiagnostic { report: large_page_diagnostic }.into());
-	}
+    // Check for restart needed scenario first
+    if crate::check_restart_needed() {
+        match fe.large_page_restart() {
+            RestartChoice::Exit => return Ok(SessionEnd::RestartChosen),
+            // The default minpage needs large pages, so say 4 KB for this run (TODO 88)
+            RestartChoice::Continue4K => alloc_config.min_page_size = "regular".to_string(),
+        }
+    } else {
+        // Normal large page setup flow
+        let large_page_diagnostic = crate::memory::diagnose_and_setup_large_pages();
+        fe.event(Setup::LargePageDiagnostic { report: large_page_diagnostic }.into());
+    }
 
-	let usable = crate::check_large_page_privilege().is_ok();
-	// Without the privilege, a large minpage (the default) refuses the run at allocation
-	let min_needs_large = crate::memory::allocator::PageSizeLevel::from_config_str(&alloc_config.min_page_size)
-		> crate::memory::allocator::PageSizeLevel::Regular;
-	fe.event(Setup::LargePageStatus { usable, min_page: alloc_config.min_page_size.clone(), min_needs_large }.into());
+    let usable = crate::check_large_page_privilege().is_ok();
+    // Without the privilege, a large minpage (the default) refuses the run at allocation
+    let min_needs_large = crate::memory::allocator::PageSizeLevel::from_config_str(&alloc_config.min_page_size)
+        > crate::memory::allocator::PageSizeLevel::Regular;
+    fe.event(Setup::LargePageStatus { usable, min_page: alloc_config.min_page_size.clone(), min_needs_large }.into());
 
     // Get system info for later use (formatted output comes via reporter below)
     let system_info = crate::tests::get_system_info();
     let cache_info = system_info.get_cache_info();
 
-	// Set SMT sharing factor: 2 if hyperthreading AND using threads mode, 1 otherwise
-	let smt_threads = if system_info.has_hyperthreading && !avoid_smt { 2 } else { 1 };
-	crate::set_active_threads_per_core(smt_threads);
+    // Set SMT sharing factor: 2 if hyperthreading AND using threads mode, 1 otherwise
+    let smt_threads = if system_info.has_hyperthreading && !avoid_smt { 2 } else { 1 };
+    crate::set_active_threads_per_core(smt_threads);
 
-	// Detect SMBIOS data for identity validation
-	let smbios = crate::smbios::get_smbios();
+    // Detect SMBIOS data for identity validation
+    let smbios = crate::smbios::get_smbios();
 
-	// Load calibration from tmr-cfg.json (unless --no-calibration)
-	let no_calibration = args.iter().any(|a| a == "--no-calibration");
-	if !no_calibration {
-		let cfg_path = crate::app_config::AppConfig::default_path();
-		let app_config = crate::app_config::AppConfig::load(&cfg_path);
-		if app_config.is_calibration_valid(system_info, smbios) {
-			if let Some(cal) = app_config.get_best_calibration() {
-				let extended = app_config.calibration_extended.is_some();
-				fe.event(Setup::CacheCalibration(CacheCalibrationState::Loaded { extended, at: cal.timestamp }).into());
-				crate::set_calibration_data(Some(cal.clone()));
-			} else {
-				fe.event(Setup::CacheCalibration(CacheCalibrationState::None).into());
-				crate::set_calibration_data(None);
-			}
-		} else if app_config.machine_id.is_some() {
-			fe.event(Setup::CacheCalibration(CacheCalibrationState::Stale).into());
-			crate::set_calibration_data(None);
-		} else {
-			fe.event(Setup::CacheCalibration(CacheCalibrationState::None).into());
-			crate::set_calibration_data(None);
-		}
-		let seal = load_seal_calibration(&app_config, system_info, smbios, crate::seal::set_calibrated_width);
-		fe.event(Setup::SealCalibration(seal).into());
-	} else {
-		fe.event(Setup::CacheCalibration(CacheCalibrationState::Disabled).into());
-		crate::set_calibration_data(None);
-	}
+    // Load calibration from tmr-cfg.json (unless --no-calibration)
+    let no_calibration = args.iter().any(|a| a == "--no-calibration");
+    if !no_calibration {
+        let cfg_path = crate::app_config::AppConfig::default_path();
+        let app_config = crate::app_config::AppConfig::load(&cfg_path);
+        if app_config.is_calibration_valid(system_info, smbios) {
+            if let Some(cal) = app_config.get_best_calibration() {
+                let extended = app_config.calibration_extended.is_some();
+                fe.event(Setup::CacheCalibration(CacheCalibrationState::Loaded { extended, at: cal.timestamp }).into());
+                crate::set_calibration_data(Some(cal.clone()));
+            } else {
+                fe.event(Setup::CacheCalibration(CacheCalibrationState::None).into());
+                crate::set_calibration_data(None);
+            }
+        } else if app_config.machine_id.is_some() {
+            fe.event(Setup::CacheCalibration(CacheCalibrationState::Stale).into());
+            crate::set_calibration_data(None);
+        } else {
+            fe.event(Setup::CacheCalibration(CacheCalibrationState::None).into());
+            crate::set_calibration_data(None);
+        }
+        let seal = load_seal_calibration(&app_config, system_info, smbios, crate::seal::set_calibrated_width);
+        fe.event(Setup::SealCalibration(seal).into());
+    } else {
+        fe.event(Setup::CacheCalibration(CacheCalibrationState::Disabled).into());
+        crate::set_calibration_data(None);
+    }
 
-	// Display CPU topology right after system information
-	let (report, smt_p_cores, e_cores_skipped_first) =
-		crate::cpu_topology::startup_topology(&cpu_list, pinning_config.cpus_to_skip, avoid_smt, pinning_config.enable_pinning);
-	fe.event(Setup::CpuTopology { report: Box::new(report), smt_p_cores, e_cores_skipped_first }.into());
+    // Display CPU topology right after system information
+    let (report, smt_p_cores, e_cores_skipped_first) =
+        crate::cpu_topology::startup_topology(&cpu_list, pinning_config.cpus_to_skip, avoid_smt, pinning_config.enable_pinning);
+    fe.event(Setup::CpuTopology { report: Box::new(report), smt_p_cores, e_cores_skipped_first }.into());
 
-	// Show memory stats
-	fe.event(Setup::MemoryStatus(crate::runner::memory_status()).into());
+    // Show memory stats
+    fe.event(Setup::MemoryStatus(crate::runner::memory_status()).into());
 
-	{
-		use crate::reporting::system_info_builder::build_system_info_report;
+    {
+        use crate::reporting::system_info_builder::build_system_info_report;
 
-		let report = build_system_info_report(system_info, &simd_caps);
-		fe.event(Setup::SystemInfo { report: Box::new(report), memory_modules: smbios.memory_modules.clone() }.into());
-	}
+        let report = build_system_info_report(system_info, &simd_caps);
+        fe.event(Setup::SystemInfo { report: Box::new(report), memory_modules: smbios.memory_modules.clone() }.into());
+    }
 
     // Calculate memory layout using enhanced system
     // Checks the block sizes too, so a bad one stops the run before anything is allocated
@@ -646,78 +633,71 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
 
     fe.event(Setup::Starting.into());
 
-	let mut runtime_config = detect_runtime_capabilities(&alloc_config);
-	runtime_config.cpu_list = Some(cpu_list);
-	runtime_config.pin_threads = pinning_config.enable_pinning;
+    let mut runtime_config = detect_runtime_capabilities(&alloc_config);
+    runtime_config.cpu_list = Some(cpu_list);
+    runtime_config.pin_threads = pinning_config.enable_pinning;
 
-	// The workers' priority (TODO 77): priority= over the config's, else High
-	let priority = if params::has_param(&validated_params, "priority") {
-		Some(params::get_string(&validated_params, "priority", "high"))
-	} else {
-		config_opt.as_ref().and_then(|c| c.system.thread_priority.clone())
-	};
-	runtime_config.thread_priority = match priority {
-		Some(p) => p.parse()?,
-		None => crate::runner::ThreadPriority::default(),
-	};
-	if runtime_config.thread_priority == crate::runner::ThreadPriority::Realtime
-		&& runtime_config.cpu_list.as_ref().is_some_and(|cpus| cpus.len() >= crate::cpu_topology::logical_cpu_ids().len())
-	{
-		fe.event(Setup::RealtimeOnEveryCpu.into());
-	}
-	runtime_config.enhanced_memory_strategy = enhanced_memory_strategy.clone();
+    // The workers' priority (TODO 77): priority= over the config's, else High
+    let priority = if params::has_param(&validated_params, "priority") {
+        Some(params::get_string(&validated_params, "priority", "high"))
+    } else {
+        config_opt.as_ref().and_then(|c| c.system.thread_priority.clone())
+    };
+    runtime_config.thread_priority = match priority {
+        Some(p) => p.parse()?,
+        None => crate::runner::ThreadPriority::default(),
+    };
+    if runtime_config.thread_priority == crate::runner::ThreadPriority::Realtime
+        && runtime_config.cpu_list.as_ref().is_some_and(|cpus| cpus.len() >= crate::cpu_topology::logical_cpu_ids().len())
+    {
+        fe.event(Setup::RealtimeOnEveryCpu.into());
+    }
+    runtime_config.enhanced_memory_strategy = enhanced_memory_strategy.clone();
 
-	// Extract channels parameter if provided (overrides config default of 2)
-	let channels_override = if params::has_param(&validated_params, "channels") {
-		Some(params::get_usize(&validated_params, "channels", 2) as u32)
-	} else {
-		None
-	};
+    // Extract channels parameter if provided (overrides config default of 2)
+    let channels_override = if params::has_param(&validated_params, "channels") {
+        Some(params::get_usize(&validated_params, "channels", 2) as u32)
+    } else {
+        None
+    };
 
-	// The seal and its width, if given (the parser has validated them)
-	let seal_override = params::has_param(&validated_params, "seal").then(|| params::get_string(&validated_params, "seal", "tmr"));
-	let seal_width_override = params::has_param(&validated_params, "seal-width").then(|| params::get_string(&validated_params, "seal-width", "auto"));
+    // The seal and its width, if given (the parser has validated them)
+    let seal_override = params::has_param(&validated_params, "seal").then(|| params::get_string(&validated_params, "seal", "tmr"));
+    let seal_width_override =
+        params::has_param(&validated_params, "seal-width").then(|| params::get_string(&validated_params, "seal-width", "auto"));
 
-	// Extract the mirror override if provided (the parser has validated it)
-	let mirror_override = if params::has_param(&validated_params, "mirror") {
-		params::get_string(&validated_params, "mirror", "whole").parse::<crate::config::MirrorMode>().ok()
-	} else {
-		None
-	};
+    // Extract the mirror override if provided (the parser has validated it)
+    let mirror_override = if params::has_param(&validated_params, "mirror") {
+        params::get_string(&validated_params, "mirror", "whole").parse::<crate::config::MirrorMode>().ok()
+    } else {
+        None
+    };
 
-	// Extract pattern-mode override if provided
-	let pattern_mode_override = if params::has_param(&validated_params, "pattern-mode") {
-		Some(params::get_u32(&validated_params, "pattern-mode", 0))
-	} else {
-		None
-	};
+    // Extract pattern-mode override if provided
+    let pattern_mode_override = if params::has_param(&validated_params, "pattern-mode") {
+        Some(params::get_u32(&validated_params, "pattern-mode", 0))
+    } else {
+        None
+    };
 
-	// Mem-Sequence's passes and order, if given (the parser has checked them)
-	let sequence_override = params::has_param(&validated_params, "sequence")
-		.then(|| params::get_string(&validated_params, "sequence", ""));
-	let order_override = params::has_param(&validated_params, "order")
-		.then(|| params::get_string(&validated_params, "order", "forward"));
+    // Mem-Sequence's passes and order, if given (the parser has checked them)
+    let sequence_override = params::has_param(&validated_params, "sequence").then(|| params::get_string(&validated_params, "sequence", ""));
+    let order_override = params::has_param(&validated_params, "order").then(|| params::get_string(&validated_params, "order", "forward"));
 
-	// Extract verify-reps override if provided
-	let verify_reps_override = if params::has_param(&validated_params, "verify-reps") {
-		Some(params::get_u32(&validated_params, "verify-reps", 1))
-	} else {
-		None
-	};
+    // Extract verify-reps override if provided
+    let verify_reps_override =
+        if params::has_param(&validated_params, "verify-reps") { Some(params::get_u32(&validated_params, "verify-reps", 1)) } else { None };
 
-	// Extract test-reps override if provided
-	let test_reps_override = if params::has_param(&validated_params, "test-reps") {
-		Some(params::get_u32(&validated_params, "test-reps", 1))
-	} else {
-		None
-	};
+    // Extract test-reps override if provided
+    let test_reps_override =
+        if params::has_param(&validated_params, "test-reps") { Some(params::get_u32(&validated_params, "test-reps", 1)) } else { None };
 
-	// Extract write-read-cycles override if provided
-	let wrc_override = if params::has_param(&validated_params, "write-read-cycles") {
-		Some(params::get_u32(&validated_params, "write-read-cycles", 1))
-	} else {
-		None
-	};
+    // Extract write-read-cycles override if provided
+    let wrc_override = if params::has_param(&validated_params, "write-read-cycles") {
+        Some(params::get_u32(&validated_params, "write-read-cycles", 1))
+    } else {
+        None
+    };
 
     // --startup-debug: run the startup sequence and print the test plan, but allocate no test memory and
     // run no test
@@ -735,30 +715,33 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         fe.event(Setup::Plan { name: plan.name, about: plan.about, is_default: plan_param.is_none() }.into());
     }
 
-    let status = run_tests_with_layout_and_timing_filtered(crate::runner::RunSetup {
-        layout: enhanced_layout,
-        error_mode,
-        suite_timing,
-        runtime_config,
-        config: config_opt.as_ref(),
-        overrides: crate::runner::TestRunOverrides {
-            single_test_filter: final_test_filter,
-            plan,
-            seal_override: seal_override.as_deref(),
-            seal_width_override: seal_width_override.as_deref(),
-            mirror_override,
-            pattern_mode_override,
-            sequence_override: sequence_override.as_deref(),
-            order_override: order_override.as_deref(),
-            verify_reps_override,
-            test_reps_override,
-            wrc_override,
-            channels_override,
-            plan_only,
-            command_line: &command_line,
+    let status = run_tests_with_layout_and_timing_filtered(
+        crate::runner::RunSetup {
+            layout: enhanced_layout,
+            error_mode,
+            suite_timing,
+            runtime_config,
+            config: config_opt.as_ref(),
+            overrides: crate::runner::TestRunOverrides {
+                single_test_filter: final_test_filter,
+                plan,
+                seal_override: seal_override.as_deref(),
+                seal_width_override: seal_width_override.as_deref(),
+                mirror_override,
+                pattern_mode_override,
+                sequence_override: sequence_override.as_deref(),
+                order_override: order_override.as_deref(),
+                verify_reps_override,
+                test_reps_override,
+                wrc_override,
+                channels_override,
+                plan_only,
+                command_line: &command_line,
+            },
+            cache_info,
         },
-        cache_info,
-    }, &fe);
+        &fe,
+    );
 
     Ok(SessionEnd::Ran { status, elapsed: start_time.elapsed(), plan_only })
 }
@@ -767,16 +750,21 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
 /// (`commands::Command::Calibrate` takes them first): they answer its save question, which nothing
 /// else asks.
 fn calibration_flag_without_calibration(args: &[String]) -> Option<String> {
-    args.iter().find(|a| *a == "--yes" || *a == "--no-save").map(|flag| format!(
-        "{flag} answers a calibration's save question: give it with --calibrate-cache, --calibrate-cache-ext, \
-         --calibrate-seal or --calibrate-all"))
+    args.iter().find(|a| *a == "--yes" || *a == "--no-save").map(|flag| {
+        format!(
+            "{flag} answers a calibration's save question: give it with --calibrate-cache, --calibrate-cache-ext, \
+         --calibrate-seal or --calibrate-all"
+        )
+    })
 }
 
 /// The seal's width under `auto`, at startup (TODO 99): this machine's seal calibration
 /// (`AppConfig::valid_seal_calibration`), whose width `set` makes the one `auto` resolves to
 /// (`seal::set_calibrated_width` in a run), else none, so the rule; and which it was.
-fn load_seal_calibration(app_config: &crate::app_config::AppConfig, system_info: &crate::SystemInfo,
-                         smbios: &crate::smbios::SmbiosData, set: impl FnOnce(crate::seal::SealWidth)) -> SealCalibrationState {
+fn load_seal_calibration(
+    app_config: &crate::app_config::AppConfig, system_info: &crate::SystemInfo, smbios: &crate::smbios::SmbiosData,
+    set: impl FnOnce(crate::seal::SealWidth),
+) -> SealCalibrationState {
     let seal = app_config.valid_seal_calibration(system_info, smbios).and_then(|s| s.width().map(|w| (s, w)));
     match (seal, &app_config.seal_calibration) {
         (Some((seal, width)), _) => {
@@ -790,21 +778,12 @@ fn load_seal_calibration(app_config: &crate::app_config::AppConfig, system_info:
 
 /// Parsed configuration bundle produced from validated CLI parameters:
 /// `(memory_strategy, error_mode, suite_timing, cputype, cpus, pinning, alloc)`.
-type ParsedRunConfig = (
-    EnhancedMemoryStrategy,
-    ErrorMode,
-    TestSuiteTiming,
-    String,
-    String,
-    CpuPinningConfig,
-    MemoryAllocationConfig,
-);
+type ParsedRunConfig = (EnhancedMemoryStrategy, ErrorMode, TestSuiteTiming, String, String, CpuPinningConfig, MemoryAllocationConfig);
 
 /// Build configuration from validated parameters (using centralized registry). What the
 /// allocation and pinning parameters set goes to `fe`, once they are read.
 fn build_config_from_validated_params(
-    validated: &HashMap<String, params::ParamValue>,
-    fe: &dyn Frontend,
+    validated: &HashMap<String, params::ParamValue>, fe: &dyn Frontend,
 ) -> Result<ParsedRunConfig, String> {
     // Extract basic string parameters with defaults
     let cputype = params::get_string(validated, "cputype", "threads");
@@ -868,7 +847,7 @@ fn build_config_from_validated_params(
 
     // Handle topology (has side effect of setting global state)
     if let Some(params::ParamValue::String(topology_str)) = validated.get("topology") {
-        use crate::cpu_topology::{set_topology_detection_method, TopologyDetectionMethod};
+        use crate::cpu_topology::{TopologyDetectionMethod, set_topology_detection_method};
         // Validated by the parameter's parser
         let method = TopologyDetectionMethod::parse(topology_str).unwrap_or(TopologyDetectionMethod::Auto);
         set_topology_detection_method(method);
@@ -891,11 +870,9 @@ fn build_config_from_validated_params(
 
 /// Parse enhanced memory parameter with clear reserve semantics
 fn parse_enhanced_memory_parameter(param: &str) -> Result<crate::memory::allocation_strategy::EnhancedMemoryStrategy, String> {
-    use crate::memory::allocation_strategy::{EnhancedMemoryStrategy, AllocationMode};
+    use crate::memory::allocation_strategy::{AllocationMode, EnhancedMemoryStrategy};
 
-    Ok(EnhancedMemoryStrategy {
-        allocation_mode: AllocationMode::parse(param)?,
-    })
+    Ok(EnhancedMemoryStrategy { allocation_mode: AllocationMode::parse(param)? })
 }
 
 #[cfg(test)]

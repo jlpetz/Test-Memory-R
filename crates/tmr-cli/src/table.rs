@@ -20,37 +20,29 @@ impl Default for TableBuilder {
 
 impl TableBuilder {
     pub fn new() -> Self {
-        Self {
-            headers: Vec::new(),
-            rows: Vec::new(),
-            separator_char: '-',
-            min_column_width: 10,
-        }
+        Self { headers: Vec::new(), rows: Vec::new(), separator_char: '-', min_column_width: 10 }
     }
-    
+
     pub fn add_header(mut self, header: &str, alignment: Alignment) -> Self {
         self.headers.push((header.to_string(), alignment));
         self
     }
-    
+
     pub fn add_row(mut self, row: Vec<String>) -> Self {
         self.rows.push(row);
         self
     }
-    
+
     /// Writes the table as the console shows it: a rule, the headers, a rule, the rows, a rule.
     /// Nothing when it has no headers.
     pub fn write_to(&self, out: &mut impl std::fmt::Write) -> std::fmt::Result {
         if self.headers.is_empty() {
             return Ok(());
         }
-        
+
         // Calculate column widths
-        let mut widths: Vec<usize> = self.headers
-            .iter()
-            .map(|(h, _)| h.len().max(self.min_column_width))
-            .collect();
-        
+        let mut widths: Vec<usize> = self.headers.iter().map(|(h, _)| h.len().max(self.min_column_width)).collect();
+
         // Adjust widths based on row content
         for row in &self.rows {
             for (i, cell) in row.iter().enumerate() {
@@ -59,19 +51,19 @@ impl TableBuilder {
                 }
             }
         }
-        
+
         // Store original widths for content formatting
         let content_widths = widths.clone();
-        
+
         // Add padding for separator calculation
         for width in &mut widths {
             *width += 2; // Add padding for separator width calculation
         }
-        
+
         // Print separator
         let total_width: usize = widths.iter().sum();
         writeln!(out, "{}", self.separator_char.to_string().repeat(total_width))?;
-        
+
         // Print headers with proper spacing
         for (i, (header, alignment)) in self.headers.iter().enumerate() {
             let content_width = content_widths[i];
@@ -83,10 +75,10 @@ impl TableBuilder {
             write!(out, "{}  ", formatted)?; // Add 2 spaces between columns
         }
         writeln!(out)?;
-        
+
         // Print separator
         writeln!(out, "{}", self.separator_char.to_string().repeat(total_width))?;
-        
+
         // Print rows with proper spacing
         for row in &self.rows {
             for (i, cell) in row.iter().enumerate() {
@@ -103,11 +95,11 @@ impl TableBuilder {
             }
             writeln!(out)?;
         }
-        
+
         // Print final separator
         writeln!(out, "{}", self.separator_char.to_string().repeat(total_width))
     }
-    
+
     // Alternative: return as string for logging - use format!("{}", table) via Display trait
 }
 
@@ -116,13 +108,10 @@ impl std::fmt::Display for TableBuilder {
         if self.headers.is_empty() {
             return Ok(());
         }
-        
+
         // Calculate column widths
-        let mut widths: Vec<usize> = self.headers
-            .iter()
-            .map(|(h, _)| h.len().max(self.min_column_width))
-            .collect();
-        
+        let mut widths: Vec<usize> = self.headers.iter().map(|(h, _)| h.len().max(self.min_column_width)).collect();
+
         // Adjust widths based on row content
         for row in &self.rows {
             for (i, cell) in row.iter().enumerate() {
@@ -131,12 +120,12 @@ impl std::fmt::Display for TableBuilder {
                 }
             }
         }
-        
+
         let total_width = widths.iter().sum::<usize>() + widths.len() * 3 + 1;
-        
+
         // Top border
         writeln!(f, "{}", self.separator_char.to_string().repeat(total_width))?;
-        
+
         // Headers
         write!(f, "|")?;
         for ((header, align), &width) in self.headers.iter().zip(&widths) {
@@ -154,10 +143,10 @@ impl std::fmt::Display for TableBuilder {
             write!(f, " |")?;
         }
         writeln!(f)?;
-        
+
         // Header separator
         writeln!(f, "{}", self.separator_char.to_string().repeat(total_width))?;
-        
+
         // Rows
         for row in &self.rows {
             write!(f, "|")?;
@@ -181,10 +170,10 @@ impl std::fmt::Display for TableBuilder {
             }
             writeln!(f)?;
         }
-        
+
         // Final separator
         writeln!(f, "{}", self.separator_char.to_string().repeat(total_width))?;
-        
+
         Ok(())
     }
 }

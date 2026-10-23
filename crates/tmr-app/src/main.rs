@@ -60,13 +60,16 @@ impl Fault {
     /// `info` is null or the exception pointers Windows passed the handler.
     unsafe fn of(info: *const EXCEPTION_POINTERS) -> Option<Fault> {
         use windows::Win32::Foundation::{
-            EXCEPTION_ACCESS_VIOLATION, STATUS_ILLEGAL_INSTRUCTION,
-            STATUS_STACK_OVERFLOW, STATUS_STACK_BUFFER_OVERRUN,
+            EXCEPTION_ACCESS_VIOLATION, STATUS_ILLEGAL_INSTRUCTION, STATUS_STACK_BUFFER_OVERRUN, STATUS_STACK_OVERFLOW,
         };
 
-        if info.is_null() { return None; }
+        if info.is_null() {
+            return None;
+        }
         let ptrs = unsafe { &*info };
-        if ptrs.ExceptionRecord.is_null() { return None; }
+        if ptrs.ExceptionRecord.is_null() {
+            return None;
+        }
         let record = unsafe { &*ptrs.ExceptionRecord };
 
         let code = record.ExceptionCode;
@@ -86,10 +89,7 @@ impl Fault {
         };
 
         // Compute RVA from module base (works regardless of ASLR)
-        let module_base = unsafe {
-            windows::Win32::System::LibraryLoader::GetModuleHandleA(None)
-                .map(|h| h.0 as usize).unwrap_or(0)
-        };
+        let module_base = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleA(None).map(|h| h.0 as usize).unwrap_or(0) };
         let rva = if module_base > 0 && ip >= module_base { ip - module_base } else { ip };
 
         // For access violations, ExceptionInformation[0] = access type, [1] = target address
@@ -173,9 +173,8 @@ fn main() {
         } else {
             "unknown panic".to_string()
         };
-        let location = info.location()
-            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-            .unwrap_or_else(|| "unknown location".to_string());
+        let location =
+            info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_else(|| "unknown location".to_string());
         let text = format!("PANIC at {}: {}", location, msg);
         eprintln!("\n!!! {text}");
         log::error!("{text}");

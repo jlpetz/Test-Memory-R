@@ -6,23 +6,19 @@
 // you to skip reading these.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
-use crate::memory::allocator::PageSizeLevel;
-use crate::memory::allocator::AllocationConfig;
-use crate::memory::privileges::setup_large_pages_automatically;
-use crate::constants::{HUGE_PAGE_SIZE_USIZE, LARGE_PAGE_SIZE_USIZE, PAGE_SIZE_4KB, MB};
-
 // Windows API imports for VirtualAlloc2 (moved from buffer.rs)
 use windows::Win32::Foundation::GetLastError;
 use windows::Win32::System::Memory::{
-    VirtualAlloc2, MEM_COMMIT, MEM_LARGE_PAGES, MEM_RESERVE, 
-    PAGE_READWRITE, MEM_ADDRESS_REQUIREMENTS, MEM_EXTENDED_PARAMETER,
-    MemExtendedParameterAttributeFlags, MemExtendedParameterNumaNode, 
-    MemExtendedParameterAddressRequirements,
+    MEM_ADDRESS_REQUIREMENTS, MEM_COMMIT, MEM_EXTENDED_PARAMETER, MEM_LARGE_PAGES, MEM_RESERVE, MemExtendedParameterAddressRequirements,
+    MemExtendedParameterAttributeFlags, MemExtendedParameterNumaNode, PAGE_READWRITE, VirtualAlloc2,
 };
 use windows::Win32::System::SystemServices::{
-    MEM_EXTENDED_PARAMETER_NONPAGED_HUGE, MEM_EXTENDED_PARAMETER_NONPAGED_LARGE,
-    MEM_EXTENDED_PARAMETER_TYPE_BITS,
+    MEM_EXTENDED_PARAMETER_NONPAGED_HUGE, MEM_EXTENDED_PARAMETER_NONPAGED_LARGE, MEM_EXTENDED_PARAMETER_TYPE_BITS,
 };
+
+use crate::constants::{HUGE_PAGE_SIZE_USIZE, LARGE_PAGE_SIZE_USIZE, MB, PAGE_SIZE_4KB};
+use crate::memory::allocator::{AllocationConfig, PageSizeLevel};
+use crate::memory::privileges::setup_large_pages_automatically;
 
 // Win32 codes an allocation can be refused with. 1450 = no contiguous physical memory (a pool ran
 // dry), 1314 = no SeLockMemoryPrivilege, 87 = a bug in the request (TMR-APP CLAUDE.md).
@@ -62,11 +58,7 @@ pub(crate) fn describe_error(code: u32) -> String {
 pub(crate) fn is_exhaustion(code: u32) -> bool {
     matches!(
         code,
-        ERROR_NO_SYSTEM_RESOURCES
-            | ERROR_COMMITMENT_LIMIT
-            | ERROR_NOT_ENOUGH_MEMORY
-            | ERROR_OUTOFMEMORY
-            | ERROR_PRIVILEGE_NOT_HELD
+        ERROR_NO_SYSTEM_RESOURCES | ERROR_COMMITMENT_LIMIT | ERROR_NOT_ENOUGH_MEMORY | ERROR_OUTOFMEMORY | ERROR_PRIVILEGE_NOT_HELD
     )
 }
 
@@ -112,9 +104,14 @@ pub struct BackendAllocation {
 /// the driver-client purge (TODO #4/5).
 #[derive(Debug, Clone)]
 pub enum BackendType {
-    Auto,                                    // Let system decide
-    #[expect(dead_code, reason = "revival seam (TODO #4/5): only Auto is built since the stitched allocator calls VirtualAlloc2 itself (TODO 76)")]
-    Windows { large_pages: bool },          // Windows VirtualAlloc
+    Auto, // Let system decide
+    #[expect(
+        dead_code,
+        reason = "revival seam (TODO #4/5): only Auto is built since the stitched allocator calls VirtualAlloc2 itself (TODO 76)"
+    )]
+    Windows {
+        large_pages: bool,
+    }, // Windows VirtualAlloc
 }
 
 /// Windows VirtualAlloc backend
@@ -132,7 +129,7 @@ impl WindowsBackend {
 impl Backend for WindowsBackend {
     fn allocate(&self, config: &AllocationConfig) -> Result<BackendAllocation, AllocError> {
         use crate::memory::allocator::PageSizePreference as AllocPageSizePref;
-        
+
         // Override page preference if backend doesn't support large pages
         let final_config = if !self.use_large_pages {
             let mut modified_config = config.clone();
@@ -140,25 +137,23 @@ impl Backend for WindowsBackend {
             modified_config.page_size = match &config.page_size {
                 AllocPageSizePref::Any => AllocPageSizePref::Prefer(PageSizeLevel::Regular),
                 AllocPageSizePref::Prefer(_) => AllocPageSizePref::Prefer(PageSizeLevel::Regular),
-                AllocPageSizePref::Require(page_type) => {
-                    match page_type {
-                        PageSizeLevel::Regular => config.page_size.clone(),
-                        _ => return Err(AllocError::other("Backend doesn't support large/huge pages but they are required")),
-                    }
+                AllocPageSizePref::Require(page_type) => match page_type {
+                    PageSizeLevel::Regular => config.page_size.clone(),
+                    _ => return Err(AllocError::other("Backend doesn't support large/huge pages but they are required")),
                 },
             };
             modified_config
         } else {
             config.clone()
         };
-        
+
         // VirtualAlloc2 implementation (moved from TestBuffer)
         let (ptr, size) = self.allocate_with_virtualalloc2(&final_config)?;
         Ok(BackendAllocation { ptr, size })
     }
-    
+
     fn free(&self, allocation: BackendAllocation) -> Result<(), String> {
-        use windows::Win32::System::Memory::{VirtualFree, MEM_RELEASE};
+        use windows::Win32::System::Memory::{MEM_RELEASE, VirtualFree};
 
         // SAFETY: `allocation` is taken by value, so this is the unique owner of the region and the
         // release happens exactly once. `ptr` came from a successful `VirtualAlloc2` in this same
@@ -168,37 +163,33 @@ impl Backend for WindowsBackend {
             // See: https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualfree
             if !VirtualFree(allocation.ptr as *mut _, 0, MEM_RELEASE).is_ok() {
                 let err = GetLastError();
-                return Err(format!("VirtualFree failed for ptr {:?}, size {}: error code {}",
-                    allocation.ptr, allocation.size, err.0));
+                return Err(format!("VirtualFree failed for ptr {:?}, size {}: error code {}", allocation.ptr, allocation.size, err.0));
             }
         }
 
         log::trace!("Freed {} bytes at {:?}", allocation.size, allocation.ptr);
         Ok(())
     }
-    
-    
+
     fn name(&self) -> &'static str {
-        if self.use_large_pages {
-            "Windows Large Pages"
-        } else {
-            "Windows Regular"
-        }
+        if self.use_large_pages { "Windows Large Pages" } else { "Windows Regular" }
     }
 }
 
 impl WindowsBackend {
     /// Helper function to create a MEM_EXTENDED_PARAMETER with the correct bitfield packing
-    fn create_extended_param(param_type: windows::Win32::System::Memory::MEM_EXTENDED_PARAMETER_TYPE, value: u64) -> MEM_EXTENDED_PARAMETER {
+    fn create_extended_param(
+        param_type: windows::Win32::System::Memory::MEM_EXTENDED_PARAMETER_TYPE, value: u64,
+    ) -> MEM_EXTENDED_PARAMETER {
         let mut param = MEM_EXTENDED_PARAMETER::default();
-        
+
         // Pack the Type into the low TYPE_BITS bits of _bitfield
         let type_bits = MEM_EXTENDED_PARAMETER_TYPE_BITS;
         param.Anonymous1._bitfield = (param_type.0 as u64) & ((1_u64 << type_bits) - 1);
-        
+
         // Set the union value
         param.Anonymous2.ULong64 = value;
-        
+
         param
     }
 
@@ -206,44 +197,41 @@ impl WindowsBackend {
     /// The page size it got is logged (debug), not returned.
     fn allocate_with_virtualalloc2(&self, config: &AllocationConfig) -> Result<(*mut u8, usize), AllocError> {
         use crate::memory::allocator::PageSizePreference as AllocPageSizePref;
-        
+
         let size_bytes = config.size;
-        
+
         // Determine what type of pages we want based on PageSizePreference
         let (needs_large_pages, target_page_type) = match &config.page_size {
             AllocPageSizePref::Any => (true, None), // Try best available
-            AllocPageSizePref::Prefer(page_type) => {
-                match page_type {
-                    PageSizeLevel::Regular => (false, Some((false, false))),
-                    PageSizeLevel::Large => (true, Some((true, false))),
-                    PageSizeLevel::Huge => (true, Some((true, true))),
-                }
+            AllocPageSizePref::Prefer(page_type) => match page_type {
+                PageSizeLevel::Regular => (false, Some((false, false))),
+                PageSizeLevel::Large => (true, Some((true, false))),
+                PageSizeLevel::Huge => (true, Some((true, true))),
             },
-            AllocPageSizePref::Require(page_type) => {
-                match page_type {
-                    PageSizeLevel::Regular => (false, Some((false, false))),
-                    PageSizeLevel::Large => (true, Some((true, false))),
-                    PageSizeLevel::Huge => (true, Some((true, true))),
-                }
+            AllocPageSizePref::Require(page_type) => match page_type {
+                PageSizeLevel::Regular => (false, Some((false, false))),
+                PageSizeLevel::Large => (true, Some((true, false))),
+                PageSizeLevel::Huge => (true, Some((true, true))),
             },
         };
-        
-        if needs_large_pages
-            && setup_large_pages_automatically().is_err() {
-                log::debug!("Large/huge page error - missing privilege");
-                // Fall back for non-strict modes
-                match &config.page_size {
-                    AllocPageSizePref::Require(_) => return Err(AllocError {
+
+        if needs_large_pages && setup_large_pages_automatically().is_err() {
+            log::debug!("Large/huge page error - missing privilege");
+            // Fall back for non-strict modes
+            match &config.page_size {
+                AllocPageSizePref::Require(_) => {
+                    return Err(AllocError {
                         message: format!("Large/huge pages required but privilege missing ({})", describe_error(ERROR_PRIVILEGE_NOT_HELD)),
-                    }),
-                    _ => {
-                        // Try with regular pages
-                        let mut fallback_config = config.clone();
-                        fallback_config.page_size = AllocPageSizePref::Require(PageSizeLevel::Regular);
-                        return self.allocate_with_virtualalloc2(&fallback_config);
-                    }
+                    });
+                }
+                _ => {
+                    // Try with regular pages
+                    let mut fallback_config = config.clone();
+                    fallback_config.page_size = AllocPageSizePref::Require(PageSizeLevel::Regular);
+                    return self.allocate_with_virtualalloc2(&fallback_config);
                 }
             }
+        }
 
         // Determine page size and alignment based on target or auto-select
         let (aligned_size, allocation_type, actual_page_type) = match target_page_type {
@@ -252,26 +240,26 @@ impl WindowsBackend {
                 let page_size = PAGE_SIZE_4KB;
                 let aligned = (size_bytes + page_size - 1) & !(page_size - 1);
                 (aligned, MEM_RESERVE | MEM_COMMIT, (false, false))
-            },
+            }
             Some((true, false)) => {
                 // Large pages (2MB)
                 let page_size = LARGE_PAGE_SIZE_USIZE;
                 let aligned = (size_bytes + page_size - 1) & !(page_size - 1);
                 (aligned, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, (true, false))
-            },
+            }
             Some((true, true)) => {
                 // Huge pages (1GB)
                 let page_size = HUGE_PAGE_SIZE_USIZE;
                 let aligned = (size_bytes + page_size - 1) & !(page_size - 1);
                 (aligned, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, (true, true))
-            },
+            }
             Some((false, true)) => {
                 // This combination is impossible (huge pages require large pages flag too)
                 // Treat as regular pages
                 let page_size = PAGE_SIZE_4KB;
                 let aligned = (size_bytes + page_size - 1) & !(page_size - 1);
                 (aligned, MEM_RESERVE | MEM_COMMIT, (false, false))
-            },
+            }
             None => {
                 // Auto-select based on size
                 if size_bytes >= HUGE_PAGE_SIZE_USIZE {
@@ -280,7 +268,7 @@ impl WindowsBackend {
                     let aligned = (size_bytes + page_size - 1) & !(page_size - 1);
                     (aligned, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, (true, true))
                 } else if size_bytes >= 4 * MB {
-                    // >= 4MB, use large pages  
+                    // >= 4MB, use large pages
                     let page_size = LARGE_PAGE_SIZE_USIZE;
                     let aligned = (size_bytes + page_size - 1) & !(page_size - 1);
                     (aligned, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, (true, false))
@@ -295,18 +283,16 @@ impl WindowsBackend {
 
         // Build extended parameters
         let mut extended_params = Vec::new();
-        
+
         // Add page attribute based on type
-        if actual_page_type.1 { // is_huge (1GB)
-            extended_params.push(Self::create_extended_param(
-                MemExtendedParameterAttributeFlags,
-                MEM_EXTENDED_PARAMETER_NONPAGED_HUGE as u64
-            ));
-        } else if actual_page_type.0 { // is_large (2MB)
-            extended_params.push(Self::create_extended_param(
-                MemExtendedParameterAttributeFlags,
-                MEM_EXTENDED_PARAMETER_NONPAGED_LARGE as u64
-            ));
+        if actual_page_type.1 {
+            // is_huge (1GB)
+            extended_params
+                .push(Self::create_extended_param(MemExtendedParameterAttributeFlags, MEM_EXTENDED_PARAMETER_NONPAGED_HUGE as u64));
+        } else if actual_page_type.0 {
+            // is_large (2MB)
+            extended_params
+                .push(Self::create_extended_param(MemExtendedParameterAttributeFlags, MEM_EXTENDED_PARAMETER_NONPAGED_LARGE as u64));
         }
         // No extended parameter needed for regular 4KB pages
 
@@ -315,15 +301,21 @@ impl WindowsBackend {
             let strict = config.numa_strict && actual_page_type.0;
             extended_params.push(Self::create_extended_param(
                 MemExtendedParameterNumaNode,
-                node as u64 | if strict { NUMA_NODE_MANDATORY } else { 0 }
+                node as u64 | if strict { NUMA_NODE_MANDATORY } else { 0 },
             ));
-            
+
             let is_strict = matches!(&config.page_size, AllocPageSizePref::Require(_));
-            log::debug!("Requesting {} pages on NUMA node {} (strict: {})", 
-                if actual_page_type.1 { "1GB huge" }
-                else if actual_page_type.0 { "2MB large" }
-                else { "4KB regular" },
-                node, is_strict
+            log::debug!(
+                "Requesting {} pages on NUMA node {} (strict: {})",
+                if actual_page_type.1 {
+                    "1GB huge"
+                } else if actual_page_type.0 {
+                    "2MB large"
+                } else {
+                    "4KB regular"
+                },
+                node,
+                is_strict
             );
         }
 
@@ -346,8 +338,7 @@ impl WindowsBackend {
             addr_req.Alignment = alignment;
 
             let mut param = Self::create_extended_param(
-                MemExtendedParameterAddressRequirements,
-                0 // Will be overridden by Pointer field
+                MemExtendedParameterAddressRequirements, 0, // Will be overridden by Pointer field
             );
             param.Anonymous2.Pointer = &mut addr_req as *mut _ as *mut std::ffi::c_void;
             extended_params.push(param);
@@ -364,8 +355,8 @@ impl WindowsBackend {
         // narrower scope.
         let ptr = unsafe {
             VirtualAlloc2(
-                None,  // Current process
-                None,  // Let address requirements handle base address
+                None, // Current process
+                None, // Let address requirements handle base address
                 aligned_size,
                 allocation_type,
                 PAGE_READWRITE.0,
@@ -380,20 +371,17 @@ impl WindowsBackend {
             // SAFETY: `GetLastError` reads this thread's error slot and takes no arguments. It is
             // read immediately after the failed call, before anything else can overwrite it.
             let err = unsafe { GetLastError() };
-            
+
             // Handle fallback scenarios
             let is_strict = matches!(&config.page_size, AllocPageSizePref::Require(_));
-            
+
             if config.numa_node.is_some() && !is_strict {
-                log::debug!(
-                    "VirtualAlloc2 failed on NUMA node {:?} (code {}), trying without NUMA preference",
-                    config.numa_node, err.0
-                );
+                log::debug!("VirtualAlloc2 failed on NUMA node {:?} (code {}), trying without NUMA preference", config.numa_node, err.0);
                 let mut fallback_config = config.clone();
                 fallback_config.numa_node = None;
                 return self.allocate_with_virtualalloc2(&fallback_config);
             }
-            
+
             // For non-strict page preferences, try fallback
             match &config.page_size {
                 AllocPageSizePref::Any | AllocPageSizePref::Prefer(_) => {
@@ -410,22 +398,25 @@ impl WindowsBackend {
                         fallback_config.page_size = AllocPageSizePref::Prefer(PageSizeLevel::Regular);
                         return self.allocate_with_virtualalloc2(&fallback_config);
                     }
-                },
+                }
                 AllocPageSizePref::Require(_) => {} // No fallback for Require
             }
-            
-            Err(AllocError {
-                message: format!("VirtualAlloc2 failed: {}", describe_error(err.0)),
-            })
+
+            Err(AllocError { message: format!("VirtualAlloc2 failed: {}", describe_error(err.0)) })
         } else {
-            log::debug!("Successfully allocated {} bytes using {} pages{}", 
+            log::debug!(
+                "Successfully allocated {} bytes using {} pages{}",
                 aligned_size,
-                if actual_page_type.1 { "1GB huge" } 
-                else if actual_page_type.0 { "2MB large" } 
-                else { "4KB regular" },
+                if actual_page_type.1 {
+                    "1GB huge"
+                } else if actual_page_type.0 {
+                    "2MB large"
+                } else {
+                    "4KB regular"
+                },
                 if let Some(node) = config.numa_node { format!(" on NUMA node {}", node) } else { String::new() }
             );
-            
+
             Ok((ptr as *mut u8, aligned_size))
         }
     }

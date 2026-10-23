@@ -21,9 +21,10 @@
 //! the thread's span), the family, the key and the polarity only, so chunks may overlap, any walk
 //! order works, every thread's words differ, and `seed=` replays a run's bytes on the same layout.
 
-use crate::pattern_gen::BusBeat;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::pattern_gen::BusBeat;
 
 /// The pattern spec this module implements, recorded in results. Version 1 is the numbered modes
 /// (`pattern_gen::MODES`), which TMR still runs when a config names one.
@@ -82,8 +83,8 @@ pub enum Family {
 }
 
 impl Family {
-    pub const ALL: [Family; 7] = [Family::Ident, Family::Random, Family::Switch, Family::Lines, Family::Linepair,
-                                  Family::Quiet, Family::Header];
+    pub const ALL: [Family; 7] =
+        [Family::Ident, Family::Random, Family::Switch, Family::Lines, Family::Linepair, Family::Quiet, Family::Header];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -249,7 +250,6 @@ pub fn linepair_line(lid: u64, key: u64) -> [u64; LINE_WORDS] {
     ident_line(lid & !1, key).map(|w| w ^ invert)
 }
 
-
 // ─── The line functions at a SIMD width ──────────────────────────────────────────────────────────
 //
 // The same words as the functions above, computed as `V` vectors of `N` lanes (`N * V` = 8), lane
@@ -301,9 +301,9 @@ pub fn switch_line_v<const N: usize, const V: usize>(lid: u64, key: u64, beat: B
     let w = switch_line(lid, key, beat);
     match beat {
         // Even words `a`, odd ones `!a`: `a` XOR a mask that is all ones in the odd words
-        BusBeat::Bits64 => std::array::from_fn(|v| {
-            V64::splat(w[0]) ^ V64::from_array(std::array::from_fn(|l| if (v * N + l) % 2 == 1 { !0 } else { 0 }))
-        }),
+        BusBeat::Bits64 => {
+            std::array::from_fn(|v| V64::splat(w[0]) ^ V64::from_array(std::array::from_fn(|l| if (v * N + l) % 2 == 1 { !0 } else { 0 })))
+        }
         BusBeat::Bits32 | BusBeat::Bits16 => std::array::from_fn(|_| V64::splat(w[0])),
         BusBeat::Bits12 | BusBeat::Bits24 => std::array::from_fn(|v| V64::from_array(std::array::from_fn(|l| w[v * N + l]))),
     }
@@ -475,10 +475,12 @@ impl Program {
 
     /// From family names, e.g. `["ident", "switch"]`.
     pub fn parse<S: AsRef<str>>(names: &[S]) -> Result<Self, String> {
-        let families = names.iter()
-            .map(|n| Family::parse(n.as_ref()).ok_or_else(|| format!(
-                "'{}' is not a pattern family; valid: {}", n.as_ref(),
-                Family::ALL.map(Family::name).join(", "))))
+        let families = names
+            .iter()
+            .map(|n| {
+                Family::parse(n.as_ref())
+                    .ok_or_else(|| format!("'{}' is not a pattern family; valid: {}", n.as_ref(), Family::ALL.map(Family::name).join(", ")))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Program::new(&families)
     }
@@ -541,8 +543,10 @@ impl Program {
         let suite_cycle = epoch.suite_cycle.max(1);
         let (pair, inverse, epoch) = match schedule {
             Schedule::Rounds => (g / 2 + u64::from(suite_cycle - 1) * u64::from(wrc.max(1)).div_ceil(2), g % 2 == 1, *epoch),
-            Schedule::OncePerRun => (u64::from((suite_cycle - 1) / 2), suite_cycle.is_multiple_of(2),
-                                     StepEpoch { suite_cycle: suite_cycle.div_ceil(2), ..*epoch }),
+            Schedule::OncePerRun => (u64::from((suite_cycle - 1) / 2), suite_cycle.is_multiple_of(2), StepEpoch {
+                suite_cycle: suite_cycle.div_ceil(2),
+                ..*epoch
+            }),
         };
         let len = u64::from(self.len);
         let at = (pair % len) as usize;
@@ -552,12 +556,7 @@ impl Program {
         let switches = |list: &[Family]| list.iter().filter(|f| f.uses_beat()).count() as u64;
         let nth_switch = pair / len * switches(self.families()) + switches(&self.families()[..at]);
         let beat = beat.unwrap_or(if nth_switch.is_multiple_of(2) { BusBeat::Bits64 } else { BusBeat::Bits32 });
-        Phase {
-            family,
-            key: mix(mix(epoch.key(), pair), family.code()),
-            mask: if inverse { !0 } else { 0 },
-            beat,
-        }
+        Phase { family, key: mix(mix(epoch.key(), pair), family.code()), mask: if inverse { !0 } else { 0 }, beat }
     }
 }
 
@@ -697,8 +696,10 @@ pub fn parse_beat(s: &str) -> Result<Option<BusBeat>, String> {
         "24" | "ddr6" => Ok(Some(BusBeat::Bits24)),
         "32" | "ddr5" | "lpddr3" => Ok(Some(BusBeat::Bits32)),
         "64" | "ddr3" | "ddr4" => Ok(Some(BusBeat::Bits64)),
-        other => Err(format!("beat '{other}': use auto, a width (12, 16, 24, 32, 64) or a memory type (ddr3, ddr4, \
-                              ddr5, ddr6, lpddr3, lpddr4, lpddr5, lpddr6)")),
+        other => Err(format!(
+            "beat '{other}': use auto, a width (12, 16, 24, 32, 64) or a memory type (ddr3, ddr4, \
+                              ddr5, ddr6, lpddr3, lpddr4, lpddr5, lpddr6)"
+        )),
     }
 }
 
@@ -735,8 +736,10 @@ impl Drop for TestBeat {
 /// What a modelled width rests on, for the log and the results (`doc/pattern_spec.md`).
 fn model_note(beat: BusBeat) -> &'static str {
     match beat {
-        BusBeat::Bits12 => "a model of LPDDR6: TMR hasn't verified its packet map or how a controller places a line in it, \
-                            so the payload is taken to come first",
+        BusBeat::Bits12 => {
+            "a model of LPDDR6: TMR hasn't verified its packet map or how a controller places a line in it, \
+                            so the payload is taken to come first"
+        }
         BusBeat::Bits24 => "a model of DDR6 as drafted: TMR has verified no DDR6 layout, so 64 B bursts in transfer order are assumed",
         _ => "",
     }
@@ -766,10 +769,12 @@ pub fn transfer_beat() -> (Option<BusBeat>, &'static str) {
                 (Some(beat), format!("SMBIOS memory type {t:#04x}"))
             }
             None => {
-                log::warn!("Transfer width unknown: SMBIOS gives no known memory type ({types:#04x?}); the switch \
+                log::warn!(
+                    "Transfer width unknown: SMBIOS gives no known memory type ({types:#04x?}); the switch \
                             pattern alternates its 64- and 32-bit profiles, so on a 64- or 32-bit bus it flips every \
                             beat only half the time, and on other widths less (set beat= to the memory type: ddr4, \
-                            ddr5, ddr6, lpddr4, lpddr5 or lpddr6)");
+                            ddr5, ddr6, lpddr4, lpddr5 or lpddr6)"
+                );
                 (None, "unknown: switch alternates 64 and 32".to_string())
             }
         }
@@ -856,7 +861,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn vector_lines_match_the_scalar_ones() {
         fn check<const N: usize, const V: usize>(phase: &Phase) {
@@ -892,14 +896,12 @@ mod tests {
     #[test]
     fn the_vector_macro_matches_phase_line() {
         for phase in phases() {
-            let got: Vec<u64> = with_phase_vectors!(4, phase, |line| { (0..32u64).flat_map(|lid| line(lid).map(|v| v.to_array()).concat()).collect() });
+            let got: Vec<u64> =
+                with_phase_vectors!(4, phase, |line| { (0..32u64).flat_map(|lid| line(lid).map(|v| v.to_array()).concat()).collect() });
             let want: Vec<u64> = (0..32u64).flat_map(|lid| phase.line(lid)).collect();
             assert_eq!(got, want, "{}", phase.label());
         }
     }
-
-
-
 
     /// Known answers from an independent implementation of `doc/pattern_spec.md`: Python written
     /// from the spec's text alone, without this code (2026-10-11). A mismatch is this code and the
@@ -913,12 +915,13 @@ mod tests {
             (0x123456789abcdef, 0xb2c058e4ebb5112c),
             (0xffffffffffffffff, 0xb4d055fcf2cbbd7b),
             (0x9e3779b97f4a7c15, 0xe220a8397b1dcdaf),
-            (0x3c6ef372fe94f82a, 0x6e789e6aa1b965f4)
+            (0x3c6ef372fe94f82a, 0x6e789e6aa1b965f4),
         ];
         for &(z, out) in fmix_cases {
             assert_eq!(fmix(z), out, "fmix({z:#x})");
         }
         type Line = (Family, u64, u64, u64, Option<BusBeat>, [u64; LINE_WORDS]);
+        #[rustfmt::skip] // a golden table, one row a line
         let lines: &[Line] = &[
             (Family::Ident, 0x0, 0x0, 0x0, None, [0x0, 0x9e3779b9e17d05ac, 0x3c6ef372c2fa0b58, 0xdaa66d2ca7791913, 0x78dde6e585f416b1, 0x1715609f6b610cf6, 0xb54cda584ef23226, 0x53845412288d3081]),
             (Family::Ident, 0x0, 0x123456789abcdef, 0xffffffffffffffff, None, [0xfedcba9877777777, 0x60a540de68530ada, 0xc26dc7254a2d013c, 0x24364d6b23bd0f45, 0x85fed3b2032b6df1, 0xe7c759f8e1e763a0, 0x498fe03fcce55652, 0xab586685afed5407]),
@@ -1028,6 +1031,7 @@ mod tests {
         }
         // `quiet` and `header` (and `switch` again) from another implementation of the spec alone
         // (2026-10-16), at every transfer width
+        #[rustfmt::skip] // a golden table, one row a line
         let stage6: &[Line] = &[
             (Family::Quiet, 0x0, 0x0, 0x0, Some(BusBeat::Bits12), [0xf0f1f0f0f1f0f0f1, 0xf1f0f0f1f0f0f1f0, 0xf0f0f1f0f0f1f0f0, 0xf0f1f0f0f1f0f0f1, 0xf0f1f0f0f1f0f0f1, 0xf1f0f0f1f0f0f1f0, 0xf0f0f1f0f0f1f0f0, 0xf0f1f0f0f1f0f0f1]),
             (Family::Quiet, 0x0, 0x0, 0x0, Some(BusBeat::Bits16), [0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1, 0xf0ff0f10f0ff0f1]),
@@ -1125,6 +1129,7 @@ mod tests {
             assert_eq!(phase.line(lid), words, "{} line {lid:#x} key {key:#x}", phase.label());
         }
         type Row = (&'static [Family], u64, u32, u32, u32, u64, Option<BusBeat>, Family, u64, u64, Option<BusBeat>);
+        #[rustfmt::skip] // a golden table, one row a line
         let phases: &[Row] = &[
             (&[Family::Ident, Family::Switch, Family::Random, Family::Switch], 0x7, 2, 3, 4, 0, Some(BusBeat::Bits32), Family::Random, 0x754e7689d10c5f8f, 0x0, None),
             (&[Family::Ident, Family::Switch, Family::Random, Family::Switch], 0x7, 2, 3, 4, 1, Some(BusBeat::Bits32), Family::Random, 0x754e7689d10c5f8f, 0xffffffffffffffff, None),
@@ -1218,8 +1223,12 @@ mod tests {
     #[test]
     fn a_pair_complements_every_bit() {
         let epoch = StepEpoch { seed: 42, suite_cycle: 3, step: 5 };
-        for program in [Program::default_simple(), Program::from_tm5_mode(0).unwrap(), Program::from_tm5_mode(1).unwrap(),
-                        Program::single(Family::Lines)] {
+        for program in [
+            Program::default_simple(),
+            Program::from_tm5_mode(0).unwrap(),
+            Program::from_tm5_mode(1).unwrap(),
+            Program::single(Family::Lines),
+        ] {
             for g in (0..16u64).step_by(2) {
                 let (p, q) = (program.phase(&epoch, 4, g, Schedule::Rounds, None), program.phase(&epoch, 4, g + 1, Schedule::Rounds, None));
                 assert_eq!((p.family, p.key, p.beat), (q.family, q.key, q.beat), "round {g}");
@@ -1270,10 +1279,17 @@ mod tests {
     fn programs_rotate_over_rounds_and_suite_cycles() {
         // A TM5 mode-0 import: four entries, switch twice
         let program = Program::from_tm5_mode(0).unwrap();
-        let at = |cycle, g| program.phase(&StepEpoch { seed: 1, suite_cycle: cycle, step: 0 }, 4, g, Schedule::Rounds, Some(BusBeat::Bits32)).family;
+        let at = |cycle, g| {
+            program.phase(&StepEpoch { seed: 1, suite_cycle: cycle, step: 0 }, 4, g, Schedule::Rounds, Some(BusBeat::Bits32)).family
+        };
         // A TM5 step: one cycle of its own, rounds 0-3, two pairs a suite cycle
-        assert_eq!([at(1, 0), at(1, 2), at(2, 0), at(2, 2), at(3, 0)],
-                   [Family::Ident, Family::Switch, Family::Random, Family::Switch, Family::Ident]);
+        assert_eq!([at(1, 0), at(1, 2), at(2, 0), at(2, 2), at(3, 0)], [
+            Family::Ident,
+            Family::Switch,
+            Family::Random,
+            Family::Switch,
+            Family::Ident
+        ]);
         // Keys differ by suite cycle, step and pair; never by thread
         let key = |cycle, step, g| program.phase(&StepEpoch { seed: 1, suite_cycle: cycle, step }, 4, g, Schedule::Rounds, None).key;
         let keys = [key(1, 0, 0), key(3, 0, 0), key(1, 1, 0), key(1, 0, 4)];
@@ -1298,7 +1314,11 @@ mod tests {
         }
         assert_eq!(crate::pattern_gen::MODES.map(group), [0, 0, 0, 1, 1, 1, 2, 3]);
         assert!(is_pattern_mode(31) && is_pattern_mode(20) && !is_pattern_mode(12) && !is_pattern_mode(14));
-        assert!(pattern_modes().ends_with("15 ident, 16 random, 17 linepair, 21 lines, 31 switch, 32 quiet, 33 header"), "{}", pattern_modes());
+        assert!(
+            pattern_modes().ends_with("15 ident, 16 random, 17 linepair, 21 lines, 31 switch, 32 quiet, 33 header"),
+            "{}",
+            pattern_modes()
+        );
     }
 
     /// `quiet` holds one pin through each line's transfers, 1 under P, and every other pin flips on
@@ -1369,13 +1389,21 @@ mod tests {
     fn unknown_width_alternates_the_switch_profiles() {
         use Family::*;
         let epoch = StepEpoch { seed: 9, suite_cycle: 1, step: 0 };
-        for families in [&[Ident, Switch][..], &[Switch], &[Ident, Switch, Random, Switch], &[Ident, Random, Switch, Switch],
-                         &[Switch, Ident, Random, Lines], &[Lines, Switch, Random]] {
+        for families in [
+            &[Ident, Switch][..],
+            &[Switch],
+            &[Ident, Switch, Random, Switch],
+            &[Ident, Random, Switch, Switch],
+            &[Switch, Ident, Random, Lines],
+            &[Lines, Switch, Random],
+        ] {
             let program = Program::new(families).unwrap();
-            let beats: Vec<u32> = (0..24u64).filter_map(|pair| {
-                let phase = program.phase(&epoch, 4, pair * 2, Schedule::Rounds, None);
-                (phase.family == Family::Switch).then(|| phase.beat.bits())
-            }).collect();
+            let beats: Vec<u32> = (0..24u64)
+                .filter_map(|pair| {
+                    let phase = program.phase(&epoch, 4, pair * 2, Schedule::Rounds, None);
+                    (phase.family == Family::Switch).then(|| phase.beat.bits())
+                })
+                .collect();
             assert!(beats.len() >= 4 && beats.chunks(2).all(|p| p.len() < 2 || p == [64, 32]), "{}: {beats:?}", program.name());
         }
     }

@@ -6,8 +6,9 @@
 // you to skip reading these.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
-use crate::memory::backend::{Backend, BackendAllocation};
 use std::sync::Arc;
+
+use crate::memory::backend::{Backend, BackendAllocation};
 
 /// Memory from a backend: where it is and how long. What pages and nodes it is on is the
 /// allocator's to report, per thread span (`stitched::ThreadSpan`), not the buffer's.
@@ -42,30 +43,22 @@ pub enum MemoryType {
 
 impl MemoryBuffer {
     pub fn new(allocation: BackendAllocation, backend: Arc<dyn Backend>) -> Self {
-        Self {
-            ptr: allocation.ptr,
-            size: allocation.size,
-            backend,
-        }
+        Self { ptr: allocation.ptr, size: allocation.size, backend }
     }
-    
-    pub fn as_mut_ptr(&self) -> *mut u8 { 
-        self.ptr 
+
+    pub fn as_mut_ptr(&self) -> *mut u8 {
+        self.ptr
     }
-    
-    pub fn size(&self) -> usize { 
-        self.size 
+
+    pub fn size(&self) -> usize {
+        self.size
     }
-    
 }
 
 impl Drop for MemoryBuffer {
     fn drop(&mut self) {
-        let allocation = BackendAllocation {
-            ptr: self.ptr,
-            size: self.size,
-        };
-        
+        let allocation = BackendAllocation { ptr: self.ptr, size: self.size };
+
         if let Err(e) = self.backend.free(allocation) {
             free_failed(&e);
         }

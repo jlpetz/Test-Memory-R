@@ -244,9 +244,9 @@ impl BusBeat {
     /// and LPDDR6 among them: set `beat=` on those).
     pub fn from_smbios_type(memory_type: u8) -> Option<Self> {
         match memory_type {
-            0x12 | 0x13 | 0x18 | 0x1A => Some(BusBeat::Bits64),  // DDR, DDR2, DDR3, DDR4
-            0x1D | 0x22 => Some(BusBeat::Bits32),                // LPDDR3, DDR5
-            0x1E | 0x23 => Some(BusBeat::Bits16),                // LPDDR4, LPDDR5
+            0x12 | 0x13 | 0x18 | 0x1A => Some(BusBeat::Bits64), // DDR, DDR2, DDR3, DDR4
+            0x1D | 0x22 => Some(BusBeat::Bits32),               // LPDDR3, DDR5
+            0x1E | 0x23 => Some(BusBeat::Bits16),               // LPDDR4, LPDDR5
             _ => None,
         }
     }
@@ -506,8 +506,12 @@ pub(crate) mod tests {
         let unique: std::collections::HashSet<u64> = words.iter().copied().collect();
         assert_eq!(unique.len(), 8);
         assert_ne!(mode20_line(0x4000_0080, key).0, seed);
-        for other in [mode20_key(4, 1, 0x5DEECE66D, 0xB), mode20_key(3, 2, 0x5DEECE66D, 0xB),
-                      mode20_key(3, 1, 0x5DEECE66E, 0xB), mode20_key(3, 1, 0x5DEECE66D, 0xC)] {
+        for other in [
+            mode20_key(4, 1, 0x5DEECE66D, 0xB),
+            mode20_key(3, 2, 0x5DEECE66D, 0xB),
+            mode20_key(3, 1, 0x5DEECE66E, 0xB),
+            mode20_key(3, 1, 0x5DEECE66D, 0xC),
+        ] {
             assert_ne!(mode20_line(0x4000_0040, other).0, seed);
         }
     }
@@ -531,19 +535,27 @@ pub(crate) mod tests {
     pub(crate) fn transfers(words: &[u64; LINE_WORDS], beat: BusBeat) -> Vec<Vec<(u64, u32)>> {
         let (bits, burst) = (beat.bits() as usize, beat.burst_bits() as usize);
         let bit = |p: usize| (words[p / 64] >> (p % 64)) & 1;
-        (0..512 / burst).map(|b| (0..burst.div_ceil(bits)).map(|t| {
-            let pins = bits.min(burst - t * bits);
-            let value = (0..pins).fold(0u64, |acc, l| acc | (bit(b * burst + t * bits + l) << l));
-            (value, pins as u32)
-        }).collect()).collect()
+        (0..512 / burst)
+            .map(|b| {
+                (0..burst.div_ceil(bits))
+                    .map(|t| {
+                        let pins = bits.min(burst - t * bits);
+                        let value = (0..pins).fold(0u64, |acc, l| acc | (bit(b * burst + t * bits + l) << l));
+                        (value, pins as u32)
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// Every pin of every burst holds the inverse at the next transfer it carries payload on
     pub(crate) fn flips_every_transfer(words: &[u64; LINE_WORDS], beat: BusBeat) -> bool {
-        transfers(words, beat).iter().all(|burst| burst.windows(2).all(|t| {
-            let mask = if t[1].1 == 64 { u64::MAX } else { (1u64 << t[1].1) - 1 };
-            (t[0].0 ^ t[1].0) & mask == mask
-        }))
+        transfers(words, beat).iter().all(|burst| {
+            burst.windows(2).all(|t| {
+                let mask = if t[1].1 == 64 { u64::MAX } else { (1u64 << t[1].1) - 1 };
+                (t[0].0 ^ t[1].0) & mask == mask
+            })
+        })
     }
 
     /// Mode 30: in address order, every beat of a line's burst is the inverse of the one before, at
@@ -564,7 +576,12 @@ pub(crate) mod tests {
             }
             // 4096 lines drawn from 2^8 values at 12 and 16 bits (all 256), 2^12 at 24 (about
             // 2600 by the birthday bound), 2^16 at 32 (about 3970), 2^32 at 64 (nearly all 4096)
-            let floor = match beat.bits() { 12 | 16 => 250, 24 => 2400, 32 => 3800, _ => 4090 };
+            let floor = match beat.bits() {
+                12 | 16 => 250,
+                24 => 2400,
+                32 => 3800,
+                _ => 4090,
+            };
             assert!(values.len() >= floor, "{beat:?}: {} distinct", values.len());
         }
         assert_eq!(BusBeat::from_smbios_type(0x22), Some(BusBeat::Bits32));
@@ -591,9 +608,8 @@ pub(crate) mod tests {
 
     #[test]
     fn test_cache_line_shift_values() {
-        assert_eq!(cache_line_shift(64), 3);  // 64/8 = 8 elements = 2^3
+        assert_eq!(cache_line_shift(64), 3); // 64/8 = 8 elements = 2^3
         assert_eq!(cache_line_shift(128), 4); // 128/8 = 16 elements = 2^4
-        assert_eq!(cache_line_shift(32), 2);  // 32/8 = 4 elements = 2^2
+        assert_eq!(cache_line_shift(32), 2); // 32/8 = 4 elements = 2^2
     }
-
 }

@@ -85,8 +85,10 @@ impl Sequence {
                 return Err(format!("a sequence lists at most {MAX_STEPS} steps"));
             }
             let (body, step_order) = match token.split_once('@') {
-                Some((body, o)) => (body, Some(Order::parse(o).ok_or_else(|| format!(
-                    "'{token}': the order is forward, reverse, random or stride, not '{o}'"))?)),
+                Some((body, o)) => (
+                    body,
+                    Some(Order::parse(o).ok_or_else(|| format!("'{token}': the order is forward, reverse, random or stride, not '{o}'"))?),
+                ),
                 None => (token, None),
             };
             let digits = body.find(|c: char| !c.is_ascii_digit()).unwrap_or(body.len());
@@ -98,8 +100,12 @@ impl Sequence {
                 "W" => Op::Write,
                 "R" => Op::Read,
                 "RW" => Op::ReadWrite,
-                "WR" => return Err(format!("'{token}': WR isn't a step: a read straight after a write of the same line \
-                    is answered by the cache; W then R reads it from memory")),
+                "WR" => {
+                    return Err(format!(
+                        "'{token}': WR isn't a step: a read straight after a write of the same line \
+                    is answered by the cache; W then R reads it from memory"
+                    ));
+                }
                 other => return Err(format!("'{token}': a step is W, R or RW, with a count and an @order, not '{other}'")),
             };
             if !(1..=MAX_COUNT).contains(&count) {
@@ -189,16 +195,20 @@ impl Sequence {
 
     /// `W 4R RW 2R@random`, the steps as given, with `@order` where a step names one.
     pub fn name(&self) -> String {
-        self.steps().iter().map(|s| {
-            let op = match s.op {
-                Op::Write => "W",
-                Op::Read => "R",
-                Op::ReadWrite => "RW",
-            };
-            let count = if s.count == 1 { String::new() } else { s.count.to_string() };
-            let order = s.order.map_or(String::new(), |o| format!("@{}", o.name()));
-            format!("{count}{op}{order}")
-        }).collect::<Vec<_>>().join(" ")
+        self.steps()
+            .iter()
+            .map(|s| {
+                let op = match s.op {
+                    Op::Write => "W",
+                    Op::Read => "R",
+                    Op::ReadWrite => "RW",
+                };
+                let count = if s.count == 1 { String::new() } else { s.count.to_string() };
+                let order = s.order.map_or(String::new(), |o| format!("@{}", o.name()));
+                format!("{count}{op}{order}")
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -255,8 +265,15 @@ mod tests {
         assert!(Sequence::parse("W R W", Order::Forward).unwrap().unread_writes(), "the last write");
         assert!(Sequence::parse("W RW W R", Order::Forward).unwrap().unread_writes(), "RW's write, overwritten");
         assert!(!Sequence::parse("3X", Order::Forward).unwrap_err().contains("cache"), "the WR note is for WR");
-        for (bad, says) in [("", "empty"), ("W 2W", "never reads"), ("WR", "cache"), ("3X", "W, R or RW"),
-                            ("R@sideways", "forward, reverse"), ("0R", "1 to 64"), ("65R", "1 to 64")] {
+        for (bad, says) in [
+            ("", "empty"),
+            ("W 2W", "never reads"),
+            ("WR", "cache"),
+            ("3X", "W, R or RW"),
+            ("R@sideways", "forward, reverse"),
+            ("0R", "1 to 64"),
+            ("65R", "1 to 64"),
+        ] {
             let err = Sequence::parse(bad, Order::Forward).unwrap_err();
             assert!(err.contains(says), "'{bad}': {err}");
         }
@@ -282,4 +299,3 @@ mod tests {
         assert!(far > 3500, "{far} of 4095 steps went far");
     }
 }
-

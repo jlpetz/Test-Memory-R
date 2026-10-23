@@ -243,7 +243,7 @@ pub struct TestPerformanceEntry {
 /// Final test summary report
 #[derive(Debug, Clone)]
 pub struct FinalTestSummaryReport {
-    pub total_runtime: String,              // Fixed format: "HH:MM:SS"
+    pub total_runtime: String, // Fixed format: "HH:MM:SS"
     pub cycles_completed: usize,
     pub total_data_processed_gib: f64,
     pub overall_throughput_mib_s: f64,
@@ -321,7 +321,7 @@ pub struct TestSummaryEntry {
     pub latency_p95_ns: Option<f64>,
     pub latency_p99_ns: Option<f64>,
     pub latency_p99_9_ns: Option<f64>,
-    pub latency_spread: Option<f64>,  // P95/P5 ratio
+    pub latency_spread: Option<f64>, // P95/P5 ratio
 }
 
 /// Consolidated memory report combining current status and allocation planning
@@ -334,7 +334,7 @@ pub struct ConsolidatedMemoryReport {
     pub used_physical_bytes: u64,
     pub total_virtual_bytes: u64,
     pub memory_load_percent: u32,
-    
+
     // Allocation planning information, as in `AllocationResult`
     pub reference_bytes: u64,
     pub reference_name: &'static str,
@@ -487,9 +487,9 @@ pub struct LatencyTestSummaryReport {
 /// Summary of latency measurements for a single cache level across all threads
 #[derive(Debug, Clone)]
 pub struct LatencyLevelSummary {
-    pub total_samples: usize,          // Total samples across all threads
+    pub total_samples: usize, // Total samples across all threads
     pub per_thread_results: Vec<LatencyThreadResult>,
-    pub consolidated: LatencyPercentiles,  // Consolidated across all threads
+    pub consolidated: LatencyPercentiles, // Consolidated across all threads
 }
 
 /// Per-thread latency results
@@ -514,7 +514,7 @@ pub struct LatencyPercentiles {
     pub p95_ns: f64,
     pub p99_ns: f64,
     pub p99_9_ns: f64,
-    pub spread_ratio: f64,  // P95/P5 - indicates variability
+    pub spread_ratio: f64, // P95/P5 - indicates variability
 }
 
 // Note: CacheLatencyLevel was removed - --cache-latency now uses LatencyLevelSummary
@@ -545,10 +545,7 @@ pub enum ColumnAlignment {
 
 impl TableHeader {
     pub fn new(text: impl Into<String>, alignment: ColumnAlignment) -> Self {
-        Self {
-            text: text.into(),
-            alignment,
-        }
+        Self { text: text.into(), alignment }
     }
 }
 
@@ -560,29 +557,24 @@ impl Default for TableData {
 
 impl TableData {
     pub fn new() -> Self {
-        Self {
-            title: None,
-            headers: Vec::new(),
-            rows: Vec::new(),
-            footer: None,
-        }
+        Self { title: None, headers: Vec::new(), rows: Vec::new(), footer: None }
     }
-    
+
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
     }
-    
+
     pub fn add_header(mut self, text: impl Into<String>, alignment: ColumnAlignment) -> Self {
         self.headers.push(TableHeader::new(text, alignment));
         self
     }
-    
+
     pub fn add_row(mut self, row: Vec<String>) -> Self {
         self.rows.push(row);
         self
     }
-    
+
     pub fn with_footer(mut self, footer: impl Into<String>) -> Self {
         self.footer = Some(footer.into());
         self

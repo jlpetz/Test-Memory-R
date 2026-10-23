@@ -106,8 +106,9 @@ mod tests {
     fn warnings_reach_the_window_and_a_full_channel_counts_what_it_drops() {
         let (logger, window) = logger(LevelFilter::Info, 2);
         let log = |level: Level, target: &str, text: &str| {
-            logger.log(&Record::builder().level(level).target(target).module_path_static(Some("tmr::tests"))
-                .args(format_args!("{text}")).build());
+            logger.log(
+                &Record::builder().level(level).target(target).module_path_static(Some("tmr::tests")).args(format_args!("{text}")).build(),
+            );
         };
         log(Level::Info, "tmr::tests", "a step began");
         log(Level::Debug, "tmr::tests", "below the level");
@@ -121,8 +122,11 @@ mod tests {
             assert!(lines.iter().all(|line| line.starts_with('[') && line.as_bytes()[9] == b' '), "{lines:?}");
             (lines.iter().map(|line| line[10..].to_string()).collect::<Vec<_>>(), dropped)
         };
-        assert_eq!(take(), (vec!["WARN tmr::tests] bad word at 0x1000".to_string(), "ERROR tmr::tests] second bad word".to_string()], 1),
-                   "the third dropped, with the channel full");
+        assert_eq!(
+            take(),
+            (vec!["WARN tmr::tests] bad word at 0x1000".to_string(), "ERROR tmr::tests] second bad word".to_string()], 1),
+            "the third dropped, with the channel full"
+        );
 
         // Drained, it takes lines again, and the count stays the run's
         log(Level::Warn, "tmr::tests", "fourth");

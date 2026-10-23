@@ -1,14 +1,14 @@
 // This file contains the redesigned latency tests using pointer chasing
 // to defeat prefetchers and ensure accurate latency measurements
 
-use crate::ErrorMode;
-use crate::runner::AllocationBlock;
-use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats};
-use crate::test_scaffolding::TestRunner;
-use std::sync::atomic::{fence, Ordering};
-
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::__rdtscp;
+use std::sync::atomic::{Ordering, fence};
+
+use crate::ErrorMode;
+use crate::runner::AllocationBlock;
+use crate::test_scaffolding::TestRunner;
+use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestStats, TestTiming};
 
 /// Extended stats for latency tests including percentiles
 
@@ -19,16 +19,16 @@ pub struct LatencyTestStats {
     pub sample_count: usize,
 
     // Full percentile breakdown
-    pub p1_ns: f64,     // 1st percentile
-    pub p5_ns: f64,     // 5th percentile
-    pub p10_ns: f64,    // 10th percentile
-    pub p25_ns: f64,    // Lower quartile
-    pub p50_ns: f64,    // Median
-    pub p75_ns: f64,    // Upper quartile
-    pub p90_ns: f64,    // 90th percentile
-    pub p95_ns: f64,    // 95th percentile
-    pub p99_ns: f64,    // 99th percentile
-    pub p99_9_ns: f64,  // 99.9th percentile
+    pub p1_ns: f64,    // 1st percentile
+    pub p5_ns: f64,    // 5th percentile
+    pub p10_ns: f64,   // 10th percentile
+    pub p25_ns: f64,   // Lower quartile
+    pub p50_ns: f64,   // Median
+    pub p75_ns: f64,   // Upper quartile
+    pub p90_ns: f64,   // 90th percentile
+    pub p95_ns: f64,   // 95th percentile
+    pub p99_ns: f64,   // 99th percentile
+    pub p99_9_ns: f64, // 99.9th percentile
 
     // Spread ratio (P95/P5) - high values suggest cache level spills
     pub spread_ratio: f64,
@@ -96,7 +96,6 @@ impl LatencyTestStats {
     }
 }
 
-
 /// One step of the setup RNG (xorshift64), mapped onto `[0, n)` by multiply-high: no division.
 #[inline(always)]
 pub(crate) fn below(rng: &mut u64, n: usize) -> usize {
@@ -128,11 +127,7 @@ pub(crate) unsafe fn build_cycle_u64(base: *mut u64, n: usize, seed: u64) {
 /// Read Latency Test - Uses pointer chasing for true random-access latency
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn read_latency_multi(
-    blocks: &[AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     let test_name = "ReadLatency";
@@ -152,8 +147,14 @@ pub unsafe fn read_latency_multi(
     let len = extent.test_size / std::mem::size_of::<u64>();
     let iterations = len.min(1000); // Fixed iterations for consistent measurements
 
-    log::debug!("[Thread {}] {} - Working set: {} bytes ({} elements) targeting {}",
-        thread_id, test_name, extent.test_size, len, config.extent_mode.target_level_name());
+    log::debug!(
+        "[Thread {}] {} - Working set: {} bytes ({} elements) targeting {}",
+        thread_id,
+        test_name,
+        extent.test_size,
+        len,
+        config.extent_mode.target_level_name()
+    );
 
     build_cycle_u64(base, len, thread_id as u64);
 
@@ -174,8 +175,8 @@ pub unsafe fn read_latency_multi(
         let start_cycles = __rdtscp(&mut aux);
 
         for _ in 0..iterations {
-            let addr = *ptr;  // Read address of next location
-            ptr = addr as *mut u64;  // Jump to that location
+            let addr = *ptr; // Read address of next location
+            ptr = addr as *mut u64; // Jump to that location
         }
 
         let end_cycles = __rdtscp(&mut aux);
@@ -184,16 +185,27 @@ pub unsafe fn read_latency_multi(
         // Use result to prevent optimization
         std::hint::black_box(ptr);
 
-            let delta_cycles = end_cycles - start_cycles;
-            let cycles_per_read = delta_cycles as f64 / iterations as f64;
-            let latency_ns = cycles_per_read / cpu_ghz;
+        let delta_cycles = end_cycles - start_cycles;
+        let cycles_per_read = delta_cycles as f64 / iterations as f64;
+        let latency_ns = cycles_per_read / cpu_ghz;
 
-            if latencies_ns.len() < 10 {
-                log::debug!("[Thread {}] {} sample #{}: start={} end={} delta={} iter={} cycles/op={:.2} freq={:.3}GHz latency={:.2}ns",
-                    thread_id, test_name, latencies_ns.len() + 1, start_cycles, end_cycles, delta_cycles, iterations, cycles_per_read, cpu_ghz, latency_ns);
-            }
+        if latencies_ns.len() < 10 {
+            log::debug!(
+                "[Thread {}] {} sample #{}: start={} end={} delta={} iter={} cycles/op={:.2} freq={:.3}GHz latency={:.2}ns",
+                thread_id,
+                test_name,
+                latencies_ns.len() + 1,
+                start_cycles,
+                end_cycles,
+                delta_cycles,
+                iterations,
+                cycles_per_read,
+                cpu_ghz,
+                latency_ns
+            );
+        }
 
-            latencies_ns.push(latency_ns);
+        latencies_ns.push(latency_ns);
         runner.add_bytes(iterations * 8);
 
         runner.update_progress();
@@ -206,11 +218,23 @@ pub unsafe fn read_latency_multi(
     result.basic_stats = runner.finish_completed((runner.bytes_processed() / 8) as u64);
 
     // Log per-thread results with all percentiles
-    log::info!("[Thread {}] {} - {} samples | P1={:.1} P5={:.1} P10={:.1} P25={:.1} P50={:.1} P75={:.1} P90={:.1} P95={:.1} P99={:.1} P99.9={:.1} | Spread={:.2}x",
-        thread_id, test_name, result.sample_count,
-        result.p1_ns, result.p5_ns, result.p10_ns, result.p25_ns, result.p50_ns,
-        result.p75_ns, result.p90_ns, result.p95_ns, result.p99_ns, result.p99_9_ns,
-        result.spread_ratio);
+    log::info!(
+        "[Thread {}] {} - {} samples | P1={:.1} P5={:.1} P10={:.1} P25={:.1} P50={:.1} P75={:.1} P90={:.1} P95={:.1} P99={:.1} P99.9={:.1} | Spread={:.2}x",
+        thread_id,
+        test_name,
+        result.sample_count,
+        result.p1_ns,
+        result.p5_ns,
+        result.p10_ns,
+        result.p25_ns,
+        result.p50_ns,
+        result.p75_ns,
+        result.p90_ns,
+        result.p95_ns,
+        result.p99_ns,
+        result.p99_9_ns,
+        result.spread_ratio
+    );
 
     result
 }
@@ -218,11 +242,7 @@ pub unsafe fn read_latency_multi(
 /// Write Latency Test - Uses pointer chasing for addresses, writes simple values
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn write_latency_multi(
-    blocks: &[AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     let test_name = "WriteLatency";
@@ -244,9 +264,16 @@ pub unsafe fn write_latency_multi(
     let write_base = chain_base.add(chain_len);
     let iterations = chain_len.min(1000);
 
-    log::debug!("[Thread {}] {} - Working set: {} bytes ({} elements: {} chain + {} write) targeting {}",
-        thread_id, test_name, extent.test_size, chain_len * 2, chain_len, chain_len,
-        config.extent_mode.target_level_name());
+    log::debug!(
+        "[Thread {}] {} - Working set: {} bytes ({} elements: {} chain + {} write) targeting {}",
+        thread_id,
+        test_name,
+        extent.test_size,
+        chain_len * 2,
+        chain_len,
+        chain_len,
+        config.extent_mode.target_level_name()
+    );
 
     build_cycle_u64(chain_base, chain_len, thread_id as u64);
 
@@ -267,12 +294,12 @@ pub unsafe fn write_latency_multi(
 
         // Follow pointer chain to get random offsets, write to parallel region
         for i in 0..iterations {
-            let next_chain_addr = *chain_ptr;  // Read next from chain (doesn't modify chain)
+            let next_chain_addr = *chain_ptr; // Read next from chain (doesn't modify chain)
             // Calculate offset from chain position, write to parallel location
             let offset = (chain_ptr as usize - chain_base as usize) / 8;
             let write_ptr = write_base.add(offset);
-            *write_ptr = i as u64;  // Write to parallel location (random address)
-            chain_ptr = next_chain_addr as *mut u64;  // Move to next in chain
+            *write_ptr = i as u64; // Write to parallel location (random address)
+            chain_ptr = next_chain_addr as *mut u64; // Move to next in chain
         }
 
         let end_cycles = __rdtscp(&mut aux);
@@ -280,16 +307,27 @@ pub unsafe fn write_latency_multi(
 
         std::hint::black_box(chain_ptr);
 
-            let delta_cycles = end_cycles - start_cycles;
-            let cycles_per_write = delta_cycles as f64 / iterations as f64;
-            let latency_ns = cycles_per_write / cpu_ghz;
+        let delta_cycles = end_cycles - start_cycles;
+        let cycles_per_write = delta_cycles as f64 / iterations as f64;
+        let latency_ns = cycles_per_write / cpu_ghz;
 
-            if latencies_ns.len() < 10 {
-                log::debug!("[Thread {}] {} sample #{}: start={} end={} delta={} iter={} cycles/op={:.2} freq={:.3}GHz latency={:.2}ns",
-                    thread_id, test_name, latencies_ns.len() + 1, start_cycles, end_cycles, delta_cycles, iterations, cycles_per_write, cpu_ghz, latency_ns);
-            }
+        if latencies_ns.len() < 10 {
+            log::debug!(
+                "[Thread {}] {} sample #{}: start={} end={} delta={} iter={} cycles/op={:.2} freq={:.3}GHz latency={:.2}ns",
+                thread_id,
+                test_name,
+                latencies_ns.len() + 1,
+                start_cycles,
+                end_cycles,
+                delta_cycles,
+                iterations,
+                cycles_per_write,
+                cpu_ghz,
+                latency_ns
+            );
+        }
 
-            latencies_ns.push(latency_ns);
+        latencies_ns.push(latency_ns);
         runner.add_bytes(iterations * 8);
 
         runner.update_progress();
@@ -302,11 +340,23 @@ pub unsafe fn write_latency_multi(
     result.basic_stats = runner.finish_completed((runner.bytes_processed() / 8) as u64);
 
     // Log per-thread results with all percentiles
-    log::info!("[Thread {}] {} - {} samples | P1={:.1} P5={:.1} P10={:.1} P25={:.1} P50={:.1} P75={:.1} P90={:.1} P95={:.1} P99={:.1} P99.9={:.1} | Spread={:.2}x",
-        thread_id, test_name, result.sample_count,
-        result.p1_ns, result.p5_ns, result.p10_ns, result.p25_ns, result.p50_ns,
-        result.p75_ns, result.p90_ns, result.p95_ns, result.p99_ns, result.p99_9_ns,
-        result.spread_ratio);
+    log::info!(
+        "[Thread {}] {} - {} samples | P1={:.1} P5={:.1} P10={:.1} P25={:.1} P50={:.1} P75={:.1} P90={:.1} P95={:.1} P99={:.1} P99.9={:.1} | Spread={:.2}x",
+        thread_id,
+        test_name,
+        result.sample_count,
+        result.p1_ns,
+        result.p5_ns,
+        result.p10_ns,
+        result.p25_ns,
+        result.p50_ns,
+        result.p75_ns,
+        result.p90_ns,
+        result.p95_ns,
+        result.p99_ns,
+        result.p99_9_ns,
+        result.spread_ratio
+    );
 
     result
 }
@@ -314,11 +364,7 @@ pub unsafe fn write_latency_multi(
 /// Copy Latency Test - Uses pointer chasing for source addresses
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn copy_latency_multi(
-    blocks: &[AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     let test_name = "CopyLatency";
@@ -340,9 +386,15 @@ pub unsafe fn copy_latency_multi(
     let dst_base = src_base.add(half_len);
     let iterations = half_len.min(1000);
 
-    log::debug!("[Thread {}] {} - Working set: {} bytes per buffer ({} elements each, {} total) targeting {}",
-        thread_id, test_name, half_len * std::mem::size_of::<u64>(), half_len, half_len * 2,
-        config.extent_mode.target_level_name());
+    log::debug!(
+        "[Thread {}] {} - Working set: {} bytes per buffer ({} elements each, {} total) targeting {}",
+        thread_id,
+        test_name,
+        half_len * std::mem::size_of::<u64>(),
+        half_len,
+        half_len * 2,
+        config.extent_mode.target_level_name()
+    );
 
     build_cycle_u64(src_base, half_len, thread_id as u64);
 
@@ -367,11 +419,13 @@ pub unsafe fn copy_latency_multi(
         let dst_end = dst_base.add(half_len);
         let mut dst_ptr = dst_base.add(dst_offset);
         for _ in 0..iterations {
-            let value = *src_ptr;  // Read pointer (also serves as data value)
-            *dst_ptr = value;  // Write to destination
-            src_ptr = value as *mut u64;  // Move source (chain follows the value)
+            let value = *src_ptr; // Read pointer (also serves as data value)
+            *dst_ptr = value; // Write to destination
+            src_ptr = value as *mut u64; // Move source (chain follows the value)
             dst_ptr = dst_ptr.add(1);
-            if dst_ptr >= dst_end { dst_ptr = dst_base; }  // Predictable branch — replaces idiv
+            if dst_ptr >= dst_end {
+                dst_ptr = dst_base;
+            } // Predictable branch — replaces idiv
         }
         dst_offset = dst_ptr.offset_from(dst_base) as usize;
 
@@ -381,16 +435,27 @@ pub unsafe fn copy_latency_multi(
         std::hint::black_box(src_ptr);
         std::hint::black_box(dst_offset);
 
-            let delta_cycles = end_cycles - start_cycles;
-            let cycles_per_copy = delta_cycles as f64 / iterations as f64;
-            let latency_ns = cycles_per_copy / cpu_ghz;
+        let delta_cycles = end_cycles - start_cycles;
+        let cycles_per_copy = delta_cycles as f64 / iterations as f64;
+        let latency_ns = cycles_per_copy / cpu_ghz;
 
-            if latencies_ns.len() < 10 {
-                log::debug!("[Thread {}] {} sample #{}: start={} end={} delta={} iter={} cycles/op={:.2} freq={:.3}GHz latency={:.2}ns",
-                    thread_id, test_name, latencies_ns.len() + 1, start_cycles, end_cycles, delta_cycles, iterations, cycles_per_copy, cpu_ghz, latency_ns);
-            }
+        if latencies_ns.len() < 10 {
+            log::debug!(
+                "[Thread {}] {} sample #{}: start={} end={} delta={} iter={} cycles/op={:.2} freq={:.3}GHz latency={:.2}ns",
+                thread_id,
+                test_name,
+                latencies_ns.len() + 1,
+                start_cycles,
+                end_cycles,
+                delta_cycles,
+                iterations,
+                cycles_per_copy,
+                cpu_ghz,
+                latency_ns
+            );
+        }
 
-            latencies_ns.push(latency_ns);
+        latencies_ns.push(latency_ns);
         runner.add_bytes(iterations * 16);
 
         runner.update_progress();
@@ -403,11 +468,23 @@ pub unsafe fn copy_latency_multi(
     result.basic_stats = runner.finish_completed((runner.bytes_processed() / 16) as u64);
 
     // Log per-thread results with all percentiles
-    log::info!("[Thread {}] {} - {} samples | P1={:.1} P5={:.1} P10={:.1} P25={:.1} P50={:.1} P75={:.1} P90={:.1} P95={:.1} P99={:.1} P99.9={:.1} | Spread={:.2}x",
-        thread_id, test_name, result.sample_count,
-        result.p1_ns, result.p5_ns, result.p10_ns, result.p25_ns, result.p50_ns,
-        result.p75_ns, result.p90_ns, result.p95_ns, result.p99_ns, result.p99_9_ns,
-        result.spread_ratio);
+    log::info!(
+        "[Thread {}] {} - {} samples | P1={:.1} P5={:.1} P10={:.1} P25={:.1} P50={:.1} P75={:.1} P90={:.1} P95={:.1} P99={:.1} P99.9={:.1} | Spread={:.2}x",
+        thread_id,
+        test_name,
+        result.sample_count,
+        result.p1_ns,
+        result.p5_ns,
+        result.p10_ns,
+        result.p25_ns,
+        result.p50_ns,
+        result.p75_ns,
+        result.p90_ns,
+        result.p95_ns,
+        result.p99_ns,
+        result.p99_9_ns,
+        result.spread_ratio
+    );
 
     result
 }

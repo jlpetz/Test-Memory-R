@@ -354,11 +354,17 @@ impl Model {
     /// The info line: the session's facts, or until there are any, the command Start runs (ran)
     pub fn info_line(&self) -> String {
         let f = &self.facts;
-        let facts: Vec<&str> = [f.allocation.as_deref(), f.plan.as_deref(), f.no_large_pages.then_some("no large pages"),
-                                f.left_out.as_deref(), f.whea_unmonitored.then_some("WHEA not monitored"), f.results.as_deref()]
-            .into_iter()
-            .flatten()
-            .collect();
+        let facts: Vec<&str> = [
+            f.allocation.as_deref(),
+            f.plan.as_deref(),
+            f.no_large_pages.then_some("no large pages"),
+            f.left_out.as_deref(),
+            f.whea_unmonitored.then_some("WHEA not monitored"),
+            f.results.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         if !facts.is_empty() {
             facts.join(" · ")
         } else if self.args.trim().is_empty() {
@@ -379,9 +385,17 @@ impl Model {
     fn setup(&mut self, setup: Setup) {
         match setup {
             // The console's alone: the parameters as given, and the detail behind the facts below
-            Setup::TestFilter { .. } | Setup::QuickTest | Setup::ParamNotes(_) | Setup::StartupHeader { .. }
-            | Setup::StartupParams { .. } | Setup::CpuType { .. } | Setup::CpuFilter { .. } | Setup::CpuCount { .. }
-            | Setup::LargePageDiagnostic { .. } | Setup::CacheCalibration(_) | Setup::SealCalibration(_)
+            Setup::TestFilter { .. }
+            | Setup::QuickTest
+            | Setup::ParamNotes(_)
+            | Setup::StartupHeader { .. }
+            | Setup::StartupParams { .. }
+            | Setup::CpuType { .. }
+            | Setup::CpuFilter { .. }
+            | Setup::CpuCount { .. }
+            | Setup::LargePageDiagnostic { .. }
+            | Setup::CacheCalibration(_)
+            | Setup::SealCalibration(_)
             | Setup::CpuTopology { .. } => {}
             Setup::Selection(selection) => {
                 self.facts.allocation = Some(format!("{} thread{}", selection.threads, plural(selection.threads)));
@@ -397,8 +411,9 @@ impl Model {
                 self.system = Some(SystemPanel::of(&Machine::of(&report, memory_modules)));
             }
             Setup::Starting => self.position = "Starting".to_string(),
-            Setup::RealtimeOnEveryCpu => self.errors.push(
-                "priority=realtime with a worker on every logical CPU: the window can freeze until the run ends".to_string()),
+            Setup::RealtimeOnEveryCpu => self
+                .errors
+                .push("priority=realtime with a worker on every logical CPU: the window can freeze until the run ends".to_string()),
             Setup::Plan { name, .. } => {
                 self.facts.plan_name = Some(name);
                 self.facts.plan = Some(format!("plan {name}"));
@@ -429,8 +444,11 @@ impl Model {
             RestartChoice::Exit => self.position = "Exiting, to restart Windows".to_string(),
             RestartChoice::Continue4K => {
                 self.position = "Setting up, on 4 KiB pages".to_string();
-                self.errors.push("Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages \
-                                  (minpage=regular)".to_string());
+                self.errors.push(
+                    "Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages \
+                                  (minpage=regular)"
+                        .to_string(),
+                );
             }
         }
     }
@@ -522,8 +540,8 @@ impl Model {
             Err(e) => self.errors.push(format!("Error: {e}")),
             Ok(SessionEnd::Stopped(why)) => self.errors.push(stopped(why)),
             Ok(SessionEnd::Command(_)) => {
-                self.errors.push("A one-shot command (--help, --calibrate-cache, ...) runs on the console: tmr.exe without --gui"
-                                 .to_string());
+                self.errors
+                    .push("A one-shot command (--help, --calibrate-cache, ...) runs on the console: tmr.exe without --gui".to_string());
             }
             Ok(SessionEnd::RestartChosen) => position = "Restart Windows for large pages, then run again",
             // As the console has it, only a plan that was shown; one stopped before it is Stopped before testing
@@ -550,8 +568,13 @@ impl Model {
         };
         let cycles = self.cycles_finished as usize;
         let last = if self.last_partial { ", the last stopped early" } else { "" };
-        format!("{how} · {cycles} cycle{}{last}, {} steps · {memory_errors} errors + {} WHEA{}",
-                plural(cycles), self.rows.len(), whea.total, whea.split_suffix())
+        format!(
+            "{how} · {cycles} cycle{}{last}, {} steps · {memory_errors} errors + {} WHEA{}",
+            plural(cycles),
+            self.rows.len(),
+            whea.total,
+            whea.split_suffix()
+        )
     }
 }
 
@@ -587,8 +610,16 @@ fn step_errors(report: &StepReport) -> Option<String> {
     }
     let seal = if report.sealed { format!(" + {} seal{}", s.seal_errors, s.seal_failing_bits.brief()) } else { String::new() };
     let whea = WheaCounts { total: s.whea_total, corrected: s.whea_corrected };
-    Some(format!("Cycle {} · step {} · {}: {} errors{}{seal} + {} WHEA{}",
-                 report.cycle, s.step, s.label, s.errors, s.failing_bits.brief(), whea.total, whea.split_suffix()))
+    Some(format!(
+        "Cycle {} · step {} · {}: {} errors{}{seal} + {} WHEA{}",
+        report.cycle,
+        s.step,
+        s.label,
+        s.errors,
+        s.failing_bits.brief(),
+        whea.total,
+        whea.split_suffix()
+    ))
 }
 
 /// What allocation got: `8 threads · 28.0 GiB · 1 GiB pages`, the page sizes by their share when
@@ -597,18 +628,19 @@ fn allocation_fact(report: &AllocationReport) -> String {
     let threads = report.threads.len();
     let bytes: u64 = report.threads.iter().map(|t| t.allocated_bytes).sum();
     let sum = |of: fn(&tmr::frontend::AllocationThread) -> u64| report.threads.iter().map(of).sum::<u64>();
-    let sizes: Vec<(&str, u64)> = [("1 GiB", sum(|t| t.huge_bytes)), ("2 MiB", sum(|t| t.large_bytes)), ("4 KiB", sum(|t| t.regular_bytes))]
-        .into_iter()
-        .filter(|&(_, bytes)| bytes > 0)
-        .collect();
+    let sizes: Vec<(&str, u64)> =
+        [("1 GiB", sum(|t| t.huge_bytes)), ("2 MiB", sum(|t| t.large_bytes)), ("4 KiB", sum(|t| t.regular_bytes))]
+            .into_iter()
+            .filter(|&(_, bytes)| bytes > 0)
+            .collect();
     let total: u64 = sizes.iter().map(|&(_, bytes)| bytes).sum();
     let pages = match sizes.as_slice() {
         [] => String::new(),
         [(size, _)] => format!(" · {size} pages"),
-        _ => format!(" · pages {}", sizes.iter()
-            .map(|&(size, bytes)| format!("{size} {:.0}%", bytes as f64 * 100.0 / total as f64))
-            .collect::<Vec<_>>()
-            .join(", ")),
+        _ => format!(
+            " · pages {}",
+            sizes.iter().map(|&(size, bytes)| format!("{size} {:.0}%", bytes as f64 * 100.0 / total as f64)).collect::<Vec<_>>().join(", ")
+        ),
     };
     format!("{threads} thread{} · {:.1} GiB{pages}", plural(threads), bytes as f64 / GIB)
 }
@@ -708,11 +740,12 @@ pub fn args_of(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tmr::frontend::{
         AllocationThread, CacheInfo, CpuInfo, ErrorMode, LiveFigures, MemoryModule, MemoryStatus, Selection, StepConfigLine,
         SystemInfoReport, TestSnapshot, TestSummary, ThreadTimingReport, TscCalibrationInfo,
     };
+
+    use super::*;
 
     /// A step of `cycle` that found `errors`, and `seal` errors in a sealed run (`None` unsealed),
     /// while WHEA saw `whea`. Every count is its own, so a row or a line that read the wrong one
@@ -814,8 +847,16 @@ mod tests {
     /// Setup's choice of 6 threads of 6 available cores
     fn selection() -> Selection {
         Selection {
-            error_mode: ErrorMode::Log, threads: 6, available: 6, cputype: "cores".to_string(), cpu_list: vec![0, 2, 4, 6, 8, 10],
-            pinned: true, cpus_to_skip: 0, avoid_smt_doubling: false, cycles: Some(2), duration_secs: None,
+            error_mode: ErrorMode::Log,
+            threads: 6,
+            available: 6,
+            cputype: "cores".to_string(),
+            cpu_list: vec![0, 2, 4, 6, 8, 10],
+            pinned: true,
+            cpus_to_skip: 0,
+            avoid_smt_doubling: false,
+            cycles: Some(2),
+            duration_secs: None,
             simd: "SSE, AVX2".to_string(),
         }
     }
@@ -824,18 +865,36 @@ mod tests {
     fn system_info() -> SystemInfoReport {
         SystemInfoReport {
             cpu_info: CpuInfo {
-                brand: "AMD Ryzen 5 8600G w/ Radeon 760M Graphics".to_string(), vendor: "AuthenticAMD".to_string(), family: 25,
-                model: 117, stepping: 2, physical_cores: 6, logical_cores: 12, has_hyperthreading: true,
+                brand: "AMD Ryzen 5 8600G w/ Radeon 760M Graphics".to_string(),
+                vendor: "AuthenticAMD".to_string(),
+                family: 25,
+                model: 117,
+                stepping: 2,
+                physical_cores: 6,
+                logical_cores: 12,
+                has_hyperthreading: true,
                 simd_capabilities: vec!["AVX2".to_string()],
             },
             cache_info: CacheInfo {
-                l1_data_total: 6 * (32 << 10), l1_instruction_total: 6 * (32 << 10), l2_total: 6 << 20, l3_total: 16 << 20,
-                per_core_l1d: 32 << 10, per_core_l1i: 32 << 10, per_core_l2: 1 << 20, cache_line_size: 64,
+                l1_data_total: 6 * (32 << 10),
+                l1_instruction_total: 6 * (32 << 10),
+                l2_total: 6 << 20,
+                l3_total: 16 << 20,
+                per_core_l1d: 32 << 10,
+                per_core_l1i: 32 << 10,
+                per_core_l2: 1 << 20,
+                cache_line_size: 64,
                 detection_method: "raw_cpuid leaf 4".to_string(),
             },
             tsc_info: TscCalibrationInfo {
-                frequency_ghz: 4.3, detection_method: "cpuid".to_string(), is_invariant: true, confidence_percent: 99.0, samples: 5,
-                calibration_time_ms: 50, std_dev_ghz: 0.001, converged: true,
+                frequency_ghz: 4.3,
+                detection_method: "cpuid".to_string(),
+                is_invariant: true,
+                confidence_percent: 99.0,
+                samples: 5,
+                calibration_time_ms: 50,
+                std_dev_ghz: 0.001,
+                converged: true,
             },
         }
     }
@@ -851,22 +910,48 @@ mod tests {
         assert_eq!(m.status, Status::Running);
 
         let thread = |huge: u64, large: u64| AllocationThread {
-            thread_id: 0, numa_node: Some(0), target_bytes: huge + large, allocated_bytes: huge + large,
-            huge_bytes: huge, large_bytes: large, regular_bytes: 0, remote_bytes: 0, commits: Vec::new(),
+            thread_id: 0,
+            numa_node: Some(0),
+            target_bytes: huge + large,
+            allocated_bytes: huge + large,
+            huge_bytes: huge,
+            large_bytes: large,
+            regular_bytes: 0,
+            remote_bytes: 0,
+            commits: Vec::new(),
         };
         let allocated = AllocationReport {
-            allocator: "stitched".to_string(), elapsed: Duration::from_millis(900), numa_nodes: 1,
-            threads: vec![thread(3 << 30, 1 << 30), thread(5 << 30, 0)], nodes: Vec::new(), commit_groups: Vec::new(), fairness: Vec::new(),
+            allocator: "stitched".to_string(),
+            elapsed: Duration::from_millis(900),
+            numa_nodes: 1,
+            threads: vec![thread(3 << 30, 1 << 30), thread(5 << 30, 0)],
+            nodes: Vec::new(),
+            commit_groups: Vec::new(),
+            fairness: Vec::new(),
         };
-        let plan = TestConfigurationReport { suite_timing: String::new(), test_count: 2, step_count: 3, sealed: true, tests: Vec::new(), notes: Vec::new() };
+        let plan = TestConfigurationReport {
+            suite_timing: String::new(),
+            test_count: 2,
+            step_count: 3,
+            sealed: true,
+            tests: Vec::new(),
+            notes: Vec::new(),
+        };
         let (clean, whea) = (WheaCounts::default(), WheaCounts { total: 2, corrected: 1 });
-        for run in [Run::Allocated(Box::new(allocated)), Run::TestPlan(Box::new(plan)),
-                    Run::SuiteStarted { progress: Arc::new(ProgressTracker::new()), seed: 1, transfer_bits: None, transfer_source: "none" },
-                    Run::CycleStarted { cycle: 1, limit: Some(2) }, step(1, 1, 0, Some(0), clean), step(1, 2, 3, Some(4), clean),
-                    Run::CycleFinished { cycle: 1, partial: false }, Run::CycleStarted { cycle: 2, limit: Some(2) },
-                    step(2, 1, 0, Some(0), whea), Run::CycleFinished { cycle: 2, partial: true },
-                    Run::SuiteEnded { outcome: RunOutcome::Interrupted, status: RunStatus::Failed, memory_errors: 7, whea },
-                    Run::ResultsSaved { path: "results/run.json".to_string() }] {
+        for run in [
+            Run::Allocated(Box::new(allocated)),
+            Run::TestPlan(Box::new(plan)),
+            Run::SuiteStarted { progress: Arc::new(ProgressTracker::new()), seed: 1, transfer_bits: None, transfer_source: "none" },
+            Run::CycleStarted { cycle: 1, limit: Some(2) },
+            step(1, 1, 0, Some(0), clean),
+            step(1, 2, 3, Some(4), clean),
+            Run::CycleFinished { cycle: 1, partial: false },
+            Run::CycleStarted { cycle: 2, limit: Some(2) },
+            step(2, 1, 0, Some(0), whea),
+            Run::CycleFinished { cycle: 2, partial: true },
+            Run::SuiteEnded { outcome: RunOutcome::Interrupted, status: RunStatus::Failed, memory_errors: 7, whea },
+            Run::ResultsSaved { path: "results/run.json".to_string() },
+        ] {
             m.apply(run.into());
         }
         assert!(m.progress().is_some());
@@ -876,8 +961,10 @@ mod tests {
             [id, &format!("Mem-StuckBit256 (Test {test})"), "20,480", errors, seal, whea].map(str::to_string)
         };
         assert_eq!(cells, [row("1·1", 1, "0", "0", "0"), row("1·2", 2, "3", "4", "0"), row("2·1", 1, "0", "0", "2")]);
-        assert_eq!(m.errors, ["Cycle 1 · step 2 · Mem-StuckBit256 (Test 2): 3 errors + 4 seal + 0 WHEA",
-                              "Cycle 2 · step 1 · Mem-StuckBit256 (Test 1): 0 errors + 0 seal + 2 WHEA (1C/1UC)"]);
+        assert_eq!(m.errors, [
+            "Cycle 1 · step 2 · Mem-StuckBit256 (Test 2): 3 errors + 4 seal + 0 WHEA",
+            "Cycle 2 · step 1 · Mem-StuckBit256 (Test 1): 0 errors + 0 seal + 2 WHEA (1C/1UC)"
+        ]);
         assert_eq!(m.status, Status::Failed);
         assert_eq!(m.position, "Stopped · 2 cycles, the last stopped early, 3 steps · 7 errors + 2 WHEA (1C/1UC)");
 
@@ -903,23 +990,38 @@ mod tests {
         m.ask_restart(reply);
         m.answer_restart(RestartChoice::Continue4K);
         assert_eq!(answer.try_recv(), Ok(RestartChoice::Continue4K));
-        for setup in [Setup::LargePageStatus { usable: false, min_page: "regular".to_string(), min_needs_large: false },
-                      Setup::MemoryStatus(Some(status)), Setup::MemoryStatus(None),
-                      Setup::SystemInfo { report: Box::new(system_info()), memory_modules: vec![module] },
-                      Setup::Starting, Setup::RealtimeOnEveryCpu,
-                      Setup::Plan { name: "stability", about: "the stability tests", is_default: true }] {
+        for setup in [
+            Setup::LargePageStatus { usable: false, min_page: "regular".to_string(), min_needs_large: false },
+            Setup::MemoryStatus(Some(status)),
+            Setup::MemoryStatus(None),
+            Setup::SystemInfo { report: Box::new(system_info()), memory_modules: vec![module] },
+            Setup::Starting,
+            Setup::RealtimeOnEveryCpu,
+            Setup::Plan { name: "stability", about: "the stability tests", is_default: true },
+        ] {
             m.apply(setup.into());
         }
         assert_eq!((m.position.as_str(), m.ram_bytes), ("Starting", Some(62 << 30)));
         assert_eq!(m.info_line(), "6 threads · plan stability · no large pages");
         let system = m.system.as_ref().expect("the system panel");
-        assert_eq!((system.cpu.as_str(), system.cache_line.as_str()), ("AMD Ryzen 5 8600G w/ Radeon 760M Graphics",
-                                                                        "L1 32 KiB · L2 1 MiB per core · L3 16 MiB"));
+        assert_eq!(
+            (system.cpu.as_str(), system.cache_line.as_str()),
+            ("AMD Ryzen 5 8600G w/ Radeon 760M Graphics", "L1 32 KiB · L2 1 MiB per core · L3 16 MiB")
+        );
         assert_eq!(system.dimm_title, "1 × DDR5 · 32 GiB total");
-        assert_eq!(m.errors, ["Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)",
-                              "priority=realtime with a worker on every logical CPU: the window can freeze until the run ends"]);
+        assert_eq!(m.errors, [
+            "Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)",
+            "priority=realtime with a worker on every logical CPU: the window can freeze until the run ends"
+        ]);
 
-        let plan = TestConfigurationReport { suite_timing: String::new(), test_count: 2, step_count: 3, sealed: false, tests: Vec::new(), notes: Vec::new() };
+        let plan = TestConfigurationReport {
+            suite_timing: String::new(),
+            test_count: 2,
+            step_count: 3,
+            sealed: false,
+            tests: Vec::new(),
+            notes: Vec::new(),
+        };
         m.apply(Run::TestPlan(Box::new(plan)).into());
         assert_eq!(m.info_line(), "6 threads · plan stability · 3 steps a cycle · no large pages");
     }
@@ -936,17 +1038,25 @@ mod tests {
             (m.position, m.errors.newest(usize::MAX).map(|(_, entry)| entry).collect::<Vec<_>>().join(" | "))
         };
         let stopped = "Stopped before testing".to_string();
-        assert_eq!(end(Ok(SessionEnd::Stopped(Stopped::UnknownFlags(vec!["--latency-test".to_string(), "--fast".to_string()])))),
-                   (stopped.clone(), "Unknown parameter(s): --latency-test --fast".to_string()));
+        assert_eq!(
+            end(Ok(SessionEnd::Stopped(Stopped::UnknownFlags(vec!["--latency-test".to_string(), "--fast".to_string()])))),
+            (stopped.clone(), "Unknown parameter(s): --latency-test --fast".to_string())
+        );
         let invalid = "❌ Invalid value for cycles: 'x' (must be a number)\n💡 Run with --help to see all valid parameters".to_string();
-        assert_eq!(end(Ok(SessionEnd::Stopped(Stopped::Invalid(invalid)))),
-                   (stopped.clone(), "Invalid value for cycles: 'x' (must be a number)".to_string()));
+        assert_eq!(
+            end(Ok(SessionEnd::Stopped(Stopped::Invalid(invalid)))),
+            (stopped.clone(), "Invalid value for cycles: 'x' (must be a number)".to_string())
+        );
         let memory = Stopped::MemoryOverride { spec: "lots".to_string(), error: "not a size".to_string() };
         assert_eq!(end(Ok(SessionEnd::Stopped(memory))), (stopped.clone(), "Invalid memory override 'lots': not a size".to_string()));
-        assert_eq!(end(Ok(SessionEnd::Stopped(Stopped::CpuSelection("8 threads asked, 6 available".to_string())))),
-                   (stopped.clone(), "CPU selection error: 8 threads asked, 6 available".to_string()));
-        assert_eq!(end(Ok(SessionEnd::Command(tmr::commands::Command::Version))),
-                   (stopped, "A one-shot command (--help, --calibrate-cache, ...) runs on the console: tmr.exe without --gui".to_string()));
+        assert_eq!(
+            end(Ok(SessionEnd::Stopped(Stopped::CpuSelection("8 threads asked, 6 available".to_string())))),
+            (stopped.clone(), "CPU selection error: 8 threads asked, 6 available".to_string())
+        );
+        assert_eq!(
+            end(Ok(SessionEnd::Command(tmr::commands::Command::Version))),
+            (stopped, "A one-shot command (--help, --calibrate-cache, ...) runs on the console: tmr.exe without --gui".to_string())
+        );
         assert_eq!(end(Ok(SessionEnd::RestartChosen)), ("Restart Windows for large pages, then run again".to_string(), String::new()));
     }
 
@@ -971,8 +1081,11 @@ mod tests {
         let mut m = model();
         m.start();
         m.ended(Ok(SessionEnd::Ran { status: RunStatus::Passed, elapsed: Duration::ZERO, plan_only: true }));
-        assert_eq!((m.status, m.position.as_str()), (Status::NotRun, "The plan only (--startup-debug): nothing allocated, no test run"),
-                   "no suite ran");
+        assert_eq!(
+            (m.status, m.position.as_str()),
+            (Status::NotRun, "The plan only (--startup-debug): nothing allocated, no test run"),
+            "no suite ran"
+        );
         // `--startup-debug` stopped before its plan: its reason is in the errors
         let mut m = model();
         m.start();
@@ -1000,8 +1113,11 @@ mod tests {
         assert_eq!((m.restart_asked(), m.position.as_str()), (true, "Large pages need Windows restarted"));
         m.answer_restart(RestartChoice::Exit);
         m.answer_restart(RestartChoice::Continue4K);
-        assert_eq!((answer.try_recv(), answer.try_recv()), (Ok(RestartChoice::Exit), Err(std::sync::mpsc::TryRecvError::Disconnected)),
-                   "one answer, then the reply is gone");
+        assert_eq!(
+            (answer.try_recv(), answer.try_recv()),
+            (Ok(RestartChoice::Exit), Err(std::sync::mpsc::TryRecvError::Disconnected)),
+            "one answer, then the reply is gone"
+        );
         assert_eq!((m.restart_asked(), m.position.as_str(), m.errors.total()), (false, "Exiting, to restart Windows", 0));
         m.ended(Ok(SessionEnd::RestartChosen));
         assert_eq!(m.position, "Restart Windows for large pages, then run again");
@@ -1013,7 +1129,9 @@ mod tests {
         m.ask_restart(reply);
         m.answer_restart(RestartChoice::Continue4K);
         assert_eq!(m.position, "Setting up, on 4 KiB pages");
-        assert_eq!(m.errors, ["Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)"]);
+        assert_eq!(m.errors, [
+            "Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)"
+        ]);
     }
 
     /// The warnings and errors logged join the errors list, and the logger's drops are one line;
@@ -1101,7 +1219,10 @@ mod tests {
         between.test.as_mut().unwrap().finished = true;
         m.tick(Some(between), Vec::new());
         assert_eq!(m.series.latest(), Some(0.0));
-        m.apply(Run::SuiteEnded { outcome: RunOutcome::Completed, status: RunStatus::Failed, memory_errors: 3, whea: WheaCounts::default() }.into());
+        m.apply(
+            Run::SuiteEnded { outcome: RunOutcome::Completed, status: RunStatus::Failed, memory_errors: 3, whea: WheaCounts::default() }
+                .into(),
+        );
         assert_eq!(m.fraction, 1.0);
         let later = ProgressSnapshot { runtime: Duration::from_secs(500), ..snapshot(0) };
         m.tick(Some(later), Vec::new());
@@ -1111,11 +1232,9 @@ mod tests {
     /// The progress takes whichever limit is nearer, or with neither, the cycle's tests
     #[test]
     fn the_progress_follows_the_nearer_limit() {
-        let at = |cycle_limit, time_limit: Option<u64>| fraction(&ProgressSnapshot {
-            cycle_limit,
-            time_limit: time_limit.map(Duration::from_secs),
-            ..snapshot(0)
-        });
+        let at = |cycle_limit, time_limit: Option<u64>| {
+            fraction(&ProgressSnapshot { cycle_limit, time_limit: time_limit.map(Duration::from_secs), ..snapshot(0) })
+        };
         assert_eq!(at(Some(4), None), 8.0 / 24.0);
         assert_eq!(at(Some(4), Some(190)), 0.5, "95 s of 190 s");
         assert_eq!(at(None, Some(950)), 0.1);
@@ -1141,8 +1260,9 @@ mod tests {
         assert_eq!(series.marks().collect::<Vec<_>>(), [(50, SAMPLES + 9 - 50, 50.0)], "one mark a sample; sample 5 scrolled off");
         assert_eq!(series.axis_top(), 200.0);
 
-        assert_eq!([0.0, 100.0, 101.0, 450.0, 19_108.7, 80_000.0, 2_100_000.0].map(axis_top),
-                   [100.0, 100.0, 200.0, 600.0, 20_000.0, 80_000.0, 4_000_000.0]);
+        assert_eq!([0.0, 100.0, 101.0, 450.0, 19_108.7, 80_000.0, 2_100_000.0].map(axis_top), [
+            100.0, 100.0, 200.0, 600.0, 20_000.0, 80_000.0, 4_000_000.0
+        ]);
         assert_eq!([0.0, 250.0, 1_500.0, 20_000.0, 2_500_000.0].map(axis_label), ["0", "250", "1.5K", "20K", "2.5M"]);
         assert_eq!([0.4, 999.5, 20_480.4, 1_234_567.0].map(thousands), ["0", "1,000", "20,480", "1,234,567"]);
     }

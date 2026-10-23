@@ -9,17 +9,17 @@
 #![cfg_attr(test, feature(internal_output_capture, thread_spawn_hook))]
 
 mod console; // single writer path while the progress ticker is on screen
-mod table;
-mod renderer; // the engine's reports as the console shows them
-mod render; // the CLI's frontend: a session's events as the console shows them (TODO 29)
-mod prompts; // the CLI's questions, over any reader and writer (TODO 29)
 #[cfg(test)]
-mod golden; // the console's output against goldens, for the engine/presentation split (TODO 29)
+mod golden;
+mod prompts; // the CLI's questions, over any reader and writer (TODO 29)
+mod render; // the CLI's frontend: a session's events as the console shows them (TODO 29)
+mod renderer; // the engine's reports as the console shows them
+mod table; // the console's output against goldens, for the engine/presentation split (TODO 29)
 
-use std::io::{stdin, stdout, Write};
+use std::io::{Write, stdin, stdout};
 use std::sync::Arc;
-use env_logger::Builder;
 
+use env_logger::Builder;
 use tmr::frontend::RunStatus;
 use tmr::session::SessionEnd;
 
@@ -86,31 +86,32 @@ fn run_command(command: &tmr::commands::Command) -> i32 {
 /// Ctrl+C from the tests' start (`Setup::Starting`): a first press stops the run gracefully, a
 /// second exits. Once a process: a second handler can't be set.
 pub(crate) fn take_ctrl_c() {
-	// Register CTRL+C handler for graceful shutdown
-	// This allows tests to stop at next checkpoint and print final reports
-	// A flag of the handler's own, not the engine's SHUTDOWN_REQUESTED: a halt sets that too, and
-	// the first CTRL+C after a halt must still be the graceful one.
-	let mut pressed = false;
-	ctrlc::set_handler(move || {
-		if pressed {
-			// Second press: the graceful stop is stuck or too slow. Windows frees every page the
-			// process holds, large pages included, when it exits. stderr rather than print_above,
-			// because a stuck shutdown may be one that is holding the console lock.
-			eprintln!("\n\n🛑 CTRL+C again - exiting now, without the final report; the results file keeps only the cycles saved so far");
-			log::logger().flush();
-			// The status Windows itself gives a process killed by CTRL+C, so a script can tell this apart
-			// from a run that finished.
-			std::process::exit(windows::Win32::Foundation::STATUS_CONTROL_C_EXIT.0);
-		}
-		pressed = true;
-		// Above the progress ticker, which this thread would otherwise print into the middle of.
-		crate::console::print_above(
-			"\n🛑 CTRL+C received - initiating graceful shutdown...\n\
+    // Register CTRL+C handler for graceful shutdown
+    // This allows tests to stop at next checkpoint and print final reports
+    // A flag of the handler's own, not the engine's SHUTDOWN_REQUESTED: a halt sets that too, and
+    // the first CTRL+C after a halt must still be the graceful one.
+    let mut pressed = false;
+    ctrlc::set_handler(move || {
+        if pressed {
+            // Second press: the graceful stop is stuck or too slow. Windows frees every page the
+            // process holds, large pages included, when it exits. stderr rather than print_above,
+            // because a stuck shutdown may be one that is holding the console lock.
+            eprintln!("\n\n🛑 CTRL+C again - exiting now, without the final report; the results file keeps only the cycles saved so far");
+            log::logger().flush();
+            // The status Windows itself gives a process killed by CTRL+C, so a script can tell this apart
+            // from a run that finished.
+            std::process::exit(windows::Win32::Foundation::STATUS_CONTROL_C_EXIT.0);
+        }
+        pressed = true;
+        // Above the progress ticker, which this thread would otherwise print into the middle of.
+        crate::console::print_above(
+            "\n🛑 CTRL+C received - initiating graceful shutdown...\n\
 			 \x20  Tests will stop at next checkpoint and print final report\n\
 			 \x20  (Press CTRL+C again to exit immediately, without the report; the results file keeps only the cycles saved so far)\n\n",
-		);
-		tmr::request_stop();
-	}).expect("Error setting CTRL+C handler");
+        );
+        tmr::request_stop();
+    })
+    .expect("Error setting CTRL+C handler");
 }
 
 /// The console's logging: VT escape processing, then env_logger, each record on the console in

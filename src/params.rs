@@ -61,20 +61,14 @@ impl ParamRegistry {
         });
 
         // CPU configuration parameters
-        params.insert("cpus", ParamDef {
-            key: "cpus",
-            can_override_config: true,
-            parser: |v| Ok(ParamValue::String(v.to_string())),
-        });
+        params.insert("cpus", ParamDef { key: "cpus", can_override_config: true, parser: |v| Ok(ParamValue::String(v.to_string())) });
 
         params.insert("cputype", ParamDef {
             key: "cputype",
             can_override_config: true,
-            parser: |v| {
-                match v {
-                    "threads" | "cores" => Ok(ParamValue::String(v.to_string())),
-                    _ => Err(format!("Invalid cputype '{}'. Valid: threads, cores", v)),
-                }
+            parser: |v| match v {
+                "threads" | "cores" => Ok(ParamValue::String(v.to_string())),
+                _ => Err(format!("Invalid cputype '{}'. Valid: threads, cores", v)),
             },
         });
 
@@ -90,17 +84,14 @@ impl ParamRegistry {
                 // Validate the shape here so bad input fails at parse time.
                 let s = v.trim();
                 if let Some((a, b)) = s.split_once('-') {
-                    let a = a.trim().parse::<usize>()
-                        .map_err(|_| format!("Invalid skip-cores range start '{}' in '{}'", a, s))?;
-                    let b = b.trim().parse::<usize>()
-                        .map_err(|_| format!("Invalid skip-cores range end '{}' in '{}'", b, s))?;
+                    let a = a.trim().parse::<usize>().map_err(|_| format!("Invalid skip-cores range start '{}' in '{}'", a, s))?;
+                    let b = b.trim().parse::<usize>().map_err(|_| format!("Invalid skip-cores range end '{}' in '{}'", b, s))?;
                     if a > b {
                         return Err(format!("Invalid skip-cores range '{}': start {} > end {}", s, a, b));
                     }
                     Ok(ParamValue::String(s.to_string()))
                 } else if let Some(pct) = s.strip_suffix('%') {
-                    let p = pct.trim().parse::<u32>()
-                        .map_err(|_| format!("Invalid skip-cores percentage '{}'", s))?;
+                    let p = pct.trim().parse::<u32>().map_err(|_| format!("Invalid skip-cores percentage '{}'", s))?;
                     if p > 100 {
                         return Err(format!("Invalid skip-cores '{}': percentage must be <= 100", s));
                     }
@@ -189,33 +180,21 @@ impl ParamRegistry {
         params.insert("cycles", ParamDef {
             key: "cycles",
             can_override_config: true,
-            parser: |v| {
-                v.parse::<u32>()
-                    .map(ParamValue::U32)
-                    .map_err(|_| format!("Invalid cycles value '{}'", v))
-            },
+            parser: |v| v.parse::<u32>().map(ParamValue::U32).map_err(|_| format!("Invalid cycles value '{}'", v)),
         });
 
         params.insert("duration", ParamDef {
             key: "duration",
             can_override_config: true,
-            parser: |v| {
-                v.parse::<u32>()
-                    .map(ParamValue::U32)
-                    .map_err(|_| format!("Invalid duration value '{}'", v))
-            },
+            parser: |v| v.parse::<u32>().map(ParamValue::U32).map_err(|_| format!("Invalid duration value '{}'", v)),
         });
 
         params.insert("errors", ParamDef {
             key: "errors",
             can_override_config: true,
-            parser: |v| {
-                match v.to_lowercase().as_str() {
-                    "log" | "halt" | "stop" | "panic" | "debug" => {
-                        Ok(ParamValue::String(v.to_string()))
-                    }
-                    _ => Err(format!("Invalid error mode '{}'. Valid: log, halt, panic", v)),
-                }
+            parser: |v| match v.to_lowercase().as_str() {
+                "log" | "halt" | "stop" | "panic" | "debug" => Ok(ParamValue::String(v.to_string())),
+                _ => Err(format!("Invalid error mode '{}'. Valid: log, halt, panic", v)),
             },
         });
 
@@ -223,8 +202,7 @@ impl ParamRegistry {
             key: "channels",
             can_override_config: true,
             parser: |v| {
-                let val = v.parse::<usize>()
-                    .map_err(|_| format!("Invalid channels value '{}'", v))?;
+                let val = v.parse::<usize>().map_err(|_| format!("Invalid channels value '{}'", v))?;
                 if val < 1 {
                     return Err("Channels must be at least 1".to_string());
                 }
@@ -236,34 +214,25 @@ impl ParamRegistry {
         params.insert("seal", ParamDef {
             key: "seal",
             can_override_config: true,
-            parser: |v| {
-                crate::seal::SealSettings::parse(v, "auto").map(|_| ParamValue::String(v.trim().to_lowercase()))
-            },
+            parser: |v| crate::seal::SealSettings::parse(v, "auto").map(|_| ParamValue::String(v.trim().to_lowercase())),
         });
         params.insert("seal-width", ParamDef {
             key: "seal-width",
             can_override_config: true,
-            parser: |v| {
-                crate::seal::SealWidth::parse(v).map(|w| ParamValue::String(w.name().to_string()))
-            },
+            parser: |v| crate::seal::SealWidth::parse(v).map(|w| ParamValue::String(w.name().to_string())),
         });
         // The tests' SIMD width (TODO 99, `crate::simd::Width`): read early in `session::run`,
         // before a config loads; registered so it validates
         params.insert("width", ParamDef {
             key: "width",
             can_override_config: true,
-            parser: |v| {
-                crate::simd::Width::parse(v).map(|w| ParamValue::String(w.map_or("auto", crate::simd::Width::name).to_string()))
-            },
+            parser: |v| crate::simd::Width::parse(v).map(|w| ParamValue::String(w.map_or("auto", crate::simd::Width::name).to_string())),
         });
 
         params.insert("mirror", ParamDef {
             key: "mirror",
             can_override_config: true,
-            parser: |v| {
-                v.to_lowercase().parse::<crate::config::MirrorMode>()
-                    .map(|m| ParamValue::String(m.to_string()))
-            },
+            parser: |v| v.to_lowercase().parse::<crate::config::MirrorMode>().map(|m| ParamValue::String(m.to_string())),
         });
 
         // Pattern and repetition parameters
@@ -271,12 +240,17 @@ impl ParamRegistry {
             key: "pattern-mode",
             can_override_config: true,
             parser: |v| {
-                let val = v.parse::<u32>()
-                    .map_err(|_| format!("Invalid pattern-mode '{}'. Valid: {}", v, crate::pattern::pattern_modes()))?;
+                let val =
+                    v.parse::<u32>().map_err(|_| format!("Invalid pattern-mode '{}'. Valid: {}", v, crate::pattern::pattern_modes()))?;
                 if crate::pattern::is_pattern_mode(val) {
                     Ok(ParamValue::U32(val))
                 } else {
-                    Err(format!("Invalid pattern-mode {}{}. Valid: {}", val, crate::pattern::renumbered(val), crate::pattern::pattern_modes()))
+                    Err(format!(
+                        "Invalid pattern-mode {}{}. Valid: {}",
+                        val,
+                        crate::pattern::renumbered(val),
+                        crate::pattern::pattern_modes()
+                    ))
                 }
             },
         });
@@ -284,23 +258,24 @@ impl ParamRegistry {
         params.insert("sequence", ParamDef {
             key: "sequence",
             can_override_config: true,
-            parser: |v| crate::sequence::Sequence::parse(v, crate::sequence::Order::Forward)
-                .map(|_| ParamValue::String(v.to_string())),
+            parser: |v| crate::sequence::Sequence::parse(v, crate::sequence::Order::Forward).map(|_| ParamValue::String(v.to_string())),
         });
 
         params.insert("order", ParamDef {
             key: "order",
             can_override_config: true,
-            parser: |v| crate::sequence::Order::parse(v).map(|_| ParamValue::String(v.to_string()))
-                .ok_or_else(|| format!("Invalid order '{v}'. Valid: forward, reverse, random, stride")),
+            parser: |v| {
+                crate::sequence::Order::parse(v)
+                    .map(|_| ParamValue::String(v.to_string()))
+                    .ok_or_else(|| format!("Invalid order '{v}'. Valid: forward, reverse, random, stride"))
+            },
         });
 
         params.insert("verify-reps", ParamDef {
             key: "verify-reps",
             can_override_config: true,
             parser: |v| {
-                let val = v.parse::<u32>()
-                    .map_err(|_| format!("Invalid verify-reps '{}'. Must be 1-100", v))?;
+                let val = v.parse::<u32>().map_err(|_| format!("Invalid verify-reps '{}'. Must be 1-100", v))?;
                 if val == 0 || val > 100 {
                     return Err(format!("verify-reps must be 1-100, got {}", val));
                 }
@@ -312,8 +287,7 @@ impl ParamRegistry {
             key: "test-reps",
             can_override_config: true,
             parser: |v| {
-                let val = v.parse::<u32>()
-                    .map_err(|_| format!("Invalid test-reps '{}'. Must be 1-100", v))?;
+                let val = v.parse::<u32>().map_err(|_| format!("Invalid test-reps '{}'. Must be 1-100", v))?;
                 if val == 0 || val > 100 {
                     return Err(format!("test-reps must be 1-100, got {}", val));
                 }
@@ -325,8 +299,7 @@ impl ParamRegistry {
             key: "write-read-cycles",
             can_override_config: true,
             parser: |v| {
-                let val = v.parse::<u32>()
-                    .map_err(|_| format!("Invalid write-read-cycles '{}'. Must be 1-100", v))?;
+                let val = v.parse::<u32>().map_err(|_| format!("Invalid write-read-cycles '{}'. Must be 1-100", v))?;
                 if val == 0 || val > 100 {
                     return Err(format!("write-read-cycles must be 1-100, got {}", val));
                 }
@@ -338,26 +311,18 @@ impl ParamRegistry {
         params.insert("minpage", ParamDef {
             key: "minpage",
             can_override_config: true,
-            parser: |v| {
-                match v.to_lowercase().as_str() {
-                    "regular" | "4kb" | "large" | "2mb" | "huge" | "1gb" => {
-                        Ok(ParamValue::String(v.to_lowercase()))
-                    }
-                    _ => Err(format!("Invalid page size '{}'. Valid: regular/4kb, large/2mb, huge/1gb", v)),
-                }
+            parser: |v| match v.to_lowercase().as_str() {
+                "regular" | "4kb" | "large" | "2mb" | "huge" | "1gb" => Ok(ParamValue::String(v.to_lowercase())),
+                _ => Err(format!("Invalid page size '{}'. Valid: regular/4kb, large/2mb, huge/1gb", v)),
             },
         });
 
         params.insert("maxpage", ParamDef {
             key: "maxpage",
             can_override_config: true,
-            parser: |v| {
-                match v.to_lowercase().as_str() {
-                    "regular" | "4kb" | "large" | "2mb" | "huge" | "1gb" => {
-                        Ok(ParamValue::String(v.to_lowercase()))
-                    }
-                    _ => Err(format!("Invalid page size '{}'. Valid: regular/4kb, large/2mb, huge/1gb", v)),
-                }
+            parser: |v| match v.to_lowercase().as_str() {
+                "regular" | "4kb" | "large" | "2mb" | "huge" | "1gb" => Ok(ParamValue::String(v.to_lowercase())),
+                _ => Err(format!("Invalid page size '{}'. Valid: regular/4kb, large/2mb, huge/1gb", v)),
             },
         });
 
@@ -381,18 +346,10 @@ impl ParamRegistry {
         });
 
         // Config file parameter
-        params.insert("config", ParamDef {
-            key: "config",
-            can_override_config: false,
-            parser: |v| Ok(ParamValue::String(v.to_string())),
-        });
+        params.insert("config", ParamDef { key: "config", can_override_config: false, parser: |v| Ok(ParamValue::String(v.to_string())) });
 
         // Test filter parameter (supports glob patterns and comma-separated lists)
-        params.insert("test", ParamDef {
-            key: "test",
-            can_override_config: false,
-            parser: |v| Ok(ParamValue::String(v.to_string())),
-        });
+        params.insert("test", ParamDef { key: "test", can_override_config: false, parser: |v| Ok(ParamValue::String(v.to_string())) });
 
         params.insert("priority", ParamDef {
             key: "priority",
@@ -435,18 +392,12 @@ impl ParamRegistry {
 
     /// Check if a parameter can override config file values
     pub fn can_override_config(&self, key: &str) -> bool {
-        self.params.get(key)
-            .or_else(|| self.flags.get(key))
-            .map(|def| def.can_override_config)
-            .unwrap_or(false)
+        self.params.get(key).or_else(|| self.flags.get(key)).map(|def| def.can_override_config).unwrap_or(false)
     }
 
     /// List all recognized parameter keys (for validation)
     pub fn all_keys(&self) -> Vec<&str> {
-        self.params.keys()
-            .chain(self.flags.keys())
-            .copied()
-            .collect()
+        self.params.keys().chain(self.flags.keys()).copied().collect()
     }
 }
 
@@ -474,7 +425,8 @@ pub fn parse_and_validate_args(args: &[String]) -> Result<HashMap<String, ParamV
             || arg.starts_with("--ram-latency")
             || arg.starts_with("--cache-latency")
             || arg.starts_with("--no-calibration")
-            || arg.starts_with("--startup-debug") {
+            || arg.starts_with("--startup-debug")
+        {
             continue;
         }
 

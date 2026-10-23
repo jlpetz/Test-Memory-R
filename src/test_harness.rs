@@ -13,11 +13,9 @@
 //! - Closures capture SIMD constants by value → no indirection
 //! - No vtable, no boxing, no `dyn`
 
-use crate::runner::AllocationBlock;
-use crate::tests::{
-    TestAction, TestMemoryConfig, TestProgress, TestStats, TestTiming,
-};
 use crate::ErrorMode;
+use crate::runner::AllocationBlock;
+use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestStats, TestTiming};
 
 /// Chunk-level context passed to closures.
 /// Contains pre-computed values so closures don't need to recompute them.
@@ -107,21 +105,9 @@ pub struct ChunkCtx {
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn run_phased_test<Init, Test, Verify>(
-    blocks: &[AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
-    progress: Option<&TestProgress>,
-    test_name: &'static str,
-    action: TestAction,
-    bytes_per_test_op: usize,
-    skip_init: bool,
-    test_reps: u32,
-    verify_reps: u32,
-    mut init_fn: Init,
-    mut test_fn: Test,
-    mut verify_fn: Verify,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+    progress: Option<&TestProgress>, test_name: &'static str, action: TestAction, bytes_per_test_op: usize, skip_init: bool,
+    test_reps: u32, verify_reps: u32, mut init_fn: Init, mut test_fn: Test, mut verify_fn: Verify,
 ) -> TestStats
 where
     Init: FnMut(&ChunkCtx),
@@ -136,9 +122,8 @@ where
     // now — one source of truth shared with the Tier-2 loop-owning tests (TODO #19 A.3).
     // The runner also starts the timer BEFORE init, preserving the v1 behaviour of
     // counting the first write in cycle timing.
-    let (mut runner, extent) = crate::test_scaffolding::TestRunner::new(
-        blocks, thread_id, error_mode, timing, config, progress, test_name, action,
-    );
+    let (mut runner, extent) =
+        crate::test_scaffolding::TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, action);
 
     if extent.test_size == 0 {
         log::warn!("{}: No blocks prepared for testing", test_name);
@@ -174,15 +159,7 @@ where
     // An unsealed step fills the extent up front
     if fill && !wrap {
         runner.set_stage(crate::tests::Stage::FillingMemory);
-        let ctx = ChunkCtx {
-            ptr,
-            chunk_start: 0,
-            chunk_end: len_elements,
-            cycle: 0,
-            thread_id,
-            check_mask,
-            round: 0,
-        };
+        let ctx = ChunkCtx { ptr, chunk_start: 0, chunk_end: len_elements, cycle: 0, thread_id, check_mask, round: 0 };
         init_fn(&ctx);
         // Setup, not the test: its own record (TODO 90)
         runner.setup_done(crate::ops::Op::PatternFill, extent.test_size as u64);
@@ -200,15 +177,7 @@ where
         for k in 0..chunks.count() {
             let chunk_start = chunks.start(k) / std::mem::size_of::<u64>();
             let chunk_end = chunk_start + chunk_len;
-            let mut ctx = ChunkCtx {
-                ptr,
-                chunk_start,
-                chunk_end,
-                cycle,
-                thread_id,
-                check_mask,
-                round: 0,
-            };
+            let mut ctx = ChunkCtx { ptr, chunk_start, chunk_end, cycle, thread_id, check_mask, round: 0 };
 
             runner.check_seal(chunk_start * std::mem::size_of::<u64>(), chunks.chunk());
             // An error halts before the test overwrites what the seal check found
@@ -255,7 +224,8 @@ where
                     if cycle_errors > 0 && runner.should_halt(cycle_errors) {
                         let ops = ops_per_wrc * round as usize + bytes_per_test_op * test_reps as usize + rep as usize + 1;
                         runner.add_bytes(chunk_len * std::mem::size_of::<u64>() * ops);
-                        let words = chunk_len as u64 * (u64::from(test_reps + verify_reps) * u64::from(round) + u64::from(test_reps + rep + 1));
+                        let words =
+                            chunk_len as u64 * (u64::from(test_reps + verify_reps) * u64::from(round) + u64::from(test_reps + rep + 1));
                         return runner.finish_aborted(cycle_errors, total_operations + words);
                     }
                 }
@@ -321,12 +291,8 @@ macro_rules! auto_dispatch {
     ) => {
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $name(
-            blocks: &[$crate::runner::AllocationBlock],
-            thread_id: usize,
-            error_mode: $crate::ErrorMode,
-            timing: &$crate::tests::TestTiming,
-            config: &$crate::tests::TestMemoryConfig,
-            progress: Option<&$crate::tests::TestProgress>,
+            blocks: &[$crate::runner::AllocationBlock], thread_id: usize, error_mode: $crate::ErrorMode,
+            timing: &$crate::tests::TestTiming, config: &$crate::tests::TestMemoryConfig, progress: Option<&$crate::tests::TestProgress>,
         ) -> $crate::tests::TestStats {
             match $crate::simd::test_width() {
                 $crate::simd::Width::W512 => $crate::dispatched!($avx512)(blocks, thread_id, error_mode, timing, config, progress),
@@ -349,15 +315,7 @@ mod tests {
     }
 
     fn make_ctx(ptr: *mut u64, len: usize, check_mask: Option<u32>) -> ChunkCtx {
-        ChunkCtx {
-            ptr,
-            chunk_start: 0,
-            chunk_end: len,
-            cycle: 1,
-            thread_id: 0,
-            check_mask,
-            round: 0,
-        }
+        ChunkCtx { ptr, chunk_start: 0, chunk_end: len, cycle: 1, thread_id: 0, check_mask, round: 0 }
     }
 
     // ── SimpleTest v2 Mode 0 error injection ──
@@ -383,7 +341,9 @@ mod tests {
             for i in ctx.chunk_start..ctx.chunk_end {
                 let expected = pattern_gen::pattern_mode10(i as u64, base);
                 let actual = *ctx.ptr.add(i);
-                if actual != expected { total += 1; }
+                if actual != expected {
+                    total += 1;
+                }
             }
             total
         };
@@ -391,7 +351,9 @@ mod tests {
 
         // Corrupt one element (single bit flip)
         let corrupt_idx = len / 3;
-        unsafe { *ptr.add(corrupt_idx) ^= 1; }
+        unsafe {
+            *ptr.add(corrupt_idx) ^= 1;
+        }
 
         // Verify corrupted — should detect exactly 1 error
         let errors = unsafe {
@@ -399,7 +361,9 @@ mod tests {
             for i in ctx.chunk_start..ctx.chunk_end {
                 let expected = pattern_gen::pattern_mode10(i as u64, base);
                 let actual = *ctx.ptr.add(i);
-                if actual != expected { total += 1; }
+                if actual != expected {
+                    total += 1;
+                }
             }
             total
         };
@@ -433,7 +397,9 @@ mod tests {
             let mut element_count = 0u32;
             for i in ctx.chunk_start..ctx.chunk_end {
                 let expected = pattern_gen::pattern_mode10(i as u64, base);
-                if *ctx.ptr.add(i) != expected { interval_errors += 1; }
+                if *ctx.ptr.add(i) != expected {
+                    interval_errors += 1;
+                }
                 element_count += 1;
                 if (element_count & check_mask) == 0 {
                     total += interval_errors;
@@ -456,7 +422,9 @@ mod tests {
             let mut element_count = 0u32;
             for i in ctx.chunk_start..ctx.chunk_end {
                 let expected = pattern_gen::pattern_mode10(i as u64, base);
-                if *ctx.ptr.add(i) != expected { interval_errors += 1; }
+                if *ctx.ptr.add(i) != expected {
+                    interval_errors += 1;
+                }
                 element_count += 1;
                 if (element_count & check_mask) == 0 {
                     total += interval_errors;
@@ -469,5 +437,4 @@ mod tests {
     }
 
     // ── Mirror subblock round-trip preserves data ──
-
 }

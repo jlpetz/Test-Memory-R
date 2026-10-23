@@ -1,14 +1,15 @@
-use crate::{ErrorMode};
-use crate::constants::{gib_to_bytes, BYTES_PER_MIB};
-use crate::tests::{ExtentMode, ChunkMode, CacheTarget, parse_size_string};
-use crate::memory::allocation_strategy::{EnhancedMemoryStrategy, AllocationMode, ReserveAmount, RoundDirection, ShareRounding};
-use crate::memory::allocator::{BlockSizing, DEFAULT_LARGE_CHUNK};
-use crate::runner::TestSuiteTiming;
-use crate::tests::{TestTiming, TestMemoryConfig};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::ErrorMode;
+use crate::constants::{BYTES_PER_MIB, gib_to_bytes};
+use crate::memory::allocation_strategy::{AllocationMode, EnhancedMemoryStrategy, ReserveAmount, RoundDirection, ShareRounding};
+use crate::memory::allocator::{BlockSizing, DEFAULT_LARGE_CHUNK};
+use crate::runner::TestSuiteTiming;
+use crate::tests::{CacheTarget, ChunkMode, ExtentMode, TestMemoryConfig, TestTiming, parse_size_string};
 
 // Application constants
 pub const APP_NAME: &str = "Test Memory R";
@@ -48,7 +49,9 @@ pub struct LegacyMetadata {
     pub tm5_lock_mb: u32,
 }
 
-fn default_channels() -> u32 { 2 }
+fn default_channels() -> u32 {
+    2
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -69,9 +72,9 @@ pub struct SystemConfig {
     pub error_mode: String,
     pub timing: TimingConfig,
     pub large_pages: bool,
-	#[serde(default)]
-	pub cpu_pinning: CpuPinningConfig,
-	#[serde(default)]
+    #[serde(default)]
+    pub cpu_pinning: CpuPinningConfig,
+    #[serde(default)]
     pub memory_allocation: MemoryAllocationConfig,
     /// Memory channel count for stride calculation (default 2 for consumer DDR5 dual-channel).
     /// Higher values produce larger strides to match DDR interleave boundaries.
@@ -123,11 +126,18 @@ pub struct CpuPinningConfig {
     pub stride_spec: String,
 }
 
-fn default_cpus_to_skip() -> usize { 1 }
-fn default_avoid_smt_doubling() -> bool { false }
-fn default_skip_spec() -> String { "1".to_string() }
-fn default_stride_spec() -> String { "1".to_string() }
-
+fn default_cpus_to_skip() -> usize {
+    1
+}
+fn default_avoid_smt_doubling() -> bool {
+    false
+}
+fn default_skip_spec() -> String {
+    "1".to_string()
+}
+fn default_stride_spec() -> String {
+    "1".to_string()
+}
 
 // Define MemoryAllocationConfig
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,32 +145,44 @@ fn default_stride_spec() -> String { "1".to_string() }
 pub struct MemoryAllocationConfig {
     // Page size constraints (using your existing system)
     #[serde(default = "default_min_page_size")]
-    pub min_page_size: String,                 // "regular", "large", "huge"
-    
+    pub min_page_size: String, // "regular", "large", "huge"
+
     #[serde(default = "default_max_page_size")]
-    pub max_page_size: String,                 // "regular", "large", "huge"
+    pub max_page_size: String, // "regular", "large", "huge"
 
     // Block sizes, checked by `block_sizing` (see `BlockSizing`). Sizes as `parse_size_string`.
     #[serde(default = "default_huge_chunk")]
-    pub huge_chunk: String,                    // `hugechunk`: first size of each 1 GiB-page request
+    pub huge_chunk: String, // `hugechunk`: first size of each 1 GiB-page request
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub large_chunk: Option<String>,           // `largechunk`: first size of each 2 MiB-page request; unset = 128 MiB
+    pub large_chunk: Option<String>, // `largechunk`: first size of each 2 MiB-page request; unset = 128 MiB
     #[serde(default = "default_large_floor")]
-    pub large_floor: String,                   // `largefloor`: smallest 2 MiB-page request
+    pub large_floor: String, // `largefloor`: smallest 2 MiB-page request
 
     // Per-thread share rounding before any allocator runs, checked by `share_rounding`
     #[serde(default = "default_share_round_step")]
-    pub share_round_step: String,              // `blkroundtarget`: round each thread's share to a multiple of this
+    pub share_round_step: String, // `blkroundtarget`: round each thread's share to a multiple of this
     #[serde(default = "default_share_round")]
-    pub share_round: String,                   // `blkround`: "up", "down", "nearest"
+    pub share_round: String, // `blkround`: "up", "down", "nearest"
 }
 
-fn default_min_page_size() -> String { "large".to_string() }
-fn default_max_page_size() -> String { "huge".to_string() }
-fn default_huge_chunk() -> String { "1GiB".to_string() }
-fn default_large_floor() -> String { "16MiB".to_string() }
-fn default_share_round_step() -> String { "1GiB".to_string() }
-fn default_share_round() -> String { "up".to_string() }
+fn default_min_page_size() -> String {
+    "large".to_string()
+}
+fn default_max_page_size() -> String {
+    "huge".to_string()
+}
+fn default_huge_chunk() -> String {
+    "1GiB".to_string()
+}
+fn default_large_floor() -> String {
+    "16MiB".to_string()
+}
+fn default_share_round_step() -> String {
+    "1GiB".to_string()
+}
+fn default_share_round() -> String {
+    "up".to_string()
+}
 
 impl Default for MemoryAllocationConfig {
     fn default() -> Self {
@@ -215,14 +237,16 @@ impl MemoryAllocationConfig {
     /// share falls back to when rounding would pass the memory there is.
     pub fn share_rounding(&self) -> Result<ShareRounding, String> {
         let sizing = self.block_sizing()?;
-        let step = parse_size_string(&self.share_round_step)
-            .map_err(|e| format!("blkroundtarget={}: {e}", self.share_round_step))?;
+        let step = parse_size_string(&self.share_round_step).map_err(|e| format!("blkroundtarget={}: {e}", self.share_round_step))?;
         let mib = |b: usize| b / BYTES_PER_MIB as usize;
         let top = sizing.largest_request();
         if step < sizing.large_floor || !step.is_multiple_of(sizing.large_floor) || step > top {
             return Err(format!(
                 "blkroundtarget={} MiB must be a multiple of largefloor ({} MiB) and at most the largest request, hugechunk or largechunk ({} MiB)",
-                mib(step), mib(sizing.large_floor), mib(top)));
+                mib(step),
+                mib(sizing.large_floor),
+                mib(top)
+            ));
         }
         let direction: RoundDirection = self.share_round.parse()?;
         Ok(ShareRounding { step_bytes: step as u64, direction, floor_bytes: sizing.large_floor as u64 })
@@ -233,10 +257,10 @@ impl Default for CpuPinningConfig {
     fn default() -> Self {
         Self {
             enable_pinning: true,
-			cpus_to_skip: 1,
-			avoid_smt_doubling: false,
-			skip_spec: default_skip_spec(),
-			stride_spec: default_stride_spec(),
+            cpus_to_skip: 1,
+            avoid_smt_doubling: false,
+            skip_spec: default_skip_spec(),
+            stride_spec: default_stride_spec(),
         }
     }
 }
@@ -324,12 +348,18 @@ pub fn check_sequence(sequence: &crate::sequence::Sequence, config: &TestMemoryC
     // A stride of 0 (parameter 1 on one channel) is TM5's jump 0: in order, as SimpleTest's
     let stride = config.parameter_context.as_ref().and_then(|c| c.stride_elements);
     if sequence.strides() && stride.is_none() {
-        return Err(format!("'{}' walks TM5's stride, which needs the test's \"parameter\" (the stride is channels x \
-            parameter - 1 lines), so a config entry", sequence.name()));
+        return Err(format!(
+            "'{}' walks TM5's stride, which needs the test's \"parameter\" (the stride is channels x \
+            parameter - 1 lines), so a config entry",
+            sequence.name()
+        ));
     }
     if sequence.unread_writes() {
-        log::warn!("Mem-Sequence '{}': some writes are never read back (two writes in a row, or a write last), so \
-            they stress the bus but find nothing", sequence.name());
+        log::warn!(
+            "Mem-Sequence '{}': some writes are never read back (two writes in a row, or a write last), so \
+            they stress the bus but find nothing",
+            sequence.name()
+        );
     }
     Ok(())
 }
@@ -355,7 +385,11 @@ fn validate_repetition(test: &TestConfig, config: &TestMemoryConfig) -> Result<(
     let (simple, mirror) = (f.starts_with("Mem-SimpleV2") || f == "Mem-Simple" || f == "SimpleTest", f.starts_with("Mem-MirrorV2"));
     // `run_phased_test` reads write_read_cycles; only SimpleV2 and MirrorV2 pass it the other two
     let native_bench = crate::tests::native_bench_tests().iter().any(|(init, verify, _, _)| f == *init || f == *verify);
-    let rounds = simple || mirror || f.starts_with("Mem-SimpleNT") || f == "Seal-Check" || f == "Mem-Sequence"
+    let rounds = simple
+        || mirror
+        || f.starts_with("Mem-SimpleNT")
+        || f == "Seal-Check"
+        || f == "Mem-Sequence"
         || (f.starts_with("Bench-") && !native_bench);
     for (name, set, value, read) in [
         ("verify_reps", test.verify_reps.is_some(), config.verify_reps, simple || mirror),
@@ -379,9 +413,11 @@ fn validate_repetition(test: &TestConfig, config: &TestMemoryConfig) -> Result<(
         return Err("test_reps 0 never mirrors: the test would only check the seal".to_string());
     }
     if simple && config.test_reps == 0 && matches!(config.pattern_mode, Some(0 | 1 | 2 | 20 | 30)) {
-        return Err(format!("test_reps 0 verifies the fill alone, but pattern_mode {} keys its image by the cycle, which \
+        return Err(format!(
+            "test_reps 0 verifies the fill alone, but pattern_mode {} keys its image by the cycle, which \
             the fill and the verifies don't share, so every word would fail; use a native program, or mode 10, 11 or 13",
-            config.pattern_mode.unwrap_or(0)));
+            config.pattern_mode.unwrap_or(0)
+        ));
     }
     Ok(())
 }
@@ -392,22 +428,29 @@ pub fn spec_to_extent_mode(spec: &ExtentSpec) -> Result<ExtentMode, String> {
     match spec.mode.to_ascii_lowercase().as_str() {
         "full_allocation" | "full-allocation" | "full" => Ok(ExtentMode::FullAllocation),
         "cache" => {
-            let target_str = spec.target.as_deref()
+            let target_str = spec
+                .target
+                .as_deref()
                 .ok_or_else(|| "extent mode 'cache' requires 'target' field (e.g. \"L3/2\", \"DRAM*4\")".to_string())?;
-            let target = CacheTarget::parse(target_str)
-                .ok_or_else(|| format!("invalid cache target '{}' (L1, L2, L3, DRAM or DRAM-FULL, optionally /N or *N with a scale of 0.01-100)", target_str))?;
+            let target = CacheTarget::parse(target_str).ok_or_else(|| {
+                format!(
+                    "invalid cache target '{}' (L1, L2, L3, DRAM or DRAM-FULL, optionally /N or *N with a scale of 0.01-100)",
+                    target_str
+                )
+            })?;
             Ok(ExtentMode::Cache { target })
         }
         "cache_total" | "cache-total" => {
-            let fraction = spec.fraction
-                .ok_or_else(|| "extent mode 'cache_total' requires 'fraction' field".to_string())?;
+            let fraction = spec.fraction.ok_or_else(|| "extent mode 'cache_total' requires 'fraction' field".to_string())?;
             if fraction <= 0.0 {
                 return Err(format!("cache_total fraction must be > 0 (got {})", fraction));
             }
             Ok(ExtentMode::CacheTotal { fraction })
         }
         "absolute" => {
-            let size_str = spec.size.as_deref()
+            let size_str = spec
+                .size
+                .as_deref()
                 .ok_or_else(|| "extent mode 'absolute' requires 'size' field (e.g. \"880MB\", \"4GiB\")".to_string())?;
             let size_bytes = parse_size_string(size_str)?;
             if size_bytes == 0 {
@@ -425,23 +468,28 @@ pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
         "auto" => Ok(ChunkMode::Auto),
         "whole" => Ok(ChunkMode::Whole),
         "cache" => {
-            let target_str = spec.target.as_deref()
+            let target_str = spec
+                .target
+                .as_deref()
                 .ok_or_else(|| "chunk mode 'cache' requires 'target' field (e.g. \"L3/2\", \"DRAM*4\")".to_string())?;
-            let target = CacheTarget::parse(target_str)
-                .ok_or_else(|| format!("invalid cache target '{}' (L1, L2, L3, DRAM or DRAM-FULL, optionally /N or *N with a scale of 0.01-100)", target_str))?;
+            let target = CacheTarget::parse(target_str).ok_or_else(|| {
+                format!(
+                    "invalid cache target '{}' (L1, L2, L3, DRAM or DRAM-FULL, optionally /N or *N with a scale of 0.01-100)",
+                    target_str
+                )
+            })?;
             Ok(ChunkMode::Cache { target })
         }
         "cache_total" | "cache-total" => {
-            let fraction = spec.fraction
-                .ok_or_else(|| "chunk mode 'cache_total' requires 'fraction' field".to_string())?;
+            let fraction = spec.fraction.ok_or_else(|| "chunk mode 'cache_total' requires 'fraction' field".to_string())?;
             if fraction <= 0.0 {
                 return Err(format!("cache_total fraction must be > 0 (got {})", fraction));
             }
             Ok(ChunkMode::CacheTotal { fraction })
         }
         "absolute" => {
-            let size_str = spec.size.as_deref()
-                .ok_or_else(|| "chunk mode 'absolute' requires 'size' field (e.g. \"16MB\", \"64KiB\")".to_string())?;
+            let size_str =
+                spec.size.as_deref().ok_or_else(|| "chunk mode 'absolute' requires 'size' field (e.g. \"16MB\", \"64KiB\")".to_string())?;
             let size_bytes = parse_size_string(size_str)?;
             if size_bytes == 0 {
                 return Err("chunk size must be above 0".to_string());
@@ -520,10 +568,10 @@ pub struct ChunkSpec {
 #[serde(deny_unknown_fields)]
 pub struct MemoryStrategyConfig {
     // Stage 1: Allocation strategy
-    pub allocation_mode: String, // "max_available", "percentage_reserve", "fixed_reserve"
-    pub reserve_mb: Option<u32>,       // For max_available mode
-    pub reserve_percent: Option<f64>,  // For percentage_reserve mode
-    pub reserve_gib: Option<f64>,      // For fixed_reserve mode
+    pub allocation_mode: String,      // "max_available", "percentage_reserve", "fixed_reserve"
+    pub reserve_mb: Option<u32>,      // For max_available mode
+    pub reserve_percent: Option<f64>, // For percentage_reserve mode
+    pub reserve_gib: Option<f64>,     // For fixed_reserve mode
 
     /// Default extent spec — applied when a test does not override it.
     pub default_extent: ExtentSpec,
@@ -537,7 +585,7 @@ pub struct TimingConfig {
     // Global test suite timing
     pub global_cycles: Option<u32>,
     pub global_duration_secs: Option<u32>,
-    
+
     // Default per-test timing (can be overridden per test)
     pub default_test_cycles: Option<u32>,
     pub default_test_duration_secs: Option<u32>,
@@ -564,7 +612,7 @@ pub struct TestConfig {
     /// latency, Bench and Mem-Random tests never take it.
     #[serde(default)]
     pub seal: Option<bool>,
-    
+
     // Per-test timing overrides
     pub cycles: Option<u32>,
     pub duration_secs: Option<u32>,
@@ -577,7 +625,6 @@ pub struct TestConfig {
     #[serde(default)]
     pub chunk: Option<ChunkSpec>,
 
-
     /// Flush each chunk out of cache (CLFLUSHOPT + MFENCE) between the write and verify phases,
     /// so the verify round-trips through DRAM instead of reading the just-written cached copy
     /// (#59). Defaults to false. Only meaningful where the extent/chunk would otherwise stay
@@ -586,12 +633,11 @@ pub struct TestConfig {
     #[serde(default)]
     pub flush_before_verify: Option<bool>,
 
-
     // TMR-native test parameters (each used by specific tests, see doc/test_parameters.md)
-    pub stride_patterns: Option<u32>,       // CacheBust: number of interleaved stride pattern variants
-    pub rng_sequences: Option<u32>,         // RandomTorture: number of independent RNG sequences
-    pub subdivisions: Option<u32>,          // StrideAccess: number of chunk subdivisions
-    pub copy_directions: Option<u32>,       // BlockMove: number of copy direction patterns
+    pub stride_patterns: Option<u32>, // CacheBust: number of interleaved stride pattern variants
+    pub rng_sequences: Option<u32>,   // RandomTorture: number of independent RNG sequences
+    pub subdivisions: Option<u32>,    // StrideAccess: number of chunk subdivisions
+    pub copy_directions: Option<u32>, // BlockMove: number of copy direction patterns
     /// Mem-MirrorV2-*: `"whole"` (the default), `"subblocks:2"`, `"subblocks:4"` or `"jump:N"`
     /// (`MirrorMode`). Mirror tests take this, not `parameter`.
     #[serde(default)]
@@ -606,11 +652,11 @@ pub struct TestConfig {
     // Per-chunk repetition: how long each chunk is worked (TODO 79 B2). Unset is the test's own
     // default; loading a TM5 `.cfg` fills them from `Time (%)`.
     #[serde(default)]
-    pub verify_reps: Option<u32>,           // Verify passes after each fill
+    pub verify_reps: Option<u32>, // Verify passes after each fill
     #[serde(default)]
-    pub write_read_cycles: Option<u32>,     // Fill + verify rounds per chunk
+    pub write_read_cycles: Option<u32>, // Fill + verify rounds per chunk
     #[serde(default)]
-    pub test_reps: Option<u32>,             // Test-op repetitions before verifying (MirrorMove: round trips)
+    pub test_reps: Option<u32>, // Test-op repetitions before verifying (MirrorMove: round trips)
 
     /// Mem-SimpleV2 and Mem-Sequence: the native pattern program (pattern spec v2, `crate::pattern`), family names
     /// in order, e.g. `["ident", "switch", "random", "switch"]`; each runs as a P/~P pair. Unset
@@ -631,7 +677,7 @@ pub struct TestConfig {
     pub pattern_mode: Option<u32>,
     pub pattern_param0: Option<u64>,
     pub pattern_param1: Option<u64>,
-    pub parameter: Option<u32>,             // Raw TM5 parameter — interpreted via TestParameterContext
+    pub parameter: Option<u32>, // Raw TM5 parameter — interpreted via TestParameterContext
 }
 
 /// How a Mem-MirrorV2 test walks each chunk (TODO 85). Written `whole`, `subblocks:N` or `jump:N`
@@ -673,13 +719,14 @@ impl std::str::FromStr for MirrorMode {
         if let Some(n) = s.strip_prefix("subblocks:") {
             return match n.parse::<u32>() {
                 Ok(n @ (2 | 4)) => Ok(MirrorMode::Subblocks(n)),
-                Ok(3) => Err(format!("mirror '{s}': {}. Use subblocks:2, subblocks:4 or whole",
-                                     MirrorMode::THREE_SUBBLOCKS)),
+                Ok(3) => Err(format!("mirror '{s}': {}. Use subblocks:2, subblocks:4 or whole", MirrorMode::THREE_SUBBLOCKS)),
                 _ => Err(format!("mirror '{s}': subblocks:N takes 2 or 4")),
             };
         }
         if let Some(n) = s.strip_prefix("jump:") {
-            return n.parse::<u32>().map(MirrorMode::Jump)
+            return n
+                .parse::<u32>()
+                .map(MirrorMode::Jump)
                 .map_err(|_| format!("mirror '{s}': jump:N takes a whole number of 128 B steps (0 or more)"));
         }
         Err(format!("mirror '{s}': use whole, subblocks:2, subblocks:4 or jump:N"))
@@ -756,10 +803,7 @@ pub fn interpret_tm5_parameter_with_channels(function: &str, parameter: u32, cha
         // Every width: Mem-SimpleV2-128/256/512/Auto stride too (TODO 93)
         f if f == "SimpleTest" || f == "Mem-Simple" || f.starts_with("Mem-SimpleV2") || f == "Mem-Sequence" => {
             if parameter == 0 {
-                TestParameterContext {
-                    raw_parameter: parameter,
-                    ..Default::default()
-                }
+                TestParameterContext { raw_parameter: parameter, ..Default::default() }
             } else {
                 // TM5: JumpStep = BlkSize * (Channels * Parameter - 1)
                 let stride_cl = (channels as usize * parameter as usize).saturating_sub(1);
@@ -773,10 +817,7 @@ pub fn interpret_tm5_parameter_with_channels(function: &str, parameter: u32, cha
         }
         _ => {
             // Unknown test type — preserve raw parameter, no interpretation
-            TestParameterContext {
-                raw_parameter: parameter,
-                ..Default::default()
-            }
+            TestParameterContext { raw_parameter: parameter, ..Default::default() }
         }
     }
 }
@@ -865,13 +906,14 @@ impl ModernConfig {
             ("priority", "thread_priority", sys.thread_priority.as_deref().unwrap_or("high")),
         ];
         for (cli_key, json_key, value) in checks {
-            registry.parse_arg(&format!("{cli_key}={value}"))
-                .map_err(|e| format!("system.{json_key}: {e}"))?;
+            registry.parse_arg(&format!("{cli_key}={value}")).map_err(|e| format!("system.{json_key}: {e}"))?;
         }
         match sys.memory_strategy.allocation_mode.as_str() {
             "max_available" | "percentage_reserve" | "fixed_reserve" => Ok(()),
-            other => Err(format!("system.memory_strategy.allocation_mode: unknown mode '{other}'; \
-                valid: max_available, percentage_reserve, fixed_reserve")),
+            other => Err(format!(
+                "system.memory_strategy.allocation_mode: unknown mode '{other}'; \
+                valid: max_available, percentage_reserve, fixed_reserve"
+            )),
         }
     }
 
@@ -884,13 +926,10 @@ impl ModernConfig {
         match config.config_format_version.as_str() {
             "2.0" => Ok(config),
             "1.0" => Err("Config format version 1.0 detected - please use legacy .cfg format or upgrade to v2.0".to_string()),
-            version => Err(format!(
-                "Unsupported config format version '{}' - TMR {} supports v2.0",
-                version, APP_VERSION
-            )),
+            version => Err(format!("Unsupported config format version '{}' - TMR {} supports v2.0", version, APP_VERSION)),
         }
     }
-	
+
     pub fn save_to_file(&self, path: &str) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize config: {}", e))?;
 
@@ -900,34 +939,30 @@ impl ModernConfig {
     // Convert to runtime allocation strategy (extent/chunk modes are now test-specific)
     pub fn to_memory_strategy(&self) -> EnhancedMemoryStrategy {
         let allocation_mode = match self.system.memory_strategy.allocation_mode.as_str() {
-            "max_available" => AllocationMode::ReserveFromAvailable { 
-                reserve: ReserveAmount::Bytes((self.system.memory_strategy.reserve_mb.unwrap_or(128) as u64) * BYTES_PER_MIB)
+            "max_available" => AllocationMode::ReserveFromAvailable {
+                reserve: ReserveAmount::Bytes((self.system.memory_strategy.reserve_mb.unwrap_or(128) as u64) * BYTES_PER_MIB),
             },
-            "percentage_reserve" => AllocationMode::ReserveFromAvailable { 
-                reserve: ReserveAmount::Percentage(self.system.memory_strategy.reserve_percent.unwrap_or(10.0))
+            "percentage_reserve" => AllocationMode::ReserveFromAvailable {
+                reserve: ReserveAmount::Percentage(self.system.memory_strategy.reserve_percent.unwrap_or(10.0)),
             },
-            "fixed_reserve" => AllocationMode::ReserveFromAvailable { 
-                reserve: ReserveAmount::Bytes(gib_to_bytes(self.system.memory_strategy.reserve_gib.unwrap_or(2.0)))
+            "fixed_reserve" => AllocationMode::ReserveFromAvailable {
+                reserve: ReserveAmount::Bytes(gib_to_bytes(self.system.memory_strategy.reserve_gib.unwrap_or(2.0))),
             },
-            _ => AllocationMode::ReserveFromAvailable { 
-                reserve: ReserveAmount::Percentage(10.0) 
-            },
+            _ => AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(10.0) },
         };
 
         EnhancedMemoryStrategy { allocation_mode }
     }
-    
+
     // Parse default extent spec into runtime ExtentMode. An invalid spec is an error, not a
     // fallback: the run stops rather than test something the config didn't ask for.
     pub fn get_default_extent_mode(&self) -> Result<ExtentMode, String> {
-        spec_to_extent_mode(&self.system.memory_strategy.default_extent)
-            .map_err(|e| format!("invalid default extent spec: {e}"))
+        spec_to_extent_mode(&self.system.memory_strategy.default_extent).map_err(|e| format!("invalid default extent spec: {e}"))
     }
 
     // Parse default chunk spec into runtime ChunkMode. Invalid is an error, as above.
     pub fn get_default_chunk_mode(&self) -> Result<ChunkMode, String> {
-        spec_to_chunk_mode(&self.system.memory_strategy.default_chunk)
-            .map_err(|e| format!("invalid default chunk spec: {e}"))
+        spec_to_chunk_mode(&self.system.memory_strategy.default_chunk).map_err(|e| format!("invalid default chunk spec: {e}"))
     }
 
     pub fn to_error_mode(&self) -> ErrorMode {
@@ -937,18 +972,18 @@ impl ModernConfig {
             _ => ErrorMode::Log, // default
         }
     }
-    
+
     pub fn to_test_suite_timing(&self) -> TestSuiteTiming {
-        TestSuiteTiming {
-            global_cycles: self.system.timing.global_cycles,
-            global_duration_secs: self.system.timing.global_duration_secs,
-        }
+        TestSuiteTiming { global_cycles: self.system.timing.global_cycles, global_duration_secs: self.system.timing.global_duration_secs }
     }
-    
+
     /// The enabled tests, in file order, each with its runtime config.
     #[cfg(test)]
     pub fn get_test_configs(&self) -> Result<Vec<(&str, TestMemoryConfig)>, String> {
-        self.test_sequence.iter().enumerate().filter(|(_, t)| t.enabled)
+        self.test_sequence
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.enabled)
             .map(|(i, test)| Ok((test.function.as_str(), self.build_test(i, test)?)))
             .collect()
     }
@@ -997,18 +1032,22 @@ impl ModernConfig {
     /// One test's runtime config from its entry `i` in `test_sequence`.
     fn build_test(&self, i: usize, test: &TestConfig) -> Result<TestMemoryConfig, String> {
         // Channels: prefer JSON system.channels, fall back to legacy TM5 metadata, default 2
-        let channels = if self.system.channels > 0 {
-            self.system.channels
-        } else {
-            self.legacy_metadata.as_ref().map_or(2, |m| m.tm5_channels)
-        };
+        let channels =
+            if self.system.channels > 0 { self.system.channels } else { self.legacy_metadata.as_ref().map_or(2, |m| m.tm5_channels) };
         let extent_mode = self.parse_test_extent_mode(test).map_err(|e| Self::test_error(i, test, e))?;
         let chunk_mode = self.parse_test_chunk_mode(test).map_err(|e| Self::test_error(i, test, e))?;
         if let Some(mode) = test.pattern_mode
             && !crate::pattern::is_pattern_mode(mode)
         {
-            return Err(Self::test_error(i, test, format!("pattern_mode {mode} is not a mode{}; valid: {}",
-                crate::pattern::renumbered(mode), crate::pattern::pattern_modes())));
+            return Err(Self::test_error(
+                i,
+                test,
+                format!(
+                    "pattern_mode {mode} is not a mode{}; valid: {}",
+                    crate::pattern::renumbered(mode),
+                    crate::pattern::pattern_modes()
+                ),
+            ));
         }
         // A native family's number is a program of the family alone, not a numbered mode. A Bench
         // pair of a numbered mode runs the one its name gives, `Bench-Init-TMR-30` mode 30, when
@@ -1018,14 +1057,26 @@ impl ModernConfig {
         let is_sequence = test.function == "Mem-Sequence";
         let native_test = test.function.starts_with("Mem-SimpleV2") || is_sequence;
         if is_sequence && pattern_mode.is_some() {
-            return Err(Self::test_error(i, test, "Mem-Sequence runs native patterns only: give it a \"program\", or a native \
-                family's number as its pattern_mode".to_string()));
+            return Err(Self::test_error(
+                i,
+                test,
+                "Mem-Sequence runs native patterns only: give it a \"program\", or a native \
+                family's number as its pattern_mode"
+                    .to_string(),
+            ));
         }
         let program = match &test.program {
             None => match native {
                 Some(_) if !native_test => {
-                    return Err(Self::test_error(i, test, format!("only the Mem-SimpleV2 tests and Mem-Sequence run native patterns \
-                        (pattern_mode {})", test.pattern_mode.unwrap_or(0))));
+                    return Err(Self::test_error(
+                        i,
+                        test,
+                        format!(
+                            "only the Mem-SimpleV2 tests and Mem-Sequence run native patterns \
+                        (pattern_mode {})",
+                            test.pattern_mode.unwrap_or(0)
+                        ),
+                    ));
                 }
                 native => native.map(crate::pattern::Program::single),
             },
@@ -1033,13 +1084,21 @@ impl ModernConfig {
                 return Err(Self::test_error(i, test, "only the Mem-SimpleV2 tests and Mem-Sequence read \"program\"".to_string()));
             }
             Some(_) if test.pattern_mode.is_some() => {
-                return Err(Self::test_error(i, test, "a test takes \"program\" (native patterns) or \"pattern_mode\" (TMR's numbered modes), not both".to_string()));
+                return Err(Self::test_error(
+                    i,
+                    test,
+                    "a test takes \"program\" (native patterns) or \"pattern_mode\" (TMR's numbered modes), not both".to_string(),
+                ));
             }
             Some(names) => Some(crate::pattern::Program::parse(names).map_err(|e| Self::test_error(i, test, e))?),
         };
         let is_mirror = test.function.starts_with("Mem-MirrorV2");
         if is_mirror && test.parameter.is_some() {
-            return Err(Self::test_error(i, test, "a mirror test takes \"mirror\" (whole, subblocks:2, subblocks:4 or jump:N), not \"parameter\"".to_string()));
+            return Err(Self::test_error(
+                i,
+                test,
+                "a mirror test takes \"mirror\" (whole, subblocks:2, subblocks:4 or jump:N), not \"parameter\"".to_string(),
+            ));
         }
         if !is_mirror && test.mirror.is_some() {
             return Err(Self::test_error(i, test, "only the Mem-MirrorV2 tests read \"mirror\"".to_string()));
@@ -1047,8 +1106,12 @@ impl ModernConfig {
         if let ChunkMode::Absolute { size_bytes } = chunk_mode
             && !size_bytes.is_multiple_of(crate::test_memory::GRANULE)
         {
-            log::info!("test_sequence[{i}] ('{}'): chunk {} bytes -> {} KiB (chunks are multiples of 4 KiB, rounded up; then at least the test's minimum and at most the extent)",
-                test.function, size_bytes, size_bytes.next_multiple_of(crate::test_memory::GRANULE) / 1024);
+            log::info!(
+                "test_sequence[{i}] ('{}'): chunk {} bytes -> {} KiB (chunks are multiples of 4 KiB, rounded up; then at least the test's minimum and at most the extent)",
+                test.function,
+                size_bytes,
+                size_bytes.next_multiple_of(crate::test_memory::GRANULE) / 1024
+            );
         }
         let timing = TestTiming {
             cycles: test.cycles.or(self.system.timing.default_test_cycles),
@@ -1067,23 +1130,36 @@ impl ModernConfig {
 
         // v2: Attach correctly interpreted parameter context
         if let Some(param) = test.parameter {
-            config = config.with_parameter_context(
-                interpret_tm5_parameter_with_channels(&test.function, param, channels)
-            );
+            config = config.with_parameter_context(interpret_tm5_parameter_with_channels(&test.function, param, channels));
         }
 
         // Fold TMR-native test parameters into parameter_context
-        if test.stride_patterns.is_some() || test.rng_sequences.is_some()
-            || test.subdivisions.is_some() || test.copy_directions.is_some()
-            || test.mirror.is_some() || test.wait_ms.is_some()
+        if test.stride_patterns.is_some()
+            || test.rng_sequences.is_some()
+            || test.subdivisions.is_some()
+            || test.copy_directions.is_some()
+            || test.mirror.is_some()
+            || test.wait_ms.is_some()
         {
             let ctx = config.parameter_context.get_or_insert(TestParameterContext::default());
-            if let Some(v) = test.stride_patterns { ctx.stride_patterns = Some(v); }
-            if let Some(v) = test.rng_sequences { ctx.rng_sequences = Some(v); }
-            if let Some(v) = test.subdivisions { ctx.subdivisions = Some(v); }
-            if let Some(v) = test.copy_directions { ctx.copy_directions = Some(v); }
-            if let Some(v) = test.mirror { ctx.mirror = Some(v); }
-            if let Some(v) = test.wait_ms { ctx.wait_ms = Some(v); }
+            if let Some(v) = test.stride_patterns {
+                ctx.stride_patterns = Some(v);
+            }
+            if let Some(v) = test.rng_sequences {
+                ctx.rng_sequences = Some(v);
+            }
+            if let Some(v) = test.subdivisions {
+                ctx.subdivisions = Some(v);
+            }
+            if let Some(v) = test.copy_directions {
+                ctx.copy_directions = Some(v);
+            }
+            if let Some(v) = test.mirror {
+                ctx.mirror = Some(v);
+            }
+            if let Some(v) = test.wait_ms {
+                ctx.wait_ms = Some(v);
+            }
         }
         if let Some(ms) = test.wait_ms
             && !(test.function.starts_with("Mem-Refresh") || test.function == "RefreshStable")
@@ -1100,185 +1176,173 @@ impl ModernConfig {
         Ok(config)
     }
 
-/// Which entry an error belongs to: its `test_sequence` index and function, since a config can
-/// repeat a function (a TM5 import has eleven `Mem-SimpleV2`).
-fn test_error(index: usize, test: &TestConfig, e: String) -> String {
-    format!("test_sequence[{index}] ('{}'): {e}", test.function)
-}
-
-fn parse_test_extent_mode(&self, test: &TestConfig) -> Result<ExtentMode, String> {
-    match test.extent {
-        Some(ref spec) => spec_to_extent_mode(spec).map_err(|e| format!("invalid extent spec: {e}")),
-        None => self.get_default_extent_mode(),
+    /// Which entry an error belongs to: its `test_sequence` index and function, since a config can
+    /// repeat a function (a TM5 import has eleven `Mem-SimpleV2`).
+    fn test_error(index: usize, test: &TestConfig, e: String) -> String {
+        format!("test_sequence[{index}] ('{}'): {e}", test.function)
     }
-}
 
-fn parse_test_chunk_mode(&self, test: &TestConfig) -> Result<ChunkMode, String> {
-    match test.chunk {
-        Some(ref spec) => spec_to_chunk_mode(spec).map_err(|e| format!("invalid chunk spec: {e}")),
-        None => self.get_default_chunk_mode(),
+    fn parse_test_extent_mode(&self, test: &TestConfig) -> Result<ExtentMode, String> {
+        match test.extent {
+            Some(ref spec) => spec_to_extent_mode(spec).map_err(|e| format!("invalid extent spec: {e}")),
+            None => self.get_default_extent_mode(),
+        }
     }
-}
 
-pub fn create_demo_config() -> Self {
-    ModernConfig {
-        config_format_version: CONFIG_VERSION.to_string(),
-        application_name: format!("{} ({})", APP_NAME, APP_SHORT_NAME),
-        metadata: ConfigMetadata {
-            name: "TMR Quick Demo Test".to_string(),
-            author: "tmr_user".to_string(),
-            version: "1.0".to_string(),
-            description: Some("Quick 1-cycle demo showcasing each test with optimal configurations".to_string()),
-            created: Some("2025-01-03".to_string()),
-            tested_with_version: APP_VERSION.to_string(),
-        },
-        system: SystemConfig {
-            memory_strategy: MemoryStrategyConfig {
-                allocation_mode: "percentage_reserve".to_string(),
-                reserve_mb: None,
-                reserve_percent: Some(10.0),           // Reserve 10% for OS
-                reserve_gib: None,
-                default_extent: ExtentSpec::full_allocation(),
-                default_chunk: ChunkSpec::auto(),
-            },
-            cpu_config: CpuConfig {
-                cpu_type: "cores".to_string(),
-                usage_percent: 100,
-            },
-            error_mode: "log".to_string(),
-            timing: TimingConfig {
-                global_cycles: Some(1),                // Just 1 global cycle for demo
-                global_duration_secs: None,
-                default_test_cycles: Some(1),          // Default 1 cycle per test
-                default_test_duration_secs: None,
-            },
-            large_pages: true,
-			cpu_pinning: CpuPinningConfig::default(),
-			memory_allocation: MemoryAllocationConfig::default(),
-            channels: 2,
-            seal: None,
-            seal_width: None,
-            width: None,
-            thread_priority: None,
-        },
-        test_sequence: vec![
-            // Critical: Full memory stuck bit test
-            TestConfig {
-                enabled: true,
-                function: "Mem-StuckBitAuto".to_string(),
-                cycles: Some(1),                       // 1 cycle is thorough enough
-                extent: Some(ExtentSpec::full_allocation()), // Must test ALL memory
-                chunk: Some(ChunkSpec::absolute("512MiB")),  // Above a desktop L3; capped per block piece
-                ..Default::default()
-            },
-
-            // Mem-RefreshAuto - needs small extent for refresh timing
-            TestConfig {
-                enabled: true,
-                function: "Mem-RefreshAuto".to_string(),
-                cycles: Some(1),
-                extent: Some(ExtentSpec::cache_total(2.0)), // 2x cache for refresh testing
-                chunk: Some(ChunkSpec::absolute("1MB")),    // Small 1MB blocks
-                // A 1 MB chunk is written, slept on and verified inside the caches unless it is
-                // flushed first, as the scalar Mem-Refresh this step ran until TODO 99 always was
-                flush_before_verify: Some(true),
-                ..Default::default()
-            },
-            
-            // Mem-SimpleV2-Auto - general pattern test with TM5 compatibility
-            TestConfig {
-                enabled: true,
-                function: "Mem-SimpleV2-Auto".to_string(),
-                cycles: Some(1),
-                extent: Some(ExtentSpec::absolute("880MB")), // a fixed extent
-                chunk: Some(ChunkSpec::absolute("16MB")),    // TM5 typical block size
-                pattern_mode: Some(1),
-                pattern_param0: Some(0x1E5F),
-                pattern_param1: Some(0x45357354),
-                ..Default::default()
-            },
-
-            // Mem-MirrorV2-128 - SIMD test with optimal locality
-            TestConfig {
-                enabled: true,
-                function: "Mem-MirrorV2-128".to_string(),
-                cycles: Some(1),
-                extent: Some(ExtentSpec::absolute("64MB")),  // Good SIMD locality
-                chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB for 128-bit alignment
-                ..Default::default()
-            },
-            
-            // Mem-MirrorV2-256 - AVX2 with dual subblocks
-            TestConfig {
-                enabled: true,
-                function: "Mem-MirrorV2-256".to_string(),
-                cycles: Some(1),
-                extent: Some(ExtentSpec::absolute("128MB")), // Larger for AVX2
-                chunk: Some(ChunkSpec::absolute("32MB")),    // 32MB for 256-bit alignment
-                ..Default::default()
-            },
-            
-            // Mem-CacheBust - specifically sized for cache stress
-            TestConfig {
-                enabled: true,
-                function: "Mem-CacheBust".to_string(),
-                cycles: Some(1),
-                extent: Some(ExtentSpec::cache_total(0.5)), // Half total cache to ensure busting
-                chunk: Some(ChunkSpec::absolute("1MB")),    // 1MB blocks for cache lines
-                stride_patterns: Some(4),              // 4 interleaved stride patterns
-                ..Default::default()
-            },
-            
-            // Mem-Random - full memory random access
-            TestConfig {
-                enabled: true,
-                function: "Mem-Random".to_string(),
-                cycles: Some(1),
-                extent: Some(ExtentSpec::full_allocation()), // Need full memory
-                chunk: Some(ChunkSpec::absolute("8MB")),    // 8MB blocks
-                rng_sequences: Some(8),                // 8 independent RNG sequences
-                ..Default::default()
-            },
-            
-            // Mem-Stride - test various stride patterns
-            TestConfig {
-                enabled: true,
-                function: "Mem-Stride".to_string(),
-                cycles: Some(1),
-                extent: Some(ExtentSpec::full_allocation()),
-                chunk: Some(ChunkSpec::auto()),             // Let TMR optimize
-                subdivisions: Some(4),                 // 4 chunk subdivisions
-                ..Default::default()
-            },
-            
-            // Mem-BlockMove - memory copy test
-            TestConfig {
-                enabled: true,
-                function: "Mem-BlockMove".to_string(),
-                cycles: Some(1),
-                extent: Some(ExtentSpec::full_allocation()), // Need src+dst space
-                chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB blocks
-                copy_directions: Some(2),              // Forward + backward copy
-                ..Default::default()
-            },
-            
-            // Legacy TM5-style test with one large block
-            TestConfig {
-                enabled: true,
-                function: "Mem-SimpleV2-Auto".to_string(),
-                cycles: Some(1),
-                chunk: Some(ChunkSpec::absolute("512MiB")),
-                pattern_mode: Some(0),
-                pattern_param0: Some(0),
-                pattern_param1: Some(0),
-                ..Default::default()
-            },
-        ],
-        cycle_order: None,
-        legacy_metadata: None,
+    fn parse_test_chunk_mode(&self, test: &TestConfig) -> Result<ChunkMode, String> {
+        match test.chunk {
+            Some(ref spec) => spec_to_chunk_mode(spec).map_err(|e| format!("invalid chunk spec: {e}")),
+            None => self.get_default_chunk_mode(),
+        }
     }
-}
-    
+
+    pub fn create_demo_config() -> Self {
+        ModernConfig {
+            config_format_version: CONFIG_VERSION.to_string(),
+            application_name: format!("{} ({})", APP_NAME, APP_SHORT_NAME),
+            metadata: ConfigMetadata {
+                name: "TMR Quick Demo Test".to_string(),
+                author: "tmr_user".to_string(),
+                version: "1.0".to_string(),
+                description: Some("Quick 1-cycle demo showcasing each test with optimal configurations".to_string()),
+                created: Some("2025-01-03".to_string()),
+                tested_with_version: APP_VERSION.to_string(),
+            },
+            system: SystemConfig {
+                memory_strategy: MemoryStrategyConfig {
+                    allocation_mode: "percentage_reserve".to_string(),
+                    reserve_mb: None,
+                    reserve_percent: Some(10.0), // Reserve 10% for OS
+                    reserve_gib: None,
+                    default_extent: ExtentSpec::full_allocation(),
+                    default_chunk: ChunkSpec::auto(),
+                },
+                cpu_config: CpuConfig { cpu_type: "cores".to_string(), usage_percent: 100 },
+                error_mode: "log".to_string(),
+                timing: TimingConfig {
+                    global_cycles: Some(1), // Just 1 global cycle for demo
+                    global_duration_secs: None,
+                    default_test_cycles: Some(1), // Default 1 cycle per test
+                    default_test_duration_secs: None,
+                },
+                large_pages: true,
+                cpu_pinning: CpuPinningConfig::default(),
+                memory_allocation: MemoryAllocationConfig::default(),
+                channels: 2,
+                seal: None,
+                seal_width: None,
+                width: None,
+                thread_priority: None,
+            },
+            test_sequence: vec![
+                // Critical: Full memory stuck bit test
+                TestConfig {
+                    enabled: true,
+                    function: "Mem-StuckBitAuto".to_string(),
+                    cycles: Some(1),                             // 1 cycle is thorough enough
+                    extent: Some(ExtentSpec::full_allocation()), // Must test ALL memory
+                    chunk: Some(ChunkSpec::absolute("512MiB")),  // Above a desktop L3; capped per block piece
+                    ..Default::default()
+                },
+                // Mem-RefreshAuto - needs small extent for refresh timing
+                TestConfig {
+                    enabled: true,
+                    function: "Mem-RefreshAuto".to_string(),
+                    cycles: Some(1),
+                    extent: Some(ExtentSpec::cache_total(2.0)), // 2x cache for refresh testing
+                    chunk: Some(ChunkSpec::absolute("1MB")),    // Small 1MB blocks
+                    // A 1 MB chunk is written, slept on and verified inside the caches unless it is
+                    // flushed first, as the scalar Mem-Refresh this step ran until TODO 99 always was
+                    flush_before_verify: Some(true),
+                    ..Default::default()
+                },
+                // Mem-SimpleV2-Auto - general pattern test with TM5 compatibility
+                TestConfig {
+                    enabled: true,
+                    function: "Mem-SimpleV2-Auto".to_string(),
+                    cycles: Some(1),
+                    extent: Some(ExtentSpec::absolute("880MB")), // a fixed extent
+                    chunk: Some(ChunkSpec::absolute("16MB")),    // TM5 typical block size
+                    pattern_mode: Some(1),
+                    pattern_param0: Some(0x1E5F),
+                    pattern_param1: Some(0x45357354),
+                    ..Default::default()
+                },
+                // Mem-MirrorV2-128 - SIMD test with optimal locality
+                TestConfig {
+                    enabled: true,
+                    function: "Mem-MirrorV2-128".to_string(),
+                    cycles: Some(1),
+                    extent: Some(ExtentSpec::absolute("64MB")), // Good SIMD locality
+                    chunk: Some(ChunkSpec::absolute("16MB")),   // 16MB for 128-bit alignment
+                    ..Default::default()
+                },
+                // Mem-MirrorV2-256 - AVX2 with dual subblocks
+                TestConfig {
+                    enabled: true,
+                    function: "Mem-MirrorV2-256".to_string(),
+                    cycles: Some(1),
+                    extent: Some(ExtentSpec::absolute("128MB")), // Larger for AVX2
+                    chunk: Some(ChunkSpec::absolute("32MB")),    // 32MB for 256-bit alignment
+                    ..Default::default()
+                },
+                // Mem-CacheBust - specifically sized for cache stress
+                TestConfig {
+                    enabled: true,
+                    function: "Mem-CacheBust".to_string(),
+                    cycles: Some(1),
+                    extent: Some(ExtentSpec::cache_total(0.5)), // Half total cache to ensure busting
+                    chunk: Some(ChunkSpec::absolute("1MB")),    // 1MB blocks for cache lines
+                    stride_patterns: Some(4),                   // 4 interleaved stride patterns
+                    ..Default::default()
+                },
+                // Mem-Random - full memory random access
+                TestConfig {
+                    enabled: true,
+                    function: "Mem-Random".to_string(),
+                    cycles: Some(1),
+                    extent: Some(ExtentSpec::full_allocation()), // Need full memory
+                    chunk: Some(ChunkSpec::absolute("8MB")),     // 8MB blocks
+                    rng_sequences: Some(8),                      // 8 independent RNG sequences
+                    ..Default::default()
+                },
+                // Mem-Stride - test various stride patterns
+                TestConfig {
+                    enabled: true,
+                    function: "Mem-Stride".to_string(),
+                    cycles: Some(1),
+                    extent: Some(ExtentSpec::full_allocation()),
+                    chunk: Some(ChunkSpec::auto()), // Let TMR optimize
+                    subdivisions: Some(4),          // 4 chunk subdivisions
+                    ..Default::default()
+                },
+                // Mem-BlockMove - memory copy test
+                TestConfig {
+                    enabled: true,
+                    function: "Mem-BlockMove".to_string(),
+                    cycles: Some(1),
+                    extent: Some(ExtentSpec::full_allocation()), // Need src+dst space
+                    chunk: Some(ChunkSpec::absolute("16MB")),    // 16MB blocks
+                    copy_directions: Some(2),                    // Forward + backward copy
+                    ..Default::default()
+                },
+                // Legacy TM5-style test with one large block
+                TestConfig {
+                    enabled: true,
+                    function: "Mem-SimpleV2-Auto".to_string(),
+                    cycles: Some(1),
+                    chunk: Some(ChunkSpec::absolute("512MiB")),
+                    pattern_mode: Some(0),
+                    pattern_param0: Some(0),
+                    pattern_param1: Some(0),
+                    ..Default::default()
+                },
+            ],
+            cycle_order: None,
+            legacy_metadata: None,
+        }
+    }
+
     pub fn create_tm5_compatible_config() -> Self {
         ModernConfig {
             config_format_version: CONFIG_VERSION.to_string(),
@@ -1294,32 +1358,29 @@ pub fn create_demo_config() -> Self {
             system: SystemConfig {
                 memory_strategy: MemoryStrategyConfig {
                     allocation_mode: "max_available".to_string(),
-                    reserve_mb: Some(128),                 // TM5-style fixed reserve
+                    reserve_mb: Some(128), // TM5-style fixed reserve
                     reserve_percent: None,
                     reserve_gib: None,
                     default_extent: ExtentSpec::full_allocation(), // as a TM5 .cfg import
                     default_chunk: ChunkSpec::auto(),
                 },
-                cpu_config: CpuConfig {
-                    cpu_type: "cores".to_string(),
-                    usage_percent: 100,
-                },
+                cpu_config: CpuConfig { cpu_type: "cores".to_string(), usage_percent: 100 },
                 error_mode: "log".to_string(),
                 timing: TimingConfig {
                     global_cycles: Some(3),
                     global_duration_secs: None,
-                    default_test_cycles: Some(1),          // TM5-style single runs
+                    default_test_cycles: Some(1), // TM5-style single runs
                     default_test_duration_secs: None,
                 },
                 large_pages: true,
-				cpu_pinning: CpuPinningConfig::default(),
-				memory_allocation: MemoryAllocationConfig::default(),
+                cpu_pinning: CpuPinningConfig::default(),
+                memory_allocation: MemoryAllocationConfig::default(),
                 channels: 2,
                 seal: None,
                 seal_width: None,
                 width: None,
                 thread_priority: None,
-	            },
+            },
             test_sequence: vec![
                 TestConfig {
                     enabled: true,
@@ -1332,7 +1393,7 @@ pub fn create_demo_config() -> Self {
                     enabled: true,
                     function: "Mem-SimpleV2-Auto".to_string(),
                     cycles: Some(1),
-                    chunk: Some(ChunkSpec::absolute("16MB")),    // TM5-style block size
+                    chunk: Some(ChunkSpec::absolute("16MB")), // TM5-style block size
                     pattern_mode: Some(1),
                     pattern_param0: Some(0x1E5F),
                     pattern_param1: Some(0x45357354),
@@ -1340,7 +1401,7 @@ pub fn create_demo_config() -> Self {
                 },
             ],
             cycle_order: None,
-        legacy_metadata: None,
+            legacy_metadata: None,
         }
     }
 }
@@ -1398,7 +1459,10 @@ impl LegacyConfig {
 
         let test_sequence = match main.get("Test Sequence") {
             None => Vec::new(),
-            Some(s) => s.split(',').map(|n| n.trim()).filter(|n| !n.is_empty())
+            Some(s) => s
+                .split(',')
+                .map(|n| n.trim())
+                .filter(|n| !n.is_empty())
                 .map(|n| n.parse::<u32>().map_err(|_| format!("TM5 config [Main Section] Test Sequence: '{n}' is not a test number")))
                 .collect::<Result<Vec<_>, _>>()?,
         };
@@ -1444,177 +1508,179 @@ impl LegacyConfig {
             }
         }
 
-        Ok(LegacyConfig {
-            main_section,
-            memory_setup,
-            tests,
-        })
+        Ok(LegacyConfig { main_section, memory_setup, tests })
     }
 
     // Convert legacy config to modern config v2.0
- /// Every `[TestN]` becomes a test with the id `"N"` and its `Enable=`, `Test Sequence` the
- /// `cycle_order` and `Cycles` the run's cycles (TODO 74). Test 0 is TM5's RefreshStable, which
- /// TM5 runs around every step: TMR's seal. Enabled, the run is sealed and a `0` step is a
- /// seal check (`Seal-Check`); disabled, the run is unsealed. TM5 skips a disabled step, and
- /// stops reading `Test Sequence` at a number of 16 or more.
- pub fn to_modern_config(&self) -> Result<ModernConfig, String> {
-    let mut test_sequence = Vec::new();
-    let mut sealed = false;
-    for test in &self.tests {
-        if test.id == 0 {
-            if test.function != "RefreshStable" {
-                return Err(format!("TM5 Test0 is {}, not RefreshStable: TM5 runs test 0 around every step, \
-                                    as TMR's seal, and TMR only runs it as RefreshStable", test.function));
-            }
-            sealed = test.enabled;
-            test_sequence.push(TestConfig {
-                id: Some("0".to_string()),
-                enabled: test.enabled,
-                function: "Seal-Check".to_string(),
-                cycles: Some(1),
-                chunk: Some(self.chunk_spec(test)),
-                ..Default::default()
-            });
-            continue;
-        }
-        // A disabled test is declared, so a `Test Sequence` that names it skips it; one whose
-        // function TMR doesn't know is left out (naming it is then an error)
-        let function = match Self::map_legacy_function(&test.function) {
-            Ok(function) => function,
-            Err(e) if test.enabled => return Err(e),
-            Err(_) => continue,
-        };
-        {
-            let (verify_reps, write_read_cycles, test_reps) = self.repetition(test);
-            let mirror = match Self::mirror_mode(test) {
-                Err(e) if !test.enabled => { log::info!("TM5 Test{} is disabled: {e}", test.id); None }
-                other => other?,
-            };
-
-            // A SimpleTest's mode becomes a native program (pattern spec v2): its intent's family
-            // and switching, then mixed data and switching (`Program::from_tm5_mode`), or a native
-            // family's number that family alone, on Mem-SimpleV2-Auto: at the run's width
-            // (`width=`, else the widest the CPU has, TODO 99), every width writing one image.
-            // With patterns=legacy it keeps TMR's numbered mode (spec 1), to compare, on the same
-            // test (there is no scalar test). No other function reads the pattern fields, so they
-            // get none.
-            let (function, program, pattern) = match function.as_str() {
-                "Mem-SimpleV2-Auto" if crate::pattern::legacy_import() => {
-                    (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1)))
+    /// Every `[TestN]` becomes a test with the id `"N"` and its `Enable=`, `Test Sequence` the
+    /// `cycle_order` and `Cycles` the run's cycles (TODO 74). Test 0 is TM5's RefreshStable, which
+    /// TM5 runs around every step: TMR's seal. Enabled, the run is sealed and a `0` step is a
+    /// seal check (`Seal-Check`); disabled, the run is unsealed. TM5 skips a disabled step, and
+    /// stops reading `Test Sequence` at a number of 16 or more.
+    pub fn to_modern_config(&self) -> Result<ModernConfig, String> {
+        let mut test_sequence = Vec::new();
+        let mut sealed = false;
+        for test in &self.tests {
+            if test.id == 0 {
+                if test.function != "RefreshStable" {
+                    return Err(format!(
+                        "TM5 Test0 is {}, not RefreshStable: TM5 runs test 0 around every step, \
+                                    as TMR's seal, and TMR only runs it as RefreshStable",
+                        test.function
+                    ));
                 }
-                "Mem-SimpleV2-Auto" => match crate::pattern::Program::from_tm5_mode(test.pattern_mode)
-                    .or_else(|| crate::pattern::Family::from_number(test.pattern_mode).map(crate::pattern::Program::single))
-                {
-                    Some(program) => (function, Some(program.names()), None),
-                    // Not one of TM5's: kept as the TMR mode it names (build_test refuses one TMR
-                    // doesn't have)
-                    None => (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1))),
-                },
-                _ => (function, None, None),
-            };
-            // An imported RefreshStable flushes each chunk before its sleep, as the scalar
-            // Mem-Refresh it ran on until TODO 99 did always: a chunk the .cfg sizes inside the
-            // caches would otherwise verify cached copies. The built-in Mem-RefreshAuto doesn't
-            // (its extent is twice the caches)
-            let flush_before_verify = (function == "Mem-RefreshAuto").then_some(true);
-            test_sequence.push(TestConfig {
-                id: Some(test.id.to_string()),
-                enabled: test.enabled,
-                function,
-
-                // One pass per plan cycle; TM5 `Time (%)` is per-chunk dwell, set below (TODO 79 B2)
-                cycles: Some(1),
-
-                // `extent` unset is the default, the full allocation: every TM5 test visits every
-                // locked page, walking its AWE window over them (TODO 76)
-                chunk: Some(self.chunk_spec(test)),
-
-
-                verify_reps,
-                write_read_cycles,
-                test_reps,
-
-                program,
-                pattern_mode: pattern.map(|p| p.0),
-                pattern_param0: pattern.map(|p| p.1),
-                pattern_param1: pattern.map(|p| p.2),
-                // A mirror test's Parameter becomes its mode
-                mirror,
-                parameter: if mirror.is_some() { None } else { Some(test.parameter) },
-                flush_before_verify,
-                ..Default::default()
-            });
-        }
-    }
-    let declared: std::collections::HashSet<u32> = test_sequence.iter()
-        .filter_map(|t| t.id.as_deref()?.parse().ok()).collect();
-    let mut cycle_order = Vec::new();
-    for &n in &self.main_section.test_sequence {
-        if n >= 16 {
-            if cycle_order.is_empty() {
-                return Err(format!("TM5 Test Sequence starts with {n}: TM5 stops reading it at a number of 16 or more, so the cycle would run nothing"));
+                sealed = test.enabled;
+                test_sequence.push(TestConfig {
+                    id: Some("0".to_string()),
+                    enabled: test.enabled,
+                    function: "Seal-Check".to_string(),
+                    cycles: Some(1),
+                    chunk: Some(self.chunk_spec(test)),
+                    ..Default::default()
+                });
+                continue;
             }
-            break;
-        }
-        if !declared.contains(&n) {
-            return Err(format!("TM5 Test Sequence names test {n}, which the .cfg doesn't define"));
-        }
-        cycle_order.push(n.to_string());
-    }
+            // A disabled test is declared, so a `Test Sequence` that names it skips it; one whose
+            // function TMR doesn't know is left out (naming it is then an error)
+            let function = match Self::map_legacy_function(&test.function) {
+                Ok(function) => function,
+                Err(e) if test.enabled => return Err(e),
+                Err(_) => continue,
+            };
+            {
+                let (verify_reps, write_read_cycles, test_reps) = self.repetition(test);
+                let mirror = match Self::mirror_mode(test) {
+                    Err(e) if !test.enabled => {
+                        log::info!("TM5 Test{} is disabled: {e}", test.id);
+                        None
+                    }
+                    other => other?,
+                };
 
-    Ok(ModernConfig {
-        config_format_version: CONFIG_VERSION.to_string(),
-        application_name: format!("{} ({})", APP_NAME, APP_SHORT_NAME),
-        metadata: ConfigMetadata {
-            name: format!("{} (Legacy Converted)", self.main_section.config_name),
-            author: self.main_section.config_author.clone(),
-            version: "1.0".to_string(),
-            description: Some("Converted from legacy TestMem5 config".to_string()),
-            created: None,
-            tested_with_version: APP_VERSION.to_string(),
-        },
-        system: SystemConfig {
-            memory_strategy: MemoryStrategyConfig {
-                allocation_mode: "max_available".to_string(),
-                reserve_mb: Some(self.memory_setup.reserved_memory_mb),
-                reserve_percent: None,
-                reserve_gib: None,
-                default_extent: ExtentSpec::full_allocation(),
-                default_chunk: ChunkSpec::auto(),
+                // A SimpleTest's mode becomes a native program (pattern spec v2): its intent's family
+                // and switching, then mixed data and switching (`Program::from_tm5_mode`), or a native
+                // family's number that family alone, on Mem-SimpleV2-Auto: at the run's width
+                // (`width=`, else the widest the CPU has, TODO 99), every width writing one image.
+                // With patterns=legacy it keeps TMR's numbered mode (spec 1), to compare, on the same
+                // test (there is no scalar test). No other function reads the pattern fields, so they
+                // get none.
+                let (function, program, pattern) = match function.as_str() {
+                    "Mem-SimpleV2-Auto" if crate::pattern::legacy_import() => {
+                        (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1)))
+                    }
+                    "Mem-SimpleV2-Auto" => match crate::pattern::Program::from_tm5_mode(test.pattern_mode)
+                        .or_else(|| crate::pattern::Family::from_number(test.pattern_mode).map(crate::pattern::Program::single))
+                    {
+                        Some(program) => (function, Some(program.names()), None),
+                        // Not one of TM5's: kept as the TMR mode it names (build_test refuses one TMR
+                        // doesn't have)
+                        None => (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1))),
+                    },
+                    _ => (function, None, None),
+                };
+                // An imported RefreshStable flushes each chunk before its sleep, as the scalar
+                // Mem-Refresh it ran on until TODO 99 did always: a chunk the .cfg sizes inside the
+                // caches would otherwise verify cached copies. The built-in Mem-RefreshAuto doesn't
+                // (its extent is twice the caches)
+                let flush_before_verify = (function == "Mem-RefreshAuto").then_some(true);
+                test_sequence.push(TestConfig {
+                    id: Some(test.id.to_string()),
+                    enabled: test.enabled,
+                    function,
+
+                    // One pass per plan cycle; TM5 `Time (%)` is per-chunk dwell, set below (TODO 79 B2)
+                    cycles: Some(1),
+
+                    // `extent` unset is the default, the full allocation: every TM5 test visits every
+                    // locked page, walking its AWE window over them (TODO 76)
+                    chunk: Some(self.chunk_spec(test)),
+
+                    verify_reps,
+                    write_read_cycles,
+                    test_reps,
+
+                    program,
+                    pattern_mode: pattern.map(|p| p.0),
+                    pattern_param0: pattern.map(|p| p.1),
+                    pattern_param1: pattern.map(|p| p.2),
+                    // A mirror test's Parameter becomes its mode
+                    mirror,
+                    parameter: if mirror.is_some() { None } else { Some(test.parameter) },
+                    flush_before_verify,
+                    ..Default::default()
+                });
+            }
+        }
+        let declared: std::collections::HashSet<u32> = test_sequence.iter().filter_map(|t| t.id.as_deref()?.parse().ok()).collect();
+        let mut cycle_order = Vec::new();
+        for &n in &self.main_section.test_sequence {
+            if n >= 16 {
+                if cycle_order.is_empty() {
+                    return Err(format!(
+                        "TM5 Test Sequence starts with {n}: TM5 stops reading it at a number of 16 or more, so the cycle would run nothing"
+                    ));
+                }
+                break;
+            }
+            if !declared.contains(&n) {
+                return Err(format!("TM5 Test Sequence names test {n}, which the .cfg doesn't define"));
+            }
+            cycle_order.push(n.to_string());
+        }
+
+        Ok(ModernConfig {
+            config_format_version: CONFIG_VERSION.to_string(),
+            application_name: format!("{} ({})", APP_NAME, APP_SHORT_NAME),
+            metadata: ConfigMetadata {
+                name: format!("{} (Legacy Converted)", self.main_section.config_name),
+                author: self.main_section.config_author.clone(),
+                version: "1.0".to_string(),
+                description: Some("Converted from legacy TestMem5 config".to_string()),
+                created: None,
+                tested_with_version: APP_VERSION.to_string(),
             },
-            cpu_config: CpuConfig {
-                cpu_type: if self.main_section.cores > 0 { "cores" } else { "threads" }.to_string(),
-                usage_percent: 100,
+            system: SystemConfig {
+                memory_strategy: MemoryStrategyConfig {
+                    allocation_mode: "max_available".to_string(),
+                    reserve_mb: Some(self.memory_setup.reserved_memory_mb),
+                    reserve_percent: None,
+                    reserve_gib: None,
+                    default_extent: ExtentSpec::full_allocation(),
+                    default_chunk: ChunkSpec::auto(),
+                },
+                cpu_config: CpuConfig {
+                    cpu_type: if self.main_section.cores > 0 { "cores" } else { "threads" }.to_string(),
+                    usage_percent: 100,
+                },
+                error_mode: "log".to_string(),
+                timing: TimingConfig {
+                    // TM5's 0 is "until stopped"
+                    global_cycles: (self.main_section.cycles > 0).then_some(self.main_section.cycles),
+                    global_duration_secs: None, // TM5 doesn't use duration
+                    default_test_cycles: None,  // Each test has its own from Time(%)
+                    default_test_duration_secs: None,
+                },
+                large_pages: true,
+                cpu_pinning: CpuPinningConfig::default(),
+                memory_allocation: MemoryAllocationConfig::default(),
+                channels: self.memory_setup.channels,
+                seal: Some(if sealed { "tmr" } else { "off" }.to_string()),
+                seal_width: None,
+                width: None,
+                thread_priority: None,
             },
-            error_mode: "log".to_string(),
-            timing: TimingConfig {
-                // TM5's 0 is "until stopped"
-                global_cycles: (self.main_section.cycles > 0).then_some(self.main_section.cycles),
-                global_duration_secs: None,  // TM5 doesn't use duration
-                default_test_cycles: None,   // Each test has its own from Time(%)
-                default_test_duration_secs: None,
-            },
-            large_pages: true,
-			cpu_pinning: CpuPinningConfig::default(),
-			memory_allocation: MemoryAllocationConfig::default(),
-            channels: self.memory_setup.channels,
-            seal: Some(if sealed { "tmr" } else { "off" }.to_string()),
-            seal_width: None,
-            width: None,
-            thread_priority: None,
-        },
-        test_sequence,
-        // Without a Test Sequence, every enabled test once, in file order
-        cycle_order: if self.main_section.test_sequence.is_empty() { None } else { Some(cycle_order) },
-        legacy_metadata: Some(LegacyMetadata {
-            tm5_cycles: self.main_section.cycles,
-            tm5_time_percent: self.main_section.time_percent,
-            tm5_channels: self.memory_setup.channels,
-            tm5_window_mb: self.memory_setup.testing_window_size_mb,
-            tm5_lock_mb: self.memory_setup.lock_granularity_mb.max(1),
-        }),
-    })
-}
+            test_sequence,
+            // Without a Test Sequence, every enabled test once, in file order
+            cycle_order: if self.main_section.test_sequence.is_empty() { None } else { Some(cycle_order) },
+            legacy_metadata: Some(LegacyMetadata {
+                tm5_cycles: self.main_section.cycles,
+                tm5_time_percent: self.main_section.time_percent,
+                tm5_channels: self.memory_setup.channels,
+                tm5_window_mb: self.memory_setup.testing_window_size_mb,
+                tm5_lock_mb: self.memory_setup.lock_granularity_mb.max(1),
+            }),
+        })
+    }
 
     /// TM5 `Test Block Size (Mb)` as a TMR chunk (TODO 79 B1), sized exactly as TM5 sizes it
     /// (`mt_ini.asm:287-303`, `MainThread.asm:627-661`). 0-3 are fraction codes, resolved at run
@@ -1633,17 +1699,29 @@ impl LegacyConfig {
                 let part = tm5_window / divisor as u64;
                 let floored = crate::tests::tm5_block_size(tm5_window as usize, divisor, lock as usize) as u64;
                 if floored != part {
-                    log::info!("TM5 Test{} ({}): Test Block Size {} = .cfg window/{} = {:.2} MiB -> {} MiB (TM5 floors it to the {} MiB Lock Memory Granularity; a thread with less memory than the window takes the fraction of its memory)",
-                              test.id, test.function, code, divisor, part as f64 / BYTES_PER_MIB as f64,
-                              floored / BYTES_PER_MIB, lock / BYTES_PER_MIB);
+                    log::info!(
+                        "TM5 Test{} ({}): Test Block Size {} = .cfg window/{} = {:.2} MiB -> {} MiB (TM5 floors it to the {} MiB Lock Memory Granularity; a thread with less memory than the window takes the fraction of its memory)",
+                        test.id,
+                        test.function,
+                        code,
+                        divisor,
+                        part as f64 / BYTES_PER_MIB as f64,
+                        floored / BYTES_PER_MIB,
+                        lock / BYTES_PER_MIB
+                    );
                 }
                 return ChunkSpec::tm5_block(tm5_window / BYTES_PER_MIB, divisor, lock / BYTES_PER_MIB);
             }
             mb => {
                 let requested = mb as u64 * BYTES_PER_MIB;
                 if requested > tm5_window {
-                    log::info!("TM5 Test{} ({}): Test Block Size {} MiB is more than the {} MiB .cfg window; the chunk is the .cfg window",
-                              test.id, test.function, mb, tm5_window / BYTES_PER_MIB);
+                    log::info!(
+                        "TM5 Test{} ({}): Test Block Size {} MiB is more than the {} MiB .cfg window; the chunk is the .cfg window",
+                        test.id,
+                        test.function,
+                        mb,
+                        tm5_window / BYTES_PER_MIB
+                    );
                 }
                 (requested.min(tm5_window), format!("{mb} MiB"))
             }
@@ -1651,9 +1729,14 @@ impl LegacyConfig {
         // TM5 floors to 4 KiB, at least 4 KiB
         let chunk = (size / granule).max(1) * granule;
         if chunk != size {
-            log::info!("TM5 Test{} ({}): Test Block Size {} = {what} = {:.2} MiB -> {} KiB chunk (a multiple of 4 KiB)",
-                      test.id, test.function, test.test_chunk_size_mb,
-                      size as f64 / BYTES_PER_MIB as f64, chunk / 1024);
+            log::info!(
+                "TM5 Test{} ({}): Test Block Size {} = {what} = {:.2} MiB -> {} KiB chunk (a multiple of 4 KiB)",
+                test.id,
+                test.function,
+                test.test_chunk_size_mb,
+                size as f64 / BYTES_PER_MIB as f64,
+                chunk / 1024
+            );
         }
         ChunkSpec::absolute(&format!("{}KiB", chunk / 1024))
     }
@@ -1666,8 +1749,12 @@ impl LegacyConfig {
         match test.function.as_str() {
             "MirrorMove" => match test.parameter {
                 2 | 4 => Ok(Some(MirrorMode::Subblocks(test.parameter))),
-                3 => Err(format!("TM5 Test{} (MirrorMove): Parameter = 3, {}. Set Parameter to 2 or 4 \
-                                  (subblocks) or 0 (the whole block)", test.id, MirrorMode::THREE_SUBBLOCKS)),
+                3 => Err(format!(
+                    "TM5 Test{} (MirrorMove): Parameter = 3, {}. Set Parameter to 2 or 4 \
+                                  (subblocks) or 0 (the whole block)",
+                    test.id,
+                    MirrorMode::THREE_SUBBLOCKS
+                )),
                 _ => Ok(Some(MirrorMode::Whole)),
             },
             "MirrorMove128" => Ok(Some(MirrorMode::Jump(test.parameter))),
@@ -1691,48 +1778,53 @@ impl LegacyConfig {
             _ => (None, None, None),
         };
         if n != 5 && reps != (None, None, None) {
-            log::info!("TM5 Test{} ({}): Time (%) {} x global {} = {} passes per chunk (TM5's default is 5)",
-                      test.id, test.function, test.time_percent, self.main_section.time_percent, n);
+            log::info!(
+                "TM5 Test{} ({}): Time (%) {} x global {} = {} passes per chunk (TM5's default is 5)",
+                test.id,
+                test.function,
+                test.time_percent,
+                self.main_section.time_percent,
+                n
+            );
         }
         reps
     }
 
     // Map legacy function names to modern equivalents
 
-fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
-    match legacy_name {
-        // TM5 legacy names -> new prefixed names, the -Auto tests: at the run's width (`width=`,
-        // else the widest the CPU has, TODO 99). TMR has no scalar tests, and its startup gate
-        // requires AVX2
-        "RefreshStable" => Ok("Mem-RefreshAuto".to_string()),
-        "SimpleTest" => Ok("Mem-SimpleV2-Auto".to_string()),
-        // Both mirrors run Mem-MirrorV2-Auto, at the run's width; the 128 in MirrorMove128 is its
-        // swap size, not a vector width (TODO 85)
-        "MirrorMove" | "MirrorMove128" => Ok("Mem-MirrorV2-Auto".to_string()),
-        "BlockMove" => Ok("Mem-BlockMove".to_string()),
-        // Also accept new names directly, a name without a width as its -Auto test
-        "Mem-Refresh" => Ok("Mem-RefreshAuto".to_string()),
-        "Mem-Simple" => Ok("Mem-SimpleV2-Auto".to_string()),
-        "Mem-Mirror" => Ok("Mem-MirrorV2-Auto".to_string()),
-        "Mem-Mirror128" => Ok("Mem-MirrorV2-128".to_string()),
-        "Mem-Mirror256" => Ok("Mem-MirrorV2-256".to_string()),
-        "Mem-Mirror512" => Ok("Mem-MirrorV2-512".to_string()),
-        "Mem-BlockMove" => Ok("Mem-BlockMove".to_string()),
-        "Mem-StuckBit" => Ok("Mem-StuckBitAuto".to_string()),
-        "Mem-CacheBust" => Ok("Mem-CacheBust".to_string()),
-        "Mem-Random" => Ok("Mem-Random".to_string()),
-        "Mem-Stride" => Ok("Mem-Stride".to_string()),
-        // v2 test names (accepted directly)
-        "Mem-SimpleV2" => Ok("Mem-SimpleV2-Auto".to_string()),
-        "Mem-MirrorV2" => Ok("Mem-MirrorV2-Auto".to_string()),
-        "Mem-MirrorV2-128" => Ok("Mem-MirrorV2-128".to_string()),
-        "Mem-MirrorV2-256" => Ok("Mem-MirrorV2-256".to_string()),
-        "Mem-MirrorV2-512" => Ok("Mem-MirrorV2-512".to_string()),
-        "Mem-MirrorV2-Auto" => Ok("Mem-MirrorV2-Auto".to_string()),
-        _ => Err(format!("Unknown legacy test function: '{}'", legacy_name))
+    fn map_legacy_function(legacy_name: &str) -> Result<String, String> {
+        match legacy_name {
+            // TM5 legacy names -> new prefixed names, the -Auto tests: at the run's width (`width=`,
+            // else the widest the CPU has, TODO 99). TMR has no scalar tests, and its startup gate
+            // requires AVX2
+            "RefreshStable" => Ok("Mem-RefreshAuto".to_string()),
+            "SimpleTest" => Ok("Mem-SimpleV2-Auto".to_string()),
+            // Both mirrors run Mem-MirrorV2-Auto, at the run's width; the 128 in MirrorMove128 is its
+            // swap size, not a vector width (TODO 85)
+            "MirrorMove" | "MirrorMove128" => Ok("Mem-MirrorV2-Auto".to_string()),
+            "BlockMove" => Ok("Mem-BlockMove".to_string()),
+            // Also accept new names directly, a name without a width as its -Auto test
+            "Mem-Refresh" => Ok("Mem-RefreshAuto".to_string()),
+            "Mem-Simple" => Ok("Mem-SimpleV2-Auto".to_string()),
+            "Mem-Mirror" => Ok("Mem-MirrorV2-Auto".to_string()),
+            "Mem-Mirror128" => Ok("Mem-MirrorV2-128".to_string()),
+            "Mem-Mirror256" => Ok("Mem-MirrorV2-256".to_string()),
+            "Mem-Mirror512" => Ok("Mem-MirrorV2-512".to_string()),
+            "Mem-BlockMove" => Ok("Mem-BlockMove".to_string()),
+            "Mem-StuckBit" => Ok("Mem-StuckBitAuto".to_string()),
+            "Mem-CacheBust" => Ok("Mem-CacheBust".to_string()),
+            "Mem-Random" => Ok("Mem-Random".to_string()),
+            "Mem-Stride" => Ok("Mem-Stride".to_string()),
+            // v2 test names (accepted directly)
+            "Mem-SimpleV2" => Ok("Mem-SimpleV2-Auto".to_string()),
+            "Mem-MirrorV2" => Ok("Mem-MirrorV2-Auto".to_string()),
+            "Mem-MirrorV2-128" => Ok("Mem-MirrorV2-128".to_string()),
+            "Mem-MirrorV2-256" => Ok("Mem-MirrorV2-256".to_string()),
+            "Mem-MirrorV2-512" => Ok("Mem-MirrorV2-512".to_string()),
+            "Mem-MirrorV2-Auto" => Ok("Mem-MirrorV2-Auto".to_string()),
+            _ => Err(format!("Unknown legacy test function: '{}'", legacy_name)),
+        }
     }
-}
-
 }
 
 // Configuration loader that handles both formats
@@ -1755,8 +1847,7 @@ pub fn load_config(path: &str) -> Result<ModernConfig, String> {
             Ok(config) => config,
             Err(json_err) => match LegacyConfig::load_from_file(path).and_then(|l| l.to_modern_config()) {
                 Ok(config) => config,
-                Err(cfg_err) => return Err(format!(
-                    "{path} is neither a TMR JSON config ({json_err}) nor a TM5 .cfg ({cfg_err})")),
+                Err(cfg_err) => return Err(format!("{path} is neither a TMR JSON config ({json_err}) nor a TM5 .cfg ({cfg_err})")),
             },
         }
     };
@@ -1807,14 +1898,10 @@ mod tests {
     /// covers the full allocation.
     #[test]
     fn tm5_block_size_codes_are_window_fractions() {
-        let tests = [0, 1, 2, 3, 4, 1536].iter().enumerate()
-            .map(|(i, &block)| test(i as u32 + 1, "SimpleTest", 100, block))
-            .collect();
+        let tests = [0, 1, 2, 3, 4, 1536].iter().enumerate().map(|(i, &block)| test(i as u32 + 1, "SimpleTest", 100, block)).collect();
         let modern = legacy(100, tests).to_modern_config().unwrap();
         let configs = modern.get_test_configs().unwrap();
-        let chunks = |extent: usize| -> Vec<usize> {
-            configs.iter().map(|(name, c)| c.calculate_chunk_size(name, extent) / MIB).collect()
-        };
+        let chunks = |extent: usize| -> Vec<usize> { configs.iter().map(|(name, c)| c.calculate_chunk_size(name, extent) / MIB).collect() };
         // The 880 MiB window; window/2 = 440 -> 432, window/3 = 293.33 -> 288, window/4 = 220
         // -> 208 (each floored to 16 MiB, as TM5 does); 4 MiB; 1536 MiB clamped to the window.
         assert_eq!(chunks(5 * 1024 * MIB), [880, 432, 288, 208, 4, 880]);
@@ -1847,12 +1934,18 @@ mod tests {
     /// run's width; TMR has no scalar tests. A name with a width keeps it.
     #[test]
     fn widthless_names_import_as_auto_tests() {
-        let tests = ["Mem-Refresh", "Mem-StuckBit", "Mem-Simple", "Mem-SimpleV2", "Mem-Mirror", "Mem-MirrorV2", "Mem-Mirror256", "SimpleTest"]
-            .iter().enumerate().map(|(i, f)| test(i as u32 + 1, f, 100, 0)).collect();
+        let tests =
+            ["Mem-Refresh", "Mem-StuckBit", "Mem-Simple", "Mem-SimpleV2", "Mem-Mirror", "Mem-MirrorV2", "Mem-Mirror256", "SimpleTest"]
+                .iter()
+                .enumerate()
+                .map(|(i, f)| test(i as u32 + 1, f, 100, 0))
+                .collect();
         let modern = legacy(100, tests).to_modern_config().unwrap();
         let functions: Vec<&str> = modern.test_sequence.iter().map(|t| t.function.as_str()).collect();
-        assert_eq!(functions, ["Mem-RefreshAuto", "Mem-StuckBitAuto", "Mem-SimpleV2-Auto", "Mem-SimpleV2-Auto", "Mem-MirrorV2-Auto",
-                               "Mem-MirrorV2-Auto", "Mem-MirrorV2-256", "Mem-SimpleV2-Auto"]);
+        assert_eq!(functions, [
+            "Mem-RefreshAuto", "Mem-StuckBitAuto", "Mem-SimpleV2-Auto", "Mem-SimpleV2-Auto", "Mem-MirrorV2-Auto", "Mem-MirrorV2-Auto",
+            "Mem-MirrorV2-256", "Mem-SimpleV2-Auto"
+        ]);
     }
 
     /// An invalid extent or chunk spec stops the run: no fallback to the default, which would
@@ -1884,10 +1977,12 @@ mod tests {
         // A bad cache-target scale is an error, not the tier default; no scale is the default.
         modern.system.memory_strategy.default_extent = ExtentSpec::full_allocation();
         for bad in ["L3x4", "L2/0", "DRAM*200", "DRAM-FULLX"] {
-            modern.test_sequence[0].extent = Some(ExtentSpec { mode: "cache".to_string(), target: Some(bad.to_string()), ..Default::default() });
+            modern.test_sequence[0].extent =
+                Some(ExtentSpec { mode: "cache".to_string(), target: Some(bad.to_string()), ..Default::default() });
             assert!(modern.get_test_configs().is_err(), "{bad} should be rejected");
         }
-        modern.test_sequence[0].extent = Some(ExtentSpec { mode: "cache".to_string(), target: Some("L3".to_string()), ..Default::default() });
+        modern.test_sequence[0].extent =
+            Some(ExtentSpec { mode: "cache".to_string(), target: Some("L3".to_string()), ..Default::default() });
         assert!(modern.get_test_configs().is_ok());
         assert!(matches!(CacheTarget::parse("L3"), Some(CacheTarget::L3 { scale }) if scale == 0.5));
         assert!(matches!(CacheTarget::parse("DRAM"), Some(CacheTarget::Dram { scale }) if scale == 4.0));
@@ -1913,12 +2008,18 @@ mod tests {
         for (old, new) in [(12, 20), (14, 30)] {
             modern.test_sequence[0].pattern_mode = Some(old);
             let err = modern.get_test_configs().unwrap_err();
-            assert!(err.contains(&format!("pattern_mode {old} is not a mode (TMR's mode {old} is {new} since")) && err.contains("20, 30"), "{err}");
+            assert!(
+                err.contains(&format!("pattern_mode {old} is not a mode (TMR's mode {old} is {new} since")) && err.contains("20, 30"),
+                "{err}"
+            );
         }
         modern.test_sequence[0].pattern_mode = Some(31);
         let configs = modern.get_test_configs().unwrap();
         let (_, config) = &configs[0];
-        assert_eq!((config.pattern_mode, config.native_program()), (None, Some(crate::pattern::Program::single(crate::pattern::Family::Switch))));
+        assert_eq!(
+            (config.pattern_mode, config.native_program()),
+            (None, Some(crate::pattern::Program::single(crate::pattern::Family::Switch)))
+        );
         let mut mirror = modern.clone();
         mirror.test_sequence[0].function = "Mem-MirrorV2-Auto".into();
         assert!(mirror.get_test_configs().unwrap_err().contains("only the Mem-SimpleV2 tests and Mem-Sequence run native patterns"));
@@ -1951,8 +2052,11 @@ mod tests {
     fn mem_sequence_entries() {
         let mut modern = legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
         let entry = |sequence: Option<&str>, order: Option<&str>| TestConfig {
-            enabled: true, function: "Mem-Sequence".to_string(),
-            sequence: sequence.map(String::from), order: order.map(String::from), ..Default::default()
+            enabled: true,
+            function: "Mem-Sequence".to_string(),
+            sequence: sequence.map(String::from),
+            order: order.map(String::from),
+            ..Default::default()
         };
         let mut load = |t: TestConfig| {
             modern.test_sequence[0] = t;
@@ -1999,11 +2103,19 @@ mod tests {
     /// A .cfg value that doesn't parse is an error naming it, not a silent default.
     #[test]
     fn unparsable_cfg_values_are_errors() {
-        let cfg = |line: &str| format!("[Main Section]\nTest Sequence=1\n[Global Memory Setup]\nChannels=2\n\
-            [Test1]\nEnable=1\nFunction=SimpleTest\nPattern Mode=0\n{line}\n");
+        let cfg = |line: &str| {
+            format!(
+                "[Main Section]\nTest Sequence=1\n[Global Memory Setup]\nChannels=2\n\
+            [Test1]\nEnable=1\nFunction=SimpleTest\nPattern Mode=0\n{line}\n"
+            )
+        };
         assert!(LegacyConfig::parse_legacy_format(&cfg("Parameter=8")).is_ok());
-        for (line, key) in [("Parameter=eight", "Parameter"), ("Pattern Param0=0xZZ", "Pattern Param0"),
-                            ("Pattern Mode=two", "Pattern Mode"), ("Time (%)=lots", "Time (%)")] {
+        for (line, key) in [
+            ("Parameter=eight", "Parameter"),
+            ("Pattern Param0=0xZZ", "Pattern Param0"),
+            ("Pattern Mode=two", "Pattern Mode"),
+            ("Time (%)=lots", "Time (%)"),
+        ] {
             let err = LegacyConfig::parse_legacy_format(&cfg(line)).unwrap_err();
             assert!(err.contains(key), "{line}: {err}");
         }
@@ -2026,7 +2138,10 @@ mod tests {
         native.pattern_mode = 32;
         let modern = legacy(100, vec![native]).to_modern_config().unwrap();
         let t = &modern.test_sequence[0];
-        assert_eq!((t.function.as_str(), t.pattern_mode, t.program.as_deref()), ("Mem-SimpleV2-Auto", None, Some(&["quiet".to_string()][..])));
+        assert_eq!(
+            (t.function.as_str(), t.pattern_mode, t.program.as_deref()),
+            ("Mem-SimpleV2-Auto", None, Some(&["quiet".to_string()][..]))
+        );
 
         // A mode TM5 doesn't have but TMR does stays that mode, on Mem-SimpleV2-Auto (TODO 99)
         let mut tmr_mode = test(3, "SimpleTest", 100, 16);
@@ -2040,8 +2155,11 @@ mod tests {
     /// The configs TMR generates itself must load, unknown-key check and system fields included.
     #[test]
     fn generated_configs_have_valid_specs() {
-        for config in [ModernConfig::create_demo_config(), ModernConfig::create_tm5_compatible_config(),
-                       legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap()] {
+        for config in [
+            ModernConfig::create_demo_config(),
+            ModernConfig::create_tm5_compatible_config(),
+            legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap(),
+        ] {
             assert!(config.get_test_configs().is_ok());
             config.validate_system().unwrap();
             let json = serde_json::to_string(&config).unwrap();
@@ -2103,15 +2221,14 @@ mod tests {
         ];
         let modern = legacy(100, tests).to_modern_config().unwrap();
         assert!(modern.test_sequence.iter().all(|t| t.cycles == Some(1)), "one pass per plan cycle");
-        let reps: Vec<(u32, u32, u32)> = modern.get_test_configs().unwrap().iter()
-            .map(|(_, c)| (c.verify_reps, c.write_read_cycles, c.test_reps))
-            .collect();
+        let reps: Vec<(u32, u32, u32)> =
+            modern.get_test_configs().unwrap().iter().map(|(_, c)| (c.verify_reps, c.write_read_cycles, c.test_reps)).collect();
         assert_eq!(reps, vec![
-            (5, 4, 1),   // 100 x 100 / 2000 = 5 verifies, TM5's default
-            (15, 4, 1),  // 300 x 100 / 2000 = 15
-            (1, 1, 5),   // 5 mirror passes, each a round trip (TODO 85)
-            (1, 1, 15),  // 15 mirror passes
-            (1, 1, 1),   // RefreshStable ignores Time (%)
+            (5, 4, 1),  // 100 x 100 / 2000 = 5 verifies, TM5's default
+            (15, 4, 1), // 300 x 100 / 2000 = 15
+            (1, 1, 5),  // 5 mirror passes, each a round trip (TODO 85)
+            (1, 1, 15), // 15 mirror passes
+            (1, 1, 1),  // RefreshStable ignores Time (%)
         ]);
         // A global 50 % halves it: 100 x 50 / 2000 = 2.
         let half = legacy(50, vec![test(1, "SimpleTest", 100, 0)]).to_modern_config().unwrap();
@@ -2231,7 +2348,9 @@ mod tests {
         assert!("subblocks:3".parse::<MirrorMode>().unwrap_err().contains("three subblocks"));
         let json: TestConfig = serde_json::from_str(r#"{"enabled": true, "function": "Mem-MirrorV2-Auto", "mirror": "jump:2"}"#).unwrap();
         assert_eq!(json.mirror, Some(MirrorMode::Jump(2)));
-        assert!(serde_json::from_str::<TestConfig>(r#"{"enabled": true, "function": "Mem-MirrorV2-Auto", "mirror": "subblocks:3"}"#).is_err());
+        assert!(
+            serde_json::from_str::<TestConfig>(r#"{"enabled": true, "function": "Mem-MirrorV2-Auto", "mirror": "subblocks:3"}"#).is_err()
+        );
     }
 
     /// A Mem-Refresh entry's `wait_ms` reaches the test (`TestParameterContext::wait_ms`, which
@@ -2257,5 +2376,4 @@ mod tests {
             assert_eq!(format_parameter_context(&ctx), shown);
         }
     }
-
 }

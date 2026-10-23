@@ -1,13 +1,13 @@
-use crate::failing_bits::FailingBits;
-use crate::progress::TestSummary;
-use crate::constants::{BYTES_PER_GIB_F64, MB_F64};
-use crate::formatting::{
-    serialize_round_2dp, serialize_round_int, serialize_round_opt_2dp,
-};
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+
+use crate::constants::{BYTES_PER_GIB_F64, MB_F64};
+use crate::failing_bits::FailingBits;
+use crate::formatting::{serialize_round_2dp, serialize_round_int, serialize_round_opt_2dp};
+use crate::progress::TestSummary;
 
 /// For `skip_serializing_if`: a count that is zero is left out, and reads back as zero.
 fn is_zero(n: &u64) -> bool {
@@ -449,10 +449,7 @@ impl TestRunResult {
                 tmr_version: crate::BUILD.version.to_string(),
                 build: Some(crate::BUILD.into()),
                 start_time: started.timestamp() as u64,
-                start_time_utc: started
-                    .with_timezone(&chrono::Utc)
-                    .format("%Y-%m-%d %H:%M:%S UTC")
-                    .to_string(),
+                start_time_utc: started.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S UTC").to_string(),
                 start_time_local: started.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
                 filename: filename.clone(),
                 config_name: run_config.config_name.clone(),
@@ -483,56 +480,56 @@ impl TestRunResult {
     }
 
     /// Adds a cycle's steps; `partial` when it stopped early (`CycleResult::partial`).
-    pub fn add_cycle(&mut self, cycle_number: u32, duration_secs: u32, test_summaries: Vec<TestSummary>, seal: Option<CycleSeal>,
-                     partial: bool) {
+    pub fn add_cycle(
+        &mut self, cycle_number: u32, duration_secs: u32, test_summaries: Vec<TestSummary>, seal: Option<CycleSeal>, partial: bool,
+    ) {
         let total_bytes: u64 = test_summaries.iter().map(|t| t.bytes_processed).sum();
-        let total_errors: u64 = test_summaries.iter().map(|t| t.errors + t.seal_errors).sum::<u64>()
-            + seal.as_ref().map_or(0, |s| s.final_check_errors);
-        let avg_throughput_mib = if duration_secs > 0 {
-            (total_bytes as f64 / MB_F64) / duration_secs as f64
-        } else {
-            0.0
-        };
+        let total_errors: u64 =
+            test_summaries.iter().map(|t| t.errors + t.seal_errors).sum::<u64>() + seal.as_ref().map_or(0, |s| s.final_check_errors);
+        let avg_throughput_mib = if duration_secs > 0 { (total_bytes as f64 / MB_F64) / duration_secs as f64 } else { 0.0 };
 
-        let tests: Vec<TestResult> = test_summaries.iter().map(|summary| {
-            TestResult {
-                step: summary.step,
-                id: summary.id.clone(),
-                test_index: summary.test_index,
-                name: summary.name.clone(),
-                label: summary.label.clone(),
-                duration_ms: summary.duration_ms,
-                timed_ms: summary.timed_ms,
-                bytes_processed: summary.bytes_processed,
-                operations: summary.operations,
-                cycles_completed_min: summary.cycles_completed.0,
-                cycles_completed_max: summary.cycles_completed.1,
-                stopped_by: summary.stopped_by.map(str::to_string),
-                intermediate: op_records(&summary.ops),
-                throughput_mib_s: summary.throughput_mib_s,
-                errors: summary.errors,
-                alarms: summary.alarms,
-                not_reproduced: summary.not_reproduced,
-                failing_bits: summary.failing_bits.clone(),
-                seal_errors: summary.seal_errors,
-                seal_failing_bits: summary.seal_failing_bits.clone(),
-                whea_total: summary.whea_total,
-                whea_corrected: summary.whea_corrected,
-                // Copy latency data from TestSummary
-                latency_samples: summary.latency_samples,
-                latency_p5_ns: summary.latency_p5_ns,
-                latency_p10_ns: summary.latency_p10_ns,
-                latency_p25_ns: summary.latency_p25_ns,
-                latency_p50_ns: summary.latency_p50_ns,
-                latency_p75_ns: summary.latency_p75_ns,
-                latency_p90_ns: summary.latency_p90_ns,
-                latency_p95_ns: summary.latency_p95_ns,
-                latency_p99_ns: summary.latency_p99_ns,
-                latency_p99_9_ns: summary.latency_p99_9_ns,
-                latency_spread: summary.latency_spread,
-                threads: summary.threads.clone(),
-            }
-        }).collect();
+        let tests: Vec<TestResult> = test_summaries
+            .iter()
+            .map(|summary| {
+                TestResult {
+                    step: summary.step,
+                    id: summary.id.clone(),
+                    test_index: summary.test_index,
+                    name: summary.name.clone(),
+                    label: summary.label.clone(),
+                    duration_ms: summary.duration_ms,
+                    timed_ms: summary.timed_ms,
+                    bytes_processed: summary.bytes_processed,
+                    operations: summary.operations,
+                    cycles_completed_min: summary.cycles_completed.0,
+                    cycles_completed_max: summary.cycles_completed.1,
+                    stopped_by: summary.stopped_by.map(str::to_string),
+                    intermediate: op_records(&summary.ops),
+                    throughput_mib_s: summary.throughput_mib_s,
+                    errors: summary.errors,
+                    alarms: summary.alarms,
+                    not_reproduced: summary.not_reproduced,
+                    failing_bits: summary.failing_bits.clone(),
+                    seal_errors: summary.seal_errors,
+                    seal_failing_bits: summary.seal_failing_bits.clone(),
+                    whea_total: summary.whea_total,
+                    whea_corrected: summary.whea_corrected,
+                    // Copy latency data from TestSummary
+                    latency_samples: summary.latency_samples,
+                    latency_p5_ns: summary.latency_p5_ns,
+                    latency_p10_ns: summary.latency_p10_ns,
+                    latency_p25_ns: summary.latency_p25_ns,
+                    latency_p50_ns: summary.latency_p50_ns,
+                    latency_p75_ns: summary.latency_p75_ns,
+                    latency_p90_ns: summary.latency_p90_ns,
+                    latency_p95_ns: summary.latency_p95_ns,
+                    latency_p99_ns: summary.latency_p99_ns,
+                    latency_p99_9_ns: summary.latency_p99_9_ns,
+                    latency_spread: summary.latency_spread,
+                    threads: summary.threads.clone(),
+                }
+            })
+            .collect();
 
         let cycle_result = CycleResult {
             cycle_number,
@@ -540,11 +537,7 @@ impl TestRunResult {
             partial,
             tests,
             seal,
-            cycle_stats: CycleStats {
-                total_bytes,
-                total_errors,
-                avg_throughput_mib_s: avg_throughput_mib,
-            },
+            cycle_stats: CycleStats { total_bytes, total_errors, avg_throughput_mib_s: avg_throughput_mib },
         };
 
         self.cycles.push(cycle_result);
@@ -579,18 +572,17 @@ impl TestRunResult {
     pub fn finalize(&mut self, total_runtime: std::time::Duration) {
         self.overall_stats.total_runtime_secs = total_runtime.as_secs();
         self.overall_stats.cycles_completed = self.cycles.len() as u32;
-        
+
         let total_bytes: u64 = self.cycles.iter().map(|c| c.cycle_stats.total_bytes).sum();
         self.overall_stats.total_data_processed_gib = total_bytes as f64 / BYTES_PER_GIB_F64;
-        
-        self.overall_stats.overall_throughput_mib_s = if total_runtime.as_secs() > 0 {
-            (total_bytes as f64 / MB_F64) / total_runtime.as_secs() as f64
-        } else {
-            0.0
-        };
-        
+
+        self.overall_stats.overall_throughput_mib_s =
+            if total_runtime.as_secs() > 0 { (total_bytes as f64 / MB_F64) / total_runtime.as_secs() as f64 } else { 0.0 };
+
         self.overall_stats.total_errors = self.cycles.iter().map(|c| c.cycle_stats.total_errors).sum();
-        self.overall_stats.seal_errors = self.cycles.iter()
+        self.overall_stats.seal_errors = self
+            .cycles
+            .iter()
             .map(|c| c.tests.iter().map(|t| t.seal_errors).sum::<u64>() + c.seal.as_ref().map_or(0, |s| s.final_check_errors))
             .sum();
         let (mut bits, mut seal_bits) = (FailingBits::default(), FailingBits::default());
@@ -630,7 +622,7 @@ impl TestRunResult {
             total_whea: u64,
             total_whea_corrected: u64,
             // Latency aggregation
-            latency_count: u64,  // Number of cycles with latency data
+            latency_count: u64, // Number of cycles with latency data
             latency_samples_sum: u64,
             latency_p5_sum: f64,
             latency_p10_sum: f64,
@@ -650,7 +642,8 @@ impl TestRunResult {
             for test in &cycle.tests {
                 let entry = test_aggregates.entry(test.step).or_default();
                 if entry.runs == 0 {
-                    (entry.id, entry.test_index, entry.name, entry.label) = (test.id.clone(), test.test_index, test.name.clone(), test.label.clone());
+                    (entry.id, entry.test_index, entry.name, entry.label) =
+                        (test.id.clone(), test.test_index, test.name.clone(), test.label.clone());
                 }
                 // A step a halt stopped before it ran carries only the seal check's errors
                 if test.duration_ms == 0 && test.bytes_processed == 0 {
@@ -690,71 +683,86 @@ impl TestRunResult {
             }
         }
 
-        self.overall_stats.per_step_averages = test_aggregates.into_iter().map(|(step, agg)| {
-            // A step a halt stopped before it ever ran has no runs: it keeps its seal errors and
-            // averages nothing
-            let (avg_duration_ms, avg_bytes) = match agg.runs {
-                0 => (0, 0),
-                runs => (agg.total_duration_ms / runs as u128, agg.total_bytes / runs),
-            };
-            // Over the runs' own time, as each step's speed is (TODO 90)
-            let avg_throughput_mib = if agg.total_timed_secs > 0.0 {
-                (agg.total_bytes as f64 / MB_F64) / agg.total_timed_secs
-            } else if avg_duration_ms > 0 {
-                (avg_bytes as f64 / MB_F64) / (avg_duration_ms as f64 / 1000.0)
-            } else {
-                0.0
-            };
+        self.overall_stats.per_step_averages = test_aggregates
+            .into_iter()
+            .map(|(step, agg)| {
+                // A step a halt stopped before it ever ran has no runs: it keeps its seal errors and
+                // averages nothing
+                let (avg_duration_ms, avg_bytes) = match agg.runs {
+                    0 => (0, 0),
+                    runs => (agg.total_duration_ms / runs as u128, agg.total_bytes / runs),
+                };
+                // Over the runs' own time, as each step's speed is (TODO 90)
+                let avg_throughput_mib = if agg.total_timed_secs > 0.0 {
+                    (agg.total_bytes as f64 / MB_F64) / agg.total_timed_secs
+                } else if avg_duration_ms > 0 {
+                    (avg_bytes as f64 / MB_F64) / (avg_duration_ms as f64 / 1000.0)
+                } else {
+                    0.0
+                };
 
-            // Calculate averaged latency metrics if present
-            let (latency_samples, latency_p5, latency_p10, latency_p25, latency_p50,
-                 latency_p75, latency_p90, latency_p95, latency_p99, latency_p99_9, latency_spread) =
-                if agg.latency_count > 0 {
+                // Calculate averaged latency metrics if present
+                let (
+                    latency_samples,
+                    latency_p5,
+                    latency_p10,
+                    latency_p25,
+                    latency_p50,
+                    latency_p75,
+                    latency_p90,
+                    latency_p95,
+                    latency_p99,
+                    latency_p99_9,
+                    latency_spread,
+                ) = if agg.latency_count > 0 {
                     let n = agg.latency_count as f64;
-                    (Some(agg.latency_samples_sum / agg.latency_count),
-                     Some(agg.latency_p5_sum / n),
-                     Some(agg.latency_p10_sum / n),
-                     Some(agg.latency_p25_sum / n),
-                     Some(agg.latency_p50_sum / n),
-                     Some(agg.latency_p75_sum / n),
-                     Some(agg.latency_p90_sum / n),
-                     Some(agg.latency_p95_sum / n),
-                     Some(agg.latency_p99_sum / n),
-                     Some(agg.latency_p99_9_sum / n),
-                     Some(agg.latency_spread_sum / n))
+                    (
+                        Some(agg.latency_samples_sum / agg.latency_count),
+                        Some(agg.latency_p5_sum / n),
+                        Some(agg.latency_p10_sum / n),
+                        Some(agg.latency_p25_sum / n),
+                        Some(agg.latency_p50_sum / n),
+                        Some(agg.latency_p75_sum / n),
+                        Some(agg.latency_p90_sum / n),
+                        Some(agg.latency_p95_sum / n),
+                        Some(agg.latency_p99_sum / n),
+                        Some(agg.latency_p99_9_sum / n),
+                        Some(agg.latency_spread_sum / n),
+                    )
                 } else {
                     (None, None, None, None, None, None, None, None, None, None, None)
                 };
 
-            TestAverage {
-                step,
-                id: agg.id,
-                test_index: agg.test_index,
-                name: agg.name,
-                label: agg.label,
-                avg_duration_ms,
-                avg_bytes_processed: avg_bytes,
-                avg_throughput_mib_s: avg_throughput_mib,
-                total_errors: agg.total_errors,
-                total_seal_errors: agg.total_seal_errors,
-                failing_bits: agg.failing_bits,
-                seal_failing_bits: agg.seal_failing_bits,
-                runs: agg.runs,
-                whea_total: agg.total_whea,
-                whea_corrected: agg.total_whea_corrected,
-                latency_samples,
-                latency_p5_ns: latency_p5,
-                latency_p10_ns: latency_p10,
-                latency_p25_ns: latency_p25,
-                latency_p50_ns: latency_p50,
-                latency_p75_ns: latency_p75,
-                latency_p90_ns: latency_p90,
-                latency_p95_ns: latency_p95,
-                latency_p99_ns: latency_p99,
-                latency_p99_9_ns: latency_p99_9,
-                latency_spread,
-            }
-        }).collect();
+                TestAverage {
+                    step,
+                    id: agg.id,
+                    test_index: agg.test_index,
+                    name: agg.name,
+                    label: agg.label,
+                    avg_duration_ms,
+                    avg_bytes_processed: avg_bytes,
+                    avg_throughput_mib_s: avg_throughput_mib,
+                    total_errors: agg.total_errors,
+                    total_seal_errors: agg.total_seal_errors,
+                    failing_bits: agg.failing_bits,
+                    seal_failing_bits: agg.seal_failing_bits,
+                    runs: agg.runs,
+                    whea_total: agg.total_whea,
+                    whea_corrected: agg.total_whea_corrected,
+                    latency_samples,
+                    latency_p5_ns: latency_p5,
+                    latency_p10_ns: latency_p10,
+                    latency_p25_ns: latency_p25,
+                    latency_p50_ns: latency_p50,
+                    latency_p75_ns: latency_p75,
+                    latency_p90_ns: latency_p90,
+                    latency_p95_ns: latency_p95,
+                    latency_p99_ns: latency_p99,
+                    latency_p99_9_ns: latency_p99_9,
+                    latency_spread,
+                }
+            })
+            .collect();
 
         self.overall_stats.per_step_averages.sort_by_key(|t| t.step);
     }
@@ -782,11 +790,9 @@ impl TestRunResult {
     /// rename again. When the viewer won't let it be written either, the save stays in the `.tmp`,
     /// and the error names both.
     pub fn save_atomic(&self, path: &str) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Failed to serialize test result: {}", e))?;
+        let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize test result: {}", e))?;
         let temp = format!("{path}.tmp");
-        write_to_disk(&temp, json.as_bytes())
-            .map_err(|e| format!("Failed to write test result file {temp}: {e}"))?;
+        write_to_disk(&temp, json.as_bytes()).map_err(|e| format!("Failed to write test result file {temp}: {e}"))?;
         if let Err(refused) = fs::rename(&temp, path) {
             log::warn!("Couldn't replace {path} with {temp} ({refused}): writing it in place");
             write_to_disk(path, json.as_bytes())
@@ -801,13 +807,10 @@ impl TestRunResult {
             return Err(format!("Test result file does not exist: {}", path));
         }
 
-        let content = fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read test result file: {}", e))?;
-        
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse test result JSON: {}", e))
-    }
+        let content = fs::read_to_string(path).map_err(|e| format!("Failed to read test result file: {}", e))?;
 
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse test result JSON: {}", e))
+    }
 }
 
 pub fn compare_test_results(baseline_path: &str, current_path: &str) -> Result<TestComparison, String> {
@@ -843,8 +846,8 @@ pub fn compare_test_results(baseline_path: &str, current_path: &str) -> Result<T
     // Per-step comparisons: a step matches the baseline's step at the same position running the
     // same test (TODO 74), so a test that runs twice is compared twice
     let mut per_test_comparisons = Vec::new();
-    let baseline_tests: HashMap<(usize, Option<String>, String), &TestAverage> = baseline.overall_stats.per_step_averages.iter()
-        .map(|t| ((t.step, t.id.clone(), t.name.clone()), t)).collect();
+    let baseline_tests: HashMap<(usize, Option<String>, String), &TestAverage> =
+        baseline.overall_stats.per_step_averages.iter().map(|t| ((t.step, t.id.clone(), t.name.clone()), t)).collect();
 
     for current_test in &current.overall_stats.per_step_averages {
         if let Some(baseline_test) = baseline_tests.get(&(current_test.step, current_test.id.clone(), current_test.name.clone())) {
@@ -896,10 +899,7 @@ pub fn compare_test_results(baseline_path: &str, current_path: &str) -> Result<T
         ));
     }
     run_differences.extend(crate::run_context::compare_identity(&baseline.identity, &current.identity));
-    run_differences.extend(crate::run_context::compare_config(
-        &baseline.run_config,
-        &current.run_config,
-    ));
+    run_differences.extend(crate::run_context::compare_config(&baseline.run_config, &current.run_config));
 
     Ok(TestComparison {
         baseline: baseline.metadata,
@@ -914,7 +914,7 @@ pub fn compare_test_results(baseline_path: &str, current_path: &str) -> Result<T
 impl TestComparison {
     pub fn to_text_report(&self) -> String {
         let mut report = String::new();
-        
+
         report.push_str("=== TMR Test Result Comparison ===\n");
         report.push_str(&format!("Comparison Time: {}\n", self.comparison_time));
         // UTC here, unlike the single-run report above, because the two files being compared may
@@ -930,22 +930,26 @@ impl TestComparison {
         report.push_str(&crate::run_context::render_differences(&self.run_differences));
 
         report.push_str("Overall Performance Changes:\n");
-        report.push_str(&format!("  Runtime: {}{} seconds ({:+.1}%)\n", 
+        report.push_str(&format!(
+            "  Runtime: {}{} seconds ({:+.1}%)\n",
             if self.overall_comparison.runtime_diff_secs >= 0 { "+" } else { "" },
             self.overall_comparison.runtime_diff_secs,
-            self.overall_comparison.runtime_diff_percent));
-        
-        report.push_str(&format!("  Throughput: {:+.1} MiB/s ({:+.1}%)\n", 
-            self.overall_comparison.throughput_diff_mib_s,
-            self.overall_comparison.throughput_diff_percent));
-        
-        report.push_str(&format!("  Data Processed: {:+.2} GiB\n", 
-            self.overall_comparison.data_processed_diff_gib));
-        
+            self.overall_comparison.runtime_diff_percent
+        ));
+
+        report.push_str(&format!(
+            "  Throughput: {:+.1} MiB/s ({:+.1}%)\n",
+            self.overall_comparison.throughput_diff_mib_s, self.overall_comparison.throughput_diff_percent
+        ));
+
+        report.push_str(&format!("  Data Processed: {:+.2} GiB\n", self.overall_comparison.data_processed_diff_gib));
+
         if self.overall_comparison.errors_diff != 0 {
-            report.push_str(&format!("  Errors: {:+} ({})\n", 
+            report.push_str(&format!(
+                "  Errors: {:+} ({})\n",
                 self.overall_comparison.errors_diff,
-                if self.overall_comparison.errors_diff > 0 { "WORSE" } else { "BETTER" }));
+                if self.overall_comparison.errors_diff > 0 { "WORSE" } else { "BETTER" }
+            ));
         } else {
             report.push_str("  Errors: No change\n");
         }
@@ -954,10 +958,23 @@ impl TestComparison {
         if !self.per_test_comparisons.is_empty() {
             report.push_str("Per-Test Performance Changes:\n");
             for test in &self.per_test_comparisons {
-                let duration_symbol = if test.duration_diff_ms < 0 { "⬇" } else if test.duration_diff_ms > 0 { "⬆" } else { "=" };
-                let throughput_symbol = if test.throughput_diff_mib_s > 0.0 { "⬆" } else if test.throughput_diff_mib_s < 0.0 { "⬇" } else { "=" };
-                
-                report.push_str(&format!("  Step {}. {} - Duration: {}{:.1}ms ({:+.1}%) {}, Throughput: {:+.1} MiB/s ({:+.1}%) {}{}\n",
+                let duration_symbol = if test.duration_diff_ms < 0 {
+                    "⬇"
+                } else if test.duration_diff_ms > 0 {
+                    "⬆"
+                } else {
+                    "="
+                };
+                let throughput_symbol = if test.throughput_diff_mib_s > 0.0 {
+                    "⬆"
+                } else if test.throughput_diff_mib_s < 0.0 {
+                    "⬇"
+                } else {
+                    "="
+                };
+
+                report.push_str(&format!(
+                    "  Step {}. {} - Duration: {}{:.1}ms ({:+.1}%) {}, Throughput: {:+.1} MiB/s ({:+.1}%) {}{}\n",
                     test.step,
                     test.label,
                     if test.duration_diff_ms >= 0 { "+" } else { "" },
@@ -967,11 +984,7 @@ impl TestComparison {
                     test.throughput_diff_mib_s,
                     test.throughput_diff_percent,
                     throughput_symbol,
-                    if test.errors_diff != 0 { 
-                        format!(", Errors: {:+}", test.errors_diff) 
-                    } else { 
-                        String::new() 
-                    }
+                    if test.errors_diff != 0 { format!(", Errors: {:+}", test.errors_diff) } else { String::new() }
                 ));
             }
         }
@@ -980,11 +993,9 @@ impl TestComparison {
     }
 
     pub fn save_to_file(&self, path: &str) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Failed to serialize comparison: {}", e))?;
-        
-        fs::write(path, json)
-            .map_err(|e| format!("Failed to write comparison file: {}", e))
+        let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize comparison: {}", e))?;
+
+        fs::write(path, json).map_err(|e| format!("Failed to write comparison file: {}", e))
     }
 }
 
@@ -1054,13 +1065,26 @@ mod tests {
         };
         let mut result = TestRunResult::new(Default::default());
         let step = |n, test: FailingBits, seal: FailingBits| TestSummary {
-            name: format!("test {n}"), failing_bits: test, seal_failing_bits: seal, ..summary(n, 5_000, 1 << 30, 0)
+            name: format!("test {n}"),
+            failing_bits: test,
+            seal_failing_bits: seal,
+            ..summary(n, 5_000, 1 << 30, 0)
         };
         let final_check = |b: FailingBits| Some(CycleSeal { final_check_failing_bits: b, ..Default::default() });
-        result.add_cycle(1, 10, vec![step(1, bits(1 << 31, 0, 1 << 31), FailingBits::default()), step(2, FailingBits::default(), FailingBits::default())],
-                         final_check(FailingBits::default()), false);
-        result.add_cycle(2, 10, vec![step(1, bits(1 << 31, 0, 0), FailingBits::default()), step(2, bits(1 << 39, 1 << 39, 0), bits(1 << 7, 0, 0))],
-                         final_check(bits(1 << 7, 0, 1 << 7)), false);
+        result.add_cycle(
+            1,
+            10,
+            vec![step(1, bits(1 << 31, 0, 1 << 31), FailingBits::default()), step(2, FailingBits::default(), FailingBits::default())],
+            final_check(FailingBits::default()),
+            false,
+        );
+        result.add_cycle(
+            2,
+            10,
+            vec![step(1, bits(1 << 31, 0, 0), FailingBits::default()), step(2, bits(1 << 39, 1 << 39, 0), bits(1 << 7, 0, 0))],
+            final_check(bits(1 << 7, 0, 1 << 7)),
+            false,
+        );
         result.finalize(std::time::Duration::from_secs(20));
         let by_step: Vec<String> = result.overall_stats.per_step_averages.iter().map(|a| a.failing_bits.detail()).collect();
         assert_eq!(by_step, ["31: 2 / 1 (1 + 0)", "39: 1 / 1 (0 + 1)"]);
@@ -1075,8 +1099,12 @@ mod tests {
         let report = crate::reporting::converters::create_overall_stats_summary_report(&result);
         let table = crate::reporting::formatters::DefaultFormatter::new().prepare_failing_bits_table(&report);
         let rows: Vec<(&str, &str)> = table.rows.iter().map(|r| (r[0].as_str(), r[1].as_str())).collect();
-        assert_eq!(rows, [("test 1", "31: 2 / 1 (1 + 0)"), ("test 2", "39: 1 / 1 (0 + 1)"), ("Seal", "7: 2 / 1 (1 + 0)"),
-                          ("All", "7: 2 / 1 (1 + 0), 31: 2 / 1 (1 + 0), 39: 1 / 1 (0 + 1)")]);
+        assert_eq!(rows, [
+            ("test 1", "31: 2 / 1 (1 + 0)"),
+            ("test 2", "39: 1 / 1 (0 + 1)"),
+            ("Seal", "7: 2 / 1 (1 + 0)"),
+            ("All", "7: 2 / 1 (1 + 0), 31: 2 / 1 (1 + 0), 39: 1 / 1 (0 + 1)")
+        ]);
     }
 
     /// A results file as TMR wrote it before TODO 72's fields (`testdata/result_files/before_todo_72.json`):
@@ -1162,8 +1190,9 @@ mod tests {
         let keys = |value: serde_json::Value| value.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
         assert!(!keys(serde_json::to_value(&result.cycles[0]).unwrap()).contains(&"partial".to_string()));
         assert!(!keys(serde_json::to_value(&result.cycles[1].tests[0]).unwrap()).contains(&"threads".to_string()));
-        assert_eq!(keys(serde_json::to_value(&result.cycles[1].tests[1].threads[1]).unwrap()),
-                   ["bytes", "cycles", "errors", "ms", "operations", "thread"]);
+        assert_eq!(keys(serde_json::to_value(&result.cycles[1].tests[1].threads[1]).unwrap()), [
+            "bytes", "cycles", "errors", "ms", "operations", "thread"
+        ]);
     }
 
     /// TODO 72: a save replaces the file whole, by renaming a temp file over it, and leaves nothing
@@ -1176,6 +1205,7 @@ mod tests {
     fn a_save_replaces_the_file_whole() {
         use std::io::Read;
         use std::os::windows::fs::OpenOptionsExt;
+
         use windows::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE};
         let dir = TempDir::new("save-atomic");
         let (path, temp) = (dir.file("result.json"), dir.file("result.json.tmp"));
@@ -1225,8 +1255,10 @@ mod tests {
 
         let comparison = compare_test_results(&baseline, &current).unwrap();
         let first = &comparison.run_differences[0];
-        assert_eq!((first.field.as_str(), first.baseline.as_str(), first.current.as_str(), first.invalidates),
-                   ("Results file", "finished after 2 cycles", "saved mid-run after 1 cycle", false));
+        assert_eq!(
+            (first.field.as_str(), first.baseline.as_str(), first.current.as_str(), first.invalidates),
+            ("Results file", "finished after 2 cycles", "saved mid-run after 1 cycle", false)
+        );
         let report = comparison.to_text_report();
         assert!(report.find("Results file").unwrap() < report.find("Overall Performance Changes").unwrap(), "{report}");
         let both_finished = compare_test_results(&baseline, &baseline).unwrap();
@@ -1242,8 +1274,9 @@ mod tests {
     #[test]
     #[ignore = "a measurement: run it by name"]
     fn a_long_runs_results_file() {
-        use crate::ops::Op;
         use std::time::{Duration, Instant};
+
+        use crate::ops::Op;
         const THREADS: usize = 32;
         const STEPS: usize = 16;
         const CYCLES: u32 = 50;
@@ -1279,7 +1312,14 @@ mod tests {
                 ..summary(n, 4_200, 32 << 30, 0)
             }
         };
-        let seal = CycleSeal { seal_ms: 3_410, seal_bytes: 32 << 30, between_steps_ms: 900, final_check_ms: 3_380, final_check_bytes: 32 << 30, ..Default::default() };
+        let seal = CycleSeal {
+            seal_ms: 3_410,
+            seal_bytes: 32 << 30,
+            between_steps_ms: 900,
+            final_check_ms: 3_380,
+            final_check_bytes: 32 << 30,
+            ..Default::default()
+        };
         let (mut written, mut serializing) = (0usize, Duration::ZERO);
         for cycle in 1..=CYCLES {
             result.add_cycle(cycle, 75, (1..=STEPS).map(step).collect(), Some(seal.clone()), false);
@@ -1305,9 +1345,18 @@ mod tests {
         let records = THREADS * STEPS * CYCLES as usize;
         let mb = |bytes: usize| bytes as f64 / 1e6;
         println!("{THREADS} threads x {STEPS} steps x {CYCLES} cycles = {records} thread records");
-        println!("final file: pretty {:.2} MB ({:.2} MB without the thread records, {} B a record), compact {:.2} MB",
-                 mb(pretty.len()), mb(without_threads), (pretty.len() - without_threads) / records, mb(compact.len()));
-        println!("final save: to_string_pretty {:.1} ms, save_atomic {:.1} ms", pretty_time.as_secs_f64() * 1e3, save_time.as_secs_f64() * 1e3);
+        println!(
+            "final file: pretty {:.2} MB ({:.2} MB without the thread records, {} B a record), compact {:.2} MB",
+            mb(pretty.len()),
+            mb(without_threads),
+            (pretty.len() - without_threads) / records,
+            mb(compact.len())
+        );
+        println!(
+            "final save: to_string_pretty {:.1} ms, save_atomic {:.1} ms",
+            pretty_time.as_secs_f64() * 1e3,
+            save_time.as_secs_f64() * 1e3
+        );
         println!("over the run: {:.1} MB written by {CYCLES} saves, {:.0} ms serializing", mb(written), serializing.as_secs_f64() * 1e3);
     }
 }

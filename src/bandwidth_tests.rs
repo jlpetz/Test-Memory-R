@@ -15,8 +15,8 @@
 
 use crate::ErrorMode;
 use crate::runner::AllocationBlock;
-use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming, TestStats};
 use crate::test_scaffolding::TestRunner;
+use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestStats, TestTiming};
 
 /// The write pattern. Not byte-uniform: a byte-uniform fill (it was 0x5555...) lets LLVM turn the
 /// cached write loop into `memset`, which measured the C runtime, the same at every width.
@@ -71,7 +71,7 @@ macro_rules! spd_write_hot {
             p = p.add(1);
             offset += vec_size;
         }
-    }}
+    }};
 }
 
 // ============================================================================
@@ -114,7 +114,7 @@ macro_rules! spd_read_hot {
         acc2 = $xor_fn(acc2, acc3);
         acc0 = $xor_fn(acc0, acc2);
         std::hint::black_box(acc0);
-    }}
+    }};
 }
 
 // ============================================================================
@@ -187,17 +187,12 @@ macro_rules! spd_write_impl {
     ) => {
         #[target_feature(enable = $target_feature)]
         unsafe fn $impl_fn(
-            blocks: &[AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> TestStats {
             let test_name = "Spd-Write";
-            let (mut runner, extent) = TestRunner::new(
-                blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Write,
-            );
+            let (mut runner, extent) =
+                TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Write);
             if extent.test_size == 0 {
                 return runner.finish_completed(0);
             }
@@ -235,12 +230,12 @@ macro_rules! spd_write_impl {
 
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
-            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
-            timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
         ) -> TestStats {
             $impl_fn(blocks, thread_id, error_mode, timing, config, progress)
         }
-    }
+    };
 }
 
 // ============================================================================
@@ -258,17 +253,12 @@ macro_rules! spd_read_impl {
     ) => {
         #[target_feature(enable = $target_feature)]
         unsafe fn $impl_fn(
-            blocks: &[AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> TestStats {
             let test_name = "Spd-Read";
-            let (mut runner, extent) = TestRunner::new(
-                blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Read,
-            );
+            let (mut runner, extent) =
+                TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Read);
             if extent.test_size == 0 {
                 return runner.finish_completed(0);
             }
@@ -302,12 +292,12 @@ macro_rules! spd_read_impl {
 
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
-            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
-            timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
         ) -> TestStats {
             $impl_fn(blocks, thread_id, error_mode, timing, config, progress)
         }
-    }
+    };
 }
 
 // ============================================================================
@@ -329,17 +319,12 @@ macro_rules! spd_copy_impl {
 
         #[target_feature(enable = $target_feature)]
         unsafe fn $impl_fn(
-            blocks: &[AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> TestStats {
             let test_name = "Spd-Copy";
-            let (mut runner, extent) = TestRunner::new(
-                blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Copy,
-            );
+            let (mut runner, extent) =
+                TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Copy);
             if extent.test_size == 0 {
                 return runner.finish_completed(0);
             }
@@ -385,12 +370,12 @@ macro_rules! spd_copy_impl {
 
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
-            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
-            timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+            progress: Option<&TestProgress>,
         ) -> TestStats {
             $impl_fn(blocks, thread_id, error_mode, timing, config, progress)
         }
-    }
+    };
 }
 
 // ============================================================================
@@ -399,7 +384,8 @@ macro_rules! spd_copy_impl {
 // ============================================================================
 
 spd_write_impl!(
-    spd_write_128_impl, spd_write_128_multi,
+    spd_write_128_impl,
+    spd_write_128_multi,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
     std::arch::x86_64::__m128i,
     std::arch::x86_64::_mm_set1_epi64x,
@@ -408,7 +394,8 @@ spd_write_impl!(
 );
 
 spd_write_impl!(
-    spd_write_256_impl, spd_write_256_multi,
+    spd_write_256_impl,
+    spd_write_256_multi,
     "avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_set1_epi64x,
@@ -417,7 +404,8 @@ spd_write_impl!(
 );
 
 spd_write_impl!(
-    spd_write_512_impl, spd_write_512_multi,
+    spd_write_512_impl,
+    spd_write_512_multi,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_set1_epi64,
@@ -438,7 +426,8 @@ crate::auto_dispatch!(
 // ============================================================================
 
 spd_write_impl!(
-    spd_write_nt_128_impl, spd_write_nt_128_multi,
+    spd_write_nt_128_impl,
+    spd_write_nt_128_multi,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
     std::arch::x86_64::__m128i,
     std::arch::x86_64::_mm_set1_epi64x,
@@ -447,7 +436,8 @@ spd_write_impl!(
 );
 
 spd_write_impl!(
-    spd_write_nt_256_impl, spd_write_nt_256_multi,
+    spd_write_nt_256_impl,
+    spd_write_nt_256_multi,
     "avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_set1_epi64x,
@@ -456,7 +446,8 @@ spd_write_impl!(
 );
 
 spd_write_impl!(
-    spd_write_nt_512_impl, spd_write_nt_512_multi,
+    spd_write_nt_512_impl,
+    spd_write_nt_512_multi,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_set1_epi64,
@@ -476,7 +467,8 @@ crate::auto_dispatch!(
 // ============================================================================
 
 spd_read_impl!(
-    spd_read_128_impl, spd_read_128_multi,
+    spd_read_128_impl,
+    spd_read_128_multi,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
     std::arch::x86_64::__m128i,
     std::arch::x86_64::_mm_load_si128,
@@ -485,7 +477,8 @@ spd_read_impl!(
 );
 
 spd_read_impl!(
-    spd_read_256_impl, spd_read_256_multi,
+    spd_read_256_impl,
+    spd_read_256_multi,
     "avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_load_si256,
@@ -494,7 +487,8 @@ spd_read_impl!(
 );
 
 spd_read_impl!(
-    spd_read_512_impl, spd_read_512_multi,
+    spd_read_512_impl,
+    spd_read_512_multi,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_load_si512,
@@ -518,7 +512,9 @@ crate::auto_dispatch!(
 // `_mm_store_si128` it copied each two adjacent vectors as one 32 B `ymm` move (the AVX2 baseline),
 // so Spd-Copy-128 ran at 256 bits (TODO 99). The same instructions otherwise (`vmovaps xmm`).
 spd_copy_impl!(
-    spd_copy_128_impl, spd_copy_128_multi, spd_copy_128_chunk,
+    spd_copy_128_impl,
+    spd_copy_128_multi,
+    spd_copy_128_chunk,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
     std::arch::x86_64::__m128i,
     std::ptr::read_volatile,
@@ -527,7 +523,9 @@ spd_copy_impl!(
 );
 
 spd_copy_impl!(
-    spd_copy_256_impl, spd_copy_256_multi, spd_copy_256_chunk,
+    spd_copy_256_impl,
+    spd_copy_256_multi,
+    spd_copy_256_chunk,
     "avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_load_si256,
@@ -536,7 +534,9 @@ spd_copy_impl!(
 );
 
 spd_copy_impl!(
-    spd_copy_512_impl, spd_copy_512_multi, spd_copy_512_chunk,
+    spd_copy_512_impl,
+    spd_copy_512_multi,
+    spd_copy_512_chunk,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_load_si512,
@@ -557,7 +557,9 @@ crate::auto_dispatch!(
 // ============================================================================
 
 spd_copy_impl!(
-    spd_copy_nt_128_impl, spd_copy_nt_128_multi, spd_copy_nt_128_chunk,
+    spd_copy_nt_128_impl,
+    spd_copy_nt_128_multi,
+    spd_copy_nt_128_chunk,
     "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
     std::arch::x86_64::__m128i,
     std::arch::x86_64::_mm_load_si128,
@@ -566,7 +568,9 @@ spd_copy_impl!(
 );
 
 spd_copy_impl!(
-    spd_copy_nt_256_impl, spd_copy_nt_256_multi, spd_copy_nt_256_chunk,
+    spd_copy_nt_256_impl,
+    spd_copy_nt_256_multi,
+    spd_copy_nt_256_chunk,
     "avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_load_si256,
@@ -575,7 +579,9 @@ spd_copy_impl!(
 );
 
 spd_copy_impl!(
-    spd_copy_nt_512_impl, spd_copy_nt_512_multi, spd_copy_nt_512_chunk,
+    spd_copy_nt_512_impl,
+    spd_copy_nt_512_multi,
+    spd_copy_nt_512_chunk,
     "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_load_si512,

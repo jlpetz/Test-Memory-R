@@ -17,16 +17,16 @@
 // All chain cells are 64-byte aligned (cache-line aligned). Data cells are pure 64-byte payloads
 // — no metadata embedded — so SIMD ops up to AVX-512 work directly on them.
 
-use crate::ErrorMode;
-use crate::runner::AllocationBlock;
-use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming};
-use crate::latency_tests::{below, LatencyTestStats};
-use crate::test_scaffolding::TestRunner;
-use std::collections::HashMap;
-use std::sync::atomic::{fence, Ordering};
-
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::__rdtscp;
+use std::collections::HashMap;
+use std::sync::atomic::{Ordering, fence};
+
+use crate::ErrorMode;
+use crate::latency_tests::{LatencyTestStats, below};
+use crate::runner::AllocationBlock;
+use crate::test_scaffolding::TestRunner;
+use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestTiming};
 
 const CACHE_LINE_BYTES: usize = 64;
 
@@ -76,12 +76,8 @@ unsafe fn setup_layout_a(base: *mut u8, working_bytes: usize, thread_id: usize) 
         return base as *mut u64;
     }
 
-    let chain_addr = |i: usize| -> *mut u64 {
-        base.add(i * LAYOUT_A_BLOCK_BYTES) as *mut u64
-    };
-    let data_addr = |i: usize| -> *mut u64 {
-        base.add(i * LAYOUT_A_BLOCK_BYTES + CACHE_LINE_BYTES) as *mut u64
-    };
+    let chain_addr = |i: usize| -> *mut u64 { base.add(i * LAYOUT_A_BLOCK_BYTES) as *mut u64 };
+    let data_addr = |i: usize| -> *mut u64 { base.add(i * LAYOUT_A_BLOCK_BYTES + CACHE_LINE_BYTES) as *mut u64 };
 
     let mut chain_rng = setup_rng(thread_id ^ 0xA1);
     let mut data_rng = setup_rng(thread_id ^ 0xA2);
@@ -108,14 +104,10 @@ unsafe fn setup_layout_b(base: *mut u8, working_bytes: usize, thread_id: usize) 
         return base as *mut u64;
     }
 
-    let chain_addr = |i: usize| -> *mut u64 {
-        base.add(i * LAYOUT_B_BLOCK_BYTES) as *mut u64
-    };
+    let chain_addr = |i: usize| -> *mut u64 { base.add(i * LAYOUT_B_BLOCK_BYTES) as *mut u64 };
     // Data field k: slot k % 6 of chain cell k / 6. Its target: data cell k % 6 of block k / 6.
     let field = |k: usize| -> *mut u64 { chain_addr(k / 6).add(2 + k % 6) };
-    let data_addr = |k: usize| -> *mut u64 {
-        base.add((k / 6) * LAYOUT_B_BLOCK_BYTES + (1 + k % 6) * CACHE_LINE_BYTES) as *mut u64
-    };
+    let data_addr = |k: usize| -> *mut u64 { base.add((k / 6) * LAYOUT_B_BLOCK_BYTES + (1 + k % 6) * CACHE_LINE_BYTES) as *mut u64 };
 
     let mut chain_rng = setup_rng(thread_id ^ 0xB1);
     let mut data_rng = setup_rng(thread_id ^ 0xB2);
@@ -142,13 +134,15 @@ unsafe fn setup_layout_b(base: *mut u8, working_bytes: usize, thread_id: usize) 
 fn random_prefix(n: usize, k: usize, seed: usize) -> Vec<usize> {
     let mut rng = setup_rng(seed);
     let mut moved: HashMap<usize, usize> = HashMap::with_capacity(k);
-    (0..k).map(|i| {
-        let j = i + below(&mut rng, n - i);
-        let at_j = moved.get(&j).copied().unwrap_or(j);
-        let at_i = moved.get(&i).copied().unwrap_or(i);
-        moved.insert(j, at_i);
-        at_j
-    }).collect()
+    (0..k)
+        .map(|i| {
+            let j = i + below(&mut rng, n - i);
+            let at_j = moved.get(&j).copied().unwrap_or(j);
+            let at_i = moved.get(&i).copied().unwrap_or(i);
+            moved.insert(j, at_i);
+            at_j
+        })
+        .collect()
 }
 
 // ============================================================================
@@ -172,11 +166,7 @@ macro_rules! lat_v2_read_impl {
         #[target_feature(enable = $target_feature)]
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
-            blocks: &[AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2-Read";
@@ -185,7 +175,8 @@ macro_rules! lat_v2_read_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            let (mut runner, extent) =
+                TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
                 return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
@@ -238,12 +229,14 @@ macro_rules! lat_v2_read_impl {
                 runner.add_bytes(ops as usize * 8);
 
                 runner.update_progress();
-                if runner.shutdown_requested() || !runner.should_continue() { break; }
+                if runner.shutdown_requested() || !runner.should_continue() {
+                    break;
+                }
             }
 
             finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
-    }
+    };
 }
 
 // ============================================================================
@@ -267,11 +260,7 @@ macro_rules! lat_v2_write_impl {
         #[target_feature(enable = $target_feature)]
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
-            blocks: &[AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2-Write";
@@ -280,7 +269,8 @@ macro_rules! lat_v2_write_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            let (mut runner, extent) =
+                TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
                 return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
@@ -326,12 +316,14 @@ macro_rules! lat_v2_write_impl {
                 runner.add_bytes(ops as usize * 8);
 
                 runner.update_progress();
-                if runner.shutdown_requested() || !runner.should_continue() { break; }
+                if runner.shutdown_requested() || !runner.should_continue() {
+                    break;
+                }
             }
 
             finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
-    }
+    };
 }
 
 // ============================================================================
@@ -357,11 +349,7 @@ macro_rules! lat_v2_copy_impl {
         #[target_feature(enable = $target_feature)]
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
-            blocks: &[AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2-Copy";
@@ -370,7 +358,8 @@ macro_rules! lat_v2_copy_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            let (mut runner, extent) =
+                TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
                 return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
@@ -416,12 +405,14 @@ macro_rules! lat_v2_copy_impl {
                 runner.add_bytes(ops as usize * 8);
 
                 runner.update_progress();
-                if runner.shutdown_requested() || !runner.should_continue() { break; }
+                if runner.shutdown_requested() || !runner.should_continue() {
+                    break;
+                }
             }
 
             finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
-    }
+    };
 }
 
 // ============================================================================
@@ -441,11 +432,7 @@ macro_rules! lat_v2p_read_impl {
         #[target_feature(enable = $target_feature)]
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
-            blocks: &[AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2P-Read";
@@ -454,7 +441,8 @@ macro_rules! lat_v2p_read_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            let (mut runner, extent) =
+                TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
                 return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
@@ -519,12 +507,14 @@ macro_rules! lat_v2p_read_impl {
                 runner.add_bytes(ops as usize * 8);
 
                 runner.update_progress();
-                if runner.shutdown_requested() || !runner.should_continue() { break; }
+                if runner.shutdown_requested() || !runner.should_continue() {
+                    break;
+                }
             }
 
             finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
-    }
+    };
 }
 
 // ============================================================================
@@ -551,11 +541,7 @@ macro_rules! lat_v2p_write_impl {
         #[target_feature(enable = $target_feature)]
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
-            blocks: &[AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2P-Write";
@@ -564,7 +550,8 @@ macro_rules! lat_v2p_write_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            let (mut runner, extent) =
+                TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
                 return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
@@ -625,12 +612,14 @@ macro_rules! lat_v2p_write_impl {
                 runner.add_bytes(ops as usize * 8);
 
                 runner.update_progress();
-                if runner.shutdown_requested() || !runner.should_continue() { break; }
+                if runner.shutdown_requested() || !runner.should_continue() {
+                    break;
+                }
             }
 
             finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
-    }
+    };
 }
 
 // ============================================================================
@@ -663,11 +652,7 @@ macro_rules! lat_v2p_copy_impl {
         #[target_feature(enable = $target_feature)]
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
-            blocks: &[AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2P-Copy";
@@ -676,7 +661,8 @@ macro_rules! lat_v2p_copy_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            let (mut runner, extent) =
+                TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
                 return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
@@ -711,12 +697,18 @@ macro_rules! lat_v2p_copy_impl {
                     // Read-Modify-Write each data cell. Loads warm the lines into L1
                     // first, so the subsequent stores hit a cached line (no RFO needed).
                     // Tests the "copy traffic" path — load + store on same cache line.
-                    let v0 = $load_fn(d0); $store_fn(d0, $xor_fn(v0, mask));
-                    let v1 = $load_fn(d1); $store_fn(d1, $xor_fn(v1, mask));
-                    let v2 = $load_fn(d2); $store_fn(d2, $xor_fn(v2, mask));
-                    let v3 = $load_fn(d3); $store_fn(d3, $xor_fn(v3, mask));
-                    let v4 = $load_fn(d4); $store_fn(d4, $xor_fn(v4, mask));
-                    let v5 = $load_fn(d5); $store_fn(d5, $xor_fn(v5, mask));
+                    let v0 = $load_fn(d0);
+                    $store_fn(d0, $xor_fn(v0, mask));
+                    let v1 = $load_fn(d1);
+                    $store_fn(d1, $xor_fn(v1, mask));
+                    let v2 = $load_fn(d2);
+                    $store_fn(d2, $xor_fn(v2, mask));
+                    let v3 = $load_fn(d3);
+                    $store_fn(d3, $xor_fn(v3, mask));
+                    let v4 = $load_fn(d4);
+                    $store_fn(d4, $xor_fn(v4, mask));
+                    let v5 = $load_fn(d5);
+                    $store_fn(d5, $xor_fn(v5, mask));
                     chain = next;
                 }
 
@@ -735,12 +727,14 @@ macro_rules! lat_v2p_copy_impl {
                 runner.add_bytes(ops as usize * 8);
 
                 runner.update_progress();
-                if runner.shutdown_requested() || !runner.should_continue() { break; }
+                if runner.shutdown_requested() || !runner.should_continue() {
+                    break;
+                }
             }
 
             finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
-    }
+    };
 }
 
 // ============================================================================
@@ -771,11 +765,7 @@ macro_rules! lat_v2p_write_full_impl {
         #[target_feature(enable = $target_feature)]
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
-            blocks: &[AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2P-WriteFull";
@@ -784,7 +774,8 @@ macro_rules! lat_v2p_write_full_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            let (mut runner, extent) =
+                TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
                 return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
@@ -843,12 +834,14 @@ macro_rules! lat_v2p_write_full_impl {
                 runner.add_bytes(ops as usize * 8);
 
                 runner.update_progress();
-                if runner.shutdown_requested() || !runner.should_continue() { break; }
+                if runner.shutdown_requested() || !runner.should_continue() {
+                    break;
+                }
             }
 
             finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
-    }
+    };
 }
 
 // ============================================================================
@@ -875,11 +868,7 @@ macro_rules! lat_v2p_copy_full_impl {
         #[target_feature(enable = $target_feature)]
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
-            blocks: &[AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             let test_name = "Lat-V2P-CopyFull";
@@ -888,7 +877,8 @@ macro_rules! lat_v2p_copy_full_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            let (mut runner, extent) =
+                TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
                 return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
@@ -922,12 +912,18 @@ macro_rules! lat_v2p_copy_full_impl {
                     let d5 = *chain.add(7) as *mut $vec_type;
                     // Full-line RMW: cover every byte of every target line.
                     for i in 0..$ops_per_cell {
-                        let v0 = $load_fn(d0.add(i)); $store_fn(d0.add(i), $xor_fn(v0, mask));
-                        let v1 = $load_fn(d1.add(i)); $store_fn(d1.add(i), $xor_fn(v1, mask));
-                        let v2 = $load_fn(d2.add(i)); $store_fn(d2.add(i), $xor_fn(v2, mask));
-                        let v3 = $load_fn(d3.add(i)); $store_fn(d3.add(i), $xor_fn(v3, mask));
-                        let v4 = $load_fn(d4.add(i)); $store_fn(d4.add(i), $xor_fn(v4, mask));
-                        let v5 = $load_fn(d5.add(i)); $store_fn(d5.add(i), $xor_fn(v5, mask));
+                        let v0 = $load_fn(d0.add(i));
+                        $store_fn(d0.add(i), $xor_fn(v0, mask));
+                        let v1 = $load_fn(d1.add(i));
+                        $store_fn(d1.add(i), $xor_fn(v1, mask));
+                        let v2 = $load_fn(d2.add(i));
+                        $store_fn(d2.add(i), $xor_fn(v2, mask));
+                        let v3 = $load_fn(d3.add(i));
+                        $store_fn(d3.add(i), $xor_fn(v3, mask));
+                        let v4 = $load_fn(d4.add(i));
+                        $store_fn(d4.add(i), $xor_fn(v4, mask));
+                        let v5 = $load_fn(d5.add(i));
+                        $store_fn(d5.add(i), $xor_fn(v5, mask));
                     }
                     chain = next;
                 }
@@ -945,12 +941,14 @@ macro_rules! lat_v2p_copy_full_impl {
                 runner.add_bytes(ops as usize * 8);
 
                 runner.update_progress();
-                if runner.shutdown_requested() || !runner.should_continue() { break; }
+                if runner.shutdown_requested() || !runner.should_continue() {
+                    break;
+                }
             }
 
             finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
-    }
+    };
 }
 
 // ============================================================================
@@ -1023,8 +1021,8 @@ lat_v2_read_impl!(
 /// Returns LatencyTestStats (not TestStats) so it works with TestFunction::Latency.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2_read_auto_multi(
-    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
-    timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
         crate::simd::Width::W512 => crate::dispatched!(lat_v2_read_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
@@ -1063,8 +1061,8 @@ lat_v2_write_impl!(
 
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2_write_auto_multi(
-    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
-    timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
         crate::simd::Width::W512 => crate::dispatched!(lat_v2_write_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
@@ -1109,8 +1107,8 @@ lat_v2_copy_impl!(
 
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2_copy_auto_multi(
-    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
-    timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
         crate::simd::Width::W512 => crate::dispatched!(lat_v2_copy_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
@@ -1155,8 +1153,8 @@ lat_v2p_read_impl!(
 
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2p_read_auto_multi(
-    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
-    timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
         crate::simd::Width::W512 => crate::dispatched!(lat_v2p_read_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
@@ -1195,8 +1193,8 @@ lat_v2p_write_impl!(
 
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2p_write_auto_multi(
-    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
-    timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
         crate::simd::Width::W512 => crate::dispatched!(lat_v2p_write_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
@@ -1241,8 +1239,8 @@ lat_v2p_copy_impl!(
 
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2p_copy_auto_multi(
-    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
-    timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
         crate::simd::Width::W512 => crate::dispatched!(lat_v2p_copy_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
@@ -1261,7 +1259,7 @@ lat_v2p_write_full_impl!(
     std::arch::x86_64::__m128i,
     std::arch::x86_64::_mm_set1_epi64x,
     std::arch::x86_64::_mm_store_si128,
-    4_usize  // 4 × 16 bytes = full 64-byte cache line
+    4_usize // 4 × 16 bytes = full 64-byte cache line
 );
 
 lat_v2p_write_full_impl!(
@@ -1270,7 +1268,7 @@ lat_v2p_write_full_impl!(
     std::arch::x86_64::__m256i,
     std::arch::x86_64::_mm256_set1_epi64x,
     std::arch::x86_64::_mm256_store_si256,
-    2_usize  // 2 × 32 bytes = full 64-byte cache line
+    2_usize // 2 × 32 bytes = full 64-byte cache line
 );
 
 lat_v2p_write_full_impl!(
@@ -1279,18 +1277,24 @@ lat_v2p_write_full_impl!(
     std::arch::x86_64::__m512i,
     std::arch::x86_64::_mm512_set1_epi64,
     std::arch::x86_64::_mm512_store_si512,
-    1_usize  // 1 × 64 bytes = full 64-byte cache line
+    1_usize // 1 × 64 bytes = full 64-byte cache line
 );
 
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2p_write_full_auto_multi(
-    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
-    timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => crate::dispatched!(lat_v2p_write_full_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => crate::dispatched!(lat_v2p_write_full_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => crate::dispatched!(lat_v2p_write_full_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => {
+            crate::dispatched!(lat_v2p_write_full_512_multi)(blocks, thread_id, error_mode, timing, config, progress)
+        }
+        crate::simd::Width::W256 => {
+            crate::dispatched!(lat_v2p_write_full_256_multi)(blocks, thread_id, error_mode, timing, config, progress)
+        }
+        crate::simd::Width::W128 => {
+            crate::dispatched!(lat_v2p_write_full_128_multi)(blocks, thread_id, error_mode, timing, config, progress)
+        }
     }
 }
 
@@ -1333,13 +1337,19 @@ lat_v2p_copy_full_impl!(
 
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_v2p_copy_full_auto_multi(
-    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
-    timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
-        crate::simd::Width::W512 => crate::dispatched!(lat_v2p_copy_full_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W256 => crate::dispatched!(lat_v2p_copy_full_256_multi)(blocks, thread_id, error_mode, timing, config, progress),
-        crate::simd::Width::W128 => crate::dispatched!(lat_v2p_copy_full_128_multi)(blocks, thread_id, error_mode, timing, config, progress),
+        crate::simd::Width::W512 => {
+            crate::dispatched!(lat_v2p_copy_full_512_multi)(blocks, thread_id, error_mode, timing, config, progress)
+        }
+        crate::simd::Width::W256 => {
+            crate::dispatched!(lat_v2p_copy_full_256_multi)(blocks, thread_id, error_mode, timing, config, progress)
+        }
+        crate::simd::Width::W128 => {
+            crate::dispatched!(lat_v2p_copy_full_128_multi)(blocks, thread_id, error_mode, timing, config, progress)
+        }
     }
 }
 
@@ -1371,11 +1381,7 @@ macro_rules! lat_ntw_write_impl {
         #[target_feature(enable = $target_feature)]
         #[doc = include_str!("test_fn_safety.md")]
         pub unsafe fn $pub_fn(
-            blocks: &[AllocationBlock],
-            thread_id: usize,
-            error_mode: ErrorMode,
-            timing: &TestTiming,
-            config: &TestMemoryConfig,
+            blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
             progress: Option<&TestProgress>,
         ) -> LatencyTestStats {
             use std::arch::x86_64::_mm_sfence;
@@ -1386,7 +1392,8 @@ macro_rules! lat_ntw_write_impl {
                 panic!("TSC frequency not detected");
             }
 
-            let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
+            let (mut runner, extent) =
+                TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
                 return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
@@ -1408,9 +1415,8 @@ macro_rules! lat_ntw_write_impl {
                 return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
             }
             let lines = random_prefix(line_count, line_count.min(STORES_PER_SAMPLE), thread_id ^ 0xC1);
-            let table: Vec<*mut $vec_type> = (0..STORES_PER_SAMPLE)
-                .map(|i| extent.ptr.add(lines[i % lines.len()] * CACHE_LINE_BYTES) as *mut $vec_type)
-                .collect();
+            let table: Vec<*mut $vec_type> =
+                (0..STORES_PER_SAMPLE).map(|i| extent.ptr.add(lines[i % lines.len()] * CACHE_LINE_BYTES) as *mut $vec_type).collect();
 
             let mut latencies_ns = Vec::with_capacity(10000);
             let mut total_ops = 0u64;
@@ -1441,7 +1447,9 @@ macro_rules! lat_ntw_write_impl {
                 runner.add_bytes(STORES_PER_SAMPLE as u64 as usize * 8);
 
                 runner.update_progress();
-                if runner.shutdown_requested() || !runner.should_continue() { break; }
+                if runner.shutdown_requested() || !runner.should_continue() {
+                    break;
+                }
             }
 
             // Suppress unused-vec_size warning; the value is documentary and may be used in
@@ -1449,7 +1457,7 @@ macro_rules! lat_ntw_write_impl {
             let _ = $vec_size;
             finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
         }
-    }
+    };
 }
 
 /// Scalar (8-byte) NT-write variant. `_mm_stream_si64` writes a single u64 (8 bytes) per
@@ -1459,11 +1467,7 @@ macro_rules! lat_ntw_write_impl {
 #[doc = include_str!("test_fn_safety.md")]
 #[target_feature(enable = "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt")]
 pub unsafe fn lat_ntw_write_scalar_multi(
-    blocks: &[AllocationBlock],
-    thread_id: usize,
-    error_mode: ErrorMode,
-    timing: &TestTiming,
-    config: &TestMemoryConfig,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
     progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     use std::arch::x86_64::{_mm_sfence, _mm_stream_si64};
@@ -1489,9 +1493,8 @@ pub unsafe fn lat_ntw_write_scalar_multi(
         return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
     }
     let lines = random_prefix(line_count, line_count.min(STORES_PER_SAMPLE), thread_id ^ 0xC1);
-    let table: Vec<*mut i64> = (0..STORES_PER_SAMPLE)
-        .map(|i| extent.ptr.add(lines[i % lines.len()] * CACHE_LINE_BYTES) as *mut i64)
-        .collect();
+    let table: Vec<*mut i64> =
+        (0..STORES_PER_SAMPLE).map(|i| extent.ptr.add(lines[i % lines.len()] * CACHE_LINE_BYTES) as *mut i64).collect();
 
     let mut latencies_ns = Vec::with_capacity(10000);
     let mut total_ops = 0u64;
@@ -1522,7 +1525,9 @@ pub unsafe fn lat_ntw_write_scalar_multi(
         runner.add_bytes(STORES_PER_SAMPLE as u64 as usize * 8);
 
         runner.update_progress();
-        if runner.shutdown_requested() || !runner.should_continue() { break; }
+        if runner.shutdown_requested() || !runner.should_continue() {
+            break;
+        }
     }
 
     finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
@@ -1557,8 +1562,8 @@ lat_ntw_write_impl!(
 
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_ntw_write_auto_multi(
-    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode,
-    timing: &TestTiming, config: &TestMemoryConfig, progress: Option<&TestProgress>,
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
 ) -> LatencyTestStats {
     match crate::simd::test_width() {
         crate::simd::Width::W512 => crate::dispatched!(lat_ntw_write_512_multi)(blocks, thread_id, error_mode, timing, config, progress),
@@ -1574,17 +1579,15 @@ pub unsafe fn lat_ntw_write_auto_multi(
 /// The test's stats: the runner's bytes, time and cycles (one sample per cycle), and the
 /// percentiles of the samples.
 fn finalize_stats(
-    runner: &mut TestRunner<'_>,
-    test_name: &'static str,
-    thread_id: usize,
-    total_ops: u64,
-    latencies_ns: Vec<f64>,
+    runner: &mut TestRunner<'_>, test_name: &'static str, thread_id: usize, total_ops: u64, latencies_ns: Vec<f64>,
 ) -> LatencyTestStats {
     let mut sorted = latencies_ns;
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let len = sorted.len();
     let percentile = |slice: &[f64], p: f64| -> f64 {
-        if slice.is_empty() { return 0.0; }
+        if slice.is_empty() {
+            return 0.0;
+        }
         let n = slice.len();
         let idx = ((n as f64 - 1.0) * p / 100.0) as usize;
         slice[idx.min(n - 1)]
@@ -1605,14 +1608,30 @@ fn finalize_stats(
         basic_stats: runner.finish_completed(total_ops),
         latencies_ns: sorted,
         sample_count: len,
-        p1_ns: p1, p5_ns: p5, p10_ns: p10, p25_ns: p25, p50_ns: p50,
-        p75_ns: p75, p90_ns: p90, p95_ns: p95, p99_ns: p99, p99_9_ns: p99_9,
+        p1_ns: p1,
+        p5_ns: p5,
+        p10_ns: p10,
+        p25_ns: p25,
+        p50_ns: p50,
+        p75_ns: p75,
+        p90_ns: p90,
+        p95_ns: p95,
+        p99_ns: p99,
+        p99_9_ns: p99_9,
         spread_ratio: spread,
     };
 
-    log::info!("[Thread {}] {} - {} samples | P5={:.2} P50={:.2} P95={:.2} P99={:.2} | Spread={:.2}x",
-        thread_id, test_name, result.sample_count,
-        result.p5_ns, result.p50_ns, result.p95_ns, result.p99_ns, result.spread_ratio);
+    log::info!(
+        "[Thread {}] {} - {} samples | P5={:.2} P50={:.2} P95={:.2} P99={:.2} | Spread={:.2}x",
+        thread_id,
+        test_name,
+        result.sample_count,
+        result.p5_ns,
+        result.p50_ns,
+        result.p95_ns,
+        result.p99_ns,
+        result.spread_ratio
+    );
 
     result
 }
@@ -1644,7 +1663,8 @@ mod tests {
         let mut mem = vec![std::simd::u64x8::splat(0); cells * 7];
         let base = mem.as_mut_ptr() as *mut u8;
         let expect = |block_bytes: usize, slots: usize| -> Vec<u64> {
-            let mut all: Vec<u64> = (0..cells).flat_map(|i| (0..slots).map(move |s| (i * block_bytes + (1 + s) * CACHE_LINE_BYTES) as u64)).collect();
+            let mut all: Vec<u64> =
+                (0..cells).flat_map(|i| (0..slots).map(move |s| (i * block_bytes + (1 + s) * CACHE_LINE_BYTES) as u64)).collect();
             all.sort();
             all
         };

@@ -1,19 +1,19 @@
+pub mod converters;
+pub mod formatters;
 /// Reporting module for clean separation of data, formatting, and rendering
-/// 
+///
 /// This module provides a three-layer architecture:
 /// 1. Models - Pure data structures representing what to display
 /// 2. Formatters - Logic for transforming and formatting data
 /// 3. Renderers - Output mechanisms (console, GUI, JSON, etc.)
 pub mod models;
-pub mod formatters;
 pub mod renderers;
-pub mod converters;
 pub mod system_info_builder;
 
-use crate::Result;
-use self::models::*;
 use self::formatters::{DefaultFormatter, ReportFormatter};
+use self::models::*;
 use self::renderers::Renderer;
+use crate::Result;
 
 /// Main reporter that combines formatting and rendering
 pub struct Reporter<R: Renderer> {
@@ -58,49 +58,48 @@ impl<R: Renderer> Reporter<R> {
         self.renderer.render_table(&table)?;
         Ok(())
     }
-    
+
     /// Report performance by thread
     pub fn report_performance_by_thread(&mut self, report: &PerformanceByThreadReport) -> Result<()> {
         let table = self.formatter.prepare_performance_by_thread_table(report);
         self.renderer.render_table(&table)?;
         Ok(())
     }
-    
+
     /// Report performance by CPU
     pub fn report_performance_by_cpu(&mut self, report: &PerformanceByCpuReport) -> Result<()> {
         let table = self.formatter.prepare_performance_by_cpu_table(report);
         self.renderer.render_table(&table)?;
         Ok(())
     }
-    
+
     /// Report performance by physical core
     pub fn report_performance_by_physical_core(&mut self, report: &PerformanceByPhysicalCoreReport) -> Result<()> {
         let table = self.formatter.prepare_performance_by_physical_core_table(report);
         self.renderer.render_table(&table)?;
         Ok(())
     }
-    
+
     /// Report CPU topology
     pub fn report_cpu_topology(&mut self, report: &CpuTopologyReport) -> Result<()> {
         let table = self.formatter.prepare_cpu_topology_table(report);
         self.renderer.render_table(&table)?;
         Ok(())
     }
-    
-    
+
     /// Report consolidated memory status and allocation plan
     pub fn report_consolidated_memory(&mut self, report: &ConsolidatedMemoryReport) -> Result<()> {
         let table = self.formatter.prepare_consolidated_memory_table(report);
         self.renderer.render_table(&table)?;
-        
+
         // Render warnings if any
         for warning in &report.warnings {
             self.renderer.render_warning(warning)?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Report test configuration
     pub fn report_test_configuration(&mut self, report: &TestConfigurationReport) -> Result<()> {
         let table = self.formatter.prepare_test_configuration_table(report);
@@ -110,7 +109,7 @@ impl<R: Renderer> Reporter<R> {
         }
         Ok(())
     }
-    
+
     /// Report cycle completion. Crate-private while nothing calls it, so it stays checked as dead
     /// code: a public `Reporter`'s public methods aren't (TODO 29).
     #[expect(dead_code, reason = "TODO #29: the per-cycle report is to be revived, not deleted (from TODO #69 F)")]
@@ -119,15 +118,15 @@ impl<R: Renderer> Reporter<R> {
         self.renderer.render_table(&table)?;
         Ok(())
     }
-    
+
     /// Report final test summary
     pub fn report_final_summary(&mut self, report: &FinalTestSummaryReport) -> Result<()> {
         self.renderer.render_separator()?;
-        
+
         // Render overview table
         let overview_table = self.formatter.prepare_final_summary_overview_table(report);
         self.renderer.render_table(&overview_table)?;
-        
+
         // Only show per-test performance if there are tests
         if !report.per_test_summaries.is_empty() {
             self.renderer.render_separator()?;
@@ -152,10 +151,10 @@ impl<R: Renderer> Reporter<R> {
             let table = self.formatter.prepare_failing_bits_table(report);
             self.renderer.render_table(&table)?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Report latency test summary results (multi-threaded)
     pub fn report_latency_summary(&mut self, report: &LatencyTestSummaryReport) -> Result<()> {
         // Simple label - test name and extent are already shown in the main test header and config line

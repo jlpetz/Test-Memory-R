@@ -1,8 +1,8 @@
-use crate::memory::backend::{AllocError, Backend, BackendType, WindowsBackend};
-use crate::memory::buffer::MemoryBuffer;
-use crate::memory::buffer::MemoryType as BufferMemoryType;
-use crate::constants::{HUGE_PAGE_SIZE_USIZE, BYTES_PER_MIB_USIZE, MB_16};
 use std::sync::Arc;
+
+use crate::constants::{BYTES_PER_MIB_USIZE, HUGE_PAGE_SIZE_USIZE, MB_16};
+use crate::memory::backend::{AllocError, Backend, BackendType, WindowsBackend};
+use crate::memory::buffer::{MemoryBuffer, MemoryType as BufferMemoryType};
 
 /// The smallest `largefloor`, and its default.
 pub(crate) const MIN_LARGE_FLOOR: usize = MB_16;
@@ -19,7 +19,7 @@ pub struct AllocationConfig {
     #[expect(dead_code, reason = "revival seam (TODO #4/5): VirtualAlloc2 can only give WriteBack, so it never reads this")]
     pub memory_type: BufferMemoryType,
     pub zero_memory: bool,
-    pub alignment: Option<usize>,       // Custom alignment requirement (must be power of 2)
+    pub alignment: Option<usize>, // Custom alignment requirement (must be power of 2)
     /// `numa_node` is required, not preferred (`NUMA_NODE_MANDATORY`): refuse rather than take
     /// another node's pages. Only 1 GiB and 2 MiB pages take it; 4 KiB requests stay preferred.
     pub numa_strict: bool,
@@ -27,9 +27,9 @@ pub struct AllocationConfig {
 
 #[derive(Debug, Clone)]
 pub enum PageSizePreference {
-    Any,                                    // Let backend decide
-    Prefer(PageSizeLevel),                  // Prefer but fall back
-    Require(PageSizeLevel),                 // Must have or fail
+    Any,                    // Let backend decide
+    Prefer(PageSizeLevel),  // Prefer but fall back
+    Require(PageSizeLevel), // Must have or fail
 }
 
 /// `largechunk` when it is not set. Stitched commits merge into one run per page size, so a
@@ -64,8 +64,11 @@ impl BlockSizing {
             return Err(format!("largefloor={} MiB must be a power of two from 16 MiB to 1 GiB", mib(large_floor)));
         }
         if !large_chunk.is_power_of_two() || large_chunk < large_floor {
-            return Err(format!("largechunk={} MiB must be a power of two of at least largefloor ({} MiB)",
-                               mib(large_chunk), mib(large_floor)));
+            return Err(format!(
+                "largechunk={} MiB must be a power of two of at least largefloor ({} MiB)",
+                mib(large_chunk),
+                mib(large_floor)
+            ));
         }
         Ok(Self { huge_chunk, large_chunk, large_floor })
     }
@@ -109,9 +112,7 @@ impl MemoryAllocator {
     pub fn new(backend_type: BackendType) -> Result<Self, String> {
         let backend: Arc<dyn Backend> = match backend_type {
             BackendType::Auto => Self::auto_detect_backend()?,
-            BackendType::Windows { large_pages } => {
-                Arc::new(WindowsBackend::new(large_pages))
-            }
+            BackendType::Windows { large_pages } => Arc::new(WindowsBackend::new(large_pages)),
         };
 
         Ok(Self { backend })

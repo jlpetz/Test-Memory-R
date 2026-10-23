@@ -22,8 +22,7 @@ pub(super) fn show(run: Run) {
         }
         Run::LeftOut { tests } => print!("{}", left_out(&tests)),
         Run::Channels { channels, cache_line } => {
-            println!("⚙  Memory Channels: {} (affects SimpleTest stride: [channels × param - 1] × {}B cache line)",
-                channels, cache_line);
+            println!("⚙  Memory Channels: {} (affects SimpleTest stride: [channels × param - 1] × {}B cache line)", channels, cache_line);
         }
         Run::TestPlan(report) => {
             print!("{}", report_text("test configuration report", |r| r.report_test_configuration(&report)));
@@ -34,8 +33,11 @@ pub(super) fn show(run: Run) {
         Run::Allocated(report) => print!("{}", report_text("the allocation report", |r| r.report_allocation(&report))),
         // The CLI reads the suite's progress on the monitor's ticks
         Run::SuiteStarted { progress: _, seed, transfer_bits, transfer_source } => {
-            console::print_above(&format!("🎲 Pattern seed {seed:#018x} (seed= replays it), transfer width {}",
-                transfer_bits.map_or("unknown: switch alternates 64 and 32 bits".to_string(), |bits| format!("{bits} bits ({transfer_source})"))));
+            console::print_above(&format!(
+                "🎲 Pattern seed {seed:#018x} (seed= replays it), transfer width {}",
+                transfer_bits
+                    .map_or("unknown: switch alternates 64 and 32 bits".to_string(), |bits| format!("{bits} bits ({transfer_source})"))
+            ));
         }
         Run::CycleStarted { cycle, limit } => console::print_above(&match limit {
             Some(limit) => format!("\n🔄 Starting test cycle {} of {}", cycle, limit),
@@ -51,8 +53,12 @@ pub(super) fn show(run: Run) {
             let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
             let errors_info = if op == SealOp::FinalCheck { format!("{errors} errors{}, ", bits.brief()) } else { String::new() };
             // The step report's form for an operation (TODO 90): time, data @ speed
-            console::print_above(&format!("{lead} ({}): {errors_info}{:.1}s, {gib:.2} GiB @ {:.0} MiB/s",
-                kernel, duration.as_secs_f64(), gib * 1024.0 / duration.as_secs_f64().max(1e-9)));
+            console::print_above(&format!(
+                "{lead} ({}): {errors_info}{:.1}s, {gib:.2} GiB @ {:.0} MiB/s",
+                kernel,
+                duration.as_secs_f64(),
+                gib * 1024.0 / duration.as_secs_f64().max(1e-9)
+            ));
         }
         Run::StepFinished(report) => console::print_block(&step_report(&report)),
         Run::LateWhea(events) => {
@@ -74,10 +80,7 @@ pub(super) fn show(run: Run) {
                 // Same form as the per-test topline. Either count alone fails the run: a WHEA event
                 // with `0 errors` is a fault that ECC corrected, or one raised during a test phase
                 // that does not verify — still not a stable configuration.
-                println!(
-                    "\n❌ Test suite failed: {} errors + {} WHEA{}",
-                    memory_errors, whea.total, whea.split_suffix()
-                );
+                println!("\n❌ Test suite failed: {} errors + {} WHEA{}", memory_errors, whea.total, whea.split_suffix());
             }
         }
         Run::FinalSummary(report) => print!("{}", report_text("final summary", |r| r.report_final_summary(&report))),
@@ -159,16 +162,15 @@ fn step_report(report: &StepReport) -> String {
 
         // Cycle limit indicator: RED if cycle limit caused stop, GREEN if didn't reach it
         let stop_indicator_cycles = if let Some(limit) = *cycle_limit {
-            if cycles_completed >= limit { "🔴" } else { "🟢" }  // RED when hit, GREEN when not
+            if cycles_completed >= limit { "🔴" } else { "🟢" } // RED when hit, GREEN when not
         } else {
-            "🟢"  // No limit = always green (can't hit what doesn't exist)
+            "🟢" // No limit = always green (can't hit what doesn't exist)
         };
 
         // Time limit indicator: red if time limit stopped us, green otherwise
         let stop_indicator_time = if *stopped_by_time { "🔴" } else { "🟢" };
 
-        format!(", Cycles {} {}/{}, Time Limit {}",
-                stop_indicator_cycles, cycles_completed, limit_str, stop_indicator_time)
+        format!(", Cycles {} {}/{}, Time Limit {}", stop_indicator_cycles, cycles_completed, limit_str, stop_indicator_time)
     } else {
         String::new()
     };
@@ -187,11 +189,7 @@ fn step_report(report: &StepReport) -> String {
     };
 
     // Calculate operations per second
-    let ops_per_sec = if *timed_secs > 0.0 {
-        s.operations as f64 / timed_secs
-    } else {
-        0.0
-    };
+    let ops_per_sec = if *timed_secs > 0.0 { s.operations as f64 / timed_secs } else { 0.0 };
 
     // The consolidated P50 and spread of a latency step
     let latency_info = match (s.latency_p50_ns, s.latency_spread) {
@@ -219,25 +217,31 @@ fn step_report(report: &StepReport) -> String {
     // The step's verdict and wall time, then its test's own figures, the work around it by
     // operation (TODO 90, `n/a` where it did none), and its config
     let mut text = String::new();
-    let _ = writeln!(text, "📊 Test report - Cycle {} - Step {} {}: {} {:.1}s, {} errors{}{} + {} WHEA{}{}",
-             cycle,
-             s.step,
-             s.label,
-             pass_indicator,
-             wall.as_secs_f64(),
-             s.errors,
-             s.failing_bits.brief(),
-             seal_info,
-             whea.total,
-             whea.split_suffix(),
-             cycles_info);
-    let _ = writeln!(text, "   Test: {:.1}s, {:.2} GiB @ {:.0} MiB/s, {} ops @ {} ops/s{}",
-             timed_secs,
-             s.bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0),
-             s.throughput_mib_s,
-             format_ops(s.operations),
-             format_ops(ops_per_sec as u64),
-             latency_info);
+    let _ = writeln!(
+        text,
+        "📊 Test report - Cycle {} - Step {} {}: {} {:.1}s, {} errors{}{} + {} WHEA{}{}",
+        cycle,
+        s.step,
+        s.label,
+        pass_indicator,
+        wall.as_secs_f64(),
+        s.errors,
+        s.failing_bits.brief(),
+        seal_info,
+        whea.total,
+        whea.split_suffix(),
+        cycles_info
+    );
+    let _ = writeln!(
+        text,
+        "   Test: {:.1}s, {:.2} GiB @ {:.0} MiB/s, {} ops @ {} ops/s{}",
+        timed_secs,
+        s.bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0),
+        s.throughput_mib_s,
+        format_ops(s.operations),
+        format_ops(ops_per_sec as u64),
+        latency_info
+    );
     let _ = writeln!(text, "   Intermediate: {}", s.ops.line());
 
     let reps_str = if config.test_reps != 1 || config.verify_reps != 1 || config.write_read_cycles != 1 {
@@ -245,12 +249,11 @@ fn step_report(report: &StepReport) -> String {
     } else {
         String::new()
     };
-    let _ = writeln!(text, "   Config: parameter={}, mode={}, extent={}, chunk={}{}",
-             config.parameter,
-             config.mode,
-             config.extent,
-             config.chunk,
-             reps_str);
+    let _ = writeln!(
+        text,
+        "   Config: parameter={}, mode={}, extent={}, chunk={}{}",
+        config.parameter, config.mode, config.extent, config.chunk, reps_str
+    );
 
     // Thread timing deviations, and a latency step's latencies
     text += &report_text("thread timing report", |r| r.report_thread_timing(threads));

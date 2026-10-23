@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use tmr::frontend::{ColumnAlignment, Renderer, Reporter, TableData};
 
 use crate::Result;
-use crate::table::{TableBuilder, Alignment};
+use crate::table::{Alignment, TableBuilder};
 
 #[cfg(test)]
 pub(crate) mod tests; // the Reporter's goldens, and the fixtures the setup goldens share
@@ -30,10 +30,7 @@ impl Default for ConsoleRenderer {
 
 impl ConsoleRenderer {
     pub fn new() -> Self {
-        Self {
-            use_colors: true,
-            text: String::new(),
-        }
+        Self { use_colors: true, text: String::new() }
     }
 
     /// What it rendered, as the console shows it
@@ -57,11 +54,11 @@ impl ConsoleRenderer {
         }
 
         match msg_type {
-            MessageType::Info => "\x1b[36m",     // Cyan
-            MessageType::Success => "\x1b[32m",   // Green
-            MessageType::Warning => "\x1b[33m",   // Yellow
-            MessageType::Error => "\x1b[31m",     // Red
-            MessageType::Heading => "\x1b[1m",    // Bold
+            MessageType::Info => "\x1b[36m",    // Cyan
+            MessageType::Success => "\x1b[32m", // Green
+            MessageType::Warning => "\x1b[33m", // Yellow
+            MessageType::Error => "\x1b[31m",   // Red
+            MessageType::Heading => "\x1b[1m",  // Bold
         }
     }
 

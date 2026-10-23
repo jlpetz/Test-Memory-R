@@ -151,7 +151,15 @@ pub fn probe(asked: Option<Mode>, arguments: bool) -> Facts {
             GetConsoleProcessList(&mut [0; 2]),
         )
     };
-    Facts { asked, arguments, stdout_redirected, console_window, console_processes, build: windows_build(), gui_built: cfg!(feature = "gui") }
+    Facts {
+        asked,
+        arguments,
+        stdout_redirected,
+        console_window,
+        console_processes,
+        build: windows_build(),
+        gui_built: cfg!(feature = "gui"),
+    }
 }
 
 /// Standard output of this type is redirected: a file or a pipe (`tmr.exe > out.txt`, a remote
@@ -219,8 +227,9 @@ mod tests {
     #[test]
     fn redirected_output_is_a_file_or_a_pipe() {
         use windows::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, FILE_TYPE_REMOTE, FILE_TYPE_UNKNOWN};
-        for (file_type, expected) in [(FILE_TYPE_DISK, true), (FILE_TYPE_PIPE, true), (FILE_TYPE_CHAR, false),
-                                      (FILE_TYPE_UNKNOWN, false), (FILE_TYPE_REMOTE, false)] {
+        for (file_type, expected) in
+            [(FILE_TYPE_DISK, true), (FILE_TYPE_PIPE, true), (FILE_TYPE_CHAR, false), (FILE_TYPE_UNKNOWN, false), (FILE_TYPE_REMOTE, false)]
+        {
             assert_eq!(redirected(file_type), expected, "{file_type:?}");
         }
     }
@@ -229,8 +238,15 @@ mod tests {
     /// console of tmr.exe's own), a shell, a redirected shell, WinRM (a pipe, a console with no
     /// window), and a shortcut with parameters on 26100 (no console)
     fn double_click() -> Facts {
-        Facts { asked: None, arguments: false, stdout_redirected: false, console_window: false, console_processes: 0,
-                build: Some(26100), gui_built: true }
+        Facts {
+            asked: None,
+            arguments: false,
+            stdout_redirected: false,
+            console_window: false,
+            console_processes: 0,
+            build: Some(26100),
+            gui_built: true,
+        }
     }
     fn own_console() -> Facts {
         Facts { console_window: true, console_processes: 1, build: Some(22631), ..double_click() }
@@ -257,15 +273,24 @@ mod tests {
             ("WinRM: a pipe and a console of no window", winrm, cli),
             ("a shell, with parameters", Facts { arguments: true, ..shell() }, cli),
             ("own console, with parameters", Facts { arguments: true, ..own_console() }, cli),
-            ("no console, with parameters: one opened for the CLI", Facts { arguments: true, ..double_click() },
-             launch(Mode::Cli, false, true, None)),
+            (
+                "no console, with parameters: one opened for the CLI",
+                Facts { arguments: true, ..double_click() },
+                launch(Mode::Cli, false, true, None),
+            ),
             ("no console, redirected: the output has a place", Facts { arguments: true, stdout_redirected: true, ..double_click() }, cli),
             ("--gui from a shell", Facts { asked: Some(Mode::Gui), arguments: true, ..shell() }, gui),
             ("--gui, redirected", Facts { asked: Some(Mode::Gui), stdout_redirected: true, ..shell() }, gui),
-            ("--gui in a console of its own: leaves it", Facts { asked: Some(Mode::Gui), ..own_console() },
-             launch(Mode::Gui, true, false, None)),
-            ("--cli on a double-click: a console opened for it", Facts { asked: Some(Mode::Cli), ..double_click() },
-             launch(Mode::Cli, false, true, None)),
+            (
+                "--gui in a console of its own: leaves it",
+                Facts { asked: Some(Mode::Gui), ..own_console() },
+                launch(Mode::Gui, true, false, None),
+            ),
+            (
+                "--cli on a double-click: a console opened for it",
+                Facts { asked: Some(Mode::Cli), ..double_click() },
+                launch(Mode::Cli, false, true, None),
+            ),
             ("--cli in a console of its own", Facts { asked: Some(Mode::Cli), ..own_console() }, cli),
         ];
         for (case, facts, expected) in cases {
@@ -286,21 +311,33 @@ mod tests {
             ("--gui on Server 2022", server_2022(Facts { asked: Some(Mode::Gui), ..shell() }), old(Some(20348))),
             ("a shell on Server 2022", server_2022(shell()), launch(Mode::Cli, false, false, None)),
             ("an unknown build", Facts { build: None, ..own_console() }, old(None)),
-            ("--gui without the window", without(Facts { asked: Some(Mode::Gui), ..shell() }),
-             launch(Mode::Cli, false, false, Some(Note::NotBuilt))),
+            (
+                "--gui without the window",
+                without(Facts { asked: Some(Mode::Gui), ..shell() }),
+                launch(Mode::Cli, false, false, Some(Note::NotBuilt)),
+            ),
             ("a double-click without the window", without(own_console()), launch(Mode::Cli, false, false, None)),
-            ("no console without the window: as launched", without(Facts { arguments: true, ..double_click() }),
-             launch(Mode::Cli, false, false, None)),
+            (
+                "no console without the window: as launched",
+                without(Facts { arguments: true, ..double_click() }),
+                launch(Mode::Cli, false, false, None),
+            ),
         ];
         for (case, facts, expected) in cases {
             assert_eq!(decide(&facts), expected, "{case}");
         }
-        assert_eq!(Note::OldWindows(Some(20348)).to_string(),
-                   "Note: the window needs Windows build 22000 or later (Windows 11, Server 2025), and this is 20348: running the CLI");
-        assert_eq!(Note::OldWindows(None).to_string(),
-                   "Note: the window needs Windows build 22000 or later (Windows 11, Server 2025), and this is unknown: running the CLI");
-        assert_eq!(Note::NotBuilt.to_string(),
-                   "Note: this tmr.exe was built without the window (cargo build --features tmr-app/gui): running the CLI");
+        assert_eq!(
+            Note::OldWindows(Some(20348)).to_string(),
+            "Note: the window needs Windows build 22000 or later (Windows 11, Server 2025), and this is 20348: running the CLI"
+        );
+        assert_eq!(
+            Note::OldWindows(None).to_string(),
+            "Note: the window needs Windows build 22000 or later (Windows 11, Server 2025), and this is unknown: running the CLI"
+        );
+        assert_eq!(
+            Note::NotBuilt.to_string(),
+            "Note: this tmr.exe was built without the window (cargo build --features tmr-app/gui): running the CLI"
+        );
     }
 
     /// The manifest asks only for the detached console, and doesn't carry the marker Reactor reads

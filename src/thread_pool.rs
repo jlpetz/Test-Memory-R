@@ -1,16 +1,16 @@
-use crate::{ErrorMode, AllocationBlock};
-use crate::tests::{TestMemoryConfig, TestProgress};
-use crate::runner::{TestFunction, ThreadPriority};
-use crate::cpu_topology::get_numa_node_for_cpu;
-use crate::latency_tests::LatencyTestStats;
-use crate::seal::SealKernel;
-use crate::failing_bits::FailingBits;
-use crate::tests::Stage;
 use std::collections::HashMap;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Barrier};
-use std::sync::mpsc::{channel, Sender, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use crate::cpu_topology::get_numa_node_for_cpu;
+use crate::failing_bits::FailingBits;
+use crate::latency_tests::LatencyTestStats;
+use crate::runner::{TestFunction, ThreadPriority};
+use crate::seal::SealKernel;
+use crate::tests::{Stage, TestMemoryConfig, TestProgress};
+use crate::{AllocationBlock, ErrorMode};
 
 /// A worker thread's CPU assignment: `(thread_id, logical_cpu, numa_node)`.
 pub type CpuAssignment = (usize, usize, u32);
@@ -18,9 +18,9 @@ pub type CpuAssignment = (usize, usize, u32);
 #[derive(Debug)]
 pub enum WorkItem {
     RunTest {
-        test_name: &'static str,  // Keep as static throughout
+        test_name: &'static str, // Keep as static throughout
         test_func: TestFunction,
-        test_config: Box<TestMemoryConfig>,  // Boxed: the variant would otherwise be ~300 bytes against a unit `Shutdown`
+        test_config: Box<TestMemoryConfig>, // Boxed: the variant would otherwise be ~300 bytes against a unit `Shutdown`
         error_mode: ErrorMode,
         barrier: Arc<Barrier>,
         /// Where the step is in the run, for its error lines: `step 7 (Test 12, Mem-SimpleV2-512_A), cycle 2`
@@ -66,11 +66,11 @@ pub struct WorkResult {
     /// when the test didn't run.
     pub timed: Option<Duration>,
     pub total_errors: u64,
-    pub total_operations: u64,  // Add operations tracking from runner.rs
-    pub cycles_completed: u32,  // Cycles completed (from last block processed)
-    pub cycle_limit: Option<u32>,  // Planned cycles (None = unlimited)
-    pub stopped_by_time_limit: bool,  // True if stopped due to time limit
-    pub latency_stats: Option<LatencyTestStats>,  // Set for latency tests - includes percentiles
+    pub total_operations: u64,                   // Add operations tracking from runner.rs
+    pub cycles_completed: u32,                   // Cycles completed (from last block processed)
+    pub cycle_limit: Option<u32>,                // Planned cycles (None = unlimited)
+    pub stopped_by_time_limit: bool,             // True if stopped due to time limit
+    pub latency_stats: Option<LatencyTestStats>, // Set for latency tests - includes percentiles
     /// Bad words the seal checks found during the step: before its chunks, or before a step that
     /// never takes the seal overwrote them (TODO 74). For a final check, its errors.
     pub seal_errors: u64,
@@ -108,42 +108,34 @@ pub struct ThreadPool {
 
 impl ThreadPool {
     pub fn new(
-        mut thread_blocks: HashMap<usize, Vec<AllocationBlock>>,
-        pin_threads: bool,
-        thread_priority: ThreadPriority,
-        thread_count: usize,
+        mut thread_blocks: HashMap<usize, Vec<AllocationBlock>>, pin_threads: bool, thread_priority: ThreadPriority, thread_count: usize,
         cpu_list: Option<&[usize]>,
     ) -> (Self, Receiver<WorkResult>) {
         let (result_sender, result_receiver) = channel();
         let mut senders = Vec::new();
         let mut workers = Vec::new();
         let mut cpu_assignments = Vec::new();
-        
+
         // Get CPU assignments from provided list or calculate
-        let cpu_list_final: Vec<usize> = if let Some(list) = cpu_list {
-            list.to_vec()
-        } else {
-            (0..thread_count).collect()
-        };
+        let cpu_list_final: Vec<usize> = if let Some(list) = cpu_list { list.to_vec() } else { (0..thread_count).collect() };
 
         // One live-progress slot per worker, indexed by thread_id. They outlive every test, so the
         // progress ticker can read the running test's figures while its workers publish them.
-        let live: Arc<[TestProgress]> =
-            (0..cpu_list_final.len().min(thread_count)).map(|_| TestProgress::new()).collect();
-        
+        let live: Arc<[TestProgress]> = (0..cpu_list_final.len().min(thread_count)).map(|_| TestProgress::new()).collect();
+
         // Create persistent worker threads
         for (thread_id, &cpu_id) in cpu_list_final.iter().enumerate().take(thread_count) {
             let (work_sender, work_receiver) = channel();
             senders.push(work_sender.clone());
             let numa_node = get_numa_node_for_cpu(cpu_id);
             cpu_assignments.push((thread_id, cpu_id, numa_node));
-            
+
             // Take ownership of this thread's blocks
             let blocks = thread_blocks.remove(&thread_id).unwrap_or_default();
-            
+
             let result_sender = result_sender.clone();
             let live = Arc::clone(&live);
-                        
+
             let handle = thread::spawn(move || {
                 // Pin thread to CPU once at creation
                 if pin_threads {
@@ -158,11 +150,11 @@ impl ThreadPool {
                         }
                     }
                 }
-                
+
                 if let Err(e) = thread_priority.apply() {
                     log::warn!("Thread {} priority not set: {}", thread_id, e);
                 }
-                
+
                 let mut context = WorkerContext {
                     thread_id,
                     cpu_id,
@@ -172,17 +164,17 @@ impl ThreadPool {
                     live,
                     unsealed: usize::MAX,
                 };
-                
+
                 // Worker loop - process work items until shutdown
                 worker_thread_loop(&mut context);
-                
+
                 // Return the allocated blocks when thread exits
                 context.allocated_blocks
             });
 
             workers.push(handle);
         }
-        
+
         (ThreadPool { workers, senders, cpu_assignments, live }, result_receiver)
     }
 
@@ -195,10 +187,10 @@ impl ThreadPool {
     pub fn live_progress(&self) -> Arc<[TestProgress]> {
         Arc::clone(&self.live)
     }
-    
+
     pub fn execute_test(
         &self,
-        test_name: &'static str,  // Must be static for WorkItem
+        test_name: &'static str, // Must be static for WorkItem
         test_func: &TestFunction,
         test_config: &TestMemoryConfig,
         error_mode: ErrorMode,
@@ -210,7 +202,7 @@ impl ThreadPool {
         // Send work to all threads
         for sender in &self.senders {
             let work_item = WorkItem::RunTest {
-                test_name,  // Already &'static str
+                test_name, // Already &'static str
                 test_func: test_func.clone(),
                 test_config: Box::new(test_config.clone()),
                 error_mode,
@@ -254,12 +246,12 @@ impl ThreadPool {
     // Modified shutdown to return assignments along with blocks
     pub fn shutdown(self) -> (HashMap<usize, Vec<AllocationBlock>>, Vec<CpuAssignment>) {
         let cpu_assignments = self.cpu_assignments;
-        
+
         // Send shutdown signal to all workers
         for sender in &self.senders {
             let _ = sender.send(WorkItem::Shutdown);
         }
-        
+
         // Wait for all workers and collect their allocated blocks
         let mut thread_blocks = HashMap::new();
         for (idx, worker) in self.workers.into_iter().enumerate() {
@@ -267,7 +259,7 @@ impl ThreadPool {
                 thread_blocks.insert(idx, blocks);
             }
         }
-        
+
         (thread_blocks, cpu_assignments)
     }
 }
@@ -275,7 +267,9 @@ impl ThreadPool {
 fn handle_test_errors(stats: &crate::tests::TestStats, error_mode: ErrorMode, test_name: &str) -> Result<(), String> {
     match error_mode {
         ErrorMode::Panic => panic!("Memory error detected in {} (see logs)", test_name),
-        ErrorMode::Halt => return Err(format!("Test halted due to {} errors + {} seal in {}", stats.error_count, stats.seal_errors, test_name)),
+        ErrorMode::Halt => {
+            return Err(format!("Test halted due to {} errors + {} seal in {}", stats.error_count, stats.seal_errors, test_name));
+        }
         ErrorMode::Log => {
             log::error!(
                 "[Thread {}] {} errors + {} seal detected in {} (continuing)",
@@ -292,8 +286,9 @@ fn handle_test_errors(stats: &crate::tests::TestStats, error_mode: ErrorMode, te
 /// Before a step in a sealed run (TODO 74), on the worker's span: a step that takes the seal gets
 /// back the seal on what the steps before it that don't left unsealed; one that doesn't has the
 /// sealed part of what it will overwrite checked first. Returns the bad words that check found.
-pub(crate) fn seal_before_step(blocks: &[AllocationBlock], config: &TestMemoryConfig, test_name: &str,
-                    progress: &TestProgress, unsealed: &mut usize) -> (u64, crate::ops::OpTally) {
+pub(crate) fn seal_before_step(
+    blocks: &[AllocationBlock], config: &TestMemoryConfig, test_name: &str, progress: &TestProgress, unsealed: &mut usize,
+) -> (u64, crate::ops::OpTally) {
     let seal = config.seal;
     let mut ops = crate::ops::OpTally::default();
     if !seal.on {
@@ -346,8 +341,9 @@ pub(crate) fn seal_before_step(blocks: &[AllocationBlock], config: &TestMemoryCo
 
 /// A run-wide seal stage on the worker's whole span, in 64 MiB pieces so Ctrl+C and the ticker see
 /// it move (TODO 74).
-fn run_seal_stage(blocks: &[AllocationBlock], op: SealOp, kernel: SealKernel, progress: &TestProgress,
-                  unsealed: &mut usize, thread_id: usize) -> WorkResult {
+fn run_seal_stage(
+    blocks: &[AllocationBlock], op: SealOp, kernel: SealKernel, progress: &TestProgress, unsealed: &mut usize, thread_id: usize,
+) -> WorkResult {
     const PIECE: usize = 64 << 20;
     let start = Instant::now();
     crate::tests::reset_rescan_counts();
@@ -422,25 +418,24 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                 let (stats, latency_stats) = match &test_func {
                     crate::runner::TestFunction::MultiBlock(f) => {
                         // Regular bandwidth test - returns TestStats only
-                        let stats = unsafe {
-                            f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(progress))
-                        };
+                        let stats =
+                            unsafe { f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(progress)) };
                         (stats, None)
                     }
                     crate::runner::TestFunction::Latency(f) => {
                         // Latency test - returns LatencyTestStats with percentiles
-                        let latency_stats = unsafe {
-                            f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(progress))
-                        };
+                        let latency_stats =
+                            unsafe { f(blocks_slice, context.thread_id, error_mode, &test_config.timing, &test_config, Some(progress)) };
                         (latency_stats.basic_stats.clone(), Some(latency_stats))
                     }
                 };
 
                 // Handle any errors from the test, the seal's around its chunks too
                 if stats.error_count + stats.seal_errors > 0
-                    && let Err(e) = handle_test_errors(&stats, error_mode, test_name) {
-                        log::error!("[Thread {} on CPU {}] {}", context.thread_id, context.cpu_id, e);
-                    }
+                    && let Err(e) = handle_test_errors(&stats, error_mode, test_name)
+                {
+                    log::error!("[Thread {} on CPU {}] {}", context.thread_id, context.cpu_id, e);
+                }
 
                 let bits = crate::tests::take_failing_bits();
                 let result = WorkResult {
@@ -453,7 +448,7 @@ fn worker_thread_loop(context: &mut WorkerContext) {
                     cycles_completed: stats.cycles_completed,
                     cycle_limit: stats.cycles_planned,
                     stopped_by_time_limit: stats.stopped_by_time_limit,
-                    latency_stats,  // Include detailed latency stats when available
+                    latency_stats, // Include detailed latency stats when available
                     seal_errors: stats.seal_errors,
                     alarms: stats.alarms,
                     not_reproduced: stats.not_reproduced,

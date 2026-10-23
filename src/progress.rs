@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::{Duration, Instant};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::frontend::Frontend;
 use crate::tests::TestProgress;
@@ -202,13 +202,7 @@ impl ProgressTracker {
     pub fn new() -> Self {
         Self {
             suite: OnceLock::new(),
-            position: Mutex::new(Position {
-                cycle: 0,
-                cycle_start: Instant::now(),
-                tests_done: 0,
-                test: None,
-                errors: 0,
-            }),
+            position: Mutex::new(Position { cycle: 0, cycle_start: Instant::now(), tests_done: 0, test: None, errors: 0 }),
             finished: AtomicBool::new(false),
             // Inert until `whea.start()` is called by the runner — constructing a tracker must not
             // have the side effect of opening an event-log subscription.
@@ -224,12 +218,7 @@ impl ProgressTracker {
     /// measured from the first test cycle — the same span the final summary reports — rather than
     /// from before allocation.
     pub(crate) fn begin_suite(
-        &self,
-        start: Instant,
-        cycle_limit: Option<u32>,
-        time_limit: Option<Duration>,
-        tests_per_cycle: u64,
-        workers: Arc<[TestProgress]>,
+        &self, start: Instant, cycle_limit: Option<u32>, time_limit: Option<Duration>, tests_per_cycle: u64, workers: Arc<[TestProgress]>,
     ) {
         let _ = self.suite.set(SuitePlan { start, cycle_limit, time_limit, tests_per_cycle, workers });
     }
@@ -245,28 +234,14 @@ impl ProgressTracker {
     /// duration limit, if it has one; `publishes` is whether the test reports live figures.
     /// Must be called before the test is dispatched: it zeroes the workers' live slots, which is
     /// only safe while they are idle.
-    pub(crate) fn start_test(
-        &self,
-        number: usize,
-        name: &str,
-        start: Instant,
-        time_limit: Option<Duration>,
-        publishes: bool,
-    ) {
+    pub(crate) fn start_test(&self, number: usize, name: &str, start: Instant, time_limit: Option<Duration>, publishes: bool) {
         let mut position = self.position();
         if let Some(plan) = self.suite.get() {
             for slot in plan.workers.iter() {
                 slot.reset();
             }
         }
-        position.test = Some(RunningTest {
-            number: number as u64,
-            name: name.to_string(),
-            start,
-            time_limit,
-            publishes,
-            finished: false,
-        });
+        position.test = Some(RunningTest { number: number as u64, name: name.to_string(), start, time_limit, publishes, finished: false });
     }
 
     /// Record a finished test's errors, reported by its workers' results.
@@ -352,7 +327,8 @@ impl ProgressTracker {
 /// boundary of their own loop, so this lags the work by up to one publish.
 fn live_figures(workers: &[TestProgress]) -> LiveFigures {
     let mut live = LiveFigures {
-        stage: workers.iter()
+        stage: workers
+            .iter()
             .map(|slot| crate::tests::Stage::from_u8(slot.stage.load(Ordering::Relaxed)))
             .find(|&stage| stage != crate::tests::Stage::Testing),
         ..Default::default()
@@ -422,15 +398,26 @@ mod tests {
         workers[1].set_stage(Stage::CheckingSeal);
 
         let running = progress.snapshot().expect("the suite has begun");
-        assert_eq!((running.cycle, running.cycle_limit, running.time_limit, running.tests_done, running.tests_per_cycle),
-                   (1, Some(2), Some(Duration::from_secs(600)), 0, 4));
+        assert_eq!(
+            (running.cycle, running.cycle_limit, running.time_limit, running.tests_done, running.tests_per_cycle),
+            (1, Some(2), Some(Duration::from_secs(600)), 0, 4)
+        );
         assert_eq!((running.finished_errors, running.live_errors, running.whea.total), (0, 3, 0));
         let test = running.test.as_ref().expect("a test is running");
-        assert_eq!((test.number, test.name.as_str(), test.time_limit, test.finished, test.publishes),
-                   (3, "Mem-StuckBit256", Some(Duration::from_secs(60)), false, true));
-        assert!(running.runtime >= Duration::from_secs(60) && (Duration::from_secs(5)..running.runtime).contains(&test.elapsed),
-                "the suite's time and the test's own: {:?}, {:?}", running.runtime, test.elapsed);
-        assert_eq!((test.live.published, test.live.bytes, test.live.errors, test.live.stage), (true, 1 << 20, 3, Some(Stage::CheckingSeal)));
+        assert_eq!(
+            (test.number, test.name.as_str(), test.time_limit, test.finished, test.publishes),
+            (3, "Mem-StuckBit256", Some(Duration::from_secs(60)), false, true)
+        );
+        assert!(
+            running.runtime >= Duration::from_secs(60) && (Duration::from_secs(5)..running.runtime).contains(&test.elapsed),
+            "the suite's time and the test's own: {:?}, {:?}",
+            running.runtime,
+            test.elapsed
+        );
+        assert_eq!(
+            (test.live.published, test.live.bytes, test.live.errors, test.live.stage),
+            (true, 1 << 20, 3, Some(Stage::CheckingSeal))
+        );
         assert_eq!(test.live.bytes_per_sec, 2.0 * (1 << 20) as f64, "1 MiB in half a second");
 
         progress.complete_test(3);

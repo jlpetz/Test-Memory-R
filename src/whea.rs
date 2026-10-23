@@ -53,14 +53,13 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_EVT_MAX_INSERTS_REACHED,
-    ERROR_EVT_UNRESOLVED_PARAMETER_INSERT, ERROR_EVT_UNRESOLVED_VALUE_INSERT,
-    ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_OPERATION, ERROR_NO_MORE_ITEMS, ERROR_TIMEOUT, HANDLE,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_EVT_MAX_INSERTS_REACHED, ERROR_EVT_UNRESOLVED_PARAMETER_INSERT,
+    ERROR_EVT_UNRESOLVED_VALUE_INSERT, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_OPERATION, ERROR_NO_MORE_ITEMS, ERROR_TIMEOUT, HANDLE,
     WAIT_OBJECT_0, WIN32_ERROR,
 };
 use windows::Win32::System::EventLog::{
-    EVT_HANDLE, EvtClose, EvtFormatMessage, EvtFormatMessageEvent, EvtNext, EvtOpenPublisherMetadata,
-    EvtRender, EvtRenderEventXml, EvtSubscribe, EvtSubscribeToFutureEvents,
+    EVT_HANDLE, EvtClose, EvtFormatMessage, EvtFormatMessageEvent, EvtNext, EvtOpenPublisherMetadata, EvtRender, EvtRenderEventXml,
+    EvtSubscribe, EvtSubscribeToFutureEvents,
 };
 use windows::Win32::System::Threading::{CreateEventW, ResetEvent, SetEvent, WaitForSingleObject};
 use windows::core::{HRESULT, PCWSTR};
@@ -140,19 +139,12 @@ impl WheaCounts {
     /// table the header is the label, so cells use `Display` instead. Both parts are always given
     /// when there is anything to split, so the reader never has to infer the missing one.
     pub fn split_suffix(&self) -> String {
-        if self.total == 0 {
-            String::new()
-        } else {
-            format!(" ({}C/{}UC)", self.corrected, self.uncorrected())
-        }
+        if self.total == 0 { String::new() } else { format!(" ({}C/{}UC)", self.corrected, self.uncorrected()) }
     }
 
     /// Difference between two snapshots (`self` later than `earlier`).
     pub fn since(&self, earlier: &WheaCounts) -> WheaCounts {
-        WheaCounts {
-            total: self.total.saturating_sub(earlier.total),
-            corrected: self.corrected.saturating_sub(earlier.corrected),
-        }
+        WheaCounts { total: self.total.saturating_sub(earlier.total), corrected: self.corrected.saturating_sub(earlier.corrected) }
     }
 }
 
@@ -415,8 +407,7 @@ impl WheaMonitor {
                         "WHEA drain called EvtNext without a signal (ERROR_INVALID_OPERATION) - \
                          signal handling bug, WHEA counts may be incomplete"
                     );
-                } else if !empty && !no_signal && !self.drain_error_logged.swap(true, Ordering::Relaxed)
-                {
+                } else if !empty && !no_signal && !self.drain_error_logged.swap(true, Ordering::Relaxed) {
                     log::warn!("WHEA drain failed, counts may be incomplete: {}", e);
                 }
 
@@ -469,10 +460,7 @@ impl WheaMonitor {
         // Past the cap, keep counting but stop describing — see `MAX_DESCRIBED`.
         if seq > MAX_DESCRIBED {
             if seq == MAX_DESCRIBED + 1 {
-                log::warn!(
-                    "WHEA: over {} events this run; further descriptions suppressed (counts continue)",
-                    MAX_DESCRIBED
-                );
+                log::warn!("WHEA: over {} events this run; further descriptions suppressed (counts continue)", MAX_DESCRIBED);
             }
             return;
         }
@@ -495,10 +483,7 @@ impl WheaMonitor {
 
     /// Cumulative counts for the run so far.
     pub fn counts(&self) -> WheaCounts {
-        WheaCounts {
-            total: self.total.load(Ordering::Relaxed),
-            corrected: self.corrected.load(Ordering::Relaxed),
-        }
+        WheaCounts { total: self.total.load(Ordering::Relaxed), corrected: self.corrected.load(Ordering::Relaxed) }
     }
 
     /// Removes and returns descriptions not yet shown on the console.
@@ -544,18 +529,17 @@ fn open_subscription() -> Result<Subscription, String> {
         // event is consumed by whichever one peeks first, starving the other of its drain. `poll`
         // resets it explicitly instead. initial_state = TRUE so the first poll drains unconditionally
         // and cannot miss anything queued between here and then. See `WheaMonitor::poll`.
-        let signal = CreateEventW(None, true, true, PCWSTR::null())
-            .map_err(|e| format!("CreateEventW failed: {}", e))?;
+        let signal = CreateEventW(None, true, true, PCWSTR::null()).map_err(|e| format!("CreateEventW failed: {}", e))?;
 
         let subscription = match EvtSubscribe(
-            None,                                 // local session
-            Some(signal),                         // signal-event form, not the callback form
-            PCWSTR::from_raw(channel.as_ptr()),   // channel: System
-            PCWSTR::from_raw(query.as_ptr()),     // XPath filter on the WHEA provider
-            None,                                 // no bookmark
-            None,                                 // no callback context
-            None,                                 // no callback
-            EvtSubscribeToFutureEvents.0,         // only events from now on
+            None,                               // local session
+            Some(signal),                       // signal-event form, not the callback form
+            PCWSTR::from_raw(channel.as_ptr()), // channel: System
+            PCWSTR::from_raw(query.as_ptr()),   // XPath filter on the WHEA provider
+            None,                               // no bookmark
+            None,                               // no callback context
+            None,                               // no callback
+            EvtSubscribeToFutureEvents.0,       // only events from now on
         ) {
             Ok(handle) => handle,
             Err(e) => {
@@ -627,16 +611,7 @@ fn render_xml(event: EVT_HANDLE) -> Option<String> {
     // SAFETY: the buffer pointer is passed directly as a call argument and the `Vec` outlives the
     // call; `capacity_bytes` is derived from that same `Vec`, so wevtapi cannot overrun it.
     unsafe {
-        EvtRender(
-            None,
-            event,
-            EvtRenderEventXml.0,
-            capacity_bytes,
-            Some(buffer.as_mut_ptr().cast()),
-            &mut used,
-            &mut properties,
-        )
-        .ok()?;
+        EvtRender(None, event, EvtRenderEventXml.0, capacity_bytes, Some(buffer.as_mut_ptr().cast()), &mut used, &mut properties).ok()?;
     }
 
     let chars = (used as usize / std::mem::size_of::<u16>()).min(buffer.len());
@@ -687,10 +662,7 @@ fn format_message(metadata: EVT_HANDLE, event: EVT_HANDLE) -> Option<String> {
         }
 
         // Grow once if that is all that was wrong. `used` is a character count here.
-        let needs_more = result
-            .as_ref()
-            .err()
-            .is_some_and(|e| is_win32_error(e, ERROR_INSUFFICIENT_BUFFER));
+        let needs_more = result.as_ref().err().is_some_and(|e| is_win32_error(e, ERROR_INSUFFICIENT_BUFFER));
         if !needs_more || used as usize <= buffer.len() || used as usize > MAX_CHARS {
             return None;
         }
@@ -811,10 +783,7 @@ mod tests {
     #[test]
     fn collapses_multiline_messages() {
         let text = "A corrected hardware error has occurred.\r\n\r\nReported by component: Memory\n";
-        assert_eq!(
-            collapse_whitespace(text),
-            "A corrected hardware error has occurred. Reported by component: Memory"
-        );
+        assert_eq!(collapse_whitespace(text), "A corrected hardware error has occurred. Reported by component: Memory");
     }
 
     #[test]

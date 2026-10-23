@@ -15,13 +15,13 @@ pub struct BlockInfo {
 pub struct EnhancedMemoryLayout {
     /// Detailed system memory information
     pub system_memory_info: crate::memory::allocation_strategy::SystemMemoryInfo,
-    
+
     /// Allocation calculation result
     pub allocation_result: crate::memory::allocation_strategy::AllocationResult,
-    
+
     /// Per-thread memory blocks
     pub blocks: Vec<BlockInfo>,
-    
+
     /// Strategy used to create this layout
     pub strategy: crate::memory::allocation_strategy::EnhancedMemoryStrategy,
 }
@@ -36,13 +36,11 @@ impl EnhancedMemoryLayout {
     pub fn log_thread_layout(&self) {
         log::info!("🧵 Thread Memory Layout:");
         log::info!("  Total threads: {}", self.blocks.len());
-        
+
         if !self.blocks.is_empty() {
             let size_gib = bytes_to_gib_f64(self.blocks[0].size_bytes as u64);
             log::info!("  Allocation per thread: {:.2} GiB", size_gib);
-            log::info!("  Total planned allocation: {:.2} GiB", 
-                      size_gib * self.blocks.len() as f64);
+            log::info!("  Total planned allocation: {:.2} GiB", size_gib * self.blocks.len() as f64);
         }
     }
-
 }

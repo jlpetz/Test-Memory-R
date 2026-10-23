@@ -1,81 +1,48 @@
-use crate::{ErrorMode, EnhancedMemoryLayout, ProgressTracker, BlockInfo};
-use crate::constants::MB;
-use crate::tests::{ExtentMode, ChunkMode, CacheTarget};
-use crate::MemoryAllocationConfig;
-use globset::{Glob, GlobMatcher};
-use crate::tests::{TestStats, TestMemoryConfig, TestTiming, TestProgress};
-use crate::tests::{
-    stuck_bit_test_128_multi, stuck_bit_test_256_multi, stuck_bit_test_512_multi,
-    stuck_bit_test_auto_multi,
-    refresh_stable_128_multi, refresh_stable_256_multi, refresh_stable_512_multi,
-    refresh_stable_auto_multi,
-    simple_test_nt_128_multi, simple_test_nt_256_multi, simple_test_nt_512_multi,
-    simple_test_nt_auto_multi,
-    cache_busting_multi,
-    random_torture_multi,
-    stride_access_multi, block_move_multi, moving_inversions_multi, modulo_x_multi, sequence_auto_multi,
-    // v2 tests
-    simple_test_v2_128_multi, simple_test_v2_256_multi, simple_test_v2_512_multi,
-    simple_test_v2_auto_multi,
-    mirror_move_v2_128_multi, mirror_move_v2_256_multi, mirror_move_v2_512_multi,
-    mirror_move_v2_auto_multi,
-    bench_init_multi,
-    bench_verify_multi,
-};
-use crate::latency_tests::{
-    read_latency_multi, write_latency_multi, copy_latency_multi,  // Full latency tests with percentiles
-    LatencyTestStats,
-};
-use crate::latency_tests_v2::{
-    // Layout A read (1 chain step + 1 SIMD-width data load per iteration)
-    lat_v2_read_128_multi, lat_v2_read_256_multi, lat_v2_read_512_multi, lat_v2_read_auto_multi,
-    // Layout A write (1 chain step + 1 SIMD-width cached store per iteration)
-    lat_v2_write_128_multi, lat_v2_write_256_multi, lat_v2_write_512_multi, lat_v2_write_auto_multi,
-    // Layout A copy (1 chain step + 1 SIMD-width read-modify-write per iteration)
-    lat_v2_copy_128_multi, lat_v2_copy_256_multi, lat_v2_copy_512_multi, lat_v2_copy_auto_multi,
-    // Layout B packed read (1 chain step + 6 SIMD-width data loads per iteration)
-    lat_v2p_read_128_multi, lat_v2p_read_256_multi, lat_v2p_read_512_multi, lat_v2p_read_auto_multi,
-    // Layout B packed write (1 chain step + 6 SIMD-width cached stores per iteration)
-    lat_v2p_write_128_multi, lat_v2p_write_256_multi, lat_v2p_write_512_multi, lat_v2p_write_auto_multi,
-    // Layout B packed copy (1 chain step + 6 SIMD-width read-modify-write per iteration)
-    lat_v2p_copy_128_multi, lat_v2p_copy_256_multi, lat_v2p_copy_512_multi, lat_v2p_copy_auto_multi,
-    // Layout B packed write FULL — writes entire 64B cache line per cell at every width
-    lat_v2p_write_full_128_multi, lat_v2p_write_full_256_multi, lat_v2p_write_full_512_multi, lat_v2p_write_full_auto_multi,
-    // Layout B packed copy FULL — RMW entire 64B cache line per cell at every width
-    lat_v2p_copy_full_128_multi, lat_v2p_copy_full_256_multi, lat_v2p_copy_full_512_multi, lat_v2p_copy_full_auto_multi,
-    // NT-write saturation PoC (Scalar = 8-byte MOVNTI, validates WCB-fill hypothesis)
-    lat_ntw_write_scalar_multi,
-    lat_ntw_write_128_multi, lat_ntw_write_256_multi, lat_ntw_write_512_multi, lat_ntw_write_auto_multi,
-};
-use crate::bandwidth_tests::{
-    spd_read_auto_multi, spd_write_auto_multi, spd_write_nt_auto_multi,
-    spd_copy_auto_multi, spd_copy_nt_auto_multi,
-    // Concrete SIMD variants for auto-dispatch resolution
-    spd_read_128_multi, spd_read_256_multi, spd_read_512_multi,
-    spd_write_128_multi, spd_write_256_multi, spd_write_512_multi,
-    spd_write_nt_128_multi, spd_write_nt_256_multi, spd_write_nt_512_multi,
-    spd_copy_128_multi, spd_copy_256_multi, spd_copy_512_multi,
-    spd_copy_nt_128_multi, spd_copy_nt_256_multi, spd_copy_nt_512_multi,
-};
-use crate::cache::CacheInfo;
-use crate::reporting::models::{
-    LatencyTestSummaryReport, LatencyLevelSummary, LatencyThreadResult, LatencyPercentiles,
-};
-use crate::progress::{monitor, RunOutcome};
-use crate::frontend::{CpuPerformanceSummary, Frontend, NotRun, Run, StepConfigLine, StepReport};
-use crate::results::TestRunResult;
-use crate::memory::MemoryBuffer;
-use crate::{MemoryBackend, RuntimeConfig};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use std::sync::mpsc::Receiver;
+use globset::{Glob, GlobMatcher};
 
+use crate::bandwidth_tests::{
+    spd_copy_128_multi, spd_copy_256_multi, spd_copy_512_multi, spd_copy_auto_multi, spd_copy_nt_128_multi, spd_copy_nt_256_multi,
+    spd_copy_nt_512_multi, spd_copy_nt_auto_multi, spd_read_128_multi, spd_read_256_multi, spd_read_512_multi, spd_read_auto_multi,
+    spd_write_128_multi, spd_write_256_multi, spd_write_512_multi, spd_write_auto_multi, spd_write_nt_128_multi, spd_write_nt_256_multi,
+    spd_write_nt_512_multi, spd_write_nt_auto_multi,
+};
+use crate::cache::CacheInfo;
+use crate::constants::MB;
+use crate::frontend::{CpuPerformanceSummary, Frontend, NotRun, Run, StepConfigLine, StepReport};
+use crate::latency_tests::{LatencyTestStats, copy_latency_multi, read_latency_multi, write_latency_multi};
+use crate::latency_tests_v2::{
+    lat_ntw_write_128_multi, lat_ntw_write_256_multi, lat_ntw_write_512_multi, lat_ntw_write_auto_multi, lat_ntw_write_scalar_multi,
+    lat_v2_copy_128_multi, lat_v2_copy_256_multi, lat_v2_copy_512_multi, lat_v2_copy_auto_multi, lat_v2_read_128_multi,
+    lat_v2_read_256_multi, lat_v2_read_512_multi, lat_v2_read_auto_multi, lat_v2_write_128_multi, lat_v2_write_256_multi,
+    lat_v2_write_512_multi, lat_v2_write_auto_multi, lat_v2p_copy_128_multi, lat_v2p_copy_256_multi, lat_v2p_copy_512_multi,
+    lat_v2p_copy_auto_multi, lat_v2p_copy_full_128_multi, lat_v2p_copy_full_256_multi, lat_v2p_copy_full_512_multi,
+    lat_v2p_copy_full_auto_multi, lat_v2p_read_128_multi, lat_v2p_read_256_multi, lat_v2p_read_512_multi, lat_v2p_read_auto_multi,
+    lat_v2p_write_128_multi, lat_v2p_write_256_multi, lat_v2p_write_512_multi, lat_v2p_write_auto_multi, lat_v2p_write_full_128_multi,
+    lat_v2p_write_full_256_multi, lat_v2p_write_full_512_multi, lat_v2p_write_full_auto_multi,
+};
+use crate::memory::MemoryBuffer;
+use crate::progress::{RunOutcome, monitor};
+use crate::reporting::models::{LatencyLevelSummary, LatencyPercentiles, LatencyTestSummaryReport, LatencyThreadResult};
+use crate::results::TestRunResult;
+use crate::tests::{
+    CacheTarget, ChunkMode, ExtentMode, TestMemoryConfig, TestProgress, TestStats, TestTiming, bench_init_multi, bench_verify_multi,
+    block_move_multi, cache_busting_multi, mirror_move_v2_128_multi, mirror_move_v2_256_multi, mirror_move_v2_512_multi,
+    mirror_move_v2_auto_multi, modulo_x_multi, moving_inversions_multi, random_torture_multi, refresh_stable_128_multi,
+    refresh_stable_256_multi, refresh_stable_512_multi, refresh_stable_auto_multi, sequence_auto_multi, simple_test_nt_128_multi,
+    simple_test_nt_256_multi, simple_test_nt_512_multi, simple_test_nt_auto_multi, simple_test_v2_128_multi, simple_test_v2_256_multi,
+    simple_test_v2_512_multi, simple_test_v2_auto_multi, stride_access_multi, stuck_bit_test_128_multi, stuck_bit_test_256_multi,
+    stuck_bit_test_512_multi, stuck_bit_test_auto_multi,
+};
 // Use the proper ThreadPool from thread_pool.rs
-use crate::thread_pool::{ThreadPool, WorkResult, CpuAssignment};
+use crate::thread_pool::{CpuAssignment, ThreadPool, WorkResult};
+use crate::{BlockInfo, EnhancedMemoryLayout, ErrorMode, MemoryAllocationConfig, MemoryBackend, ProgressTracker, RuntimeConfig};
 
 /// Per-thread result row collected during a test run:
 /// `(thread_id, cpu_id, bytes, time, errors, operations, cycles_completed)`, the time the test's own
@@ -108,23 +75,23 @@ struct CycleContext<'a> {
 /// Keeps the tests whose display, actual or original name matches one of the filter's
 /// comma-separated globs, e.g. `"Lat-*,Mem-*-Read"`.
 pub(crate) fn retain_matching(test_definitions: &mut Vec<TestDefinition>, filter: &str) {
-    let matchers: Vec<GlobMatcher> = filter.split(',').map(|s| s.trim())
-        .filter_map(|pattern| {
-            match Glob::new(pattern) {
-                Ok(glob) => Some(glob.compile_matcher()),
-                Err(e) => {
-                    log::warn!("Invalid glob pattern '{}': {}", pattern, e);
-                    None
-                }
+    let matchers: Vec<GlobMatcher> = filter
+        .split(',')
+        .map(|s| s.trim())
+        .filter_map(|pattern| match Glob::new(pattern) {
+            Ok(glob) => Some(glob.compile_matcher()),
+            Err(e) => {
+                log::warn!("Invalid glob pattern '{}': {}", pattern, e);
+                None
             }
         })
         .collect();
 
     test_definitions.retain(|def| {
         matchers.iter().any(|matcher| {
-            matcher.is_match(&def.display_name) ||
-            matcher.is_match(def.actual_name) ||
-            def.original_name.map(|n| matcher.is_match(n)).unwrap_or(false)
+            matcher.is_match(&def.display_name)
+                || matcher.is_match(def.actual_name)
+                || def.original_name.map(|n| matcher.is_match(n)).unwrap_or(false)
         })
     });
 }
@@ -251,7 +218,9 @@ impl PatternId {
             let mode = if test_name.contains("-Seal-TM5") { 201 } else { 200 };
             return Self { mode, param0: 0, param1: 0 };
         }
-        if let Some(i) = crate::tests::native_bench_tests().iter().position(|&(init, verify, _, _)| test_name == init || test_name == verify) {
+        if let Some(i) =
+            crate::tests::native_bench_tests().iter().position(|&(init, verify, _, _)| test_name == init || test_name == verify)
+        {
             return Self { mode: Self::NATIVE, param0: 1 + i as u64, param1: 0 };
         }
         Self::from_config(config)
@@ -275,7 +244,9 @@ impl std::fmt::Display for PatternId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let bench = crate::tests::native_bench_tests();
         match (self.mode, self.param0 as usize) {
-            (Self::NATIVE, i @ 1..) if i <= bench.len() => write!(f, "mode={} ({})", self.mode, bench[i - 1].0.trim_start_matches("Bench-Init-")),
+            (Self::NATIVE, i @ 1..) if i <= bench.len() => {
+                write!(f, "mode={} ({})", self.mode, bench[i - 1].0.trim_start_matches("Bench-Init-"))
+            }
             _ => write!(f, "mode={}", self.mode),
         }
     }
@@ -308,11 +279,13 @@ fn apply_pattern_mode(defs: &mut [TestDefinition], mode: u32) {
         }
         return;
     };
-    let mut native = defs.iter_mut().filter(|d| d.actual_name.starts_with("Mem-SimpleV2") || d.actual_name == "Mem-Sequence")
-        .peekable();
+    let mut native = defs.iter_mut().filter(|d| d.actual_name.starts_with("Mem-SimpleV2") || d.actual_name == "Mem-Sequence").peekable();
     if native.peek().is_none() {
-        log::warn!("pattern-mode={mode} is the native `{}` family, which only the SimpleTests and Mem-Sequence run, and \
-            this plan has neither: it changes nothing", family.name());
+        log::warn!(
+            "pattern-mode={mode} is the native `{}` family, which only the SimpleTests and Mem-Sequence run, and \
+            this plan has neither: it changes nothing",
+            family.name()
+        );
     }
     for def in native {
         def.config.pattern_mode = None;
@@ -323,7 +296,8 @@ fn apply_pattern_mode(defs: &mut [TestDefinition], mode: u32) {
 /// The command line's `sequence=` and `order=`, on every Mem-Sequence step: `sequence=` replaces
 /// its passes, `order=` the order its steps take when they name none. Checked as a config's are.
 fn apply_sequence(defs: &mut [TestDefinition], sequence: Option<&str>, order: Option<&str>) -> Result<(), String> {
-    let order = order.map(|o| crate::sequence::Order::parse(o).ok_or_else(|| format!("order={o}: forward, reverse, random or stride")))
+    let order = order
+        .map(|o| crate::sequence::Order::parse(o).ok_or_else(|| format!("order={o}: forward, reverse, random or stride")))
         .transpose()?;
     let mut any = false;
     for def in defs.iter_mut().filter(|d| d.actual_name == "Mem-Sequence") {
@@ -351,11 +325,14 @@ fn apply_sequence(defs: &mut [TestDefinition], sequence: Option<&str>, order: Op
 fn pair_native_rounds(defs: &mut [TestDefinition]) {
     for def in defs {
         let wrc = def.config.write_read_cycles;
-        if def.actual_name.starts_with("Mem-SimpleV2") && def.config.native_program().is_some() && def.config.test_reps > 0
-            && wrc % 2 == 1
+        if def.actual_name.starts_with("Mem-SimpleV2") && def.config.native_program().is_some() && def.config.test_reps > 0 && wrc % 2 == 1
         {
-            log::warn!("{}: write_read_cycles {wrc} is odd, but native patterns are written in pairs (each pattern, then \
-                its inverse), so it runs {}", def.display_name, wrc + 1);
+            log::warn!(
+                "{}: write_read_cycles {wrc} is odd, but native patterns are written in pairs (each pattern, then \
+                its inverse), so it runs {}",
+                def.display_name,
+                wrc + 1
+            );
             def.config.write_read_cycles = wrc + 1;
         }
         // Mem-Sequence: its program rounds a chunk (`Sequence::rounds`), the same way, where one
@@ -365,12 +342,21 @@ fn pair_native_rounds(defs: &mut [TestDefinition]) {
             let reps = wrc.max(1);
             if seq.rounds(reps) % 2 == 1 {
                 if seq.rounds(reps + 1) % 2 == 0 {
-                    log::warn!("{}: '{}' {reps} times writes an odd number of rounds, but native patterns are written in \
-                        pairs (each pattern, then its inverse), so it runs {} times", def.display_name, seq.name(), reps + 1);
+                    log::warn!(
+                        "{}: '{}' {reps} times writes an odd number of rounds, but native patterns are written in \
+                        pairs (each pattern, then its inverse), so it runs {} times",
+                        def.display_name,
+                        seq.name(),
+                        reps + 1
+                    );
                     def.config.write_read_cycles = reps + 1;
                 } else {
-                    log::warn!("{}: '{}' writes an odd number of rounds however many times it runs, so the last pattern a \
-                        chunk gets each cycle goes without its inverse", def.display_name, seq.name());
+                    log::warn!(
+                        "{}: '{}' writes an odd number of rounds however many times it runs, so the last pattern a \
+                        chunk gets each cycle goes without its inverse",
+                        def.display_name,
+                        seq.name()
+                    );
                 }
             }
         }
@@ -389,17 +375,12 @@ fn derive_memory_effect(test_name: &str, config: &crate::tests::TestMemoryConfig
     if test_name.starts_with("Mem-SimpleV2") && config.native_program().is_some() {
         return MemoryEffect::Writes(PatternId { mode: PatternId::NATIVE, param0: 0, param1: 0 });
     }
-    if test_name.starts_with("Mem-SimpleV2")
-        || test_name.starts_with("Mem-SimpleNT")
-        || test_name.starts_with("Bench-Init")
-    {
+    if test_name.starts_with("Mem-SimpleV2") || test_name.starts_with("Mem-SimpleNT") || test_name.starts_with("Bench-Init") {
         return MemoryEffect::Writes(PatternId::for_test(test_name, config));
     }
 
     // Tests that preserve existing memory contents (round-trip or read-only)
-    if test_name.starts_with("Mem-Mirror")
-        || test_name.starts_with("Bench-Verify")
-    {
+    if test_name.starts_with("Mem-Mirror") || test_name.starts_with("Bench-Verify") {
         return MemoryEffect::Preserves;
     }
 
@@ -425,14 +406,19 @@ pub fn validate_test_plan(tests: &[TestDefinition]) -> Vec<(usize, String)> {
     for (i, test) in tests.iter().enumerate() {
         let is_dependent = test.config.skip_init;
 
-        if is_dependent && test.actual_name.starts_with("Mem-SimpleV2") && test.config.native_program().is_some()
+        if is_dependent
+            && test.actual_name.starts_with("Mem-SimpleV2")
+            && test.config.native_program().is_some()
             && test.config.test_reps == 0
         {
-            warnings.push((i, format!(
-                "'{}' (dependent, test_reps 0) would only verify, but a native program's image is keyed by its own \
+            warnings.push((
+                i,
+                format!(
+                    "'{}' (dependent, test_reps 0) would only verify, but a native program's image is keyed by its own \
                  step, which no other step writes; give it test_reps 1 or more, or use a Bench-Init-* and its Bench-Verify-*",
-                test.display_name
-            )));
+                    test.display_name
+                ),
+            ));
         }
 
         if is_dependent {
@@ -448,16 +434,19 @@ pub fn validate_test_plan(tests: &[TestDefinition]) -> Vec<(usize, String)> {
                         // Pattern matches — dependency satisfied
                     }
                     Some(current) => {
-                        warnings.push((i, format!(
-                            "'{}' (dependent) expects pattern {} but memory has {}",
-                            test.display_name, expected, current
-                        )));
+                        warnings.push((
+                            i,
+                            format!("'{}' (dependent) expects pattern {} but memory has {}", test.display_name, expected, current),
+                        ));
                     }
                     None => {
-                        warnings.push((i, format!(
-                            "'{}' (dependent) expects pattern {} but no prior test wrote a known pattern",
-                            test.display_name, expected
-                        )));
+                        warnings.push((
+                            i,
+                            format!(
+                                "'{}' (dependent) expects pattern {} but no prior test wrote a known pattern",
+                                test.display_name, expected
+                            ),
+                        ));
                     }
                 }
             }
@@ -491,8 +480,8 @@ pub fn validate_test_plan(tests: &[TestDefinition]) -> Vec<(usize, String)> {
 
 #[derive(Debug, Clone)]
 pub struct TestDefinition {
-    pub actual_name: &'static str,    // Used for function resolution and stats tracking
-    pub display_name: String,         // Used for UI display and logging
+    pub actual_name: &'static str, // Used for function resolution and stats tracking
+    pub display_name: String,      // Used for UI display and logging
     pub function: TestFunction,
     pub config: TestMemoryConfig,
     pub original_name: Option<&'static str>, // Preserves original name for Auto variants (e.g., "StuckBitTestAuto")
@@ -525,11 +514,7 @@ impl TestDefinition {
     /// (`tests::picked_width`). `None` for a test that runs at the width it is named for, or has
     /// none.
     pub fn simd_width(&self) -> Option<crate::simd::Width> {
-        if self.original_name.is_some() {
-            Some(crate::simd::test_width())
-        } else {
-            crate::tests::picked_width(self.actual_name)
-        }
+        if self.original_name.is_some() { Some(crate::simd::test_width()) } else { crate::tests::picked_width(self.actual_name) }
     }
 
     /// The SIMD width the test runs at: the one it picks at run time (`simd_width`), else the one
@@ -550,8 +535,10 @@ impl TestDefinition {
 /// (TODO 99). The kernels don't check: a test that got past this would run instructions the CPU
 /// lacks, and `assert_cpu_runs` stops the run at it instead. Marks a left-out step's id not run in
 /// `cycle_order`. Returns each test left out, once, and why.
-fn leave_out_what_the_cpu_lacks(tests: &mut Vec<TestDefinition>, cycle_order: &mut Option<CycleOrder>,
-                                check: impl Fn(crate::simd::Width) -> Result<crate::simd::Width, String>) -> Vec<(String, String)> {
+fn leave_out_what_the_cpu_lacks(
+    tests: &mut Vec<TestDefinition>, cycle_order: &mut Option<CycleOrder>,
+    check: impl Fn(crate::simd::Width) -> Result<crate::simd::Width, String>,
+) -> Vec<(String, String)> {
     let mut left_out: Vec<(String, String)> = Vec::new();
     tests.retain(|def| {
         let Some(lacks) = def.cpu_lacks(&check) else { return true };
@@ -580,17 +567,18 @@ fn assert_cpu_runs(def: &TestDefinition, check: impl Fn(crate::simd::Width) -> R
 /// machine's calibrated width, else the rule); with where the width came from. A width the CPU
 /// lacks is refused, unsealed too, where it would set a mirror's data (TODO 99: refused, not
 /// stepped down). It takes the overrides whole, so the run can't hand it one and drop the other.
-fn run_seal(overrides: &TestRunOverrides, config: Option<&crate::config::ModernConfig>)
-            -> Result<(crate::seal::SealSettings, crate::seal::SealKernel, crate::seal::SealWidthSource), String> {
+fn run_seal(
+    overrides: &TestRunOverrides, config: Option<&crate::config::ModernConfig>,
+) -> Result<(crate::seal::SealSettings, crate::seal::SealKernel, crate::seal::SealWidthSource), String> {
     let TestRunOverrides { seal_override, seal_width_override, .. } = *overrides;
     let (seal_width, seal_width_setting) = crate::seal::width_setting(
-        seal_width_override.map(|w| (w, "seal-width="))
+        seal_width_override
+            .map(|w| (w, "seal-width="))
             .or(config.and_then(|c| c.system.seal_width.as_deref()).map(|w| (w, "the config's seal_width"))),
-        crate::simd::width_given());
-    crate::seal::SealSettings::parse(
-        seal_override.or(config.and_then(|c| c.system.seal.as_deref())).unwrap_or("tmr"),
-        seal_width,
-    ).and_then(|s| s.kernel(seal_width_setting).map(|(kernel, source)| (s, kernel, source)))
+        crate::simd::width_given(),
+    );
+    crate::seal::SealSettings::parse(seal_override.or(config.and_then(|c| c.system.seal.as_deref())).unwrap_or("tmr"), seal_width)
+        .and_then(|s| s.kernel(seal_width_setting).map(|(kernel, source)| (s, kernel, source)))
 }
 
 /// How a test takes the seal (TODO 74, `seal.rs`).
@@ -627,12 +615,7 @@ pub fn seal_use(test_name: &str) -> SealUse {
 fn set_step_seals(test_definitions: &mut [TestDefinition], kernel: crate::seal::SealKernel, on: bool) {
     for def in test_definitions {
         let takes = def.seal_use != SealUse::Never && !def.seal_opt_out;
-        def.config.seal = crate::seal::SealStep {
-            kernel,
-            on,
-            expects: on && takes,
-            wrap: on && takes && def.seal_use == SealUse::Wrap,
-        };
+        def.config.seal = crate::seal::SealStep { kernel, on, expects: on && takes, wrap: on && takes && def.seal_use == SealUse::Wrap };
     }
 }
 
@@ -648,7 +631,7 @@ pub struct TestSuiteTiming {
 impl Default for TestSuiteTiming {
     fn default() -> Self {
         Self {
-            global_cycles: Some(3),  // Default 3 cycles to match help text
+            global_cycles: Some(3), // Default 3 cycles to match help text
             global_duration_secs: None,
         }
     }
@@ -656,17 +639,11 @@ impl Default for TestSuiteTiming {
 
 impl TestSuiteTiming {
     pub fn cycles_only(cycles: u32) -> Self {
-        Self {
-            global_cycles: Some(cycles),
-            global_duration_secs: None,
-        }
+        Self { global_cycles: Some(cycles), global_duration_secs: None }
     }
-    
+
     pub fn duration_only(duration_secs: u32) -> Self {
-        Self {
-            global_cycles: None,
-            global_duration_secs: Some(duration_secs),
-        }
+        Self { global_cycles: None, global_duration_secs: Some(duration_secs) }
     }
 }
 
@@ -674,16 +651,21 @@ impl TestSuiteTiming {
 /// (`Run::Channels`): built once that event is sent, because building it logs. `thread_memory` is
 /// each thread's bytes, planned or allocated, so the table shows the extents and chunks the tests
 /// will resolve; `tm5` a TM5 import's `.cfg` window and lock granularity.
-fn test_plan(test_definitions: &[TestDefinition], suite_timing: &TestSuiteTiming, cache_info: &CacheInfo,
-             thread_memory: &[usize], tm5: Option<(u32, u32)>, sequence: &crate::reporting::converters::PlanSequence) -> Run {
-    let report = crate::reporting::converters::create_test_configuration_report_v2(test_definitions, suite_timing, cache_info,
-                                                                                   thread_memory, tm5, sequence);
+fn test_plan(
+    test_definitions: &[TestDefinition], suite_timing: &TestSuiteTiming, cache_info: &CacheInfo, thread_memory: &[usize],
+    tm5: Option<(u32, u32)>, sequence: &crate::reporting::converters::PlanSequence,
+) -> Run {
+    let report = crate::reporting::converters::create_test_configuration_report_v2(
+        test_definitions, suite_timing, cache_info, thread_memory, tm5, sequence,
+    );
     Run::TestPlan(Box::new(report))
 }
 
 // Test function signatures
-pub(crate) type TestFunctionMultiBlock = unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> TestStats;
-type TestFunctionLatency = unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> LatencyTestStats;
+pub(crate) type TestFunctionMultiBlock =
+    unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> TestStats;
+type TestFunctionLatency =
+    unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> LatencyTestStats;
 
 // Test function wrapper enum
 #[derive(Debug, Clone)]
@@ -771,8 +753,11 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
             fe.event(Run::NotRun(NotRun::NoTestMatches { filter: test_name_filter.to_string(), plan: plan.map(|p| p.name) }).into());
             let tests = match plan {
                 // A filter narrows a named plan: list what it could have picked from
-                Some(plan) => crate::plans::select(plan, create_test_definitions(cache_info)).unwrap_or_default()
-                    .into_iter().map(|def| def.original_name.unwrap_or(def.actual_name).to_string()).collect(),
+                Some(plan) => crate::plans::select(plan, create_test_definitions(cache_info))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|def| def.original_name.unwrap_or(def.actual_name).to_string())
+                    .collect(),
                 None => create_test_definitions(cache_info).into_iter().map(|def| def.actual_name.to_string()).collect(),
             };
             fe.event(Run::Matchable { tests }.into());
@@ -857,8 +842,13 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
                     let stride_cl = (channels as usize * ctx.raw_parameter as usize).saturating_sub(1);
                     ctx.stride_cachelines = Some(stride_cl);
                     ctx.stride_elements = Some(stride_cl * (def.config.cache_line_bytes / 8));
-                    log::debug!("  {} stride recalculated: {} cache lines ({} channels × {} parameter - 1)",
-                        def.display_name, stride_cl, channels, ctx.raw_parameter);
+                    log::debug!(
+                        "  {} stride recalculated: {} cache lines ({} channels × {} parameter - 1)",
+                        def.display_name,
+                        stride_cl,
+                        channels,
+                        ctx.raw_parameter
+                    );
                 }
             }
         }
@@ -872,12 +862,16 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     for def in &test_definitions {
         // After the CLI's overrides too: a verify of the fill with a cycle-keyed TMR mode fails on
         // every word, as the config check refuses (`validate_repetition`)
-        if def.actual_name.starts_with("Mem-SimpleV2") && def.config.test_reps == 0
+        if def.actual_name.starts_with("Mem-SimpleV2")
+            && def.config.test_reps == 0
             && matches!(def.config.pattern_mode, Some(0 | 1 | 2 | 20 | 30))
         {
-            param_errors.push(format!("{}: test_reps 0 verifies the fill alone, but pattern_mode {} keys its image by the \
+            param_errors.push(format!(
+                "{}: test_reps 0 verifies the fill alone, but pattern_mode {} keys its image by the \
                 cycle, which the fill and the verifies don't share; use a native program, or mode 10, 11 or 13",
-                def.display_name, def.config.pattern_mode.unwrap_or(0)));
+                def.display_name,
+                def.config.pattern_mode.unwrap_or(0)
+            ));
         }
         if let Some(ref ctx) = def.config.parameter_context {
             let mut check = |name: &str, val: Option<u32>, require_pow2: bool| {
@@ -894,7 +888,9 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
             check("copy_directions", ctx.copy_directions, false);
             // Mem-Stride splits each chunk by shifting; a chunk is a multiple of 4 KiB (512 u64),
             // so more subdivisions than that would leave part of a chunk untested (TODO 76)
-            if let Some(v) = ctx.subdivisions && v > 512 {
+            if let Some(v) = ctx.subdivisions
+                && v > 512
+            {
                 param_errors.push(format!("{}: subdivisions must be at most 512, got {}", def.display_name, v));
             }
         }
@@ -929,8 +925,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     // Validate test plan dependency chain: a step that verifies the data an earlier one left must
     // directly follow it, with no seal in between (TODO 74, the plan-time half of TODO 13)
     for (i, def) in test_definitions.iter().enumerate() {
-        log::debug!("Test plan [{}] '{}': effect={}, skip_init={}",
-            i + 1, def.display_name, def.memory_effect, def.config.skip_init);
+        log::debug!("Test plan [{}] '{}': effect={}, skip_init={}", i + 1, def.display_name, def.memory_effect, def.config.skip_init);
     }
     let plan_errors = validate_test_plan(&test_definitions);
     if !plan_errors.is_empty() {
@@ -946,9 +941,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         thread_blocks.entry(block.thread_id).or_default().push(block);
     }
 
-    let effective_channels = channels_override
-        .or_else(|| config.map(|c| c.system.channels))
-        .unwrap_or(2);
+    let effective_channels = channels_override.or_else(|| config.map(|c| c.system.channels)).unwrap_or(2);
 
     let tm5 = config.and_then(|c| c.legacy_metadata.as_ref()).map(|m| (m.tm5_window_mb, m.tm5_lock_mb));
     let width = crate::simd::width_given();
@@ -979,7 +972,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     // it. See whea.rs for the transport choice.
     fe.event(Run::WheaMonitoring(progress.whea.start()).into());
 
-	let all_test_cpu_stats: Arc<Mutex<TestCpuStats>> = Arc::new(Mutex::new(HashMap::new()));
+    let all_test_cpu_stats: Arc<Mutex<TestCpuStats>> = Arc::new(Mutex::new(HashMap::new()));
 
     // Stage 1: Pre-allocate all memory blocks, between the page sizes allowed, which are shown
     // first: parsed the way the allocator parses them, so "2mb" or "Large" show as what they mean
@@ -1043,11 +1036,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     // The real allocated total while we still own the blocks (`ThreadPool::new` takes them by value
     // below). An outcome: a partially satisfied request still runs, so it can't come from
     // `layout.allocation_result`.
-    let allocated_bytes: u64 = allocated_blocks
-        .values()
-        .flat_map(|blocks| blocks.iter())
-        .map(|block| block.buffer.size() as u64)
-        .sum();
+    let allocated_bytes: u64 = allocated_blocks.values().flat_map(|blocks| blocks.iter()).map(|block| block.buffer.size() as u64).sum();
 
     log::info!(
         "Creating thread pool: {} persistent workers at {} priority ({})",
@@ -1060,7 +1049,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         runtime_config.pin_threads,
         thread_priority,
         thread_count,
-        runtime_config.cpu_list.as_deref()  // Pass the CPU list
+        runtime_config.cpu_list.as_deref(), // Pass the CPU list
     );
 
     // Open the result file with the run's resolved configuration, now that both allocation and
@@ -1121,11 +1110,16 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     // The native patterns' seed and transfer width, once: with the seed (and the same layout) a
     // run writes the same bytes again
     let (seed, (beat, beat_source)) = (crate::pattern::run_seed(), crate::pattern::transfer_beat());
-    log::info!("Pattern seed {seed:#018x} ({}); transfer width {} ({beat_source}); rescan {}",
-               if crate::pattern::seed_given() { "seed=" } else { "from the clock" },
-               beat.map_or("unknown".to_string(), |b| format!("{} bits", b.bits())),
-               if crate::pattern::rescan_enabled() { "on" } else { "off" });
-    fe.event(Run::SuiteStarted { progress: Arc::clone(&progress), seed, transfer_bits: beat.map(|b| b.bits()), transfer_source: beat_source }.into());
+    log::info!(
+        "Pattern seed {seed:#018x} ({}); transfer width {} ({beat_source}); rescan {}",
+        if crate::pattern::seed_given() { "seed=" } else { "from the clock" },
+        beat.map_or("unknown".to_string(), |b| format!("{} bits", b.bits())),
+        if crate::pattern::rescan_enabled() { "on" } else { "off" }
+    );
+    fe.event(
+        Run::SuiteStarted { progress: Arc::clone(&progress), seed, transfer_bits: beat.map(|b| b.bits()), transfer_source: beat_source }
+            .into(),
+    );
 
     let mut cycles_done = 0u32;
     // When the results were last saved between cycles (TODO 72)
@@ -1168,14 +1162,9 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     let (thread_blocks, cpu_assignments) = thread_pool.shutdown();
 
     // Calculate total memory to be freed for logging
-    let total_bytes: usize = thread_blocks.values()
-        .flat_map(|blocks| blocks.iter())
-        .map(|block| block.buffer.size())
-        .sum();
+    let total_bytes: usize = thread_blocks.values().flat_map(|blocks| blocks.iter()).map(|block| block.buffer.size()).sum();
 
-    log::info!("Freeing {:.2} GiB across {} threads",
-        total_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-        thread_blocks.len());
+    log::info!("Freeing {:.2} GiB across {} threads", total_bytes as f64 / (1024.0 * 1024.0 * 1024.0), thread_blocks.len());
 
     // Explicitly drop allocations - this triggers MemoryBuffer::drop()
     // which calls backend.free() for each allocation
@@ -1269,8 +1258,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         fe,
     } = ctx;
 
-    use crate::progress::TestSummary;
     use crate::constants::MB_F64;
+    use crate::progress::TestSummary;
 
     // Track cycle timing and collect test summaries for this cycle
     let cycle_start = Instant::now();
@@ -1341,8 +1330,13 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
                         between_ops.merge_thread(&result.ops);
                         if result.seal_errors > 0 {
                             success.store(false, Ordering::Relaxed);
-                            log::error!("Thread {}: the seal check before step {} ('{}') found {} errors",
-                                        result.thread_id, test_idx + 1, test_name, result.seal_errors);
+                            log::error!(
+                                "Thread {}: the seal check before step {} ('{}') found {} errors",
+                                result.thread_id,
+                                test_idx + 1,
+                                test_name,
+                                result.seal_errors
+                            );
                         }
                     }
                     Err(e) => {
@@ -1354,8 +1348,12 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
             seal_stages.between_steps_ms += between.elapsed().as_millis();
             // Under errors=halt, a failed check stops here: the step would overwrite the bad words
             if seal_errors_for_test > 0 && matches!(error_mode, ErrorMode::Halt) {
-                log::error!("Halting before step {} ('{}'): the seal check before it found {} errors; memory keeps them",
-                            test_idx + 1, test_name, seal_errors_for_test);
+                log::error!(
+                    "Halting before step {} ('{}'): the seal check before it found {} errors; memory keeps them",
+                    test_idx + 1,
+                    test_name,
+                    seal_errors_for_test
+                );
                 progress.add_errors(seal_errors_for_test);
                 // The step didn't run; its entry carries the seal check's errors
                 cycle_test_summaries.push(TestSummary {
@@ -1399,89 +1397,103 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         }
         let test_start = Instant::now();
         thread_pool.execute_test(test_name, test_func, test_config, error_mode, &step_context);
-        
-		// Collect results from all threads
-		let mut test_stats = Vec::new();
-		let mut latency_results = Vec::new();  // Collect latency stats separately
-		let mut total_bytes_for_test = 0u64;
-		let mut total_errors_for_test = 0u64;
-		let (mut alarms_for_test, mut not_reproduced_for_test) = (0u64, 0u64);
-		let mut bits_for_test = crate::failing_bits::FailingBits::default();
-		let mut timed_for_test: Option<std::time::Duration> = None;
-		let mut total_operations_for_test = 0u64;
-		let mut cycles_completed = 0u32;
-		let mut cycles_fewest = u32::MAX;
-		let mut cycle_limit: Option<u32> = None;
-		let mut stopped_by_time_limit = false;
-		// Each thread's part, for the results file (TODO 72)
-		let mut thread_records = Vec::with_capacity(thread_count);
 
-		for _ in 0..thread_count {
-			match result_receiver.recv() {
-				Ok(result) => {
-					// Look up CPU assignment for this thread
-					let assignment = thread_pool.get_cpu_assignments()
-						.iter()
-						.find(|(tid, _, _)| *tid == result.thread_id)
-						.copied();
-					// Recorded with or without one, before its latencies move below
-					thread_records.push(thread_step_record(&result, assignment));
-					if let Some((_, cpu_id, _)) = assignment {
-						// Store simplified stats: (thread_id, cpu_id, bytes, time, errors, operations, cycles_completed)
-						// The thread's own timed clock, as the step's speed (TODO 90)
-						test_stats.push((result.thread_id, cpu_id,
-									   result.total_bytes, result.timed.unwrap_or(result.elapsed), result.total_errors, result.total_operations,
-									   result.cycles_completed));
+        // Collect results from all threads
+        let mut test_stats = Vec::new();
+        let mut latency_results = Vec::new(); // Collect latency stats separately
+        let mut total_bytes_for_test = 0u64;
+        let mut total_errors_for_test = 0u64;
+        let (mut alarms_for_test, mut not_reproduced_for_test) = (0u64, 0u64);
+        let mut bits_for_test = crate::failing_bits::FailingBits::default();
+        let mut timed_for_test: Option<std::time::Duration> = None;
+        let mut total_operations_for_test = 0u64;
+        let mut cycles_completed = 0u32;
+        let mut cycles_fewest = u32::MAX;
+        let mut cycle_limit: Option<u32> = None;
+        let mut stopped_by_time_limit = false;
+        // Each thread's part, for the results file (TODO 72)
+        let mut thread_records = Vec::with_capacity(thread_count);
 
-						// Collect latency stats if present (for latency tests)
-						if let Some(lat_stats) = result.latency_stats {
-							latency_results.push((result.thread_id, cpu_id, lat_stats));
-						}
-					}
+        for _ in 0..thread_count {
+            match result_receiver.recv() {
+                Ok(result) => {
+                    // Look up CPU assignment for this thread
+                    let assignment = thread_pool.get_cpu_assignments().iter().find(|(tid, _, _)| *tid == result.thread_id).copied();
+                    // Recorded with or without one, before its latencies move below
+                    thread_records.push(thread_step_record(&result, assignment));
+                    if let Some((_, cpu_id, _)) = assignment {
+                        // Store simplified stats: (thread_id, cpu_id, bytes, time, errors, operations, cycles_completed)
+                        // The thread's own timed clock, as the step's speed (TODO 90)
+                        test_stats.push((
+                            result.thread_id,
+                            cpu_id,
+                            result.total_bytes,
+                            result.timed.unwrap_or(result.elapsed),
+                            result.total_errors,
+                            result.total_operations,
+                            result.cycles_completed,
+                        ));
 
-					total_bytes_for_test += result.total_bytes;
-					total_errors_for_test += result.total_errors;
-					alarms_for_test += result.alarms;
-					not_reproduced_for_test += result.not_reproduced;
-					bits_for_test.add(&result.failing_bits);
-					seal_bits_for_test.add(&result.seal_failing_bits);
-					timed_for_test = timed_for_test.max(result.timed);
-					seal_errors_for_test += result.seal_errors;
-					total_operations_for_test += result.total_operations;
-					test_ops.merge_thread(&result.ops);
+                        // Collect latency stats if present (for latency tests)
+                        if let Some(lat_stats) = result.latency_stats {
+                            latency_results.push((result.thread_id, cpu_id, lat_stats));
+                        }
+                    }
 
-					// Track maximum cycle count (to detect if any thread hit the limit)
-					if result.cycles_completed > cycles_completed {
-						cycles_completed = result.cycles_completed;
-					}
-					cycles_fewest = cycles_fewest.min(result.cycles_completed);
-					// Track cycle limit from first thread (same for all)
-					if cycle_limit.is_none() {
-						cycle_limit = result.cycle_limit;
-					}
-					// Track if ANY thread was stopped by time limit
-					if result.stopped_by_time_limit {
-						stopped_by_time_limit = true;
-					}
+                    total_bytes_for_test += result.total_bytes;
+                    total_errors_for_test += result.total_errors;
+                    alarms_for_test += result.alarms;
+                    not_reproduced_for_test += result.not_reproduced;
+                    bits_for_test.add(&result.failing_bits);
+                    seal_bits_for_test.add(&result.seal_failing_bits);
+                    timed_for_test = timed_for_test.max(result.timed);
+                    seal_errors_for_test += result.seal_errors;
+                    total_operations_for_test += result.total_operations;
+                    test_ops.merge_thread(&result.ops);
 
-					if result.total_errors > 0 {
-						success.store(false, Ordering::Relaxed);
-						log::error!("Thread {} reported {} memory errors in test '{}' ({} failed checks, {} not reproduced on rescan)",
-								  result.thread_id, result.total_errors, test_name, result.alarms, result.not_reproduced);
-					}
-					if result.seal_errors > 0 {
-						success.store(false, Ordering::Relaxed);
-						log::error!("Thread {}: the seal checks in step {} ('{}') found {} errors",
-								  result.thread_id, test_idx + 1, test_name, result.seal_errors);
-					}
-				}
-				Err(e) => {
-					log::error!("Failed to receive test result: {}", e);
-					success.store(false, Ordering::Relaxed);
-				}
-			}
-		}
-		thread_records.sort_by_key(|record| record.thread);
+                    // Track maximum cycle count (to detect if any thread hit the limit)
+                    if result.cycles_completed > cycles_completed {
+                        cycles_completed = result.cycles_completed;
+                    }
+                    cycles_fewest = cycles_fewest.min(result.cycles_completed);
+                    // Track cycle limit from first thread (same for all)
+                    if cycle_limit.is_none() {
+                        cycle_limit = result.cycle_limit;
+                    }
+                    // Track if ANY thread was stopped by time limit
+                    if result.stopped_by_time_limit {
+                        stopped_by_time_limit = true;
+                    }
+
+                    if result.total_errors > 0 {
+                        success.store(false, Ordering::Relaxed);
+                        log::error!(
+                            "Thread {} reported {} memory errors in test '{}' ({} failed checks, {} not reproduced on rescan)",
+                            result.thread_id,
+                            result.total_errors,
+                            test_name,
+                            result.alarms,
+                            result.not_reproduced
+                        );
+                    }
+                    if result.seal_errors > 0 {
+                        success.store(false, Ordering::Relaxed);
+                        log::error!(
+                            "Thread {}: the seal checks in step {} ('{}') found {} errors",
+                            result.thread_id,
+                            test_idx + 1,
+                            test_name,
+                            result.seal_errors
+                        );
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to receive test result: {}", e);
+                    success.store(false, Ordering::Relaxed);
+                }
+            }
+        }
+        thread_records.sort_by_key(|record| record.thread);
 
         // Attribute WHEA events that landed while this test ran. A non-zero count here is a real
         // failure signal even when every thread reported zero errors: the fault was either
@@ -1491,12 +1503,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         let whea_for_test = progress.whea.counts().since(&whea_before);
         if whea_for_test.total > 0 {
             success.store(false, Ordering::Relaxed);
-            log::error!(
-                "Test '{}' saw {} WHEA{}",
-                test_name,
-                whea_for_test.total,
-                whea_for_test.split_suffix()
-            );
+            log::error!("Test '{}' saw {} WHEA{}", test_name, whea_for_test.total, whea_for_test.split_suffix());
         }
 
         let test_duration = test_start.elapsed();
@@ -1516,42 +1523,55 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         // clock (a Bench-Verify's fill, a bandwidth test's page faults, TODO 90), however short. The
         // step's wall time when no thread ran the test.
         let timed_secs = timed_for_test.map_or(test_duration_secs, |t| t.as_secs_f64());
-        let throughput_mib_s = if timed_secs > 0.0 {
-            (total_bytes_for_test as f64 / MB_F64) / timed_secs
-        } else {
-            0.0
-        };
+        let throughput_mib_s = if timed_secs > 0.0 { (total_bytes_for_test as f64 / MB_F64) / timed_secs } else { 0.0 };
 
         // Create TestSummary for this test, the report's figures too
         // Include latency data if this was a latency test
-        let (latency_samples, latency_p5, latency_p10, latency_p25, latency_p50,
-             latency_p75, latency_p90, latency_p95, latency_p99, latency_p99_9, latency_spread) =
-            if !latency_results.is_empty() {
-                // Aggregate latency stats across all threads
-                let total_samples: usize = latency_results.iter().map(|(_, _, stats)| stats.sample_count).sum();
-                let all_latencies: Vec<f64> = latency_results.iter()
-                    .flat_map(|(_, _, stats)| stats.latencies_ns.clone())
-                    .collect();
+        let (
+            latency_samples,
+            latency_p5,
+            latency_p10,
+            latency_p25,
+            latency_p50,
+            latency_p75,
+            latency_p90,
+            latency_p95,
+            latency_p99,
+            latency_p99_9,
+            latency_spread,
+        ) = if !latency_results.is_empty() {
+            // Aggregate latency stats across all threads
+            let total_samples: usize = latency_results.iter().map(|(_, _, stats)| stats.sample_count).sum();
+            let all_latencies: Vec<f64> = latency_results.iter().flat_map(|(_, _, stats)| stats.latencies_ns.clone()).collect();
 
-                if !all_latencies.is_empty() {
-                    let mut sorted = all_latencies.clone();
-                    sorted.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).unwrap());
-                    let len = sorted.len();
-                    let percentile = |p: f64| sorted[((len as f64 - 1.0) * p / 100.0) as usize];
-                    let p5 = percentile(5.0);
-                    let p95 = percentile(95.0);
-                    let spread = if p5 > 0.0 { p95 / p5 } else { 0.0 };
+            if !all_latencies.is_empty() {
+                let mut sorted = all_latencies.clone();
+                sorted.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).unwrap());
+                let len = sorted.len();
+                let percentile = |p: f64| sorted[((len as f64 - 1.0) * p / 100.0) as usize];
+                let p5 = percentile(5.0);
+                let p95 = percentile(95.0);
+                let spread = if p5 > 0.0 { p95 / p5 } else { 0.0 };
 
-                    (Some(total_samples as u64), Some(percentile(5.0)), Some(percentile(10.0)),
-                     Some(percentile(25.0)), Some(percentile(50.0)), Some(percentile(75.0)),
-                     Some(percentile(90.0)), Some(percentile(95.0)), Some(percentile(99.0)),
-                     Some(percentile(99.9)), Some(spread))
-                } else {
-                    (None, None, None, None, None, None, None, None, None, None, None)
-                }
+                (
+                    Some(total_samples as u64),
+                    Some(percentile(5.0)),
+                    Some(percentile(10.0)),
+                    Some(percentile(25.0)),
+                    Some(percentile(50.0)),
+                    Some(percentile(75.0)),
+                    Some(percentile(90.0)),
+                    Some(percentile(95.0)),
+                    Some(percentile(99.0)),
+                    Some(percentile(99.9)),
+                    Some(spread),
+                )
             } else {
                 (None, None, None, None, None, None, None, None, None, None, None)
-            };
+            }
+        } else {
+            (None, None, None, None, None, None, None, None, None, None, None)
+        };
 
         let summary = TestSummary {
             step: test_idx + 1,
@@ -1594,28 +1614,30 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
 
         // The step's report (TODO 29): its thread timing deviations, a latency step's latencies,
         // and where the suite stood as it ended, its results in
-        let latency = (!latency_results.is_empty()).then(|| LatencyTestSummaryReport {
-            levels_tested: vec![convert_to_latency_level_summary(&latency_results)],
-        });
-        fe.event(Run::StepFinished(Box::new(StepReport {
-            cycle,
-            summary: summary.clone(),
-            wall: test_duration,
-            timed_secs,
-            cycle_limit,
-            stopped_by_time: stopped_by_time_limit,
-            sealed: seal.is_some(),
-            config: step_config_line(test_def, cache_info, thread_count),
-            threads: crate::reporting::converters::create_thread_timing_report(&test_stats, whea_for_test),
-            latency,
-            stamp: progress.snapshot(),
-        })).into());
+        let latency = (!latency_results.is_empty())
+            .then(|| LatencyTestSummaryReport { levels_tested: vec![convert_to_latency_level_summary(&latency_results)] });
+        fe.event(
+            Run::StepFinished(Box::new(StepReport {
+                cycle,
+                summary: summary.clone(),
+                wall: test_duration,
+                timed_secs,
+                cycle_limit,
+                stopped_by_time: stopped_by_time_limit,
+                sealed: seal.is_some(),
+                config: step_config_line(test_def, cache_info, thread_count),
+                threads: crate::reporting::converters::create_thread_timing_report(&test_stats, whea_for_test),
+                latency,
+                stamp: progress.snapshot(),
+            }))
+            .into(),
+        );
 
-		// Store aggregated stats for this test
-		{
-			let mut stats_map = all_test_cpu_stats.lock().unwrap();
-			stats_map.entry(test_name.to_string()).or_default().extend(test_stats);
-		}
+        // Store aggregated stats for this test
+        {
+            let mut stats_map = all_test_cpu_stats.lock().unwrap();
+            stats_map.entry(test_name.to_string()).or_default().extend(test_stats);
+        }
 
         cycle_test_summaries.push(summary);
 
@@ -1668,7 +1690,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
 /// A step's Config line in its report: its parameter, its pattern mode, its extent and chunk with
 /// their sizes (from `cache_info` and the thread count, as the step resolves them), its repetitions.
 fn step_config_line(def: &TestDefinition, cache_info: &CacheInfo, thread_count: usize) -> StepConfigLine {
-    use crate::reporting::formatters::{ReportFormatter, DefaultFormatter};
+    use crate::reporting::formatters::{DefaultFormatter, ReportFormatter};
     let formatter = DefaultFormatter::new();
     let extent = formatter.format_extent_mode_with_size(&def.config.extent_mode, cache_info, thread_count);
     let chunk = formatter.format_chunk_mode_with_size(&def.config.chunk_mode, cache_info, thread_count);
@@ -1677,13 +1699,15 @@ fn step_config_line(def: &TestDefinition, cache_info: &CacheInfo, thread_count: 
         Some(m @ 0..=2) => format!("TM5-{m}"),
         Some(m) => format!("TMR-{m}"),
         // A native program (pattern spec v2), and Mem-Sequence's passes
-        None if def.actual_name.starts_with("Mem-SimpleV2") => {
-            def.config.native_program().map_or("-".to_string(), |p| p.name())
-        }
+        None if def.actual_name.starts_with("Mem-SimpleV2") => def.config.native_program().map_or("-".to_string(), |p| p.name()),
         None if def.actual_name == "Mem-Sequence" => {
             let seq = def.config.sequence();
-            format!("{}, sequence={} (order={})", def.config.native_program().map_or("-".to_string(), |p| p.name()),
-                    seq.name(), seq.order.name())
+            format!(
+                "{}, sequence={} (order={})",
+                def.config.native_program().map_or("-".to_string(), |p| p.name()),
+                seq.name(),
+                seq.order.name()
+            )
         }
         None => "-".to_string(),
     };
@@ -1728,8 +1752,9 @@ fn thread_step_record(result: &WorkResult, assignment: Option<CpuAssignment>) ->
 
 /// Run a seal stage on every worker (TODO 74) and report it: the bytes, the errors and the bits
 /// that failed (a final check's), and the wall time.
-fn run_seal_stage(ctx: &CycleContext, op: crate::thread_pool::SealOp, kernel: crate::seal::SealKernel,
-                  cycle: u64) -> (u64, u64, crate::failing_bits::FailingBits, Duration) {
+fn run_seal_stage(
+    ctx: &CycleContext, op: crate::thread_pool::SealOp, kernel: crate::seal::SealKernel, cycle: u64,
+) -> (u64, u64, crate::failing_bits::FailingBits, Duration) {
     use crate::thread_pool::SealOp;
     let name = match op {
         SealOp::SealAll => "Sealing memory",
@@ -2159,45 +2184,33 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
         (
             "Mem-StuckBit128",
             TestFunction::MultiBlock(stuck_bit_test_128_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 512 * MB }
-            ).with_timing(TestTiming::cycles_only(1))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 512 * MB })
+                .with_timing(TestTiming::cycles_only(1))
+                .with_memory_type(None),
         ),
-
         (
             "Mem-StuckBit256",
             TestFunction::MultiBlock(stuck_bit_test_256_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 512 * MB }
-            ).with_timing(TestTiming::cycles_only(1))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 512 * MB })
+                .with_timing(TestTiming::cycles_only(1))
+                .with_memory_type(None),
         ),
-
         (
             "Mem-StuckBit512",
             TestFunction::MultiBlock(stuck_bit_test_512_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 512 * MB }
-            ).with_timing(TestTiming::cycles_only(1))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 512 * MB })
+                .with_timing(TestTiming::cycles_only(1))
+                .with_memory_type(None),
         ),
-
         // === StuckBitTest Auto-dispatch (AVX-512 > AVX2 > SSE2) ===
         // Placed last so results match the actual variant performance
         (
             "Mem-StuckBitAuto",
             TestFunction::MultiBlock(stuck_bit_test_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 512 * MB }
-            ).with_timing(TestTiming::cycles_only(1))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 512 * MB })
+                .with_timing(TestTiming::cycles_only(1))
+                .with_memory_type(None),
         ),
-
         // === StuckBit CLFLUSHOPT-verify variant (TODO #59) ===
         // Same 3-phase alternating-bit test, but each chunk is flushed out of cache between
         // write and verify, so the verify provably round-trips through DRAM instead of reading
@@ -2247,98 +2260,71 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
         (
             "Mem-StuckBit-FlushAuto",
             TestFunction::MultiBlock(stuck_bit_test_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Cache { target: CacheTarget::L2 { scale: 1.0 } }
-            ).with_timing(TestTiming::cycles_only(1))
-             .with_memory_type(None)
-             .with_flush_before_verify(true)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Cache { target: CacheTarget::L2 { scale: 1.0 } })
+                .with_timing(TestTiming::cycles_only(1))
+                .with_memory_type(None)
+                .with_flush_before_verify(true),
         ),
-
         // === SimpleTest NT (non-temporal stores) — bandwidth comparison ===
         (
             "Mem-SimpleNT-128",
             TestFunction::MultiBlock(simple_test_nt_128_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::hybrid(100, 30))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::hybrid(100, 30))
+                .with_memory_type(None),
         ),
-
         (
             "Mem-SimpleNT-256",
             TestFunction::MultiBlock(simple_test_nt_256_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::hybrid(100, 30))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::hybrid(100, 30))
+                .with_memory_type(None),
         ),
-
         (
             "Mem-SimpleNT-512",
             TestFunction::MultiBlock(simple_test_nt_512_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::hybrid(100, 30))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::hybrid(100, 30))
+                .with_memory_type(None),
         ),
-
         (
             "Mem-SimpleNT-Auto",
             TestFunction::MultiBlock(simple_test_nt_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::hybrid(100, 30))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::hybrid(100, 30))
+                .with_memory_type(None),
         ),
-
         // === Refresh stability tests (MultiBlock implementations) ===
         (
             "Mem-Refresh128",
             TestFunction::MultiBlock(refresh_stable_128_multi),
-            TestMemoryConfig::new(
-                ExtentMode::CacheTotal { fraction: 2.0 },
-                ChunkMode::Absolute { size_bytes: 2048 * MB }
-            ).with_timing(TestTiming::duration_only(15))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::CacheTotal { fraction: 2.0 }, ChunkMode::Absolute { size_bytes: 2048 * MB })
+                .with_timing(TestTiming::duration_only(15))
+                .with_memory_type(None),
         ),
-
         (
             "Mem-Refresh256",
             TestFunction::MultiBlock(refresh_stable_256_multi),
-            TestMemoryConfig::new(
-                ExtentMode::CacheTotal { fraction: 2.0 },
-                ChunkMode::Absolute { size_bytes: 2048 * MB }
-            ).with_timing(TestTiming::duration_only(15))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::CacheTotal { fraction: 2.0 }, ChunkMode::Absolute { size_bytes: 2048 * MB })
+                .with_timing(TestTiming::duration_only(15))
+                .with_memory_type(None),
         ),
-
         (
             "Mem-Refresh512",
             TestFunction::MultiBlock(refresh_stable_512_multi),
-            TestMemoryConfig::new(
-                ExtentMode::CacheTotal { fraction: 2.0 },
-                ChunkMode::Absolute { size_bytes: 2048 * MB }
-            ).with_timing(TestTiming::duration_only(15))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::CacheTotal { fraction: 2.0 }, ChunkMode::Absolute { size_bytes: 2048 * MB })
+                .with_timing(TestTiming::duration_only(15))
+                .with_memory_type(None),
         ),
-
         // === RefreshStable Auto-dispatch (AVX-512 > AVX2 > SSE2) ===
         // Placed after the explicit widths so results match the actual variant performance
         (
             "Mem-RefreshAuto",
             TestFunction::MultiBlock(refresh_stable_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::CacheTotal { fraction: 2.0 },
-                ChunkMode::Absolute { size_bytes: 2048 * MB }
-            ).with_timing(TestTiming::duration_only(15))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::CacheTotal { fraction: 2.0 }, ChunkMode::Absolute { size_bytes: 2048 * MB })
+                .with_timing(TestTiming::duration_only(15))
+                .with_memory_type(None),
         ),
-
         // === Refresh CLFLUSHOPT-verify variant (TODO #59, opt-in) ===
         // Same test with the pre-sleep flush enabled, making the DRAM round-trip architecturally
         // guaranteed rather than relying on eviction policy. Not the default: the plain variants'
@@ -2357,115 +2343,95 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
         (
             "Mem-Refresh-FlushAuto",
             TestFunction::MultiBlock(refresh_stable_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::CacheTotal { fraction: 2.0 },
-                ChunkMode::Absolute { size_bytes: 2048 * MB }
-            ).with_timing(TestTiming::duration_only(15))
-             .with_memory_type(None)
-             .with_flush_before_verify(true)
+            TestMemoryConfig::new(ExtentMode::CacheTotal { fraction: 2.0 }, ChunkMode::Absolute { size_bytes: 2048 * MB })
+                .with_timing(TestTiming::duration_only(15))
+                .with_memory_type(None)
+                .with_flush_before_verify(true),
         ),
-
         // === Performance stress tests ===
         (
             "Mem-CacheBust",
             TestFunction::MultiBlock(cache_busting_multi),
-            TestMemoryConfig::new(
-                ExtentMode::CacheTotal { fraction: 0.5 },
-                ChunkMode::Absolute { size_bytes: MB }
-            ).with_timing(TestTiming::duration_only(20))
-             .with_parameter_context(crate::config::TestParameterContext {
-                 raw_parameter: 4,
-                 stride_patterns: Some(4),
-                 ..Default::default()
-             })
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::CacheTotal { fraction: 0.5 }, ChunkMode::Absolute { size_bytes: MB })
+                .with_timing(TestTiming::duration_only(20))
+                .with_parameter_context(crate::config::TestParameterContext {
+                    raw_parameter: 4,
+                    stride_patterns: Some(4),
+                    ..Default::default()
+                })
+                .with_memory_type(None),
         ),
-
         (
             "Mem-Random",
             TestFunction::MultiBlock(random_torture_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 8 * MB }
-            ).with_timing(TestTiming::duration_only(25))
-             .with_parameter_context(crate::config::TestParameterContext {
-                 raw_parameter: 8,
-                 rng_sequences: Some(8),
-                 ..Default::default()
-             })
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 8 * MB })
+                .with_timing(TestTiming::duration_only(25))
+                .with_parameter_context(crate::config::TestParameterContext {
+                    raw_parameter: 8,
+                    rng_sequences: Some(8),
+                    ..Default::default()
+                })
+                .with_memory_type(None),
         ),
-
         (
             "Mem-Stride",
             TestFunction::MultiBlock(stride_access_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 2 * MB }
-            ).with_timing(TestTiming::cycles_only(1))
-             .with_parameter_context(crate::config::TestParameterContext {
-                 raw_parameter: 4,
-                 subdivisions: Some(4),
-                 ..Default::default()
-             })
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 2 * MB })
+                .with_timing(TestTiming::cycles_only(1))
+                .with_parameter_context(crate::config::TestParameterContext {
+                    raw_parameter: 4,
+                    subdivisions: Some(4),
+                    ..Default::default()
+                })
+                .with_memory_type(None),
         ),
-
         // Moving inversions, memtest86's (TODO 97): chunks twice the L3, so every pass reaches DRAM
         (
             "Mem-MovingInv",
             TestFunction::MultiBlock(moving_inversions_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Cache { target: CacheTarget::Dram { scale: 2.0 } }
-            ).with_timing(TestTiming::duration_only(30))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Cache { target: CacheTarget::Dram { scale: 2.0 } })
+                .with_timing(TestTiming::duration_only(30))
+                .with_memory_type(None),
         ),
-
         // Protected victims, memtest86's modulo-20 (TODO 97): chunks twice the L3, as the moving
         // inversions'
         (
             "Mem-ModuloX",
             TestFunction::MultiBlock(modulo_x_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Cache { target: CacheTarget::Dram { scale: 2.0 } }
-            ).with_timing(TestTiming::duration_only(30))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Cache { target: CacheTarget::Dram { scale: 2.0 } })
+                .with_timing(TestTiming::duration_only(30))
+                .with_memory_type(None),
         ),
-
         // A configurable sequence of writes, reads and read-then-writes in an order (TODO 97):
         // SimpleTest's write and reads, a pass that reads and writes line by line, and reads in a
         // random order, with chunks twice the L3, so each pass reaches DRAM
         (
             "Mem-Sequence",
             TestFunction::MultiBlock(sequence_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Cache { target: CacheTarget::Dram { scale: 2.0 } }
-            ).with_timing(TestTiming::duration_only(30))
-             .with_memory_type(None)
-             .with_write_read_cycles(2)
-             .with_sequence(crate::sequence::Sequence::parse("W 2R RW 2R@random", crate::sequence::Order::Forward)
-                 .expect("a valid sequence"))
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Cache { target: CacheTarget::Dram { scale: 2.0 } })
+                .with_timing(TestTiming::duration_only(30))
+                .with_memory_type(None)
+                .with_write_read_cycles(2)
+                .with_sequence(
+                    crate::sequence::Sequence::parse("W 2R RW 2R@random", crate::sequence::Order::Forward).expect("a valid sequence"),
+                ),
         ),
-
         (
             "Mem-BlockMove",
             TestFunction::MultiBlock(block_move_multi),
             TestMemoryConfig::new(
                 // Twice the caches, so its copies stream through DRAM (TODO 91)
                 ExtentMode::CacheTotal { fraction: 2.0 },
-                ChunkMode::Absolute { size_bytes: 16 * MB }
-            ).with_timing(TestTiming::duration_only(20))
-             .with_parameter_context(crate::config::TestParameterContext {
-                 raw_parameter: 1,
-                 copy_directions: Some(1),
-                 ..Default::default()
-             })
-             .with_memory_type(None)
+                ChunkMode::Absolute { size_bytes: 16 * MB },
+            )
+            .with_timing(TestTiming::duration_only(20))
+            .with_parameter_context(crate::config::TestParameterContext {
+                raw_parameter: 1,
+                copy_directions: Some(1),
+                ..Default::default()
+            })
+            .with_memory_type(None),
         ),
-
         // === v2 Tests — fixed PRNG, correct parameter interpretation, u64 MirrorMove ===
 
         // Mem-SimpleV2-*: matches v1 Mem-Simple config (FullAllocation, 4MB chunk, 100cycles/30s),
@@ -2473,97 +2439,73 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
         (
             "Mem-SimpleV2-128",
             TestFunction::MultiBlock(simple_test_v2_128_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::hybrid(100, 30))
-             .with_memory_type(None)
-             .with_write_read_cycles(2)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::hybrid(100, 30))
+                .with_memory_type(None)
+                .with_write_read_cycles(2),
         ),
-
         (
             "Mem-SimpleV2-256",
             TestFunction::MultiBlock(simple_test_v2_256_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::hybrid(100, 30))
-             .with_memory_type(None)
-             .with_write_read_cycles(2)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::hybrid(100, 30))
+                .with_memory_type(None)
+                .with_write_read_cycles(2),
         ),
-
         (
             "Mem-SimpleV2-512",
             TestFunction::MultiBlock(simple_test_v2_512_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::hybrid(100, 30))
-             .with_memory_type(None)
-             .with_write_read_cycles(2)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::hybrid(100, 30))
+                .with_memory_type(None)
+                .with_write_read_cycles(2),
         ),
-
         (
             "Mem-SimpleV2-Auto",
             TestFunction::MultiBlock(simple_test_v2_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::hybrid(100, 30))
-             .with_memory_type(None)
-             .with_write_read_cycles(2)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::hybrid(100, 30))
+                .with_memory_type(None)
+                .with_write_read_cycles(2),
         ),
-
         // Mem-MirrorV2-*: v1 Mem-Mirror's config (FixedSize 64MB extent, 10s), the wider ones
         // larger, with subblocks
         (
             "Mem-MirrorV2-128",
             TestFunction::MultiBlock(mirror_move_v2_128_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Absolute { size_bytes: 64 * MB },
-                ChunkMode::Absolute { size_bytes: 8 * MB }
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: 64 * MB }, ChunkMode::Absolute { size_bytes: 8 * MB })
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         (
             "Mem-MirrorV2-256",
             TestFunction::MultiBlock(mirror_move_v2_256_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Absolute { size_bytes: 128 * MB },
-                ChunkMode::Absolute { size_bytes: 8 * MB }
-            ).with_timing(TestTiming::duration_only(10))
-             .with_parameter_context(crate::config::TestParameterContext {
-                 mirror: Some(crate::config::MirrorMode::Subblocks(2)),
-                 ..Default::default()
-             })
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: 128 * MB }, ChunkMode::Absolute { size_bytes: 8 * MB })
+                .with_timing(TestTiming::duration_only(10))
+                .with_parameter_context(crate::config::TestParameterContext {
+                    mirror: Some(crate::config::MirrorMode::Subblocks(2)),
+                    ..Default::default()
+                })
+                .with_memory_type(None),
         ),
-
         (
             "Mem-MirrorV2-512",
             TestFunction::MultiBlock(mirror_move_v2_512_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Absolute { size_bytes: 256 * MB },
-                ChunkMode::Absolute { size_bytes: 8 * MB }
-            ).with_timing(TestTiming::duration_only(10))
-             .with_parameter_context(crate::config::TestParameterContext {
-                 mirror: Some(crate::config::MirrorMode::Subblocks(4)),
-                 ..Default::default()
-             })
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: 256 * MB }, ChunkMode::Absolute { size_bytes: 8 * MB })
+                .with_timing(TestTiming::duration_only(10))
+                .with_parameter_context(crate::config::TestParameterContext {
+                    mirror: Some(crate::config::MirrorMode::Subblocks(4)),
+                    ..Default::default()
+                })
+                .with_memory_type(None),
         ),
-
         (
             "Mem-MirrorV2-Auto",
             TestFunction::MultiBlock(mirror_move_v2_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Absolute { size_bytes: 64 * MB },
-                ChunkMode::Absolute { size_bytes: 8 * MB }
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: 64 * MB }, ChunkMode::Absolute { size_bytes: 8 * MB })
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         // === Bench-Init: Pattern Generation Throughput Benchmarks ===
         // test=Bench-Init-* runs all 6, test=Bench-Init-TM5-* runs TM5-faithful only
         // skip_init=true: init_fn not called at startup, test_fn does the pattern write.
@@ -2571,176 +2513,142 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
         (
             "Bench-Init-TM5-0",
             TestFunction::MultiBlock(bench_init_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(0), None, None)
-             .with_skip_init(true)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(0), None, None)
+                .with_skip_init(true)
+                .with_memory_type(None),
         ),
         (
             "Bench-Init-TM5-1",
             TestFunction::MultiBlock(bench_init_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(1), None, None)
-             .with_skip_init(true)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(1), None, None)
+                .with_skip_init(true)
+                .with_memory_type(None),
         ),
         (
             "Bench-Init-TM5-2",
             TestFunction::MultiBlock(bench_init_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(2), Some(0x5DEECE66D), Some(0xB))
-             .with_skip_init(true)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(2), Some(0x5DEECE66D), Some(0xB))
+                .with_skip_init(true)
+                .with_memory_type(None),
         ),
         (
             "Bench-Init-TMR-10",
             TestFunction::MultiBlock(bench_init_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(10), None, None)
-             .with_skip_init(true)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(10), None, None)
+                .with_skip_init(true)
+                .with_memory_type(None),
         ),
         (
             "Bench-Init-TMR-11",
             TestFunction::MultiBlock(bench_init_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(11), None, None)
-             .with_skip_init(true)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(11), None, None)
+                .with_skip_init(true)
+                .with_memory_type(None),
         ),
         (
             "Bench-Init-TMR-13",
             TestFunction::MultiBlock(bench_init_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(13), Some(0xC0FFEE42C0FFEE42), None)
-             .with_skip_init(true)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(13), Some(0xC0FFEE42C0FFEE42), None)
+                .with_skip_init(true)
+                .with_memory_type(None),
         ),
         (
             "Bench-Init-TMR-20",
             TestFunction::MultiBlock(bench_init_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(20), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
-             .with_skip_init(true)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(20), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
+                .with_skip_init(true)
+                .with_memory_type(None),
         ),
         (
             "Bench-Init-TMR-30",
             TestFunction::MultiBlock(bench_init_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(30), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
-             .with_skip_init(true)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(30), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
+                .with_skip_init(true)
+                .with_memory_type(None),
         ),
-
         // === Bench-Verify: Pattern Verification Throughput Benchmarks ===
         // Independent mode (default): writes patterns then measures verify throughput
         // Dependent mode: set skip_init=true in config, requires matching Bench-Init-* earlier in plan
         (
             "Bench-Verify-TM5-0",
             TestFunction::MultiBlock(bench_verify_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(0), None, None)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(0), None, None)
+                .with_memory_type(None),
         ),
         (
             "Bench-Verify-TM5-1",
             TestFunction::MultiBlock(bench_verify_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(1), None, None)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(1), None, None)
+                .with_memory_type(None),
         ),
         (
             "Bench-Verify-TM5-2",
             TestFunction::MultiBlock(bench_verify_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(2), Some(0x5DEECE66D), Some(0xB))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(2), Some(0x5DEECE66D), Some(0xB))
+                .with_memory_type(None),
         ),
         (
             "Bench-Verify-TMR-10",
             TestFunction::MultiBlock(bench_verify_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(10), None, None)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(10), None, None)
+                .with_memory_type(None),
         ),
         (
             "Bench-Verify-TMR-11",
             TestFunction::MultiBlock(bench_verify_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(11), None, None)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(11), None, None)
+                .with_memory_type(None),
         ),
         (
             "Bench-Verify-TMR-13",
             TestFunction::MultiBlock(bench_verify_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(13), Some(0xC0FFEE42C0FFEE42), None)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(13), Some(0xC0FFEE42C0FFEE42), None)
+                .with_memory_type(None),
         ),
         (
             "Bench-Verify-TMR-20",
             TestFunction::MultiBlock(bench_verify_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(20), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(20), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
+                .with_memory_type(None),
         ),
         (
             "Bench-Verify-TMR-30",
             TestFunction::MultiBlock(bench_verify_multi),
-            TestMemoryConfig::new(
-                ExtentMode::FullAllocation,
-                ChunkMode::Absolute { size_bytes: 4 * MB }
-            ).with_timing(TestTiming::cycles_only(10))
-             .with_pattern_config(Some(30), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                .with_timing(TestTiming::cycles_only(10))
+                .with_pattern_config(Some(30), Some(0xDEADBEEFDEADBEEF), Some(0xCAFEBABECAFEBABE))
+                .with_memory_type(None),
         ),
-
         // === Cache Hierarchy Latency Tests ===
         // Uses ExtentMode::Cache for automatic sizing based on detected cache
         // Naming: Lat-{Level}-{Operation} for easy filtering
@@ -2751,172 +2659,127 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
         (
             "Lat-L1-Read",
             TestFunction::Latency(read_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L1_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         (
             "Lat-L1-Write",
             TestFunction::Latency(write_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L1_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         (
             "Lat-L1-Copy",
             TestFunction::Latency(copy_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L1_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // L2 Cache - Read, Write, Copy
         (
             "Lat-L2-Read",
             TestFunction::Latency(read_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L2_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         (
             "Lat-L2-Write",
             TestFunction::Latency(write_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L2_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         (
             "Lat-L2-Copy",
             TestFunction::Latency(copy_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L2_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // L3 Cache - Read, Write, Copy
         (
             "Lat-L3-Read",
             TestFunction::Latency(read_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L3_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         (
             "Lat-L3-Write",
             TestFunction::Latency(write_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L3_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         (
             "Lat-L3-Copy",
             TestFunction::Latency(copy_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L3_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // DRAM - High TLB hit rate (typical latency) - Read, Write, Copy
         (
             "Lat-DRAM-Read",
             TestFunction::Latency(read_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         (
             "Lat-DRAM-Write",
             TestFunction::Latency(write_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         (
             "Lat-DRAM-Copy",
             TestFunction::Latency(copy_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // DRAMFull - Low TLB hit rate (stress with page miss overhead) - Read, Write, Copy
         (
             "Lat-DRAMFull-Read",
             TestFunction::Latency(read_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         (
             "Lat-DRAMFull-Write",
             TestFunction::Latency(write_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         (
             "Lat-DRAMFull-Copy",
             TestFunction::Latency(copy_latency_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_tsc(tsc_freq)
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // === V2 Latency Tests (PoC for #24) ===
         // Three new test families exploring better measurement strategies:
         //   Lat-V2-*-Read    — Layout A: 1 chain cell + 1 data cell pair (1 read per chain step)
@@ -2932,123 +2795,162 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
             "Lat-V2-L1-Read-Auto",
             TestFunction::Latency(lat_v2_read_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L1-Read-128",
             TestFunction::Latency(lat_v2_read_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L1-Read-256",
             TestFunction::Latency(lat_v2_read_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L1-Read-512",
             TestFunction::Latency(lat_v2_read_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L2-Read-Auto",
             TestFunction::Latency(lat_v2_read_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L2-Read-128",
             TestFunction::Latency(lat_v2_read_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L2-Read-256",
             TestFunction::Latency(lat_v2_read_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L2-Read-512",
             TestFunction::Latency(lat_v2_read_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L3-Read-Auto",
             TestFunction::Latency(lat_v2_read_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L3-Read-128",
             TestFunction::Latency(lat_v2_read_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L3-Read-256",
             TestFunction::Latency(lat_v2_read_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L3-Read-512",
             TestFunction::Latency(lat_v2_read_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAM-Read-Auto",
             TestFunction::Latency(lat_v2_read_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAM-Read-128",
             TestFunction::Latency(lat_v2_read_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAM-Read-256",
             TestFunction::Latency(lat_v2_read_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAM-Read-512",
             TestFunction::Latency(lat_v2_read_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAMFull-Read-Auto",
             TestFunction::Latency(lat_v2_read_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAMFull-Read-128",
             TestFunction::Latency(lat_v2_read_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAMFull-Read-256",
             TestFunction::Latency(lat_v2_read_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAMFull-Read-512",
             TestFunction::Latency(lat_v2_read_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // Layout A Write — Lat-V2-Write (5 tiers × {Auto,128,256,512} = 20 tests)
         // Single SIMD-width cached store per chain step. Baseline: predicted to track
         // Lat-V2-Read at every tier because one in-flight write fits behind any chain
@@ -3057,123 +2959,162 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
             "Lat-V2-L1-Write-Auto",
             TestFunction::Latency(lat_v2_write_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L1-Write-128",
             TestFunction::Latency(lat_v2_write_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L1-Write-256",
             TestFunction::Latency(lat_v2_write_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L1-Write-512",
             TestFunction::Latency(lat_v2_write_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L2-Write-Auto",
             TestFunction::Latency(lat_v2_write_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L2-Write-128",
             TestFunction::Latency(lat_v2_write_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L2-Write-256",
             TestFunction::Latency(lat_v2_write_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L2-Write-512",
             TestFunction::Latency(lat_v2_write_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L3-Write-Auto",
             TestFunction::Latency(lat_v2_write_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L3-Write-128",
             TestFunction::Latency(lat_v2_write_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L3-Write-256",
             TestFunction::Latency(lat_v2_write_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L3-Write-512",
             TestFunction::Latency(lat_v2_write_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAM-Write-Auto",
             TestFunction::Latency(lat_v2_write_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAM-Write-128",
             TestFunction::Latency(lat_v2_write_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAM-Write-256",
             TestFunction::Latency(lat_v2_write_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAM-Write-512",
             TestFunction::Latency(lat_v2_write_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAMFull-Write-Auto",
             TestFunction::Latency(lat_v2_write_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAMFull-Write-128",
             TestFunction::Latency(lat_v2_write_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAMFull-Write-256",
             TestFunction::Latency(lat_v2_write_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAMFull-Write-512",
             TestFunction::Latency(lat_v2_write_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // Layout A Copy — Lat-V2-Copy (5 tiers × {Auto,128,256,512} = 20 tests)
         // Single read-modify-write per chain step. Baseline: predicted to track Lat-V2-Read
         // closely because the load+XOR+store dependency chain is short and one in-flight
@@ -3182,245 +3123,323 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
             "Lat-V2-L1-Copy-Auto",
             TestFunction::Latency(lat_v2_copy_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L1-Copy-128",
             TestFunction::Latency(lat_v2_copy_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L1-Copy-256",
             TestFunction::Latency(lat_v2_copy_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L1-Copy-512",
             TestFunction::Latency(lat_v2_copy_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L2-Copy-Auto",
             TestFunction::Latency(lat_v2_copy_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L2-Copy-128",
             TestFunction::Latency(lat_v2_copy_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L2-Copy-256",
             TestFunction::Latency(lat_v2_copy_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L2-Copy-512",
             TestFunction::Latency(lat_v2_copy_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L3-Copy-Auto",
             TestFunction::Latency(lat_v2_copy_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L3-Copy-128",
             TestFunction::Latency(lat_v2_copy_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L3-Copy-256",
             TestFunction::Latency(lat_v2_copy_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-L3-Copy-512",
             TestFunction::Latency(lat_v2_copy_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAM-Copy-Auto",
             TestFunction::Latency(lat_v2_copy_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAM-Copy-128",
             TestFunction::Latency(lat_v2_copy_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAM-Copy-256",
             TestFunction::Latency(lat_v2_copy_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAM-Copy-512",
             TestFunction::Latency(lat_v2_copy_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAMFull-Copy-Auto",
             TestFunction::Latency(lat_v2_copy_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAMFull-Copy-128",
             TestFunction::Latency(lat_v2_copy_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAMFull-Copy-256",
             TestFunction::Latency(lat_v2_copy_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2-DRAMFull-Copy-512",
             TestFunction::Latency(lat_v2_copy_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // Layout B Packed — Lat-V2P-Read (5 tiers × {Auto,128,256,512} = 20 tests)
         (
             "Lat-V2P-L1-Read-Auto",
             TestFunction::Latency(lat_v2p_read_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-Read-128",
             TestFunction::Latency(lat_v2p_read_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-Read-256",
             TestFunction::Latency(lat_v2p_read_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-Read-512",
             TestFunction::Latency(lat_v2p_read_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-Read-Auto",
             TestFunction::Latency(lat_v2p_read_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-Read-128",
             TestFunction::Latency(lat_v2p_read_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-Read-256",
             TestFunction::Latency(lat_v2p_read_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-Read-512",
             TestFunction::Latency(lat_v2p_read_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-Read-Auto",
             TestFunction::Latency(lat_v2p_read_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-Read-128",
             TestFunction::Latency(lat_v2p_read_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-Read-256",
             TestFunction::Latency(lat_v2p_read_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-Read-512",
             TestFunction::Latency(lat_v2p_read_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-Read-Auto",
             TestFunction::Latency(lat_v2p_read_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-Read-128",
             TestFunction::Latency(lat_v2p_read_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-Read-256",
             TestFunction::Latency(lat_v2p_read_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-Read-512",
             TestFunction::Latency(lat_v2p_read_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-Read-Auto",
             TestFunction::Latency(lat_v2p_read_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-Read-128",
             TestFunction::Latency(lat_v2p_read_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-Read-256",
             TestFunction::Latency(lat_v2p_read_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-Read-512",
             TestFunction::Latency(lat_v2p_read_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // Layout B Write — Lat-V2P-Write (5 tiers × {Auto,128,256,512} = 20 tests)
         // Path B PoC: 6 SIMD-width cached stores per chain step. Tests whether the store
         // buffer becomes a measurable bottleneck under sustained random write pressure
@@ -3431,123 +3450,162 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
             "Lat-V2P-L1-Write-Auto",
             TestFunction::Latency(lat_v2p_write_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-Write-128",
             TestFunction::Latency(lat_v2p_write_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-Write-256",
             TestFunction::Latency(lat_v2p_write_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-Write-512",
             TestFunction::Latency(lat_v2p_write_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-Write-Auto",
             TestFunction::Latency(lat_v2p_write_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-Write-128",
             TestFunction::Latency(lat_v2p_write_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-Write-256",
             TestFunction::Latency(lat_v2p_write_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-Write-512",
             TestFunction::Latency(lat_v2p_write_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-Write-Auto",
             TestFunction::Latency(lat_v2p_write_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-Write-128",
             TestFunction::Latency(lat_v2p_write_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-Write-256",
             TestFunction::Latency(lat_v2p_write_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-Write-512",
             TestFunction::Latency(lat_v2p_write_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-Write-Auto",
             TestFunction::Latency(lat_v2p_write_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-Write-128",
             TestFunction::Latency(lat_v2p_write_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-Write-256",
             TestFunction::Latency(lat_v2p_write_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-Write-512",
             TestFunction::Latency(lat_v2p_write_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-Write-Auto",
             TestFunction::Latency(lat_v2p_write_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-Write-128",
             TestFunction::Latency(lat_v2p_write_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-Write-256",
             TestFunction::Latency(lat_v2p_write_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-Write-512",
             TestFunction::Latency(lat_v2p_write_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // Layout B Copy — Lat-V2P-Copy (5 tiers × {Auto,128,256,512} = 20 tests)
         // Read-modify-write: each chain step loads 6 random data cells, XORs them, stores
         // back. Loads warm lines into L1 first, so stores hit cached lines without RFO.
@@ -3558,123 +3616,162 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
             "Lat-V2P-L1-Copy-Auto",
             TestFunction::Latency(lat_v2p_copy_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-Copy-128",
             TestFunction::Latency(lat_v2p_copy_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-Copy-256",
             TestFunction::Latency(lat_v2p_copy_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-Copy-512",
             TestFunction::Latency(lat_v2p_copy_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-Copy-Auto",
             TestFunction::Latency(lat_v2p_copy_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-Copy-128",
             TestFunction::Latency(lat_v2p_copy_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-Copy-256",
             TestFunction::Latency(lat_v2p_copy_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-Copy-512",
             TestFunction::Latency(lat_v2p_copy_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-Copy-Auto",
             TestFunction::Latency(lat_v2p_copy_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-Copy-128",
             TestFunction::Latency(lat_v2p_copy_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-Copy-256",
             TestFunction::Latency(lat_v2p_copy_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-Copy-512",
             TestFunction::Latency(lat_v2p_copy_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-Copy-Auto",
             TestFunction::Latency(lat_v2p_copy_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-Copy-128",
             TestFunction::Latency(lat_v2p_copy_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-Copy-256",
             TestFunction::Latency(lat_v2p_copy_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-Copy-512",
             TestFunction::Latency(lat_v2p_copy_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-Copy-Auto",
             TestFunction::Latency(lat_v2p_copy_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-Copy-128",
             TestFunction::Latency(lat_v2p_copy_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-Copy-256",
             TestFunction::Latency(lat_v2p_copy_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-Copy-512",
             TestFunction::Latency(lat_v2p_copy_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // Layout B WriteFull — full-cache-line cached writes (5 tiers × {Auto,128,256,512} = 20 tests)
         // Compares to Lat-V2P-Write to isolate the byte-coverage variable. Same chain
         // structure but every width writes the full 64-byte cache line per cell.
@@ -3682,123 +3779,162 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
             "Lat-V2P-L1-WriteFull-Auto",
             TestFunction::Latency(lat_v2p_write_full_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-WriteFull-128",
             TestFunction::Latency(lat_v2p_write_full_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-WriteFull-256",
             TestFunction::Latency(lat_v2p_write_full_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-WriteFull-512",
             TestFunction::Latency(lat_v2p_write_full_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-WriteFull-Auto",
             TestFunction::Latency(lat_v2p_write_full_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-WriteFull-128",
             TestFunction::Latency(lat_v2p_write_full_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-WriteFull-256",
             TestFunction::Latency(lat_v2p_write_full_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-WriteFull-512",
             TestFunction::Latency(lat_v2p_write_full_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-WriteFull-Auto",
             TestFunction::Latency(lat_v2p_write_full_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-WriteFull-128",
             TestFunction::Latency(lat_v2p_write_full_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-WriteFull-256",
             TestFunction::Latency(lat_v2p_write_full_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-WriteFull-512",
             TestFunction::Latency(lat_v2p_write_full_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-WriteFull-Auto",
             TestFunction::Latency(lat_v2p_write_full_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-WriteFull-128",
             TestFunction::Latency(lat_v2p_write_full_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-WriteFull-256",
             TestFunction::Latency(lat_v2p_write_full_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-WriteFull-512",
             TestFunction::Latency(lat_v2p_write_full_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-WriteFull-Auto",
             TestFunction::Latency(lat_v2p_write_full_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-WriteFull-128",
             TestFunction::Latency(lat_v2p_write_full_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-WriteFull-256",
             TestFunction::Latency(lat_v2p_write_full_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-WriteFull-512",
             TestFunction::Latency(lat_v2p_write_full_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // Layout B CopyFull — full-cache-line RMW (5 tiers × {Auto,128,256,512} = 20 tests)
         // Compares to Lat-V2P-Copy to isolate the byte-coverage variable. Tests whether
         // the L3 bimodal distribution is byte-coverage driven or SIMD-path driven.
@@ -3806,123 +3942,162 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
             "Lat-V2P-L1-CopyFull-Auto",
             TestFunction::Latency(lat_v2p_copy_full_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-CopyFull-128",
             TestFunction::Latency(lat_v2p_copy_full_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-CopyFull-256",
             TestFunction::Latency(lat_v2p_copy_full_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L1-CopyFull-512",
             TestFunction::Latency(lat_v2p_copy_full_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-CopyFull-Auto",
             TestFunction::Latency(lat_v2p_copy_full_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-CopyFull-128",
             TestFunction::Latency(lat_v2p_copy_full_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-CopyFull-256",
             TestFunction::Latency(lat_v2p_copy_full_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L2-CopyFull-512",
             TestFunction::Latency(lat_v2p_copy_full_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-CopyFull-Auto",
             TestFunction::Latency(lat_v2p_copy_full_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-CopyFull-128",
             TestFunction::Latency(lat_v2p_copy_full_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-CopyFull-256",
             TestFunction::Latency(lat_v2p_copy_full_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-L3-CopyFull-512",
             TestFunction::Latency(lat_v2p_copy_full_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-CopyFull-Auto",
             TestFunction::Latency(lat_v2p_copy_full_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-CopyFull-128",
             TestFunction::Latency(lat_v2p_copy_full_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-CopyFull-256",
             TestFunction::Latency(lat_v2p_copy_full_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAM-CopyFull-512",
             TestFunction::Latency(lat_v2p_copy_full_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-CopyFull-Auto",
             TestFunction::Latency(lat_v2p_copy_full_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-CopyFull-128",
             TestFunction::Latency(lat_v2p_copy_full_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-CopyFull-256",
             TestFunction::Latency(lat_v2p_copy_full_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-V2P-DRAMFull-CopyFull-512",
             TestFunction::Latency(lat_v2p_copy_full_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // NT Write saturation — Lat-NTW-DRAM-Write ({Auto,Scalar,128,256,512} = 5 tests)
         // NT stores bypass cache hierarchy — only the DRAM tier exists. Width variants exposed
         // because per-store commit time differs (wider stores fill cache lines in fewer ops).
@@ -3931,33 +4106,42 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
             "Lat-NTW-DRAM-Write-Auto",
             TestFunction::Latency(lat_ntw_write_auto_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-NTW-DRAM-Write-Scalar",
             TestFunction::Latency(lat_ntw_write_scalar_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-NTW-DRAM-Write-128",
             TestFunction::Latency(lat_ntw_write_128_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-NTW-DRAM-Write-256",
             TestFunction::Latency(lat_ntw_write_256_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
         (
             "Lat-NTW-DRAM-Write-512",
             TestFunction::Latency(lat_ntw_write_512_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
-                .with_timing(TestTiming::duration_only(10)).with_tsc(tsc_freq).with_memory_type(None)
+                .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
         ),
-
         // === Sequential Bandwidth Tests (Auto-dispatch) ===
         // Measures peak sequential memory bandwidth (unlike latency tests which use random access)
         // Naming: Spd-{Level}-{Operation}-Auto → resolves to Spd-{Level}-{Operation}-{128,256,512}_A
@@ -3970,160 +4154,117 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
         (
             "Spd-L1-Read-Auto",
             TestFunction::MultiBlock(spd_read_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L1_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         (
             "Spd-L1-Write-Auto",
             TestFunction::MultiBlock(spd_write_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L1_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         (
             "Spd-L1-Copy-Auto",
             TestFunction::MultiBlock(spd_copy_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L1_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L1_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         // L2 Cache Bandwidth - Read, Write, Copy
         (
             "Spd-L2-Read-Auto",
             TestFunction::MultiBlock(spd_read_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L2_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         (
             "Spd-L2-Write-Auto",
             TestFunction::MultiBlock(spd_write_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L2_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         (
             "Spd-L2-Copy-Auto",
             TestFunction::MultiBlock(spd_copy_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L2_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L2_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         // L3 Cache Bandwidth - Read, Write, Copy
         (
             "Spd-L3-Read-Auto",
             TestFunction::MultiBlock(spd_read_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L3_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         (
             "Spd-L3-Write-Auto",
             TestFunction::MultiBlock(spd_write_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L3_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         (
             "Spd-L3-Copy-Auto",
             TestFunction::MultiBlock(spd_copy_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::L3_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::L3_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         // DRAMSmall Bandwidth - Smaller working set, high TLB hit rate - Read, Write, Copy
         (
             "Spd-DRAMSmall-Read-Auto",
             TestFunction::MultiBlock(spd_read_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         (
             "Spd-DRAMSmall-Write-Auto",
             TestFunction::MultiBlock(spd_write_nt_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         (
             "Spd-DRAMSmall-Copy-Auto",
             TestFunction::MultiBlock(spd_copy_nt_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         // DRAMFull Bandwidth - Full allocation, includes TLB miss overhead - Read, Write, Copy
         (
             "Spd-DRAMFull-Read-Auto",
             TestFunction::MultiBlock(spd_read_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         (
             "Spd-DRAMFull-Write-Auto",
             TestFunction::MultiBlock(spd_write_nt_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
-
         (
             "Spd-DRAMFull-Copy-Auto",
             TestFunction::MultiBlock(spd_copy_nt_auto_multi),
-            TestMemoryConfig::new(
-                ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT },
-                ChunkMode::Whole
-            ).with_timing(TestTiming::duration_only(10))
-             .with_memory_type(None)
+            TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
+                .with_timing(TestTiming::duration_only(10))
+                .with_memory_type(None),
         ),
     ];
-    
+
     // The seal's fill and check, per pattern and width (TODO 74), set up as the Bench pairs above
-    let bench_at = test_definitions.iter().rposition(|(name, _, _)| name.starts_with("Bench-Verify-")).map_or(test_definitions.len(), |i| i + 1);
+    let bench_at =
+        test_definitions.iter().rposition(|(name, _, _)| name.starts_with("Bench-Verify-")).map_or(test_definitions.len(), |i| i + 1);
     let mut test_definitions = test_definitions;
     let seal_benches = crate::tests::bench_seal_tests().map(|(name, function)| {
         let config = TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
@@ -4136,14 +4277,20 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
 
     // The native families' write and verify alone (pattern spec v2), after the seal's: each family's
     // Init then its Verify, which fills itself and times only its verifies (TODO 90)
-    let bench_at = test_definitions.iter().rposition(|(name, _, _)| name.starts_with("Bench-Verify-")).map_or(test_definitions.len(), |i| i + 1);
-    let native_benches = crate::tests::native_bench_tests().into_iter().flat_map(|(init, verify, fi, fv)| {
-        let config = |skip_init| TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
-            .with_timing(TestTiming::cycles_only(10))
-            .with_skip_init(skip_init)
-            .with_memory_type(None);
-        [(init, TestFunction::MultiBlock(fi), config(true)), (verify, TestFunction::MultiBlock(fv), config(false))]
-    }).collect::<Vec<_>>();
+    let bench_at =
+        test_definitions.iter().rposition(|(name, _, _)| name.starts_with("Bench-Verify-")).map_or(test_definitions.len(), |i| i + 1);
+    let native_benches = crate::tests::native_bench_tests()
+        .into_iter()
+        .flat_map(|(init, verify, fi, fv)| {
+            let config = |skip_init| {
+                TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MB })
+                    .with_timing(TestTiming::cycles_only(10))
+                    .with_skip_init(skip_init)
+                    .with_memory_type(None)
+            };
+            [(init, TestFunction::MultiBlock(fi), config(true)), (verify, TestFunction::MultiBlock(fv), config(false))]
+        })
+        .collect::<Vec<_>>();
     test_definitions.splice(bench_at..bench_at, native_benches);
     test_definitions
 }
@@ -4197,7 +4344,9 @@ type CycleOrder = Vec<(String, bool)>;
 ///
 /// A config can name any test the built-in suite has, latency and bandwidth tests included
 /// (TODO 94), by its name or its `-Auto` name, plus the aliases `get_test_function_by_name` knows.
-fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cache_info: &CacheInfo) -> Result<(Vec<TestDefinition>, Option<CycleOrder>), String> {
+fn create_test_definitions_from_config(
+    config: &crate::config::ModernConfig, cache_info: &CacheInfo,
+) -> Result<(Vec<TestDefinition>, Option<CycleOrder>), String> {
     let plan = config.plan()?;
     let built_in = create_test_definitions(cache_info);
     let mut tests = Vec::new();
@@ -4205,9 +4354,9 @@ fn create_test_definitions_from_config(config: &crate::config::ModernConfig, cac
         let test_name = test.function;
         // Look up function by name: the aliases first, then the built-in suite
         let test_function = crate::tests::get_test_function_by_name(test_name)
-            .or_else(|| built_in.iter()
-                .find(|d| d.actual_name == test_name || d.original_name == Some(test_name))
-                .map(|d| d.function.clone()))
+            .or_else(|| {
+                built_in.iter().find(|d| d.actual_name == test_name || d.original_name == Some(test_name)).map(|d| d.function.clone())
+            })
             .ok_or_else(|| format!("Unknown test function '{}' in config", test_name))?;
         let id = test.id.map(str::to_string);
 
@@ -4271,8 +4420,7 @@ pub fn detect_runtime_capabilities(alloc_config: &MemoryAllocationConfig) -> Run
 
     let large_pages_available = crate::memory::privileges::check_large_page_privilege().is_ok();
 
-    log::info!("Runtime capabilities detected: backend={:?}, large_pages_available={}",
-               memory_backend, large_pages_available);
+    log::info!("Runtime capabilities detected: backend={:?}, large_pages_available={}", memory_backend, large_pages_available);
 
     RuntimeConfig {
         memory_backend,
@@ -4294,12 +4442,12 @@ pub fn pin_thread_to_cpu_with_config(thread_id: usize, cpu_id: usize, enable: bo
     if !enable {
         return Ok(cpu_id);
     }
-    
-    use windows::Win32::System::Threading::{
-        SetThreadGroupAffinity, SetThreadIdealProcessorEx, GetCurrentThread, GetCurrentProcessorNumberEx
-    };
+
     use windows::Win32::System::Kernel::PROCESSOR_NUMBER;
     use windows::Win32::System::SystemInformation::GROUP_AFFINITY;
+    use windows::Win32::System::Threading::{
+        GetCurrentProcessorNumberEx, GetCurrentThread, SetThreadGroupAffinity, SetThreadIdealProcessorEx,
+    };
 
     unsafe {
         let thread_handle = GetCurrentThread();
@@ -4309,34 +4457,54 @@ pub fn pin_thread_to_cpu_with_config(thread_id: usize, cpu_id: usize, enable: bo
         // current group: above CPU 63 its 1 << cpu wrapped, stacking workers on group 0's CPUs.
         let target = GROUP_AFFINITY { Mask: 1usize << (cpu_id % 64), Group: (cpu_id / 64) as u16, Reserved: [0; 3] };
         if !SetThreadGroupAffinity(thread_handle, &target, None).as_bool() {
-            return Err(format!("SetThreadGroupAffinity failed for thread {} CPU {} (group {}, bit {})",
-                               thread_id, cpu_id, cpu_id / 64, cpu_id % 64));
+            return Err(format!(
+                "SetThreadGroupAffinity failed for thread {} CPU {} (group {}, bit {})",
+                thread_id,
+                cpu_id,
+                cpu_id / 64,
+                cpu_id % 64
+            ));
         }
         // Check where the thread now runs: once per worker, and the only proof the pinning held
         std::thread::yield_now();
         let now = GetCurrentProcessorNumberEx();
         let running_on = now.Group as usize * 64 + now.Number as usize;
         if running_on != cpu_id {
-            log::warn!("Thread {} pinned to CPU {} but running on CPU {} (group {}, number {})",
-                       thread_id, cpu_id, running_on, now.Group, now.Number);
+            log::warn!(
+                "Thread {} pinned to CPU {} but running on CPU {} (group {}, number {})",
+                thread_id,
+                cpu_id,
+                running_on,
+                now.Group,
+                now.Number
+            );
         }
-        
+
         // Method 2: Set ideal processor (soft preference)
         let processor = PROCESSOR_NUMBER {
-            Group: (cpu_id / 64) as u16,  // Processor group (for systems with >64 CPUs)
-            Number: (cpu_id % 64) as u8,  // Processor number within group
+            Group: (cpu_id / 64) as u16, // Processor group (for systems with >64 CPUs)
+            Number: (cpu_id % 64) as u8, // Processor number within group
             Reserved: 0,
         };
-        
+
         match SetThreadIdealProcessorEx(thread_handle, &processor, None) {
             Ok(_) => {
-                log::debug!("Thread {} successfully pinned to CPU {} (Group: {}, Number: {})", 
-                    thread_id, cpu_id, processor.Group, processor.Number);
+                log::debug!(
+                    "Thread {} successfully pinned to CPU {} (Group: {}, Number: {})",
+                    thread_id,
+                    cpu_id,
+                    processor.Group,
+                    processor.Number
+                );
                 Ok(cpu_id)
-            },
+            }
             Err(e) => {
-                log::warn!("SetThreadIdealProcessorEx failed for thread {} CPU {}: {:?}, but the group affinity succeeded",
-                    thread_id, cpu_id, e);
+                log::warn!(
+                    "SetThreadIdealProcessorEx failed for thread {} CPU {}: {:?}, but the group affinity succeeded",
+                    thread_id,
+                    cpu_id,
+                    e
+                );
                 Ok(cpu_id) // Affinity mask succeeded, so still return success
             }
         }
@@ -4379,9 +4547,7 @@ impl std::str::FromStr for ThreadPriority {
 
 impl ThreadPriority {
     fn win32(self) -> (windows::Win32::System::Threading::THREAD_PRIORITY, &'static str) {
-        use windows::Win32::System::Threading::{
-            THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_TIME_CRITICAL,
-        };
+        use windows::Win32::System::Threading::{THREAD_PRIORITY_HIGHEST, THREAD_PRIORITY_NORMAL, THREAD_PRIORITY_TIME_CRITICAL};
         match self {
             Self::Normal => (THREAD_PRIORITY_NORMAL, "THREAD_PRIORITY_NORMAL"),
             Self::High => (THREAD_PRIORITY_HIGHEST, "THREAD_PRIORITY_HIGHEST"),
@@ -4414,9 +4580,7 @@ impl std::fmt::Display for ThreadPriority {
 }
 
 /// Convert latency test results to LatencyLevelSummary for reporting
-fn convert_to_latency_level_summary(
-    latency_results: &[(usize, usize, LatencyTestStats)],
-) -> LatencyLevelSummary {
+fn convert_to_latency_level_summary(latency_results: &[(usize, usize, LatencyTestStats)]) -> LatencyLevelSummary {
     // Collect per-thread results
     let mut per_thread_results = Vec::new();
     let mut all_latencies = Vec::new();
@@ -4476,21 +4640,27 @@ fn convert_to_latency_level_summary(
         }
     } else {
         LatencyPercentiles {
-            min_ns: 0.0, p5_ns: 0.0, p10_ns: 0.0, p25_ns: 0.0,
-            p50_ns: 0.0, p75_ns: 0.0, p90_ns: 0.0, p95_ns: 0.0, p99_ns: 0.0,
-            p99_9_ns: 0.0, spread_ratio: 0.0,
+            min_ns: 0.0,
+            p5_ns: 0.0,
+            p10_ns: 0.0,
+            p25_ns: 0.0,
+            p50_ns: 0.0,
+            p75_ns: 0.0,
+            p90_ns: 0.0,
+            p95_ns: 0.0,
+            p99_ns: 0.0,
+            p99_9_ns: 0.0,
+            spread_ratio: 0.0,
         }
     };
 
-    LatencyLevelSummary {
-        total_samples,
-        per_thread_results,
-        consolidated,
-    }
+    LatencyLevelSummary { total_samples, per_thread_results, consolidated }
 }
 
 /// Every thread's share, from the stitched allocator: one contiguous VA span per thread.
-fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runtime_config: &RuntimeConfig) -> Result<crate::memory::stitched::StitchedAllocation, String> {
+fn allocate_all_blocks_new(
+    thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runtime_config: &RuntimeConfig,
+) -> Result<crate::memory::stitched::StitchedAllocation, String> {
     match runtime_config.memory_backend {
         MemoryBackend::VirtualAlloc2 => crate::memory::stitched::chunk_allocate_stitched(thread_blocks, runtime_config),
     }
@@ -4500,19 +4670,20 @@ fn allocate_all_blocks_new(thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runti
 /// and placed by `cpu_assignments`, each with the run's WHEA total on its aggregate row.
 fn cpu_performance_summary(
     final_stats: &TestCpuStats,
-    cpu_assignments: &[CpuAssignment],  // (thread_id, logical_cpu, numa_node)
+    cpu_assignments: &[CpuAssignment], // (thread_id, logical_cpu, numa_node)
     whea: crate::whea::WheaCounts,
     pinned: bool,
 ) -> CpuPerformanceSummary {
-    use crate::reporting::models::*;
-    use crate::cpu_topology::get_cpu_topology;
     use std::collections::HashMap;
+
+    use crate::cpu_topology::get_cpu_topology;
+    use crate::reporting::models::*;
 
     // Get CPU topology for physical core ID lookup
     let topology = get_cpu_topology();
 
     // Aggregate stats across ALL tests by thread_id
-    let mut thread_aggregates: HashMap<usize, (u64, std::time::Duration, u64)> = HashMap::new();  // (bytes, time, errors)
+    let mut thread_aggregates: HashMap<usize, (u64, std::time::Duration, u64)> = HashMap::new(); // (bytes, time, errors)
 
     for stats in final_stats.values() {
         for &(thread_id, _cpu_id, bytes, time, errors, _operations, _cycles) in stats {
@@ -4528,16 +4699,10 @@ fn cpu_performance_summary(
     for &(thread_id, cpu_id, numa_node) in cpu_assignments {
         if let Some(&(total_bytes, total_time, total_errors)) = thread_aggregates.get(&thread_id) {
             // Look up physical core ID from topology
-            let physical_core_id = topology.iter()
-                .find(|cpu| cpu.logical_id == cpu_id)
-                .map(|cpu| cpu.physical_core_id)
-                .unwrap_or(cpu_id);  // Fallback to logical ID if not found
+            let physical_core_id = topology.iter().find(|cpu| cpu.logical_id == cpu_id).map(|cpu| cpu.physical_core_id).unwrap_or(cpu_id); // Fallback to logical ID if not found
 
-            let throughput_mib_s = if !total_time.is_zero() {
-                (total_bytes as f64 / (1024.0 * 1024.0)) / total_time.as_secs_f64()
-            } else {
-                0.0
-            };
+            let throughput_mib_s =
+                if !total_time.is_zero() { (total_bytes as f64 / (1024.0 * 1024.0)) / total_time.as_secs_f64() } else { 0.0 };
 
             threads.push(ThreadPerformance {
                 thread_id,
@@ -4554,7 +4719,7 @@ fn cpu_performance_summary(
     threads.sort_by_key(|t| t.thread_id);
 
     // Build PerformanceByCpuReport (aggregate by logical CPU)
-    let mut cpu_aggregates: HashMap<usize, (usize, u32, u64, u128, u64)> = HashMap::new();  // (physical_core, numa, bytes, time, errors)
+    let mut cpu_aggregates: HashMap<usize, (usize, u32, u64, u128, u64)> = HashMap::new(); // (physical_core, numa, bytes, time, errors)
     for thread in &threads {
         let entry = cpu_aggregates.entry(thread.cpu_id).or_insert((thread.physical_core_id, thread.numa_node, 0, 0, 0));
         entry.2 += thread.total_bytes;
@@ -4562,26 +4727,18 @@ fn cpu_performance_summary(
         entry.4 += thread.total_errors;
     }
 
-    let mut cpus: Vec<CpuPerformance> = cpu_aggregates.iter().map(|(&cpu_id, &(physical_core_id, numa_node, total_bytes, total_time_ms, total_errors))| {
-        let throughput_mib_s = if total_time_ms > 0 {
-            (total_bytes as f64 / (1024.0 * 1024.0)) / (total_time_ms as f64 / 1000.0)
-        } else {
-            0.0
-        };
-        CpuPerformance {
-            cpu_id,
-            physical_core_id,
-            numa_node,
-            total_time_ms,
-            total_bytes,
-            throughput_mib_s,
-            total_errors,
-        }
-    }).collect();
+    let mut cpus: Vec<CpuPerformance> = cpu_aggregates
+        .iter()
+        .map(|(&cpu_id, &(physical_core_id, numa_node, total_bytes, total_time_ms, total_errors))| {
+            let throughput_mib_s =
+                if total_time_ms > 0 { (total_bytes as f64 / (1024.0 * 1024.0)) / (total_time_ms as f64 / 1000.0) } else { 0.0 };
+            CpuPerformance { cpu_id, physical_core_id, numa_node, total_time_ms, total_bytes, throughput_mib_s, total_errors }
+        })
+        .collect();
     cpus.sort_by_key(|c| c.cpu_id);
 
     // Build PerformanceByPhysicalCoreReport (aggregate by physical core)
-    let mut core_aggregates: HashMap<usize, (Vec<usize>, u64, u128, u64)> = HashMap::new();  // (logical_cpus, bytes, time, errors)
+    let mut core_aggregates: HashMap<usize, (Vec<usize>, u64, u128, u64)> = HashMap::new(); // (logical_cpus, bytes, time, errors)
     for cpu in &cpus {
         let entry = core_aggregates.entry(cpu.physical_core_id).or_insert((Vec::new(), 0, 0, 0));
         if !entry.0.contains(&cpu.cpu_id) {
@@ -4592,23 +4749,23 @@ fn cpu_performance_summary(
         entry.3 += cpu.total_errors;
     }
 
-    let mut cores: Vec<PhysicalCorePerformance> = core_aggregates.iter().map(|(&core_id, (logical_cpus, total_bytes, total_time_ms, total_errors))| {
-        let throughput_mib_s = if *total_time_ms > 0 {
-            (*total_bytes as f64 / (1024.0 * 1024.0)) / (*total_time_ms as f64 / 1000.0)
-        } else {
-            0.0
-        };
-        let mut logical_cpus_sorted = logical_cpus.clone();
-        logical_cpus_sorted.sort();
-        PhysicalCorePerformance {
-            core_id,
-            logical_cpus: logical_cpus_sorted,
-            total_time_ms: *total_time_ms,
-            total_bytes: *total_bytes,
-            throughput_mib_s,
-            total_errors: *total_errors,
-        }
-    }).collect();
+    let mut cores: Vec<PhysicalCorePerformance> = core_aggregates
+        .iter()
+        .map(|(&core_id, (logical_cpus, total_bytes, total_time_ms, total_errors))| {
+            let throughput_mib_s =
+                if *total_time_ms > 0 { (*total_bytes as f64 / (1024.0 * 1024.0)) / (*total_time_ms as f64 / 1000.0) } else { 0.0 };
+            let mut logical_cpus_sorted = logical_cpus.clone();
+            logical_cpus_sorted.sort();
+            PhysicalCorePerformance {
+                core_id,
+                logical_cpus: logical_cpus_sorted,
+                total_time_ms: *total_time_ms,
+                total_bytes: *total_bytes,
+                throughput_mib_s,
+                total_errors: *total_errors,
+            }
+        })
+        .collect();
     cores.sort_by_key(|c| c.core_id);
 
     // All three breakdowns carry the same run-wide WHEA figure: the events cannot be attributed to a
@@ -4622,13 +4779,8 @@ fn cpu_performance_summary(
 }
 
 fn display_and_save_results(
-    test_run_result: &Arc<Mutex<TestRunResult>>,
-    suite_duration: std::time::Duration,
-    whea_totals: crate::whea::WheaCounts,
-    whea_monitored: bool,
-    outcome: RunOutcome,
-    status: RunStatus,
-    fe: &dyn Frontend,
+    test_run_result: &Arc<Mutex<TestRunResult>>, suite_duration: std::time::Duration, whea_totals: crate::whea::WheaCounts,
+    whea_monitored: bool, outcome: RunOutcome, status: RunStatus, fe: &dyn Frontend,
 ) {
     let mut result = test_run_result.lock().unwrap();
     result.finalize(suite_duration);
@@ -4657,8 +4809,10 @@ fn display_and_save_results(
 /// 72), so a run killed, lost or crashed from then on still leaves the cycles saved so far; then the
 /// cycle's end is shown, a partial one too, `partial` as its results record it (TODO 29). Returns
 /// when the results were last saved: now, or `last_save` when this cycle's weren't.
-fn after_cycle(end: &CycleEnd, cycle: u32, test_run_result: &Mutex<TestRunResult>, whea: &crate::whea::WheaMonitor,
-               suite_start: Instant, last_save: Instant, fe: &dyn Frontend) -> Instant {
+fn after_cycle(
+    end: &CycleEnd, cycle: u32, test_run_result: &Mutex<TestRunResult>, whea: &crate::whea::WheaMonitor, suite_start: Instant,
+    last_save: Instant, fe: &dyn Frontend,
+) -> Instant {
     let saved = if results_save_due(cycle, end.stop.is_some(), last_save.elapsed()) {
         save_after_cycle(test_run_result, cycle, suite_start.elapsed(), whea);
         Instant::now()
@@ -4706,10 +4860,7 @@ fn save_after_cycle(test_run_result: &Mutex<TestRunResult>, cycle: u32, elapsed:
 pub fn memory_status() -> Option<crate::frontend::MemoryStatus> {
     use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
-    let mut mem_status = MEMORYSTATUSEX {
-        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
-        ..Default::default()
-    };
+    let mut mem_status = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
     // SAFETY: `mem_status` is a local with its length set, passed directly as the out-parameter
     unsafe { GlobalMemoryStatusEx(&mut mem_status) }.ok()?;
     Some(crate::frontend::MemoryStatus {
@@ -4738,8 +4889,12 @@ pub mod test_support {
         fn allocate(&self, _: &AllocationConfig) -> Result<BackendAllocation, AllocError> {
             unreachable!("test blocks are built directly")
         }
-        fn free(&self, _: BackendAllocation) -> Result<(), String> { Ok(()) }
-        fn name(&self) -> &'static str { "heap" }
+        fn free(&self, _: BackendAllocation) -> Result<(), String> {
+            Ok(())
+        }
+        fn name(&self) -> &'static str {
+            "heap"
+        }
     }
 
     pub(crate) const KIB: usize = 1024;
@@ -4762,19 +4917,16 @@ pub mod test_support {
             unsafe { std::ptr::write_bytes(mem, FILL, layout.size()) };
             let backend: Arc<dyn Backend> = Arc::new(HeapView);
             let mut at = GUARD;
-            let blocks = sizes.iter().map(|&size| {
-                let block = AllocationBlock {
-                    buffer: MemoryBuffer::new(
-                        BackendAllocation {
-                            ptr: unsafe { mem.add(at) },
-                            size,
-                        },
-                        backend.clone(),
-                    ),
-                };
-                at += size;
-                block
-            }).collect();
+            let blocks = sizes
+                .iter()
+                .map(|&size| {
+                    let block = AllocationBlock {
+                        buffer: MemoryBuffer::new(BackendAllocation { ptr: unsafe { mem.add(at) }, size }, backend.clone()),
+                    };
+                    at += size;
+                    block
+                })
+                .collect();
             Region { mem, layout, blocks }
         }
 
@@ -4809,8 +4961,10 @@ pub mod test_support {
     /// Bench-Verify-TMR-10 at 256 bits, with bit 17 of one word of thread 0's span flipped first:
     /// a fault between the Bench-Init's write and its verify, for the fake cycle's golden.
     #[doc = include_str!("test_fn_safety.md")]
-    unsafe fn flip_then_verify(blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming,
-                               config: &TestMemoryConfig, progress: Option<&TestProgress>) -> TestStats {
+    unsafe fn flip_then_verify(
+        blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+        progress: Option<&TestProgress>,
+    ) -> TestStats {
         if thread_id == 0 {
             *(blocks[0].buffer.as_mut_ptr() as *mut u64).add(FLIPPED_WORD) ^= 1 << 17;
         }
@@ -4820,8 +4974,10 @@ pub mod test_support {
     /// Mem-StuckBit256, with bit 17 of one word of thread 0's span flipped after it, once it has
     /// resealed its chunks: a fault in sealed memory that only the final seal check can find.
     #[doc = include_str!("test_fn_safety.md")]
-    unsafe fn stuck_bit_then_flip(blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming,
-                                  config: &TestMemoryConfig, progress: Option<&TestProgress>) -> TestStats {
+    unsafe fn stuck_bit_then_flip(
+        blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+        progress: Option<&TestProgress>,
+    ) -> TestStats {
         let stats = crate::tests::stuck_bit_test_256_multi(blocks, thread_id, error_mode, timing, config, progress);
         if thread_id == 0 {
             *(blocks[0].buffer.as_mut_ptr() as *mut u64).add(FLIPPED_WORD) ^= 1 << 17;
@@ -4964,8 +5120,15 @@ pub mod test_support {
             static NO_CACHES: std::sync::LazyLock<CacheInfo> = std::sync::LazyLock::new(CacheInfo::default);
             let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
             let (layout, runtime_config) = golden_layout();
-            let setup = RunSetup { layout, error_mode: ErrorMode::Log, suite_timing: TestSuiteTiming::default(), runtime_config,
-                                   config: None, overrides, cache_info: &NO_CACHES };
+            let setup = RunSetup {
+                layout,
+                error_mode: ErrorMode::Log,
+                suite_timing: TestSuiteTiming::default(),
+                runtime_config,
+                config: None,
+                overrides,
+                cache_info: &NO_CACHES,
+            };
             GoldenRun { setup, _width }
         }
 
@@ -4979,8 +5142,9 @@ pub mod test_support {
     /// thread's 4 MiB is below the stitched allocator's run quantum, so a run that got past its
     /// checks would be refused before any memory is reserved.
     pub(crate) fn golden_layout() -> (EnhancedMemoryLayout, RuntimeConfig) {
-        use crate::memory::allocation_strategy::{AllocationMode, EnhancedMemoryStrategy, ReserveAmount, RoundDirection,
-                                                 ShareRounding, SystemMemoryInfo};
+        use crate::memory::allocation_strategy::{
+            AllocationMode, EnhancedMemoryStrategy, ReserveAmount, RoundDirection, ShareRounding, SystemMemoryInfo,
+        };
         let mem_info = SystemMemoryInfo {
             total_installed_bytes: 32 << 30,
             total_physical_bytes: (32 << 30) - (1200 << 20),
@@ -4989,7 +5153,8 @@ pub mod test_support {
             total_virtual_bytes: (36 << 30) + (900 << 20),
             memory_load_percent: 12,
         };
-        let strategy = EnhancedMemoryStrategy { allocation_mode: AllocationMode::AllocateTarget { target: ReserveAmount::Bytes(16 << 20) } };
+        let strategy =
+            EnhancedMemoryStrategy { allocation_mode: AllocationMode::AllocateTarget { target: ReserveAmount::Bytes(16 << 20) } };
         let rounding = ShareRounding { step_bytes: 4 << 20, direction: RoundDirection::Up, floor_bytes: 4 << 20 };
         let allocation_result = strategy.allocation_mode.calculate_allocation_with_threads(&mem_info, 4, rounding);
         let blocks = (0..4).map(|thread_id| BlockInfo { size_bytes: allocation_result.per_thread_bytes as usize, thread_id }).collect();
@@ -5009,8 +5174,8 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::{CycleRun, FakeCycle, Flip, KIB, Region, golden_layout};
     use super::*;
-    use super::test_support::{golden_layout, CycleRun, FakeCycle, Flip, Region, KIB};
 
     /// A word no test pattern writes, to find extent words a test never touched
     const UNTOUCHED: u64 = 0x5AF0_0FA5_C3D2_1E87;
@@ -5019,17 +5184,20 @@ mod tests {
     fn suite() -> Vec<(TestDefinition, TestFunctionMultiBlock)> {
         let cache_info = crate::tests::get_cache_info();
         let avx512 = is_x86_feature_detected!("avx512f");
-        create_test_definitions(cache_info).into_iter().filter_map(|mut def| {
-            // The latency tests return other stats: `latency_tests_run_in_place_on_the_span`
-            let TestFunction::MultiBlock(test_fn) = def.function else { return None };
-            if def.actual_name.contains("512") && !avx512 {
-                return None;
-            }
-            def.config.timing = TestTiming::cycles_only(1);
-            def.config.thread_count = 1;
-            def.config.cache_line_bytes = cache_info.cache_line_size;
-            Some((def, test_fn))
-        }).collect()
+        create_test_definitions(cache_info)
+            .into_iter()
+            .filter_map(|mut def| {
+                // The latency tests return other stats: `latency_tests_run_in_place_on_the_span`
+                let TestFunction::MultiBlock(test_fn) = def.function else { return None };
+                if def.actual_name.contains("512") && !avx512 {
+                    return None;
+                }
+                def.config.timing = TestTiming::cycles_only(1);
+                def.config.thread_count = 1;
+                def.config.cache_line_bytes = cache_info.cache_line_size;
+                Some((def, test_fn))
+            })
+            .collect()
     }
 
     /// TODO 76: every built-in correctness and bandwidth test runs clean on one region of three
@@ -5090,7 +5258,14 @@ mod tests {
 
         let timing = TestTiming::cycles_only(1);
         let (mut runner, _extent) = crate::test_scaffolding::TestRunner::new(
-            &region.blocks, 0, ErrorMode::Log, &timing, &def.config, None, "Mem-MirrorV2-Auto", crate::tests::TestAction::Verify,
+            &region.blocks,
+            0,
+            ErrorMode::Log,
+            &timing,
+            &def.config,
+            None,
+            "Mem-MirrorV2-Auto",
+            crate::tests::TestAction::Verify,
         );
         runner.untimed(crate::ops::Op::PatternFill, 4096, || std::thread::sleep(std::time::Duration::from_millis(60)));
         let stats = runner.finish_completed(0);
@@ -5248,8 +5423,10 @@ mod tests {
 
         let at_512: Vec<&str> = suite.iter().filter(|d| d.width() == Some(Width::W512)).map(|d| d.display_name.as_str()).collect();
         assert!(at_512.len() > 40, "only {} tests at 512", at_512.len());
-        for name in ["Mem-SimpleNT-512", "Mem-SimpleV2-512", "Mem-MirrorV2-512", "Mem-StuckBit512", "Mem-Refresh512",
-                     "Lat-V2-L1-Read-512", "Lat-V2P-DRAMFull-CopyFull-512", "Lat-NTW-DRAM-Write-512", "Bench-Init-Seal-TMR-512"] {
+        for name in [
+            "Mem-SimpleNT-512", "Mem-SimpleV2-512", "Mem-MirrorV2-512", "Mem-StuckBit512", "Mem-Refresh512", "Lat-V2-L1-Read-512",
+            "Lat-V2P-DRAMFull-CopyFull-512", "Lat-NTW-DRAM-Write-512", "Bench-Init-Seal-TMR-512",
+        ] {
             assert!(at_512.contains(&name), "{name} doesn't run at 512: {at_512:?}");
         }
         assert_eq!(left_out.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), at_512);
@@ -5279,32 +5456,34 @@ mod tests {
         let (layout, runtime_config) = golden_layout();
         let argv = [r"C:\TMR\tmr.exe".to_string(), "plan=all".to_string()];
         let suite_timing = TestSuiteTiming::default();
-        let capture = |left_out: &[(String, String)]| crate::run_context::RunConfigSnapshot::capture(crate::run_context::RunConfigInputs {
-            command_line: &argv,
-            system_memory_info: &layout.system_memory_info,
-            allocation_result: &layout.allocation_result,
-            strategy: &layout.strategy,
-            runtime_config: &runtime_config,
-            page_mix: Default::default(),
-            requests: 4,
-            refused: 0,
-            thread_memory_least: 4 << 20,
-            allocated_bytes: 16 << 20,
-            thread_count: 4,
-            cpu_assignments: &[(0, 0, 0), (1, 2, 0), (2, 4, 0), (3, 6, 0)],
-            pinned: true,
-            thread_priority: ThreadPriority::High,
-            suite_timing: &suite_timing,
-            error_mode: ErrorMode::Log,
-            test_filter: None,
-            plan: Some("all".to_string()),
-            channels: 2,
-            config_name: None,
-            tests: &tests,
-            left_out,
-            cache_info: &CacheInfo::default(),
-            seal: None,
-        });
+        let capture = |left_out: &[(String, String)]| {
+            crate::run_context::RunConfigSnapshot::capture(crate::run_context::RunConfigInputs {
+                command_line: &argv,
+                system_memory_info: &layout.system_memory_info,
+                allocation_result: &layout.allocation_result,
+                strategy: &layout.strategy,
+                runtime_config: &runtime_config,
+                page_mix: Default::default(),
+                requests: 4,
+                refused: 0,
+                thread_memory_least: 4 << 20,
+                allocated_bytes: 16 << 20,
+                thread_count: 4,
+                cpu_assignments: &[(0, 0, 0), (1, 2, 0), (2, 4, 0), (3, 6, 0)],
+                pinned: true,
+                thread_priority: ThreadPriority::High,
+                suite_timing: &suite_timing,
+                error_mode: ErrorMode::Log,
+                test_filter: None,
+                plan: Some("all".to_string()),
+                channels: 2,
+                config_name: None,
+                tests: &tests,
+                left_out,
+                cache_info: &CacheInfo::default(),
+                seal: None,
+            })
+        };
 
         let snapshot = capture(&left_out);
         let recorded: Vec<(String, String)> = snapshot.tests_left_out.iter().map(|t| (t.name.clone(), t.reason.clone())).collect();
@@ -5336,9 +5515,10 @@ mod tests {
     /// precedence alone, which a run handing it no `width=` passed.
     #[test]
     fn the_runs_seal_takes_width_unless_seal_width_sets_its_own() {
+        use SealWidthSource::{Calibrated, Rule, Setting};
+
         use crate::seal::{SealPattern, SealWidth, SealWidthSource, TestCalibratedWidth};
         use crate::simd::{TestWidth, Width};
-        use SealWidthSource::{Calibrated, Rule, Setting};
         let mut config = crate::config::ModernConfig::create_demo_config();
         config.system.seal_width = Some("128".to_string());
         let seal = |seal: Option<&str>, seal_width: Option<&str>, config: Option<&crate::config::ModernConfig>| {
@@ -5360,8 +5540,16 @@ mod tests {
                 let what = format!("width={} calibrated {calibrated:?}", width.name());
                 assert_eq!(seal_width(None, None), (width.seal(), Setting("a test's width")), "{what}");
                 assert_eq!(seal_width(Some("auto"), None), auto, "seal-width=auto over {what}");
-                assert_eq!(seal_width(None, Some(&config)), (SealWidth::W128, Setting("the config's seal_width")), "the config's over {what}");
-                assert_eq!(seal_width(Some("256"), Some(&config)), (SealWidth::W256, Setting("seal-width=")), "seal-width= over the config's");
+                assert_eq!(
+                    seal_width(None, Some(&config)),
+                    (SealWidth::W128, Setting("the config's seal_width")),
+                    "the config's over {what}"
+                );
+                assert_eq!(
+                    seal_width(Some("256"), Some(&config)),
+                    (SealWidth::W256, Setting("seal-width=")),
+                    "seal-width= over the config's"
+                );
                 assert_eq!(seal_width(Some("auto"), Some(&config)), auto, "seal-width=auto over the config's");
             }
             let _auto = TestWidth::set(None);
@@ -5382,12 +5570,15 @@ mod tests {
         use crate::simd::{TestWidth, Width};
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
         let widths: Vec<Width> = [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()).collect();
-        let suite: Vec<_> = suite().into_iter().map(|(mut def, f)| {
-            if matches!(def.config.chunk_mode, ChunkMode::Absolute { .. }) {
-                def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
-            }
-            (def, f)
-        }).collect();
+        let suite: Vec<_> = suite()
+            .into_iter()
+            .map(|(mut def, f)| {
+                if matches!(def.config.chunk_mode, ChunkMode::Absolute { .. }) {
+                    def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+                }
+                (def, f)
+            })
+            .collect();
         let run = |region: &mut Region, def: &TestDefinition, f: TestFunctionMultiBlock, width: Width| {
             let _width = TestWidth::set(Some(width));
             let stats = unsafe { f(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
@@ -5396,11 +5587,14 @@ mod tests {
         };
         let mut compared = 0;
         for (def, f) in suite.iter().filter(|(d, _)| d.actual_name == "Mem-Sequence" || d.actual_name.starts_with("Bench-Init-")) {
-            let images: Vec<Vec<u64>> = widths.iter().map(|&width| {
-                region.words().fill(UNTOUCHED);
-                run(&mut region, def, *f, width);
-                region.words().to_vec()
-            }).collect();
+            let images: Vec<Vec<u64>> = widths
+                .iter()
+                .map(|&width| {
+                    region.words().fill(UNTOUCHED);
+                    run(&mut region, def, *f, width);
+                    region.words().to_vec()
+                })
+                .collect();
             assert!(images.windows(2).all(|w| w[0] == w[1]), "{} wrote another image at another width", def.display_name);
             if def.actual_name.starts_with("Bench-Init-") {
                 let verify_name = def.display_name.replace("Bench-Init-", "Bench-Verify-");
@@ -5465,8 +5659,12 @@ mod tests {
                     let image = run(&mut region, stride_cl, false);
                     assert!(image == sequential, "{} mode {mode} stride {stride_cl}: not the sequential image", def.display_name);
                     run(&mut region, stride_cl, true);
-                    assert_eq!(unsafe { kernel.check(region.words().as_ptr(), 0, words, "test") }, 0,
-                               "{} mode {mode} stride {stride_cl} left words unsealed", def.display_name);
+                    assert_eq!(
+                        unsafe { kernel.check(region.words().as_ptr(), 0, words, "test") },
+                        0,
+                        "{} mode {mode} stride {stride_cl} left words unsealed",
+                        def.display_name
+                    );
                     ran += 1;
                 }
             }
@@ -5527,7 +5725,8 @@ mod tests {
         assert!(bits.test.is_empty() && !bits.seal.is_empty() && bits.seal.detail().starts_with("0: 1 / 1"), "{bits:?}");
         assert!(crate::tests::take_failing_bits().seal.is_empty());
         region.words().fill(UNTOUCHED);
-        let (errors, _) = crate::thread_pool::seal_before_step(&region.blocks, &sealed.config, sealed.actual_name, &progress, &mut unsealed);
+        let (errors, _) =
+            crate::thread_pool::seal_before_step(&region.blocks, &sealed.config, sealed.actual_name, &progress, &mut unsealed);
         assert_eq!((errors, unsealed), (0, 0));
         assert_eq!(unsafe { kernel.check(region.words().as_ptr(), 0, words, "test") }, 0);
     }
@@ -5545,7 +5744,8 @@ mod tests {
         }
         names.sort();
         names.dedup();
-        config.test_sequence = names.iter()
+        config.test_sequence = names
+            .iter()
             .map(|name| crate::config::TestConfig { enabled: true, function: name.to_string(), ..Default::default() })
             .collect();
         let (steps, _) = create_test_definitions_from_config(&config, cache_info).unwrap();
@@ -5565,9 +5765,7 @@ mod tests {
             names
         };
         let tests = |tiers: &[&str]| {
-            let mut names: Vec<String> = tiers.iter()
-                .flat_map(|t| ["Copy", "Read", "Write"].map(|op| format!("Lat-{t}-{op}")))
-                .collect();
+            let mut names: Vec<String> = tiers.iter().flat_map(|t| ["Copy", "Read", "Write"].map(|op| format!("Lat-{t}-{op}"))).collect();
             names.sort();
             names
         };
@@ -5686,8 +5884,10 @@ mod tests {
     /// The image a native SimpleTest of thread 0 leaves after write round `g` of `program` under
     /// `schedule`: every word from `Phase::line`, whose formulas `pattern::tests` checks against
     /// the spec's.
-    fn native_image(program: crate::pattern::Program, epoch: crate::pattern::StepEpoch, wrc: u32, g: u64,
-                    schedule: crate::pattern::Schedule, words: usize) -> Vec<u64> {
+    fn native_image(
+        program: crate::pattern::Program, epoch: crate::pattern::StepEpoch, wrc: u32, g: u64, schedule: crate::pattern::Schedule,
+        words: usize,
+    ) -> Vec<u64> {
         let phase = program.phase(&epoch, wrc, g, schedule, crate::pattern::transfer_beat().0);
         (0..words).map(|i| phase.line((i / 8) as u64)[i % 8]).collect()
     }
@@ -5695,12 +5895,16 @@ mod tests {
     /// The Mem-SimpleV2 tests at every width this CPU has, as the built-in suite registers them:
     /// no pattern_mode, so a native program.
     fn native_tests() -> Vec<(TestDefinition, TestFunctionMultiBlock)> {
-        suite().into_iter().filter(|(d, _)| d.actual_name.starts_with("Mem-SimpleV2")).map(|(mut def, f)| {
-            assert!(def.config.native_program().is_some(), "{} runs a TMR mode", def.display_name);
-            def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
-            def.config.epoch = crate::pattern::StepEpoch { seed: 7, suite_cycle: 2, step: 3 };
-            (def, f)
-        }).collect()
+        suite()
+            .into_iter()
+            .filter(|(d, _)| d.actual_name.starts_with("Mem-SimpleV2"))
+            .map(|(mut def, f)| {
+                assert!(def.config.native_program().is_some(), "{} runs a TMR mode", def.display_name);
+                def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
+                def.config.epoch = crate::pattern::StepEpoch { seed: 7, suite_cycle: 2, step: 3 };
+                (def, f)
+            })
+            .collect()
     }
 
     /// `switch` at every transfer width, LPDDR6's 12 and DDR6's 24 among them: every kernel width
@@ -5756,7 +5960,9 @@ mod tests {
     fn native_programs_write_one_image_at_every_width() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
         let words = 640 * KIB / 8;
-        let programs = crate::pattern::Family::ALL.iter().map(|&f| crate::pattern::Program::single(f))
+        let programs = crate::pattern::Family::ALL
+            .iter()
+            .map(|&f| crate::pattern::Program::single(f))
             .chain([crate::pattern::Program::default_simple()]);
         let mut ran = 0;
         for program in programs {
@@ -5800,10 +6006,18 @@ mod tests {
             // One verify a chunk: the counts below are per verify
             (def.config.verify_reps, def.config.write_read_cycles) = (1, 1);
             // Pair 0's P: what a verify-only step expects
-            let image = native_image(def.config.native_program().unwrap(), def.config.epoch, def.config.write_read_cycles, 0, crate::pattern::Schedule::OncePerRun, words);
+            let image = native_image(
+                def.config.native_program().unwrap(),
+                def.config.epoch,
+                def.config.write_read_cycles,
+                0,
+                crate::pattern::Schedule::OncePerRun,
+                words,
+            );
             // Chunks of 68 KiB spread over 640: word 5 is in the first alone, word 34000 in one chunk
             // (34000 * 8 = 265 KiB), and three bits of word 71000 in another
-            for (mode, flips, errors) in [(ErrorMode::Log, vec![5usize, 34_000, 71_000], 3u64), (ErrorMode::Halt, vec![34_000, 71_000], 1)] {
+            for (mode, flips, errors) in [(ErrorMode::Log, vec![5usize, 34_000, 71_000], 3u64), (ErrorMode::Halt, vec![34_000, 71_000], 1)]
+            {
                 region.words().copy_from_slice(&image);
                 for &w in &flips {
                     region.words()[w] ^= if w == 71_000 { 0b111 << 40 } else { 1 << 3 };
@@ -5846,7 +6060,8 @@ mod tests {
                     stride_elements: Some(stride_cl * 8),
                     ..Default::default()
                 });
-                let image = native_image(def.config.native_program().unwrap(), def.config.epoch, 1, 0, crate::pattern::Schedule::OncePerRun, words);
+                let image =
+                    native_image(def.config.native_program().unwrap(), def.config.epoch, 1, 0, crate::pattern::Schedule::OncePerRun, words);
                 // A 256 B group, line-aligned, inside the first chunk alone
                 let group = 4096 + 32;
                 for k in 0..32 {
@@ -5916,7 +6131,11 @@ mod tests {
             def.config.epoch.suite_cycle = suite_cycle;
             let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
             assert_eq!(stats.error_count, 0, "suite cycle {suite_cycle}");
-            assert_eq!(region.words().to_vec(), native_image(program, def.config.epoch, 1, 0, crate::pattern::Schedule::OncePerRun, words), "suite cycle {suite_cycle}");
+            assert_eq!(
+                region.words().to_vec(),
+                native_image(program, def.config.epoch, 1, 0, crate::pattern::Schedule::OncePerRun, words),
+                "suite cycle {suite_cycle}"
+            );
             phases.push(program.phase(&def.config.epoch, 1, 0, crate::pattern::Schedule::OncePerRun, None));
         }
         let families: Vec<_> = phases.iter().step_by(2).map(|p| p.family).collect();
@@ -5936,9 +6155,11 @@ mod tests {
             edit(&mut def);
             def
         };
-        let sequence = |text: &'static str| move |d: &mut TestDefinition| {
-            d.actual_name = "Mem-Sequence";
-            d.config = d.config.clone().with_sequence(crate::sequence::Sequence::parse(text, crate::sequence::Order::Forward).unwrap());
+        let sequence = |text: &'static str| {
+            move |d: &mut TestDefinition| {
+                d.actual_name = "Mem-Sequence";
+                d.config = d.config.clone().with_sequence(crate::sequence::Sequence::parse(text, crate::sequence::Order::Forward).unwrap());
+            }
         };
         let mut defs = vec![
             with(1, &|_| {}),
@@ -6114,9 +6335,16 @@ mod tests {
         let (base_def, test_fn) = suite().into_iter().find(|(d, _)| d.display_name == "Mem-Sequence").unwrap();
         let stride = crate::config::TestParameterContext { stride_cachelines: Some(15), stride_elements: Some(120), ..Default::default() };
         let mut ran = 0;
-        for (text, order) in [("W R", "forward"), ("W R", "reverse"), ("W R", "random"), ("W R", "stride"),
-                              ("W@random R RW R@reverse", "forward"), ("2R W RW@random 2R@random", "forward"),
-                              ("W 2R RW 2R@random", "forward"), ("W RW@stride R@random RW R", "reverse")] {
+        for (text, order) in [
+            ("W R", "forward"),
+            ("W R", "reverse"),
+            ("W R", "random"),
+            ("W R", "stride"),
+            ("W@random R RW R@reverse", "forward"),
+            ("2R W RW@random 2R@random", "forward"),
+            ("W 2R RW 2R@random", "forward"),
+            ("W RW@stride R@random RW R", "reverse"),
+        ] {
             for sealed in [false, true] {
                 let mut def = base_def.clone();
                 def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
@@ -6153,7 +6381,9 @@ mod tests {
     #[test]
     fn the_command_lines_sequence_reaches_mem_sequence() {
         let suite = suite();
-        let find = |name: &str| suite.iter().find(|(d, _)| d.display_name == name || d.original_name == Some(name)).map(|(d, _)| d.clone()).unwrap();
+        let find = |name: &str| {
+            suite.iter().find(|(d, _)| d.display_name == name || d.original_name == Some(name)).map(|(d, _)| d.clone()).unwrap()
+        };
         let mut defs = vec![find("Mem-Sequence"), find("Mem-StuckBitAuto")];
         apply_sequence(&mut defs, Some("W,4R,RW@random,R"), None).unwrap();
         let seq = defs[0].config.sequence();
@@ -6297,9 +6527,8 @@ mod tests {
         assert_eq!(errors, [0, 1, 0, 0], "the flipped bit is the verify's one error");
         let cycle = &result.cycles[0];
         assert!(!cycle.partial);
-        let threads: Vec<Vec<_>> = cycle.tests.iter()
-            .map(|t| t.threads.iter().map(|r| (r.thread, r.cpu, r.errors, r.latency.is_some())).collect())
-            .collect();
+        let threads: Vec<Vec<_>> =
+            cycle.tests.iter().map(|t| t.threads.iter().map(|r| (r.thread, r.cpu, r.errors, r.latency.is_some())).collect()).collect();
         let step = |errors: u64, latency: bool| vec![(0, Some(0), errors, latency), (1, Some(0), 0, latency)];
         assert_eq!(threads, [step(0, false), step(1, false), step(0, true), step(0, false)]);
         // CPU 0's core and node; each thread's time, and its bytes, operations and passes, which the
@@ -6313,9 +6542,17 @@ mod tests {
             assert!(test.operations > 0, "{name}");
             let passes = test.cycles_completed_min..=test.cycles_completed_max;
             assert!(test.cycles_completed_min > 0 && test.threads.iter().all(|r| passes.contains(&r.cycles)), "{name}");
-            assert!(test.timed_ms > 0.0 && test.timed_ms <= test.duration_ms as f64 + 1.0, "{name}: {} of {} ms", test.timed_ms, test.duration_ms);
+            assert!(
+                test.timed_ms > 0.0 && test.timed_ms <= test.duration_ms as f64 + 1.0,
+                "{name}: {} of {} ms",
+                test.timed_ms,
+                test.duration_ms
+            );
             for latency in test.threads.iter().filter_map(|r| r.latency) {
-                assert!(0.0 < latency.min_ns && latency.min_ns <= latency.p50_ns && latency.p50_ns <= latency.p99_ns, "{name}: {latency:?}");
+                assert!(
+                    0.0 < latency.min_ns && latency.min_ns <= latency.p50_ns && latency.p50_ns <= latency.p99_ns,
+                    "{name}: {latency:?}"
+                );
             }
         }
     }
@@ -6393,8 +6630,10 @@ mod tests {
             fn log(&self, record: &log::Record) {
                 if self.enabled(record.metadata()) && record.target() != crate::logfile::FILE_ONLY_TARGET {
                     let line = format!("{} {}", record.level(), record.args());
-                    RECORDS.with_borrow_mut(|records| if let Some(records) = records {
-                        records.push(line);
+                    RECORDS.with_borrow_mut(|records| {
+                        if let Some(records) = records {
+                            records.push(line);
+                        }
                     });
                 }
             }
@@ -6452,12 +6691,24 @@ mod tests {
             }
         }
         let fe = Saves::default();
-        let ((), records) = records_of(|| display_and_save_results(&test_run_result, Duration::from_secs(70),
-            crate::whea::WheaCounts { total: 1, corrected: 1 }, true, RunOutcome::Interrupted, RunStatus::Interrupted, &fe));
+        let ((), records) = records_of(|| {
+            display_and_save_results(
+                &test_run_result,
+                Duration::from_secs(70),
+                crate::whea::WheaCounts { total: 1, corrected: 1 },
+                true,
+                RunOutcome::Interrupted,
+                RunStatus::Interrupted,
+                &fe,
+            )
+        });
         assert_eq!(*fe.0.lock().unwrap(), std::slice::from_ref(&path), "said once, with where");
         assert!(records.is_empty(), "and only by the frontend: {records:?}");
         let stats = TestRunResult::load_from_file(&path).unwrap().overall_stats;
-        assert_eq!((stats.in_progress, stats.outcome.as_deref(), stats.status.as_deref()), (false, Some("interrupted"), Some("interrupted")));
+        assert_eq!(
+            (stats.in_progress, stats.outcome.as_deref(), stats.status.as_deref()),
+            (false, Some("interrupted"), Some("interrupted"))
+        );
         assert_eq!((stats.total_runtime_secs, stats.whea_total, stats.whea_monitored), (70, 1, true));
         assert!(!std::path::Path::new(&format!("{path}.tmp")).exists());
     }

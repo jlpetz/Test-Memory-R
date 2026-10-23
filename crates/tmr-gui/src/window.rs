@@ -8,19 +8,18 @@
 //! every 500 ms while the session runs), a button, the dialog's answer, a keystroke in the box, a
 //! theme change or a resize. Nothing animates.
 
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use tmr::frontend::{Event, ProgressSnapshot, ProgressTracker, RestartChoice, Run};
 use windows_reactor::*;
 
-use crate::chart;
 use crate::logger::{self, LogLines};
 use crate::model::{Model, Status, StepRow};
 use crate::palette::{Palette, Palettes, brush};
 use crate::sysinfo::{self, SystemPanel};
-use crate::{Feed, GuiFrontend};
+use crate::{Feed, GuiFrontend, chart};
 
 const PAGE_MARGIN_X: f64 = 20.0;
 const CARD_PADDING_X: f64 = 16.0;
@@ -207,11 +206,7 @@ impl Component for Window {
                 .backdrop(WindowBackdrop::Mica)
                 .theme(WindowTheme::System)
                 .client_size(860.0, 960.0)
-                .constraints(WindowConstraints {
-                    min_width: Some(720.0),
-                    min_height: Some(680.0),
-                    ..Default::default()
-                }),
+                .constraints(WindowConstraints { min_width: Some(720.0), min_height: Some(680.0), ..Default::default() }),
         );
         context.on_color_scheme(context.callback(Message::Scheme));
         context.on_window_size(context.callback(Message::Size));
@@ -355,37 +350,32 @@ impl Window {
             .content(TextBlock::new().text(dimm_label).foreground(brush(p.text_primary)))
             .flyout_with(Flyout::rich(self.dimm_table(s)).placement(FlyoutPlacement::BottomEdgeAlignedRight));
         let ram = self.model.ram_bytes.map_or("RAM ·".to_string(), |bytes| format!("{} RAM ·", sysinfo::size(bytes as usize)));
-        StackPanel::new()
-            .spacing(2.0)
-            .horizontal_alignment(HorizontalAlignment::Right)
-            .children((
-                TextBlock::new()
-                    .text(s.cpu.clone())
-                    .font_size(13.0)
-                    .font_weight(FontWeight::SEMI_BOLD)
-                    .foreground(brush(p.text_primary))
-                    .max_width(380.0)
-                    .text_trimming(TextTrimming::CharacterEllipsis)
-                    .horizontal_alignment(HorizontalAlignment::Right)
-                    .tooltip(s.cpu_detail.clone()),
-                StackPanel::new()
-                    .orientation(Orientation::Horizontal)
-                    .horizontal_alignment(HorizontalAlignment::Right)
-                    .spacing(6.0)
-                    .children((
-                        TextBlock::new()
-                            .text(ram)
-                            .foreground(brush(p.text_secondary))
-                            .vertical_alignment(VerticalAlignment::Center)
-                            .tooltip("The physical memory Windows reports (GlobalMemoryStatusEx), a little under what is installed"),
-                        dimm_button,
-                    )),
-                TextBlock::new()
-                    .text(s.cache_line.clone())
-                    .foreground(brush(p.text_secondary))
-                    .horizontal_alignment(HorizontalAlignment::Right)
-                    .tooltip(s.cache_detail.clone()),
-            ))
+        StackPanel::new().spacing(2.0).horizontal_alignment(HorizontalAlignment::Right).children((
+            TextBlock::new()
+                .text(s.cpu.clone())
+                .font_size(13.0)
+                .font_weight(FontWeight::SEMI_BOLD)
+                .foreground(brush(p.text_primary))
+                .max_width(380.0)
+                .text_trimming(TextTrimming::CharacterEllipsis)
+                .horizontal_alignment(HorizontalAlignment::Right)
+                .tooltip(s.cpu_detail.clone()),
+            StackPanel::new().orientation(Orientation::Horizontal).horizontal_alignment(HorizontalAlignment::Right).spacing(6.0).children(
+                (
+                    TextBlock::new()
+                        .text(ram)
+                        .foreground(brush(p.text_secondary))
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .tooltip("The physical memory Windows reports (GlobalMemoryStatusEx), a little under what is installed"),
+                    dimm_button,
+                ),
+            ),
+            TextBlock::new()
+                .text(s.cache_line.clone())
+                .foreground(brush(p.text_secondary))
+                .horizontal_alignment(HorizontalAlignment::Right)
+                .tooltip(s.cache_detail.clone()),
+        ))
     }
 
     /// The DIMM flyout: one line per module, from SMBIOS's memory devices. Manufacturer and part
@@ -468,15 +458,9 @@ impl Window {
             (i as u64, table_row(&r.cells(), p, (i % 2 == 1).then_some(stripe), false, flagged))
         });
         let body: View = if self.model.rows.is_empty() {
-            TextBlock::new()
-                .text("No steps finished yet")
-                .foreground(brush(p.text_secondary))
-                .margin(Thickness::xy(8.0, 6.0))
-                .into()
+            TextBlock::new().text("No steps finished yet").foreground(brush(p.text_secondary)).margin(Thickness::xy(8.0, 6.0)).into()
         } else {
-            ScrollViewer::new()
-                .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
-                .content(StackPanel::new().keyed_children(rows))
+            ScrollViewer::new().vertical_scroll_bar_visibility(ScrollBarVisibility::Auto).content(StackPanel::new().keyed_children(rows))
         };
         let steps = self.model.rows.len();
         let shown = if steps > SHOWN { format!(", the newest {SHOWN} shown") } else { String::new() };
@@ -487,10 +471,7 @@ impl Window {
             Grid::new()
                 .rows([GridLength::Auto, GridLength::STAR])
                 .row_spacing(2.0)
-                .children((
-                    Border::new().grid_row(0).content(header),
-                    Border::new().grid_row(1).content(body),
-                )),
+                .children((Border::new().grid_row(0).content(header), Border::new().grid_row(1).content(body))),
         )
     }
 
@@ -502,30 +483,20 @@ impl Window {
         let title = format!("Throughput (MiB/s) · last 60 s · now {latest}");
         // Title on the left, a two-item legend on the right (line = MiB/s, red mark = errors rose).
         // A temperature series would add a third legend item here.
-        let header = Grid::new()
-            .columns([GridLength::STAR, GridLength::Auto])
-            .children((
-                card_title(title, p).grid_column(0),
-                StackPanel::new()
-                    .grid_column(1)
-                    .orientation(Orientation::Horizontal)
-                    .spacing(6.0)
-                    .children((
-                        Border::new()
-                            .width(16.0)
-                            .height(2.0)
-                            .vertical_alignment(VerticalAlignment::Center)
-                            .background(brush(p.accent)),
-                        legend_text("MiB/s", p),
-                        Border::new()
-                            .width(2.0)
-                            .height(12.0)
-                            .margin(Thickness::new(8.0, 0.0, 0.0, 0.0))
-                            .vertical_alignment(VerticalAlignment::Center)
-                            .background(brush(p.error)),
-                        legend_text(&if marks == 0 { "errors".to_owned() } else { format!("errors ({marks} shown)") }, p),
-                    )),
-            ));
+        let header = Grid::new().columns([GridLength::STAR, GridLength::Auto]).children((
+            card_title(title, p).grid_column(0),
+            StackPanel::new().grid_column(1).orientation(Orientation::Horizontal).spacing(6.0).children((
+                Border::new().width(16.0).height(2.0).vertical_alignment(VerticalAlignment::Center).background(brush(p.accent)),
+                legend_text("MiB/s", p),
+                Border::new()
+                    .width(2.0)
+                    .height(12.0)
+                    .margin(Thickness::new(8.0, 0.0, 0.0, 0.0))
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .background(brush(p.error)),
+                legend_text(&if marks == 0 { "errors".to_owned() } else { format!("errors ({marks} shown)") }, p),
+            )),
+        ));
         let width = (self.width - 2.0 * PAGE_MARGIN_X - 2.0 * CARD_PADDING_X - 2.0).max(100.0);
         card(row, p, header, chart::shapes_chart(series, width, p))
     }
@@ -533,35 +504,25 @@ impl Window {
     fn error_list(&self, row: i32) -> View {
         let p = self.palette();
         let body: View = if self.model.errors.is_empty() {
-            TextBlock::new()
-                .text("No errors so far")
-                .foreground(brush(p.text_secondary))
-                .into()
+            TextBlock::new().text("No errors so far").foreground(brush(p.text_secondary)).into()
         } else {
             let entries = self.model.errors.newest(SHOWN).map(|(number, text)| {
                 (
                     number,
-                    Grid::new()
-                        .column_spacing(8.0)
-                        .margin(Thickness::xy(0.0, 3.0))
-                        .columns([GridLength::Auto, GridLength::STAR])
-                        .children((
-                            TextBlock::new()
-                                .text("●")
-                                .foreground(brush(p.error))
-                                .grid_column(0),
+                    Grid::new().column_spacing(8.0).margin(Thickness::xy(0.0, 3.0)).columns([GridLength::Auto, GridLength::STAR]).children(
+                        (
+                            TextBlock::new().text("●").foreground(brush(p.error)).grid_column(0),
                             TextBlock::new()
                                 .text(text.to_string())
                                 .foreground(brush(p.text_primary))
                                 .text_wrapping(TextWrapping::Wrap)
                                 .is_text_selection_enabled(true)
                                 .grid_column(1),
-                        )),
+                        ),
+                    ),
                 )
             });
-            ScrollViewer::new()
-                .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
-                .content(StackPanel::new().keyed_children(entries))
+            ScrollViewer::new().vertical_scroll_bar_visibility(ScrollBarVisibility::Auto).content(StackPanel::new().keyed_children(entries))
         };
         let total = self.model.errors.total();
         let shown = if total > SHOWN as u64 { format!(" · the newest {SHOWN} shown") } else { String::new() };
@@ -574,33 +535,31 @@ impl Window {
     /// it once, one session a process, and from then on it holds what ran.
     fn controls(&self, row: i32, context: &ViewContext<Self>) -> View {
         let ready = self.model.status == Status::Ready;
-        Grid::new()
-            .grid_row(row)
-            .column_spacing(8.0)
-            .columns([GridLength::STAR, GridLength::Auto, GridLength::Auto])
-            .children((
-                TextBox::new()
-                    .text(self.model.args.clone())
-                    .placeholder_text("Parameters, as on the command line: memory=50% cycles=3 (none: the defaults)")
-                    .is_enabled(ready)
-                    .on_text_changed(context.callback(Message::Args))
-                    .grid_column(0)
-                    .tooltip("What Start runs, in tmr.exe's key=value syntax (tmr.exe --help lists them). \
-                              Quote one with a space in it: \"config=C:\\My configs\\x.cfg\""),
-                Button::new()
-                    .style(ButtonStyle::Accent)
-                    .is_enabled(ready)
-                    .width(96.0)
-                    .grid_column(1)
-                    .on_click(context.callback(|()| Message::Start))
-                    .content("Start"),
-                Button::new()
-                    .is_enabled(self.model.status == Status::Running)
-                    .width(96.0)
-                    .grid_column(2)
-                    .on_click(context.callback(|()| Message::Stop))
-                    .content("Stop"),
-            ))
+        Grid::new().grid_row(row).column_spacing(8.0).columns([GridLength::STAR, GridLength::Auto, GridLength::Auto]).children((
+            TextBox::new()
+                .text(self.model.args.clone())
+                .placeholder_text("Parameters, as on the command line: memory=50% cycles=3 (none: the defaults)")
+                .is_enabled(ready)
+                .on_text_changed(context.callback(Message::Args))
+                .grid_column(0)
+                .tooltip(
+                    "What Start runs, in tmr.exe's key=value syntax (tmr.exe --help lists them). \
+                              Quote one with a space in it: \"config=C:\\My configs\\x.cfg\"",
+                ),
+            Button::new()
+                .style(ButtonStyle::Accent)
+                .is_enabled(ready)
+                .width(96.0)
+                .grid_column(1)
+                .on_click(context.callback(|()| Message::Start))
+                .content("Start"),
+            Button::new()
+                .is_enabled(self.model.status == Status::Running)
+                .width(96.0)
+                .grid_column(2)
+                .on_click(context.callback(|()| Message::Stop))
+                .content("Stop"),
+        ))
     }
 
     /// The large-page restart question, the console's A/B as a dialog, open while the session's
@@ -614,11 +573,7 @@ impl Window {
             .close_button_text("Continue on 4 KiB pages")
             .is_open(self.model.restart_asked())
             .on_closed(context.callback(Message::Restart))
-            .content(
-                TextBlock::new()
-                    .text(RESTART_QUESTION)
-                    .text_wrapping(TextWrapping::Wrap),
-            )
+            .content(TextBlock::new().text(RESTART_QUESTION).text_wrapping(TextWrapping::Wrap))
     }
 }
 
@@ -644,44 +599,33 @@ fn progress_bar(fraction: f64, paused: bool, width: f64, p: &Palette) -> View {
         .border_brush(brush(p.card_stroke))
         .border_thickness(1.0)
         .content(
-            Grid::new()
-                .columns([GridLength::Star(fill), GridLength::Star(1.0 - fill)])
-                .children((
-                    Border::new()
-                        .grid_column(0)
-                        .corner_radius(inner_radius)
-                        .background(brush(p.progress_fill))
-                        .opacity(match (f > 0.0, paused) {
-                            (false, _) => 0.0,
-                            (true, true) => 0.5,
-                            (true, false) => 1.0,
-                        }),
-                    TextBlock::new()
-                        .text(format!("{:.0}%", f * 100.0))
-                        .font_size(12.0)
-                        .font_weight(FontWeight::SEMI_BOLD)
-                        .foreground(brush(p.progress_text))
-                        .horizontal_alignment(HorizontalAlignment::Center)
-                        .vertical_alignment(VerticalAlignment::Center)
-                        .grid_column(0)
-                        .grid_column_span(2),
-                )),
+            Grid::new().columns([GridLength::Star(fill), GridLength::Star(1.0 - fill)]).children((
+                Border::new().grid_column(0).corner_radius(inner_radius).background(brush(p.progress_fill)).opacity(
+                    match (f > 0.0, paused) {
+                        (false, _) => 0.0,
+                        (true, true) => 0.5,
+                        (true, false) => 1.0,
+                    },
+                ),
+                TextBlock::new()
+                    .text(format!("{:.0}%", f * 100.0))
+                    .font_size(12.0)
+                    .font_weight(FontWeight::SEMI_BOLD)
+                    .foreground(brush(p.progress_text))
+                    .horizontal_alignment(HorizontalAlignment::Center)
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .grid_column(0)
+                    .grid_column_span(2),
+            )),
         )
 }
 
 fn card_title(title: String, p: &Palette) -> TextBlock {
-    TextBlock::new()
-        .text(title)
-        .font_weight(FontWeight::SEMI_BOLD)
-        .foreground(brush(p.text_primary))
+    TextBlock::new().text(title).font_weight(FontWeight::SEMI_BOLD).foreground(brush(p.text_primary))
 }
 
 fn legend_text(text: &str, p: &Palette) -> TextBlock {
-    TextBlock::new()
-        .text(text)
-        .font_size(12.0)
-        .foreground(brush(p.text_secondary))
-        .vertical_alignment(VerticalAlignment::Center)
+    TextBlock::new().text(text).font_size(12.0).foreground(brush(p.text_secondary)).vertical_alignment(VerticalAlignment::Center)
 }
 
 /// A WinUI-style card: card fill, hairline stroke, 8 px corners, a title line.
@@ -697,10 +641,7 @@ fn card(row: i32, p: &Palette, title: impl Into<View>, content: impl Into<View>)
             Grid::new()
                 .rows([GridLength::Auto, GridLength::STAR])
                 .row_spacing(8.0)
-                .children((
-                    Border::new().grid_row(0).content(title),
-                    Border::new().grid_row(1).content(content),
-                )),
+                .children((Border::new().grid_row(0).content(title), Border::new().grid_row(1).content(content))),
         )
 }
 
@@ -732,10 +673,5 @@ fn table_row(cells: &[String; 6], p: &Palette, stripe: Option<Brush>, header: bo
         .background_optional(stripe)
         .corner_radius(4.0)
         .padding(Thickness::new(8.0, 4.0, 12.0, 4.0))
-        .content(
-            Grid::new()
-                .columns(TABLE_COLUMNS)
-                .column_spacing(12.0)
-                .children((cell(0), cell(1), cell(2), cell(3), cell(4), cell(5))),
-        )
+        .content(Grid::new().columns(TABLE_COLUMNS).column_spacing(12.0).children((cell(0), cell(1), cell(2), cell(3), cell(4), cell(5))))
 }

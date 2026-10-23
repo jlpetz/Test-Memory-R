@@ -161,9 +161,9 @@ impl SealWidth {
     /// ~90 GiB/s (the non-temporal store ceiling), but the 512-bit check ran at 52-55 GiB/s against
     /// 58-63 for 128 and 256. The Bench-*-Seal-* pairs measure it; `--calibrate-seal` measures it
     /// on the machine (`calibration::calibrate_seal`).
-    pub(crate) fn resolve_on(self, calibrated: Option<SealWidth>, avx2: bool, avx512: bool, setting: &'static str)
-        -> Result<(Self, SealWidthSource), String>
-    {
+    pub(crate) fn resolve_on(
+        self, calibrated: Option<SealWidth>, avx2: bool, avx512: bool, setting: &'static str,
+    ) -> Result<(Self, SealWidthSource), String> {
         let lacks = |width: SealWidth| match width {
             SealWidth::W512 if !avx512 => Some("seal width 512 needs AVX-512, which this CPU lacks"),
             SealWidth::W256 if !avx2 => Some("seal width 256 needs AVX2, which this CPU lacks"),
@@ -332,9 +332,9 @@ impl SealKernel {
 /// config's `system.seal_width`), else the run's `width=` (`width`, `crate::simd::width_given`),
 /// else `auto`, which resolves to this machine's calibrated width or the rule
 /// (`SealWidth::resolve_from`).
-pub fn width_setting<'a>(seal_width: Option<(&'a str, &'static str)>, width: Option<(crate::simd::Width, &'static str)>)
-    -> (&'a str, &'static str)
-{
+pub fn width_setting<'a>(
+    seal_width: Option<(&'a str, &'static str)>, width: Option<(crate::simd::Width, &'static str)>,
+) -> (&'a str, &'static str) {
     seal_width.or(width.map(|(w, source)| (w.name(), source))).unwrap_or(("auto", "auto"))
 }
 
@@ -507,8 +507,7 @@ macro_rules! tmr_kernels {
 /// lanes from byte address `addr` (16 B aligned), under `key` and the cycle's `invert` mask. `x`
 /// stays below 2^63: the kernels mask each step's sum.
 #[inline(always)]
-fn tmr_start<const LANES: usize>(addr: usize, key: u64, invert: u64) -> (std::simd::Simd<u64, LANES>, u64, std::simd::Simd<u64, LANES>)
-{
+fn tmr_start<const LANES: usize>(addr: usize, key: u64, invert: u64) -> (std::simd::Simd<u64, LANES>, u64, std::simd::Simd<u64, LANES>) {
     let unit = (addr >> 4) as u64;
     let x = std::simd::Simd::from_array(std::array::from_fn(|j| (unit + j as u64 / 2).wrapping_mul(SEAL_MUL).wrapping_add(key) & LOW63));
     let inv = std::simd::Simd::from_array(std::array::from_fn(|j| if j % 2 == 1 { !invert } else { invert }));
@@ -584,8 +583,7 @@ macro_rules! tm5_kernels {
 /// end: vector `u`'s lane `j` is the motif word `(m + u * LANES + j) % 6` XOR the cycle's `invert`
 /// mask, where `m` is `i`'s word in the page.
 #[inline(always)]
-fn tm5_vectors<const LANES: usize>(ptr: *mut u64, i: usize, end: usize, invert: u64) -> ([std::simd::Simd<u64, LANES>; 3], usize)
-{
+fn tm5_vectors<const LANES: usize>(ptr: *mut u64, i: usize, end: usize, invert: u64) -> ([std::simd::Simd<u64, LANES>; 3], usize) {
     let addr = ptr.wrapping_add(i) as usize;
     let motif = tm5_motif(addr & !0xFFF);
     let m = (addr & 0xFFF) >> 3;
@@ -638,11 +636,18 @@ mod tests {
 
     fn kernels() -> Vec<SealKernel> {
         let mut widths = vec![SealWidth::W128];
-        if is_x86_feature_detected!("avx2") { widths.push(SealWidth::W256); }
-        if crate::simd::has_avx512() { widths.push(SealWidth::W512); }
+        if is_x86_feature_detected!("avx2") {
+            widths.push(SealWidth::W256);
+        }
+        if crate::simd::has_avx512() {
+            widths.push(SealWidth::W512);
+        }
         // Each pattern and width at the plan-time kernel and two cycles' (inverted, and a key)
-        widths.iter().flat_map(|&width| [SealPattern::Tmr, SealPattern::Tm5].map(|pattern| SealKernel::new(pattern, width)))
-            .flat_map(|k| [k, k.for_cycle(7, 2), k.for_cycle(7, 3)]).collect()
+        widths
+            .iter()
+            .flat_map(|&width| [SealPattern::Tmr, SealPattern::Tm5].map(|pattern| SealKernel::new(pattern, width)))
+            .flat_map(|k| [k, k.for_cycle(7, 2), k.for_cycle(7, 3)])
+            .collect()
     }
 
     #[test]
@@ -695,7 +700,8 @@ mod tests {
         use SealWidth::{Auto, W128, W256, W512};
         use SealWidthSource::{Calibrated, Rule, Setting};
         let (avx512, avx2, neither) = ((true, true), (true, false), (false, false));
-        let resolve = |width: SealWidth, calibrated, (avx2, avx512): (bool, bool)| width.resolve_on(calibrated, avx2, avx512, "seal-width=");
+        let resolve =
+            |width: SealWidth, calibrated, (avx2, avx512): (bool, bool)| width.resolve_on(calibrated, avx2, avx512, "seal-width=");
         for calibrated in [W128, W256, W512] {
             assert_eq!(resolve(Auto, Some(calibrated), avx512), Ok((calibrated, Calibrated)), "calibrated {calibrated:?}");
             for given in [W128, W256, W512] {
@@ -744,7 +750,6 @@ mod tests {
         assert_eq!(SealKernel::detect().width, rule);
     }
 
-
     /// Known answers from an independent implementation of `doc/pattern_spec.md`'s seal section
     /// (Python, from the spec's text alone, 2026-10-11).
     #[test]
@@ -753,7 +758,7 @@ mod tests {
             (0x5, 1, 0x6bee77a5232abdd9, false),
             (0x5, 2, 0x6bee77a5232abdd9, true),
             (0x5, 3, 0x55ca380d4216c135, false),
-            (0x5, 4, 0x55ca380d4216c135, true)
+            (0x5, 4, 0x55ca380d4216c135, true),
         ];
         for &(seed, cycle, key, invert) in keys {
             let k = SealKernel::detect().for_cycle(seed, cycle);
@@ -771,7 +776,7 @@ mod tests {
             (0x10, 0x6bee77a5232abdd9, true, 0xf5da0ea157af374f),
             (0x18, 0x6bee77a5232abdd9, true, 0xa25f15ea850c8b0),
             (0x6b394ce37b10, 0x6bee77a5232abdd9, true, 0xd3b6c665f08fcd3b),
-            (0x6b494ce37b18, 0x6bee77a5232abdd9, true, 0x2b93b5af08aabef1)
+            (0x6b494ce37b18, 0x6bee77a5232abdd9, true, 0x2b93b5af08aabef1),
         ];
         for &(addr, key, invert, word) in words {
             let k = SealKernel { key, invert, ..SealKernel::new(SealPattern::Tmr, SealWidth::W128) };
@@ -843,7 +848,11 @@ mod tests {
                     *p.add((start + end) / 2) = 0;
                     assert_eq!(kernel.check(p, start, end, "test"), 3, "{} {start}..{end}", kernel.name());
                     let guard = |i: usize| *(buf.as_ptr() as *const u64).add(i);
-                    assert!((0..512).chain(512 + words..1024 + words).all(|i| guard(i) == 0), "{} wrote outside {start}..{end}", kernel.name());
+                    assert!(
+                        (0..512).chain(512 + words..1024 + words).all(|i| guard(i) == 0),
+                        "{} wrote outside {start}..{end}",
+                        kernel.name()
+                    );
                 }
             }
         }
@@ -896,7 +905,11 @@ mod tests {
         assert!(p.addr().is_multiple_of(4096), "the range's word 0 a page's first");
         const FILLER: u64 = 0x5A5A_5A5A_5A5A_5A5A;
         for kernel in kernels() {
-            let lanes = match kernel.width { SealWidth::W512 => 8, SealWidth::W256 => 4, _ => 2 };
+            let lanes = match kernel.width {
+                SealWidth::W512 => 8,
+                SealWidth::W256 => 4,
+                _ => 2,
+            };
             // Starts at a page, one vector in, mid-page, and 16 words before a page's end; lengths
             // in vectors from one to 25, then over two pages (a full page is 21 steps at 512 bits,
             // 42 at 256 and 85 at 128)

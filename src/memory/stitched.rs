@@ -77,32 +77,26 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use crate::constants::{
-    BYTES_PER_MIB_USIZE, HUGE_PAGE_SIZE_USIZE, LARGE_PAGE_SIZE_USIZE, bytes_to_gib_f64,
-};
-use crate::memory::allocator::{AllocationConfig, BlockSizing, PageSizeLevel};
-use crate::memory::backend::{
-    AllocError, Backend, BackendAllocation, ERROR_INVALID_ADDRESS, NUMA_NODE_MANDATORY,
-    describe_error, is_exhaustion,
-};
-use crate::memory::buffer::MemoryBuffer;
-use crate::memory::fill::{
-    self, Fill, Grant, PageSizes, node_label, page_label, size_label,
-};
-use crate::{AllocationBlock, BlockInfo};
-
 use windows::Win32::Foundation::GetLastError;
 use windows::Win32::System::Memory::{
-    MEM_ADDRESS_REQUIREMENTS, MEM_COMMIT, MEM_EXTENDED_PARAMETER, MEM_EXTENDED_PARAMETER_TYPE,
-    MEM_LARGE_PAGES, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE, MEM_REPLACE_PLACEHOLDER, MEM_RESERVE,
-    MEM_RESERVE_PLACEHOLDER, MemExtendedParameterAddressRequirements,
-    MemExtendedParameterAttributeFlags, MemExtendedParameterNumaNode, PAGE_NOACCESS,
-    PAGE_READWRITE, VIRTUAL_ALLOCATION_TYPE, VIRTUAL_FREE_TYPE, VirtualAlloc2, VirtualFree,
+    MEM_ADDRESS_REQUIREMENTS, MEM_COMMIT, MEM_EXTENDED_PARAMETER, MEM_EXTENDED_PARAMETER_TYPE, MEM_LARGE_PAGES, MEM_PRESERVE_PLACEHOLDER,
+    MEM_RELEASE, MEM_REPLACE_PLACEHOLDER, MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MemExtendedParameterAddressRequirements,
+    MemExtendedParameterAttributeFlags, MemExtendedParameterNumaNode, PAGE_NOACCESS, PAGE_READWRITE, VIRTUAL_ALLOCATION_TYPE,
+    VIRTUAL_FREE_TYPE, VirtualAlloc2, VirtualFree,
 };
 use windows::Win32::System::SystemServices::{
-    MEM_COALESCE_PLACEHOLDERS, MEM_EXTENDED_PARAMETER_NONPAGED_HUGE,
-    MEM_EXTENDED_PARAMETER_NONPAGED_LARGE, MEM_EXTENDED_PARAMETER_TYPE_BITS,
+    MEM_COALESCE_PLACEHOLDERS, MEM_EXTENDED_PARAMETER_NONPAGED_HUGE, MEM_EXTENDED_PARAMETER_NONPAGED_LARGE,
+    MEM_EXTENDED_PARAMETER_TYPE_BITS,
 };
+
+use crate::constants::{BYTES_PER_MIB_USIZE, HUGE_PAGE_SIZE_USIZE, LARGE_PAGE_SIZE_USIZE, bytes_to_gib_f64};
+use crate::memory::allocator::{AllocationConfig, BlockSizing, PageSizeLevel};
+use crate::memory::backend::{
+    AllocError, Backend, BackendAllocation, ERROR_INVALID_ADDRESS, NUMA_NODE_MANDATORY, describe_error, is_exhaustion,
+};
+use crate::memory::buffer::MemoryBuffer;
+use crate::memory::fill::{self, Fill, Grant, PageSizes, node_label, page_label, size_label};
+use crate::{AllocationBlock, BlockInfo};
 
 const HUGE: usize = HUGE_PAGE_SIZE_USIZE;
 const LARGE: usize = LARGE_PAGE_SIZE_USIZE;
@@ -121,7 +115,10 @@ pub enum CommitMethod {
     /// `MEM_REPLACE_PLACEHOLDER` straight into the split slot: one call, and the VA never leaves
     /// our hands. **Bugchecks 10.0.26100** (0x139) as soon as a 1 GiB or 2 MiB replace is
     /// refused and that placeholder is later freed or split. For kernels with the fix.
-    #[cfg_attr(not(test), expect(dead_code, reason = "dormant until the kernel's refused-replace bug is fixed (module docs, TMR-APP CLAUDE.md)"))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "dormant until the kernel's refused-replace bug is fixed (module docs, TMR-APP CLAUDE.md)")
+    )]
     Replace,
     /// Split the slot off, release it, allocate at the address: two more calls per slot and a
     /// momentary VA hole, but a refusal leaves no damaged placeholder behind.
@@ -204,22 +201,14 @@ pub fn plan(req: &StitchRequest) -> Result<StitchPlan, String> {
         return Err("stitched: no threads to allocate for".to_string());
     }
     if req.min_page > req.max_page {
-        return Err(format!(
-            "stitched: min page size {:?} is above max page size {:?}",
-            req.min_page, req.max_page
-        ));
+        return Err(format!("stitched: min page size {:?} is above max page size {:?}", req.min_page, req.max_page));
     }
     let quantum = req.run_quantum;
     if !quantum.is_power_of_two() || !(LARGE..=HUGE).contains(&quantum) {
-        return Err(format!(
-            "stitched: run quantum {quantum:#x} must be a power of two between 2 MiB and 1 GiB"
-        ));
+        return Err(format!("stitched: run quantum {quantum:#x} must be a power of two between 2 MiB and 1 GiB"));
     }
     if !req.huge_chunk.is_power_of_two() || req.huge_chunk < HUGE {
-        return Err(format!(
-            "stitched: huge chunk {:#x} must be a power of two of at least 1 GiB",
-            req.huge_chunk
-        ));
+        return Err(format!("stitched: huge chunk {:#x} must be a power of two of at least 1 GiB", req.huge_chunk));
     }
     if !req.large_floor.is_power_of_two() || req.large_floor < quantum {
         return Err(format!(
@@ -237,14 +226,8 @@ pub fn plan(req: &StitchRequest) -> Result<StitchPlan, String> {
 
     let mut targets = Vec::with_capacity(req.threads.len());
     for (i, thread) in req.threads.iter().enumerate() {
-        if req.threads[..i]
-            .iter()
-            .any(|t| t.thread_id == thread.thread_id)
-        {
-            return Err(format!(
-                "stitched: thread {} is listed twice",
-                thread.thread_id
-            ));
+        if req.threads[..i].iter().any(|t| t.thread_id == thread.thread_id) {
+            return Err(format!("stitched: thread {} is listed twice", thread.thread_id));
         }
         let target = thread.bytes / quantum * quantum;
         if target == 0 {
@@ -268,17 +251,9 @@ pub fn plan(req: &StitchRequest) -> Result<StitchPlan, String> {
     }
 
     let largest = targets.iter().copied().max().unwrap_or(0);
-    let stride = largest
-        .checked_next_multiple_of(HUGE)
-        .ok_or("stitched: thread size overflows the address space")?;
-    let reservation = stride
-        .checked_mul(req.threads.len())
-        .ok_or("stitched: reservation size overflows the address space")?;
-    Ok(StitchPlan {
-        stride,
-        reservation,
-        targets,
-    })
+    let stride = largest.checked_next_multiple_of(HUGE).ok_or("stitched: thread size overflows the address space")?;
+    let reservation = stride.checked_mul(req.threads.len()).ok_or("stitched: reservation size overflows the address space")?;
+    Ok(StitchPlan { stride, reservation, targets })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -328,19 +303,11 @@ impl ThreadSpan {
     /// Bytes on 1 GiB or 2 MiB pages from a node other than the thread's own, which the commits
     /// named strictly. 4 KiB runs only prefer the home node.
     pub fn remote_bytes(&self) -> usize {
-        self.runs
-            .iter()
-            .filter(|r| r.page != PageSizeLevel::Regular && r.numa_node != self.numa_node)
-            .map(|r| r.len)
-            .sum()
+        self.runs.iter().filter(|r| r.page != PageSizeLevel::Regular && r.numa_node != self.numa_node).map(|r| r.len).sum()
     }
 
     pub fn bytes_at(&self, page: PageSizeLevel) -> usize {
-        self.runs
-            .iter()
-            .filter(|r| r.page == page)
-            .map(|r| r.len)
-            .sum()
+        self.runs.iter().filter(|r| r.page == page).map(|r| r.len).sum()
     }
 }
 
@@ -361,25 +328,13 @@ pub trait VmOps {
     /// Commit over the placeholder that is exactly `[addr, addr + len)`. A refusal leaves the
     /// placeholder in place, and on 10.0.26100 a large-page refusal leaves it poisoned: see
     /// [`CommitMethod::Replace`].
-    fn replace(
-        &mut self,
-        addr: usize,
-        len: usize,
-        page: PageSizeLevel,
-        numa: Option<u32>,
-    ) -> Result<(), u32>;
+    fn replace(&mut self, addr: usize, len: usize, page: PageSizeLevel, numa: Option<u32>) -> Result<(), u32>;
     /// Merge the adjacent placeholders that exactly cover `[addr, addr + len)` into one, the VA
     /// staying reserved throughout (`MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS`). The range must
     /// start and end on placeholder edges, else 487 (`../numa-test/FINDINGS.md`, part 5).
     fn coalesce(&mut self, addr: usize, len: usize) -> Result<(), u32>;
     /// Commit an ordinary allocation at exactly `[addr, addr + len)`, which must be free VA.
-    fn allocate_at(
-        &mut self,
-        addr: usize,
-        len: usize,
-        page: PageSizeLevel,
-        numa: Option<u32>,
-    ) -> Result<(), u32>;
+    fn allocate_at(&mut self, addr: usize, len: usize, page: PageSizeLevel, numa: Option<u32>) -> Result<(), u32>;
     /// Release the region (placeholder or allocation) based at `addr`; `len` is for the log.
     fn release(&mut self, addr: usize, len: usize) -> Result<(), u32>;
 }
@@ -394,8 +349,7 @@ impl Win32Vm {
     /// `MEM_EXTENDED_PARAMETER_TYPE_BITS` of the bitfield.
     fn ext_param(kind: MEM_EXTENDED_PARAMETER_TYPE, value: u64) -> MEM_EXTENDED_PARAMETER {
         let mut param = MEM_EXTENDED_PARAMETER::default();
-        param.Anonymous1._bitfield =
-            (kind.0 as u64) & ((1_u64 << MEM_EXTENDED_PARAMETER_TYPE_BITS) - 1);
+        param.Anonymous1._bitfield = (kind.0 as u64) & ((1_u64 << MEM_EXTENDED_PARAMETER_TYPE_BITS) - 1);
         param.Anonymous2.ULong64 = value;
         param
     }
@@ -411,17 +365,11 @@ impl Win32Vm {
             PageSizeLevel::Regular => None,
         };
         if let Some(attribute) = attribute {
-            params.push(Self::ext_param(
-                MemExtendedParameterAttributeFlags,
-                attribute as u64,
-            ));
+            params.push(Self::ext_param(MemExtendedParameterAttributeFlags, attribute as u64));
         }
         if let Some(node) = numa {
             let strict = if attribute.is_some() { NUMA_NODE_MANDATORY } else { 0 };
-            params.push(Self::ext_param(
-                MemExtendedParameterNumaNode,
-                u64::from(node) | strict,
-            ));
+            params.push(Self::ext_param(MemExtendedParameterNumaNode, u64::from(node) | strict));
         }
         params
     }
@@ -429,9 +377,7 @@ impl Win32Vm {
     fn commit_type(page: PageSizeLevel) -> VIRTUAL_ALLOCATION_TYPE {
         match page {
             PageSizeLevel::Regular => MEM_RESERVE | MEM_COMMIT,
-            PageSizeLevel::Large | PageSizeLevel::Huge => {
-                MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES
-            }
+            PageSizeLevel::Large | PageSizeLevel::Huge => MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
         }
     }
 
@@ -498,21 +444,9 @@ impl VmOps for Win32Vm {
                 // SAFETY: `params` holds a pointer to `addr_req`, which is live for this whole
                 // function (see LIFETIME above). Placeholder reservation takes no base address,
                 // which is the only form that accepts address requirements.
-                let ptr = unsafe {
-                    VirtualAlloc2(
-                        None,
-                        None,
-                        len,
-                        MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
-                        PAGE_NOACCESS.0,
-                        Some(&mut params),
-                    )
-                };
-                if ptr.is_null() {
-                    Err(Self::last_error())
-                } else {
-                    Ok(ptr as usize)
-                }
+                let ptr =
+                    unsafe { VirtualAlloc2(None, None, len, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS.0, Some(&mut params)) };
+                if ptr.is_null() { Err(Self::last_error()) } else { Ok(ptr as usize) }
             },
         );
         // Keep `addr_req` provably alive across the call above.
@@ -521,127 +455,76 @@ impl VmOps for Win32Vm {
     }
 
     fn reserve_at(&mut self, addr: usize, len: usize) -> Result<(), u32> {
-        os_call(
-            format!(
-                "VirtualAlloc2({addr:#x}, {len:#x}, MEM_RESERVE|MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS)"
-            ),
-            || {
-                // SAFETY: no extended parameters; the kernel either reserves exactly this free
-                // range or fails. Nothing of ours is dereferenced.
-                let ptr = unsafe {
-                    VirtualAlloc2(
-                        None,
-                        Some(addr as *const c_void),
-                        len,
-                        MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
-                        PAGE_NOACCESS.0,
-                        None,
-                    )
-                };
-                Self::at_address(ptr, addr)
-            },
-        )
+        os_call(format!("VirtualAlloc2({addr:#x}, {len:#x}, MEM_RESERVE|MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS)"), || {
+            // SAFETY: no extended parameters; the kernel either reserves exactly this free
+            // range or fails. Nothing of ours is dereferenced.
+            let ptr = unsafe {
+                VirtualAlloc2(None, Some(addr as *const c_void), len, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS.0, None)
+            };
+            Self::at_address(ptr, addr)
+        })
     }
 
     fn split(&mut self, addr: usize, len: usize) -> Result<(), u32> {
-        os_call(
-            format!("VirtualFree({addr:#x}, {len:#x}, MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)"),
-            || {
-                Self::free(
-                    addr,
-                    len,
-                    VIRTUAL_FREE_TYPE(MEM_RELEASE.0 | MEM_PRESERVE_PLACEHOLDER.0),
-                )
-            },
-        )
+        os_call(format!("VirtualFree({addr:#x}, {len:#x}, MEM_RELEASE|MEM_PRESERVE_PLACEHOLDER)"), || {
+            Self::free(addr, len, VIRTUAL_FREE_TYPE(MEM_RELEASE.0 | MEM_PRESERVE_PLACEHOLDER.0))
+        })
     }
 
-    fn replace(
-        &mut self,
-        addr: usize,
-        len: usize,
-        page: PageSizeLevel,
-        numa: Option<u32>,
-    ) -> Result<(), u32> {
+    fn replace(&mut self, addr: usize, len: usize, page: PageSizeLevel, numa: Option<u32>) -> Result<(), u32> {
         let mut params = Self::page_params(page, numa);
-        os_call(
-            format!(
-                "VirtualAlloc2({addr:#x}, {len:#x}, MEM_REPLACE_PLACEHOLDER|commit, {}, node {numa:?})",
-                page_label(page)
-            ),
-            || {
-                // SAFETY: `params` holds plain values (no pointers) and lives across the call.
-                // `[addr, addr + len)` is exactly one placeholder we own, as a replace requires.
-                let ptr = unsafe {
-                    VirtualAlloc2(
-                        None,
-                        Some(addr as *const c_void),
-                        len,
-                        Self::commit_type(page) | MEM_REPLACE_PLACEHOLDER,
-                        PAGE_READWRITE.0,
-                        (!params.is_empty()).then_some(params.as_mut_slice()),
-                    )
-                };
-                Self::at_address(ptr, addr)
-            },
-        )
+        os_call(format!("VirtualAlloc2({addr:#x}, {len:#x}, MEM_REPLACE_PLACEHOLDER|commit, {}, node {numa:?})", page_label(page)), || {
+            // SAFETY: `params` holds plain values (no pointers) and lives across the call.
+            // `[addr, addr + len)` is exactly one placeholder we own, as a replace requires.
+            let ptr = unsafe {
+                VirtualAlloc2(
+                    None,
+                    Some(addr as *const c_void),
+                    len,
+                    Self::commit_type(page) | MEM_REPLACE_PLACEHOLDER,
+                    PAGE_READWRITE.0,
+                    (!params.is_empty()).then_some(params.as_mut_slice()),
+                )
+            };
+            Self::at_address(ptr, addr)
+        })
     }
 
     fn coalesce(&mut self, addr: usize, len: usize) -> Result<(), u32> {
-        os_call(
-            format!("VirtualFree({addr:#x}, {len:#x}, MEM_RELEASE|MEM_COALESCE_PLACEHOLDERS)"),
-            || Self::free(addr, len, VIRTUAL_FREE_TYPE(MEM_RELEASE.0 | MEM_COALESCE_PLACEHOLDERS)),
-        )
+        os_call(format!("VirtualFree({addr:#x}, {len:#x}, MEM_RELEASE|MEM_COALESCE_PLACEHOLDERS)"), || {
+            Self::free(addr, len, VIRTUAL_FREE_TYPE(MEM_RELEASE.0 | MEM_COALESCE_PLACEHOLDERS))
+        })
     }
 
-    fn allocate_at(
-        &mut self,
-        addr: usize,
-        len: usize,
-        page: PageSizeLevel,
-        numa: Option<u32>,
-    ) -> Result<(), u32> {
+    fn allocate_at(&mut self, addr: usize, len: usize, page: PageSizeLevel, numa: Option<u32>) -> Result<(), u32> {
         let mut params = Self::page_params(page, numa);
-        os_call(
-            format!(
-                "VirtualAlloc2({addr:#x}, {len:#x}, commit, {}, node {numa:?})",
-                page_label(page)
-            ),
-            || {
-                // SAFETY: `params` holds plain values (no pointers) and lives across the call.
-                // The range is free VA we released a moment ago; the kernel either maps it or
-                // fails.
-                let ptr = unsafe {
-                    VirtualAlloc2(
-                        None,
-                        Some(addr as *const c_void),
-                        len,
-                        Self::commit_type(page),
-                        PAGE_READWRITE.0,
-                        (!params.is_empty()).then_some(params.as_mut_slice()),
-                    )
-                };
-                Self::at_address(ptr, addr)
-            },
-        )
+        os_call(format!("VirtualAlloc2({addr:#x}, {len:#x}, commit, {}, node {numa:?})", page_label(page)), || {
+            // SAFETY: `params` holds plain values (no pointers) and lives across the call.
+            // The range is free VA we released a moment ago; the kernel either maps it or
+            // fails.
+            let ptr = unsafe {
+                VirtualAlloc2(
+                    None,
+                    Some(addr as *const c_void),
+                    len,
+                    Self::commit_type(page),
+                    PAGE_READWRITE.0,
+                    (!params.is_empty()).then_some(params.as_mut_slice()),
+                )
+            };
+            Self::at_address(ptr, addr)
+        })
     }
 
     fn release(&mut self, addr: usize, len: usize) -> Result<(), u32> {
-        os_call(
-            format!("VirtualFree({addr:#x}, 0, MEM_RELEASE)  [{len:#x}]"),
-            || Self::free(addr, 0, MEM_RELEASE),
-        )
+        os_call(format!("VirtualFree({addr:#x}, 0, MEM_RELEASE)  [{len:#x}]"), || Self::free(addr, 0, MEM_RELEASE))
     }
 }
 
 fn win32_code(e: &windows::core::Error) -> u32 {
     // HRESULT_FROM_WIN32 puts the Win32 code in the low word under facility 7.
     let hr = e.code().0 as u32;
-    if hr & 0xFFFF_0000 == 0x8007_0000 {
-        hr & 0xFFFF
-    } else {
-        hr
-    }
+    if hr & 0xFFFF_0000 == 0x8007_0000 { hr & 0xFFFF } else { hr }
 }
 
 fn gib(bytes: usize) -> f64 {
@@ -714,19 +597,10 @@ impl Slice {
             };
             let offset = piece.addr - self.base;
             match runs.last_mut() {
-                Some(run)
-                    if run.page == page
-                        && run.numa_node == numa_node
-                        && run.offset + run.len == offset =>
-                {
+                Some(run) if run.page == page && run.numa_node == numa_node && run.offset + run.len == offset => {
                     run.len += piece.len;
                 }
-                _ => runs.push(Run {
-                    offset,
-                    len: piece.len,
-                    page,
-                    numa_node,
-                }),
+                _ => runs.push(Run { offset, len: piece.len, page, numa_node }),
             }
         }
         runs
@@ -793,15 +667,9 @@ impl<V: VmOps> StitchedArena<V> {
     pub fn build_with(vm: V, req: &StitchRequest) -> Result<Self, String> {
         let plan = plan(req)?;
         let mut vm = vm;
-        let base = vm
-            .reserve(plan.reservation, HUGE, req.lowest_address)
-            .map_err(|code| {
-                format!(
-                    "stitched: reserving {:.2} GiB of placeholder VA failed: {}",
-                    gib(plan.reservation),
-                    describe_error(code)
-                )
-            })?;
+        let base = vm.reserve(plan.reservation, HUGE, req.lowest_address).map_err(|code| {
+            format!("stitched: reserving {:.2} GiB of placeholder VA failed: {}", gib(plan.reservation), describe_error(code))
+        })?;
         let mut arena = Self {
             vm,
             base,
@@ -814,11 +682,7 @@ impl<V: VmOps> StitchedArena<V> {
         arena.carve(req, &plan)?;
 
         let pages = PageSizes { min: req.min_page, max: req.max_page };
-        let sizing = BlockSizing {
-            huge_chunk: req.huge_chunk,
-            large_chunk: req.large_chunk,
-            large_floor: req.large_floor,
-        };
+        let sizing = BlockSizing { huge_chunk: req.huge_chunk, large_chunk: req.large_chunk, large_floor: req.large_floor };
         // No fairness question for 4 KiB pages: a refusal there is the commit limit, and that
         // fails the build.
         if let Some((i, code)) = fill::fill_all(&mut arena, pages, &sizing, req.numa_nodes, WHO)? {
@@ -858,11 +722,7 @@ impl<V: VmOps> StitchedArena<V> {
             let addr = self.base + t * plan.stride;
             if t + 1 < req.threads.len() {
                 self.vm.split(addr, plan.stride).map_err(|code| {
-                    format!(
-                        "stitched: carving thread {}'s slice at {addr:#x} failed: {}",
-                        thread.thread_id,
-                        describe_error(code)
-                    )
+                    format!("stitched: carving thread {}'s slice at {addr:#x} failed: {}", thread.thread_id, describe_error(code))
                 })?;
                 self.uncarved = Some((addr + plan.stride, end - addr - plan.stride));
             } else {
@@ -874,11 +734,7 @@ impl<V: VmOps> StitchedArena<V> {
                 base: addr,
                 target,
                 cursor: 0,
-                pieces: vec![Piece {
-                    addr,
-                    len: plan.stride,
-                    holding: Holding::Placeholder,
-                }],
+                pieces: vec![Piece { addr, len: plan.stride, holding: Holding::Placeholder }],
                 commits: Vec::new(),
             });
         }
@@ -896,17 +752,8 @@ impl<V: VmOps> StitchedArena<V> {
             .pieces
             .iter()
             .position(|p| p.addr == addr && p.holding == Holding::Placeholder)
-            .ok_or_else(|| {
-                format!(
-                    "stitched: bug: no placeholder at thread {}'s cursor {addr:#x}",
-                    slice.thread_id
-                )
-            })?;
-        Ok(slice.pieces[start..]
-            .iter()
-            .take_while(|p| p.holding == Holding::Placeholder)
-            .map(|p| p.len)
-            .sum())
+            .ok_or_else(|| format!("stitched: bug: no placeholder at thread {}'s cursor {addr:#x}", slice.thread_id))?;
+        Ok(slice.pieces[start..].iter().take_while(|p| p.holding == Holding::Placeholder).map(|p| p.len).sum())
     }
 
     /// Make `[cursor, cursor + len)` of slice `i` a run of whole placeholder pieces, splitting the
@@ -914,40 +761,24 @@ impl<V: VmOps> StitchedArena<V> {
     fn cover(&mut self, i: usize, len: usize) -> Result<std::ops::Range<usize>, String> {
         let slice = &mut self.slices[i];
         let addr = slice.next_addr();
-        let start = slice
-            .pieces
-            .iter()
-            .position(|p| p.addr == addr)
-            .ok_or_else(|| format!("stitched: bug: no piece starts at {addr:#x}"))?;
+        let start =
+            slice.pieces.iter().position(|p| p.addr == addr).ok_or_else(|| format!("stitched: bug: no piece starts at {addr:#x}"))?;
         let (mut end, mut covered) = (start, 0);
         while covered < len {
-            let piece = *slice.pieces.get(end).ok_or_else(|| {
-                format!("stitched: bug: {len:#x} at {addr:#x} runs past thread {}'s slice", slice.thread_id)
-            })?;
+            let piece = *slice
+                .pieces
+                .get(end)
+                .ok_or_else(|| format!("stitched: bug: {len:#x} at {addr:#x} runs past thread {}'s slice", slice.thread_id))?;
             if piece.holding != Holding::Placeholder {
-                return Err(format!(
-                    "stitched: bug: piece at {:#x} is {:?}, cannot be committed into",
-                    piece.addr, piece.holding
-                ));
+                return Err(format!("stitched: bug: piece at {:#x} is {:?}, cannot be committed into", piece.addr, piece.holding));
             }
             if covered + piece.len > len {
                 let keep = len - covered;
                 self.vm.split(piece.addr, keep).map_err(|code| {
-                    format!(
-                        "stitched: splitting {keep:#x} off the placeholder at {:#x} failed: {}",
-                        piece.addr,
-                        describe_error(code)
-                    )
+                    format!("stitched: splitting {keep:#x} off the placeholder at {:#x} failed: {}", piece.addr, describe_error(code))
                 })?;
                 slice.pieces[end].len = keep;
-                slice.pieces.insert(
-                    end + 1,
-                    Piece {
-                        addr: piece.addr + keep,
-                        len: piece.len - keep,
-                        holding: Holding::Placeholder,
-                    },
-                );
+                slice.pieces.insert(end + 1, Piece { addr: piece.addr + keep, len: piece.len - keep, holding: Holding::Placeholder });
             }
             covered += slice.pieces[end].len;
             end += 1;
@@ -957,13 +788,7 @@ impl<V: VmOps> StitchedArena<V> {
 
     /// Commit `len` bytes of `node`'s pages at slice `i`'s cursor, by the request's
     /// [`CommitMethod`].
-    fn commit(
-        &mut self,
-        i: usize,
-        len: usize,
-        page: PageSizeLevel,
-        node: Option<u32>,
-    ) -> Result<Grant, String> {
+    fn commit(&mut self, i: usize, len: usize, page: PageSizeLevel, node: Option<u32>) -> Result<Grant, String> {
         match self.commit_method {
             CommitMethod::Replace => self.commit_replace(i, len, page, node),
             CommitMethod::FreeThenAllocate => self.commit_free_then_allocate(i, len, page, node),
@@ -971,13 +796,7 @@ impl<V: VmOps> StitchedArena<V> {
     }
 
     /// Commit `len` bytes at slice `i`'s cursor by replacing the placeholder in one call.
-    fn commit_replace(
-        &mut self,
-        i: usize,
-        len: usize,
-        page: PageSizeLevel,
-        node: Option<u32>,
-    ) -> Result<Grant, String> {
+    fn commit_replace(&mut self, i: usize, len: usize, page: PageSizeLevel, node: Option<u32>) -> Result<Grant, String> {
         let range = self.cover(i, len)?;
         let slice = &mut self.slices[i];
         let addr = slice.next_addr();
@@ -986,20 +805,10 @@ impl<V: VmOps> StitchedArena<V> {
             // Several placeholders a refusal left behind: merge them, the VA never leaving our
             // hands. (On 10.0.26100 a placeholder a refused large-page replace poisoned would
             // bugcheck here as it would on any split or free; Replace waits for the fix.)
-            self.vm.coalesce(addr, len).map_err(|code| {
-                format!(
-                    "stitched: merging the placeholders at {addr:#x}+{len:#x} failed: {}",
-                    describe_error(code)
-                )
-            })?;
-            slice.pieces.splice(
-                range,
-                [Piece {
-                    addr,
-                    len,
-                    holding: Holding::Placeholder,
-                }],
-            );
+            self.vm
+                .coalesce(addr, len)
+                .map_err(|code| format!("stitched: merging the placeholders at {addr:#x}+{len:#x} failed: {}", describe_error(code)))?;
+            slice.pieces.splice(range, [Piece { addr, len, holding: Holding::Placeholder }]);
         }
         match self.vm.replace(addr, len, page, node) {
             Ok(()) => {
@@ -1016,13 +825,7 @@ impl<V: VmOps> StitchedArena<V> {
 
     /// Commit `len` bytes at slice `i`'s cursor without a replace: split the slot off in its own
     /// call, release it, allocate into the hole.
-    fn commit_free_then_allocate(
-        &mut self,
-        i: usize,
-        len: usize,
-        page: PageSizeLevel,
-        node: Option<u32>,
-    ) -> Result<Grant, String> {
+    fn commit_free_then_allocate(&mut self, i: usize, len: usize, page: PageSizeLevel, node: Option<u32>) -> Result<Grant, String> {
         // 1. The slot becomes whole placeholders, in calls separate from the commit.
         let range = self.cover(i, len)?;
         let slice = &mut self.slices[i];
@@ -1032,25 +835,13 @@ impl<V: VmOps> StitchedArena<V> {
         for k in range.clone() {
             let piece = slice.pieces[k];
             self.vm.release(piece.addr, piece.len).map_err(|code| {
-                format!(
-                    "stitched: releasing the {} slot at {:#x} failed: {}",
-                    page_label(page),
-                    piece.addr,
-                    describe_error(code)
-                )
+                format!("stitched: releasing the {} slot at {:#x} failed: {}", page_label(page), piece.addr, describe_error(code))
             })?;
             slice.pieces[k].holding = Holding::Lost;
         }
         // From here one piece stands for the whole hole.
         let idx = range.start;
-        slice.pieces.splice(
-            range,
-            [Piece {
-                addr,
-                len,
-                holding: Holding::Lost,
-            }],
-        );
+        slice.pieces.splice(range, [Piece { addr, len, holding: Holding::Lost }]);
 
         // 3. Allocate into the hole as an ordinary allocation at a fixed address.
         match self.vm.allocate_at(addr, len, page, node) {
@@ -1142,12 +933,7 @@ impl<V: VmOps> Fill for StitchedArena<V> {
     }
 
     fn bytes_at(&self, i: usize, page: PageSizeLevel) -> usize {
-        self.slices[i]
-            .pieces
-            .iter()
-            .filter(|p| matches!(p.holding, Holding::Committed(pg, _) if pg == page))
-            .map(|p| p.len)
-            .sum()
+        self.slices[i].pieces.iter().filter(|p| matches!(p.holding, Holding::Committed(pg, _) if pg == page)).map(|p| p.len).sum()
     }
 
     fn remaining(&self, i: usize) -> usize {
@@ -1157,22 +943,12 @@ impl<V: VmOps> Fill for StitchedArena<V> {
     fn request_len(&self, i: usize, rung: usize, floor: usize) -> Result<usize, String> {
         let len = rung.min(self.slices[i].remaining()).min(self.slot_len(i)?) / floor * floor;
         if len < floor {
-            return Err(format!(
-                "stitched: bug: thread {} has no {} slot at its cursor",
-                self.slices[i].thread_id,
-                size_label(floor)
-            ));
+            return Err(format!("stitched: bug: thread {} has no {} slot at its cursor", self.slices[i].thread_id, size_label(floor)));
         }
         Ok(len)
     }
 
-    fn request(
-        &mut self,
-        i: usize,
-        len: usize,
-        page: PageSizeLevel,
-        node: Option<u32>,
-    ) -> Result<Grant, String> {
+    fn request(&mut self, i: usize, len: usize, page: PageSizeLevel, node: Option<u32>) -> Result<Grant, String> {
         let grant = self.commit(i, len, page, node)?;
         let refused = matches!(grant, Grant::Refused(_));
         self.slices[i].commits.push(Commit { len, page, numa_node: node, refused });
@@ -1216,12 +992,7 @@ impl<V: VmOps> Drop for StitchedArena<V> {
                     Ok(()) => released += 1,
                     Err(code) => {
                         failed += 1;
-                        log::error!(
-                            "stitched: teardown: releasing {:#x}+{:#x} failed: {}",
-                            piece.addr,
-                            piece.len,
-                            describe_error(code)
-                        );
+                        log::error!("stitched: teardown: releasing {:#x}+{:#x} failed: {}", piece.addr, piece.len, describe_error(code));
                     }
                 }
             }
@@ -1231,10 +1002,7 @@ impl<V: VmOps> Drop for StitchedArena<V> {
                 Ok(()) => released += 1,
                 Err(code) => {
                     failed += 1;
-                    log::error!(
-                        "stitched: teardown: releasing the uncarved {addr:#x}+{len:#x} failed: {}",
-                        describe_error(code)
-                    );
+                    log::error!("stitched: teardown: releasing the uncarved {addr:#x}+{len:#x} failed: {}", describe_error(code));
                 }
             }
         }
@@ -1257,11 +1025,7 @@ impl<V: VmOps + Send + Sync + std::fmt::Debug + 'static> Backend for StitchedAre
     fn free(&self, allocation: BackendAllocation) -> Result<(), String> {
         // A view going away frees nothing: the arena releases every piece together when the last
         // `MemoryBuffer` drops its `Arc`.
-        log::trace!(
-            "stitched: view {:?} (+{:#x}) returned",
-            allocation.ptr,
-            allocation.size
-        );
+        log::trace!("stitched: view {:?} (+{:#x}) returned", allocation.ptr, allocation.size);
         Ok(())
     }
 
@@ -1286,10 +1050,7 @@ where
         .spans()
         .into_iter()
         .map(|span| {
-            let buffer = MemoryBuffer::new(
-                BackendAllocation { ptr: span.base as *mut u8, size: span.len },
-                backend.clone(),
-            );
+            let buffer = MemoryBuffer::new(BackendAllocation { ptr: span.base as *mut u8, size: span.len }, backend.clone());
             (span.thread_id, vec![AllocationBlock { buffer }])
         })
         .collect()
@@ -1313,16 +1074,11 @@ pub struct StitchedAllocation {
 
 /// Every thread's share as one span.
 pub fn chunk_allocate_stitched(
-    thread_blocks: &HashMap<usize, Vec<BlockInfo>>,
-    runtime_config: &crate::RuntimeConfig,
+    thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runtime_config: &crate::RuntimeConfig,
 ) -> Result<StitchedAllocation, String> {
     let threads: Vec<StitchThread> = fill::thread_shares(thread_blocks, runtime_config)
         .into_iter()
-        .map(|share| StitchThread {
-            thread_id: share.thread_id,
-            bytes: share.bytes,
-            numa_node: Some(share.numa_node),
-        })
+        .map(|share| StitchThread { thread_id: share.thread_id, bytes: share.bytes, numa_node: Some(share.numa_node) })
         .collect();
 
     let mut request = StitchRequest::new(threads);
@@ -1348,23 +1104,16 @@ pub fn chunk_allocate_stitched(
     let spans = arena.take_spans();
     arena.log_summary();
     fill::warn_remote(WHO, &arena.remote_memory());
-    Ok(StitchedAllocation {
-        blocks: into_allocation_blocks(Arc::new(arena)),
-        spans,
-        elapsed,
-        numa_nodes: request.numa_nodes,
-    })
+    Ok(StitchedAllocation { blocks: into_allocation_blocks(Arc::new(arena)), spans, elapsed, numa_nodes: request.numa_nodes })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::memory::backend::{
-        ERROR_COMMITMENT_LIMIT, ERROR_INVALID_PARAMETER, ERROR_NO_SYSTEM_RESOURCES,
-        ERROR_PRIVILEGE_NOT_HELD,
-    };
     use std::collections::{BTreeMap, HashSet};
     use std::sync::{Mutex, PoisonError};
+
+    use super::*;
+    use crate::memory::backend::{ERROR_COMMITMENT_LIMIT, ERROR_INVALID_PARAMETER, ERROR_NO_SYSTEM_RESOURCES, ERROR_PRIVILEGE_NOT_HELD};
 
     const MIB: usize = BYTES_PER_MIB_USIZE;
     const GIB: usize = HUGE;
@@ -1423,10 +1172,7 @@ mod tests {
         }
 
         fn overlaps(&self, addr: usize, len: usize) -> bool {
-            self.regions
-                .range(..addr + len)
-                .next_back()
-                .is_some_and(|(&a, &(l, _))| a + l > addr)
+            self.regions.range(..addr + len).next_back().is_some_and(|(&a, &(l, _))| a + l > addr)
         }
 
         fn pool(&mut self, page: PageSizeLevel, node: Option<u32>) -> &mut usize {
@@ -1438,21 +1184,11 @@ mod tests {
         }
 
         fn units(page: PageSizeLevel, len: usize) -> usize {
-            if page == PageSizeLevel::Huge {
-                len / GIB
-            } else {
-                len
-            }
+            if page == PageSizeLevel::Huge { len / GIB } else { len }
         }
 
         /// Take `len` bytes of `page` from the pool. On failure, return the code the kernel would.
-        fn take(
-            &mut self,
-            addr: usize,
-            len: usize,
-            page: PageSizeLevel,
-            node: Option<u32>,
-        ) -> Result<(), u32> {
+        fn take(&mut self, addr: usize, len: usize, page: PageSizeLevel, node: Option<u32>) -> Result<(), u32> {
             let unit = page_bytes(page);
             if len == 0 || !addr.is_multiple_of(unit) || !len.is_multiple_of(unit) {
                 return Err(ERROR_INVALID_PARAMETER);
@@ -1461,17 +1197,15 @@ mod tests {
                 self.privilege_refusals.push((page, len));
                 return Err(ERROR_PRIVILEGE_NOT_HELD);
             }
-            if page == PageSizeLevel::Huge && let Some(code) = self.huge_error {
+            if page == PageSizeLevel::Huge
+                && let Some(code) = self.huge_error
+            {
                 return Err(code);
             }
             let want = Self::units(page, len);
             let pool = self.pool(page, node);
             if *pool < want {
-                return Err(if page == PageSizeLevel::Regular {
-                    ERROR_COMMITMENT_LIMIT
-                } else {
-                    ERROR_NO_SYSTEM_RESOURCES
-                });
+                return Err(if page == PageSizeLevel::Regular { ERROR_COMMITMENT_LIMIT } else { ERROR_NO_SYSTEM_RESOURCES });
             }
             *pool -= want;
             Ok(())
@@ -1489,21 +1223,10 @@ mod tests {
     }
 
     impl VmOps for FakeVm {
-        fn reserve(
-            &mut self,
-            len: usize,
-            align: usize,
-            lowest: Option<usize>,
-        ) -> Result<usize, u32> {
+        fn reserve(&mut self, len: usize, align: usize, lowest: Option<usize>) -> Result<usize, u32> {
             let mut s = self.state();
-            let top = s
-                .regions
-                .iter()
-                .next_back()
-                .map_or(0, |(&a, &(l, _))| a + l);
-            let addr = top
-                .max(lowest.unwrap_or(0x100_0000_0000))
-                .next_multiple_of(align);
+            let top = s.regions.iter().next_back().map_or(0, |(&a, &(l, _))| a + l);
+            let addr = top.max(lowest.unwrap_or(0x100_0000_0000)).next_multiple_of(align);
             s.regions.insert(addr, (len, Region::Placeholder));
             Ok(addr)
         }
@@ -1523,21 +1246,14 @@ mod tests {
             match s.regions.get(&addr).copied() {
                 Some((whole, Region::Placeholder)) if len > 0 && len < whole => {
                     s.regions.insert(addr, (len, Region::Placeholder));
-                    s.regions
-                        .insert(addr + len, (whole - len, Region::Placeholder));
+                    s.regions.insert(addr + len, (whole - len, Region::Placeholder));
                     Ok(())
                 }
                 _ => Err(ERROR_INVALID_PARAMETER),
             }
         }
 
-        fn replace(
-            &mut self,
-            addr: usize,
-            len: usize,
-            page: PageSizeLevel,
-            numa: Option<u32>,
-        ) -> Result<(), u32> {
+        fn replace(&mut self, addr: usize, len: usize, page: PageSizeLevel, numa: Option<u32>) -> Result<(), u32> {
             let mut s = self.state();
             s.replaces += 1;
             s.touch(addr, "replace");
@@ -1556,13 +1272,7 @@ mod tests {
             Ok(())
         }
 
-        fn allocate_at(
-            &mut self,
-            addr: usize,
-            len: usize,
-            page: PageSizeLevel,
-            numa: Option<u32>,
-        ) -> Result<(), u32> {
+        fn allocate_at(&mut self, addr: usize, len: usize, page: PageSizeLevel, numa: Option<u32>) -> Result<(), u32> {
             let mut s = self.state();
             if s.overlaps(addr, len) {
                 return Err(ERROR_INVALID_ADDRESS);
@@ -1615,24 +1325,11 @@ mod tests {
     }
 
     fn threads(sizes: &[usize], nodes: &[Option<u32>]) -> Vec<StitchThread> {
-        sizes
-            .iter()
-            .zip(nodes)
-            .enumerate()
-            .map(|(thread_id, (&bytes, &numa_node))| StitchThread {
-                thread_id,
-                bytes,
-                numa_node,
-            })
-            .collect()
+        sizes.iter().zip(nodes).enumerate().map(|(thread_id, (&bytes, &numa_node))| StitchThread { thread_id, bytes, numa_node }).collect()
     }
 
     fn huge_counts(arena: &StitchedArena<FakeVm>) -> Vec<usize> {
-        arena
-            .spans()
-            .iter()
-            .map(|s| s.bytes_at(PageSizeLevel::Huge) / GIB)
-            .collect()
+        arena.spans().iter().map(|s| s.bytes_at(PageSizeLevel::Huge) / GIB).collect()
     }
 
     /// Every span is contiguous from its 1 GiB-aligned base, each run on its page size's boundary.
@@ -1641,25 +1338,14 @@ mod tests {
             let mut offset = 0;
             for run in &span.runs {
                 assert_eq!(run.offset, offset, "thread {} has a gap", span.thread_id);
-                assert_eq!(
-                    run.offset % page_bytes(run.page),
-                    0,
-                    "thread {}: a {:?} run off its page boundary",
-                    span.thread_id,
-                    run.page
-                );
+                assert_eq!(run.offset % page_bytes(run.page), 0, "thread {}: a {:?} run off its page boundary", span.thread_id, run.page);
                 offset += run.len;
             }
             assert_eq!(offset, span.len);
             assert_eq!(span.base % GIB, 0);
             // The report's record agrees with what was committed, page size by page size.
             for page in [PageSizeLevel::Huge, PageSizeLevel::Large, PageSizeLevel::Regular] {
-                let granted: usize = span
-                    .commits
-                    .iter()
-                    .filter(|c| !c.refused && c.page == page)
-                    .map(|c| c.len)
-                    .sum();
+                let granted: usize = span.commits.iter().filter(|c| !c.refused && c.page == page).map(|c| c.len).sum();
                 assert_eq!(granted, span.bytes_at(page));
             }
         }
@@ -1769,10 +1455,7 @@ mod tests {
             assert_well_formed(&arena);
             let span = &arena.spans()[0];
             assert_eq!(span.len, 2 * GIB);
-            (
-                span.bytes_at(PageSizeLevel::Large),
-                vm.state().large_bytes[&None],
-            )
+            (span.bytes_at(PageSizeLevel::Large), vm.state().large_bytes[&None])
         };
         assert_eq!(run(16 * MIB), (GIB + 48 * MIB, 0));
         assert_eq!(run(32 * MIB), (GIB + 32 * MIB, 16 * MIB));
@@ -1784,23 +1467,12 @@ mod tests {
         let req = StitchRequest::new(threads(&[2 * GIB + 48 * MIB], &[None]));
         let arena = StitchedArena::build_with(vm, &req).unwrap();
         let span = &arena.spans()[0];
-        assert_eq!(
-            span.runs,
-            vec![
-                Run {
-                    offset: 0,
-                    len: 2 * GIB,
-                    page: PageSizeLevel::Huge,
-                    numa_node: None,
-                },
-                Run {
-                    offset: 2 * GIB,
-                    len: 48 * MIB,
-                    page: PageSizeLevel::Large,
-                    numa_node: None,
-                },
-            ]
-        );
+        assert_eq!(span.runs, vec![Run { offset: 0, len: 2 * GIB, page: PageSizeLevel::Huge, numa_node: None }, Run {
+            offset: 2 * GIB,
+            len: 48 * MIB,
+            page: PageSizeLevel::Large,
+            numa_node: None,
+        },]);
     }
 
     #[test]
@@ -1834,14 +1506,11 @@ mod tests {
         assert!(spans.iter().all(|s| s.len == s.target));
         let run = |offset, len, page, node| Run { offset, len, page, numa_node: Some(node) };
         assert_eq!(spans[0].runs, vec![run(0, GIB, PageSizeLevel::Huge, 0), run(GIB, GIB, PageSizeLevel::Huge, 1)]);
-        assert_eq!(
-            spans[1].runs,
-            vec![
-                run(0, 512 * MIB, PageSizeLevel::Large, 0),
-                run(512 * MIB, 512 * MIB, PageSizeLevel::Large, 1),
-                run(GIB, GIB, PageSizeLevel::Huge, 1),
-            ]
-        );
+        assert_eq!(spans[1].runs, vec![
+            run(0, 512 * MIB, PageSizeLevel::Large, 0),
+            run(512 * MIB, 512 * MIB, PageSizeLevel::Large, 1),
+            run(GIB, GIB, PageSizeLevel::Huge, 1),
+        ]);
         let remote: Vec<usize> = spans.iter().map(ThreadSpan::remote_bytes).collect();
         assert_eq!(remote, vec![GIB, GIB + 512 * MIB, 0, 0]);
     }
@@ -1925,8 +1594,7 @@ mod tests {
         assert!(spans.iter().all(|s| s.len == s.target));
         assert_eq!(vm.state().large_bytes[&None], 0);
         // Thread 1's record keeps the two refusals the ladder halved through.
-        let asked: Vec<(usize, bool)> =
-            spans[1].commits.iter().take(3).map(|c| (c.len / MIB, c.refused)).collect();
+        let asked: Vec<(usize, bool)> = spans[1].commits.iter().take(3).map(|c| (c.len / MIB, c.refused)).collect();
         assert_eq!(asked, vec![(1024, true), (512, true), (256, false)]);
         assert!(spans[1].commits.iter().all(|c| c.page != PageSizeLevel::Huge));
     }
@@ -1945,15 +1613,9 @@ mod tests {
         assert_well_formed(&arena);
         assert_eq!(huge_counts(&arena), vec![2, 2, 1, 1]);
         let spans = arena.spans();
-        let large: Vec<_> = spans
-            .iter()
-            .map(|s| s.bytes_at(PageSizeLevel::Large))
-            .collect();
+        let large: Vec<_> = spans.iter().map(|s| s.bytes_at(PageSizeLevel::Large)).collect();
         assert_eq!(large, vec![0, 0, GIB + 512 * MIB, GIB]);
-        let locked: Vec<_> = spans
-            .iter()
-            .map(|s| s.len - s.bytes_at(PageSizeLevel::Regular))
-            .collect();
+        let locked: Vec<_> = spans.iter().map(|s| s.len - s.bytes_at(PageSizeLevel::Regular)).collect();
         assert_eq!(locked, vec![2 * GIB, 2 * GIB, 2 * GIB + 512 * MIB, 2 * GIB]);
         assert!(spans.iter().all(|s| s.len == s.target));
     }
@@ -1976,10 +1638,7 @@ mod tests {
         let (moved, none) = layout(CommitMethod::FreeThenAllocate);
         assert_eq!(replaced, moved);
         assert!(replaces > 0);
-        assert_eq!(
-            none, 0,
-            "the default must never issue MEM_REPLACE_PLACEHOLDER"
-        );
+        assert_eq!(none, 0, "the default must never issue MEM_REPLACE_PLACEHOLDER");
     }
 
     /// The 2026-09-24 crash in miniature: a 1 GiB commit of 2 MiB pages is refused, then the
@@ -2050,12 +1709,7 @@ mod tests {
         let req = StitchRequest::new(threads(&[GIB + 64 * MIB; 2], &[None; 2]));
         let arena = StitchedArena::build_with(vm.clone(), &req).unwrap();
         for span in arena.spans() {
-            let whole = Run {
-                offset: 0,
-                len: span.target,
-                page: PageSizeLevel::Regular,
-                numa_node: None,
-            };
+            let whole = Run { offset: 0, len: span.target, page: PageSizeLevel::Regular, numa_node: None };
             assert_eq!(span.runs, vec![whole]);
         }
         let large = [1024, 512, 256, 128, 64, 32, 16].map(|mib| (PageSizeLevel::Large, mib * MIB));
@@ -2107,19 +1761,19 @@ mod tests {
         };
         let attribute = MemExtendedParameterAttributeFlags.0;
         let node = MemExtendedParameterNumaNode.0;
-        assert_eq!(
-            decode(Win32Vm::page_params(PageSizeLevel::Huge, Some(1))),
-            vec![(attribute, MEM_EXTENDED_PARAMETER_NONPAGED_HUGE as u64), (node, 1 | NUMA_NODE_MANDATORY)]
-        );
-        assert_eq!(
-            decode(Win32Vm::page_params(PageSizeLevel::Large, Some(0))),
-            vec![(attribute, MEM_EXTENDED_PARAMETER_NONPAGED_LARGE as u64), (node, NUMA_NODE_MANDATORY)]
-        );
+        assert_eq!(decode(Win32Vm::page_params(PageSizeLevel::Huge, Some(1))), vec![
+            (attribute, MEM_EXTENDED_PARAMETER_NONPAGED_HUGE as u64),
+            (node, 1 | NUMA_NODE_MANDATORY)
+        ]);
+        assert_eq!(decode(Win32Vm::page_params(PageSizeLevel::Large, Some(0))), vec![
+            (attribute, MEM_EXTENDED_PARAMETER_NONPAGED_LARGE as u64),
+            (node, NUMA_NODE_MANDATORY)
+        ]);
         assert_eq!(decode(Win32Vm::page_params(PageSizeLevel::Regular, Some(1))), vec![(node, 1)]);
-        assert_eq!(
-            decode(Win32Vm::page_params(PageSizeLevel::Large, None)),
-            vec![(attribute, MEM_EXTENDED_PARAMETER_NONPAGED_LARGE as u64)]
-        );
+        assert_eq!(decode(Win32Vm::page_params(PageSizeLevel::Large, None)), vec![(
+            attribute,
+            MEM_EXTENDED_PARAMETER_NONPAGED_LARGE as u64
+        )]);
         assert!(decode(Win32Vm::page_params(PageSizeLevel::Regular, None)).is_empty());
     }
 
@@ -2180,11 +1834,7 @@ mod tests {
         assert!(err.contains("lost VA"), "{err}");
         let s = vm.state();
         assert_eq!(s.regions.len(), 1, "{:?}", s.regions);
-        assert!(
-            s.regions
-                .values()
-                .all(|&(len, r)| r == Region::Foreign && len == GIB)
-        );
+        assert!(s.regions.values().all(|&(len, r)| r == Region::Foreign && len == GIB));
     }
 
     #[test]
@@ -2207,10 +1857,7 @@ mod tests {
         }
 
         drop(arena);
-        assert!(
-            !vm.state().regions.is_empty(),
-            "views must keep the arena alive"
-        );
+        assert!(!vm.state().regions.is_empty(), "views must keep the arena alive");
         drop(blocks);
         assert!(vm.state().regions.is_empty());
     }

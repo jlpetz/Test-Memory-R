@@ -158,11 +158,7 @@ pub fn size(bytes: usize) -> String {
     } else {
         (KIB, "KiB")
     };
-    if bytes.is_multiple_of(unit) {
-        format!("{} {name}", bytes / unit)
-    } else {
-        format!("{:.1} {name}", bytes as f64 / unit as f64)
-    }
+    if bytes.is_multiple_of(unit) { format!("{} {name}", bytes / unit) } else { format!("{:.1} {name}", bytes as f64 / unit as f64) }
 }
 
 #[cfg(test)]
@@ -201,12 +197,18 @@ mod tests {
     fn a_desktop_shows_its_caches_and_dimms() {
         let panel = SystemPanel::of(&machine(vec![module("DIMM_A2", 32), module("DIMM_B2", 32)]));
         assert_eq!(panel.cache_line, "L1 32 KiB · L2 1 MiB per core · L3 16 MiB");
-        assert_eq!(panel.cache_detail,
-                   "L1 data: 32 KiB per core\nL1 instruction: 32 KiB per core\nL2: 1 MiB per core\nL3: 16 MiB, shared\n64-byte lines\nfrom raw_cpuid leaf 4");
+        assert_eq!(
+            panel.cache_detail,
+            "L1 data: 32 KiB per core\nL1 instruction: 32 KiB per core\nL2: 1 MiB per core\nL3: 16 MiB, shared\n64-byte lines\nfrom raw_cpuid leaf 4"
+        );
         assert_eq!(panel.cpu_detail, "AMD Ryzen 5 8600G w/ Radeon 760M Graphics\n6 cores, 12 logical CPUs");
         assert_eq!(panel.dimm_title, "2 × DDR5 · 64 GiB total");
-        let dimm = Dimm { locator: "DIMM_A2".to_string(), part: "G.Skill F5-6000J3040G32G".to_string(), capacity: "32 GiB".to_string(),
-                          speed: "6000".to_string() };
+        let dimm = Dimm {
+            locator: "DIMM_A2".to_string(),
+            part: "G.Skill F5-6000J3040G32G".to_string(),
+            capacity: "32 GiB".to_string(),
+            speed: "6000".to_string(),
+        };
         assert_eq!(panel.dimms[0], dimm);
     }
 
@@ -216,7 +218,12 @@ mod tests {
         let blank = MemoryModule { capacity_bytes: 64 << 30, ..Default::default() };
         let panel = SystemPanel::of(&machine(vec![blank]));
         assert_eq!(panel.dimm_title, "1 · 64 GiB total");
-        assert_eq!(panel.dimms[0], Dimm { locator: "–".to_string(), part: "–".to_string(), capacity: "64 GiB".to_string(), speed: "–".to_string() });
+        assert_eq!(panel.dimms[0], Dimm {
+            locator: "–".to_string(),
+            part: "–".to_string(),
+            capacity: "64 GiB".to_string(),
+            speed: "–".to_string()
+        });
         assert_eq!(SystemPanel::of(&machine(Vec::new())).dimm_title, "SMBIOS lists no memory modules");
         let none = Machine { l1_data: 0, l1_instruction: 0, l2: 0, l3: 0, ..machine(Vec::new()) };
         assert_eq!(cache_line(&none), "caches not found");

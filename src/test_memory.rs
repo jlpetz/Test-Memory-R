@@ -45,8 +45,10 @@ impl ChunkSpread {
 
     /// For halves (BlockMove, Spd-Copy): `with_granule(E / 2, c / 2, GRANULE / 2)`.
     pub fn with_granule(extent: usize, chunk: usize, granule: usize) -> Self {
-        debug_assert!(extent.is_multiple_of(granule) && chunk.is_multiple_of(granule) && chunk > 0,
-                      "extent {extent} and chunk {chunk} must be non-zero multiples of {granule}");
+        debug_assert!(
+            extent.is_multiple_of(granule) && chunk.is_multiple_of(granule) && chunk > 0,
+            "extent {extent} and chunk {chunk} must be non-zero multiples of {granule}"
+        );
         if extent == 0 {
             return Self { extent, chunk: 0, count: 0, q: 0, r: 0, d: 1, granule };
         }
@@ -87,8 +89,10 @@ impl ChunkSpread {
 /// The extent: the first `extent` bytes of the thread's span, floored to `GRANULE`, at most the
 /// span. Empty below one granule, or when the thread has no memory.
 pub fn extent(blocks: &[AllocationBlock], extent: usize) -> TestBlock<'_> {
-    debug_assert!(blocks.windows(2).all(|w| w[0].buffer.as_mut_ptr() as usize + w[0].buffer.size() == w[1].buffer.as_mut_ptr() as usize),
-                  "a thread's blocks must be one contiguous span");
+    debug_assert!(
+        blocks.windows(2).all(|w| w[0].buffer.as_mut_ptr() as usize + w[0].buffer.size() == w[1].buffer.as_mut_ptr() as usize),
+        "a thread's blocks must be one contiguous span"
+    );
     let Some(first) = blocks.first() else {
         return TestBlock::empty();
     };
@@ -131,8 +135,9 @@ pub fn describe_chunks(spread: ChunkSpread) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Arc;
+
+    use super::*;
     use crate::memory::MemoryBuffer;
     use crate::memory::allocator::AllocationConfig;
     use crate::memory::backend::{AllocError, Backend, BackendAllocation};
@@ -147,21 +152,26 @@ mod tests {
         fn allocate(&self, _: &AllocationConfig) -> Result<BackendAllocation, AllocError> {
             unreachable!("test blocks are built directly")
         }
-        fn free(&self, _: BackendAllocation) -> Result<(), String> { Ok(()) }
-        fn name(&self) -> &'static str { "none" }
+        fn free(&self, _: BackendAllocation) -> Result<(), String> {
+            Ok(())
+        }
+        fn name(&self) -> &'static str {
+            "none"
+        }
     }
 
     /// Blocks of these sizes at `addr`, in order.
     fn blocks(addr: usize, sizes: &[usize]) -> Vec<AllocationBlock> {
         let backend: Arc<dyn Backend> = Arc::new(NoMemory);
         let mut at = addr;
-        sizes.iter().map(|&size| {
-            let block = AllocationBlock {
-                buffer: MemoryBuffer::new(BackendAllocation { ptr: at as *mut u8, size }, backend.clone()),
-            };
-            at += size;
-            block
-        }).collect()
+        sizes
+            .iter()
+            .map(|&size| {
+                let block = AllocationBlock { buffer: MemoryBuffer::new(BackendAllocation { ptr: at as *mut u8, size }, backend.clone()) };
+                at += size;
+                block
+            })
+            .collect()
     }
 
     #[test]
@@ -187,11 +197,14 @@ mod tests {
         let full = TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MIB });
         let (extent, spread) = resolve_layout(&full, "Mem-SimpleV2-Auto", 7 * GIB).unwrap();
         assert_eq!((extent, spread.count(), spread.chunk(), spread.overlap()), (7 * GIB, 1792, 4 * MIB, 0));
-        let window = TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: 1000 * MIB + 100 }, ChunkMode::Absolute { size_bytes: 16 * MIB });
+        let window =
+            TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: 1000 * MIB + 100 }, ChunkMode::Absolute { size_bytes: 16 * MIB });
         let (extent, spread) = resolve_layout(&window, "Mem-BlockMove", 7 * GIB).unwrap();
         assert_eq!((extent, spread.count(), spread.overlap()), (1000 * MIB, 63, 8 * MIB));
-        assert_eq!(resolve_layout(&full, "Mem-SimpleV2-Auto", 7 * GIB).map(|(e, s)| (e, s.count())),
-                   Some((extent_of(&full, 7 * GIB), 1792)));
+        assert_eq!(
+            resolve_layout(&full, "Mem-SimpleV2-Auto", 7 * GIB).map(|(e, s)| (e, s.count())),
+            Some((extent_of(&full, 7 * GIB), 1792))
+        );
         assert!(resolve_layout(&full, "Mem-SimpleV2-Auto", 0).is_none());
     }
 

@@ -166,28 +166,20 @@ impl RunIdentity {
 
         // Installed vs OS-visible RAM. Failure is not worth aborting a run over — leave zeros,
         // which read as "not recorded" next to a populated `machine_id`.
-        let (installed_memory_gib, os_visible_memory_gib) =
-            match crate::memory::allocation_strategy::SystemMemoryInfo::gather() {
-                Ok(info) => (
-                    to_gib(info.total_installed_bytes),
-                    to_gib(info.total_physical_bytes),
-                ),
-                Err(e) => {
-                    log::warn!("Could not record system memory totals in result: {}", e);
-                    (0.0, 0.0)
-                }
-            };
+        let (installed_memory_gib, os_visible_memory_gib) = match crate::memory::allocation_strategy::SystemMemoryInfo::gather() {
+            Ok(info) => (to_gib(info.total_installed_bytes), to_gib(info.total_physical_bytes)),
+            Err(e) => {
+                log::warn!("Could not record system memory totals in result: {}", e);
+                (0.0, 0.0)
+            }
+        };
 
         let virtualized = cache.is_virtual_machine;
 
         Self {
             machine_id: crate::app_config::AppConfig::generate_machine_id(sys, smbios),
             memory_id: smbios.memory_fingerprint(),
-            system_uuid: if smbios.system.uuid.is_empty() {
-                None
-            } else {
-                Some(smbios.system.uuid.clone())
-            },
+            system_uuid: if smbios.system.uuid.is_empty() { None } else { Some(smbios.system.uuid.clone()) },
             // Same constructor `AppConfig::update_identity` uses, so a result file's readable
             // identity always corresponds to the `machine_id` that gates calibration reuse.
             machine: MachineIdentity::detect(sys, smbios),
@@ -352,22 +344,13 @@ impl PageSizeMix {
 
     /// Compact one-line summary, e.g. `"18.00 GiB 1 GiB pages, 10.00 GiB 2 MiB pages"`.
     pub fn describe(&self) -> String {
-        let parts: Vec<String> = [
-            (self.huge_1gib_gib, "1 GiB"),
-            (self.large_2mib_gib, "2 MiB"),
-            (self.regular_4kib_gib, "4 KiB"),
-        ]
-        .iter()
-        .filter(|&&(gib, _)| gib > 0.0)
-        .map(|&(gib, page)| format!("{gib:.2} GiB {page} pages"))
-        .collect();
-        if parts.is_empty() {
-            "none".to_string()
-        } else {
-            parts.join(", ")
-        }
+        let parts: Vec<String> = [(self.huge_1gib_gib, "1 GiB"), (self.large_2mib_gib, "2 MiB"), (self.regular_4kib_gib, "4 KiB")]
+            .iter()
+            .filter(|&&(gib, _)| gib > 0.0)
+            .map(|&(gib, page)| format!("{gib:.2} GiB {page} pages"))
+            .collect();
+        if parts.is_empty() { "none".to_string() } else { parts.join(", ") }
     }
-
 }
 
 /// Worker-thread placement. Recorded per thread because *which* CPUs ran matters as much as how
@@ -623,18 +606,14 @@ impl RunConfigSnapshot {
             available_at_start_gib: to_gib(system_memory_info.available_physical_bytes),
             memory_load_percent_at_start: system_memory_info.memory_load_percent,
             allocated_gib: to_gib(allocated_bytes),
-            per_thread_gib: if thread_count > 0 {
-                to_gib(allocated_bytes / thread_count as u64)
-            } else {
-                0.0
-            },
+            per_thread_gib: if thread_count > 0 { to_gib(allocated_bytes / thread_count as u64) } else { 0.0 },
             requests,
             refused,
             backend: format!("{:?}", runtime_config.memory_backend),
             large_pages_available: runtime_config.large_pages_available,
             min_page_size: runtime_config.memory_allocation.min_page_size.clone(),
             max_page_size: runtime_config.memory_allocation.max_page_size.clone(),
-page_mix,
+            page_mix,
         };
 
         // NUMA distribution, kept in node order so two runs diff cleanly.
@@ -653,11 +632,7 @@ page_mix,
             thread_priority: thread_priority.to_string(),
             assignments: cpu_assignments
                 .iter()
-                .map(|&(thread_id, logical_cpu, numa_node)| ThreadAssignment {
-                    thread_id,
-                    logical_cpu,
-                    numa_node,
-                })
+                .map(|&(thread_id, logical_cpu, numa_node)| ThreadAssignment { thread_id, logical_cpu, numa_node })
                 .collect(),
             numa_distribution,
             active_threads_per_core: crate::tests::get_active_threads_per_core(),
@@ -678,17 +653,10 @@ page_mix,
                 .collect();
             // HashMap iteration order is arbitrary; sort so results diff cleanly.
             tiers.sort_by(|a, b| a.tier.cmp(&b.tier));
-            CalibrationSnapshot {
-                timestamp: cal.timestamp.to_rfc3339(),
-                page_size: cal.page_size.clone(),
-                tiers,
-            }
+            CalibrationSnapshot { timestamp: cal.timestamp.to_rfc3339(), page_size: cal.page_size.clone(), tiers }
         });
 
-        let tests = tests
-            .iter()
-            .map(|def| TestConfigSnapshot::capture(def, cache_info, thread_count, thread_memory_least))
-            .collect();
+        let tests = tests.iter().map(|def| TestConfigSnapshot::capture(def, cache_info, thread_count, thread_memory_least)).collect();
 
         Self {
             command_line: capture_command_line(command_line),
@@ -698,10 +666,7 @@ page_mix,
             execution,
             calibration,
             tests,
-            tests_left_out: left_out
-                .iter()
-                .map(|(name, reason)| LeftOutTest { name: name.clone(), reason: reason.clone() })
-                .collect(),
+            tests_left_out: left_out.iter().map(|(name, reason)| LeftOutTest { name: name.clone(), reason: reason.clone() }).collect(),
         }
     }
 }
@@ -709,9 +674,10 @@ page_mix,
 impl ExecutionSnapshot {
     /// The run's suite-level settings (`RunConfigSnapshot::capture`); `seal` is the seal's kernel and
     /// where its width came from, in a sealed run.
-    fn capture(suite_timing: &crate::runner::TestSuiteTiming, error_mode: crate::ErrorMode, test_filter: Option<String>,
-               plan: Option<String>, channels: u32,
-               seal: Option<(crate::seal::SealKernel, crate::seal::SealWidthSource)>) -> Self {
+    fn capture(
+        suite_timing: &crate::runner::TestSuiteTiming, error_mode: crate::ErrorMode, test_filter: Option<String>, plan: Option<String>,
+        channels: u32, seal: Option<(crate::seal::SealKernel, crate::seal::SealWidthSource)>,
+    ) -> Self {
         ExecutionSnapshot {
             cycles_requested: suite_timing.global_cycles,
             duration_secs_requested: suite_timing.global_duration_secs,
@@ -735,8 +701,9 @@ impl ExecutionSnapshot {
 impl TestConfigSnapshot {
     /// One test as the run resolved it (`RunConfigSnapshot::capture`), its layout on the thread with
     /// the least memory, `thread_memory_least`.
-    fn capture(def: &crate::runner::TestDefinition, cache_info: &crate::cache::CacheInfo, thread_count: usize,
-               thread_memory_least: usize) -> Self {
+    fn capture(
+        def: &crate::runner::TestDefinition, cache_info: &crate::cache::CacheInfo, thread_count: usize, thread_memory_least: usize,
+    ) -> Self {
         // Extent/chunk modes are rendered with the same formatter the console tables use, so the
         // recorded string matches what the user saw — including the resolved byte size for cache
         // specs, which is where the SMT divisor becomes visible.
@@ -747,22 +714,15 @@ impl TestConfigSnapshot {
         TestConfigSnapshot {
             name: def.display_name.clone(),
             function: def.actual_name.to_string(),
-            extent_mode: formatter.format_extent_mode_with_size(
-                &def.config.extent_mode,
-                cache_info,
-                thread_count,
-            ),
-            chunk_mode: formatter.format_chunk_mode_with_size(
-                &def.config.chunk_mode,
-                cache_info,
-                thread_count,
-            ),
+            extent_mode: formatter.format_extent_mode_with_size(&def.config.extent_mode, cache_info, thread_count),
+            chunk_mode: formatter.format_chunk_mode_with_size(&def.config.chunk_mode, cache_info, thread_count),
             verify_reps: def.config.verify_reps,
             test_reps: def.config.test_reps,
             write_read_cycles: def.config.write_read_cycles,
             pattern_mode: def.config.pattern_mode,
             program: (def.actual_name.starts_with("Mem-SimpleV2") || def.actual_name == "Mem-Sequence")
-                .then(|| def.config.native_program().map(|p| p.names())).flatten(),
+                .then(|| def.config.native_program().map(|p| p.names()))
+                .flatten(),
             sequence: (def.actual_name == "Mem-Sequence")
                 .then(|| def.config.sequence())
                 .map(|s| format!("{} (order {})", s.name(), s.order.name())),
@@ -788,9 +748,7 @@ impl TestConfigSnapshot {
 fn capture_command_line(argv: &[String]) -> Vec<String> {
     let mut args = argv.to_vec();
     if let Some(exe) = args.first_mut()
-        && let Some(name) = std::path::Path::new(exe.as_str())
-            .file_name()
-            .and_then(|n| n.to_str())
+        && let Some(name) = std::path::Path::new(exe.as_str()).file_name().and_then(|n| n.to_str())
     {
         *exe = name.to_string();
     }
@@ -815,12 +773,7 @@ pub struct RunDifference {
 
 impl RunDifference {
     pub fn new(field: &str, baseline: impl Into<String>, current: impl Into<String>, invalidates: bool) -> Self {
-        Self {
-            field: field.to_string(),
-            baseline: baseline.into(),
-            current: current.into(),
-            invalidates,
-        }
+        Self { field: field.to_string(), baseline: baseline.into(), current: current.into(), invalidates }
     }
 }
 
@@ -848,12 +801,7 @@ pub fn compare_identity(baseline: &RunIdentity, current: &RunIdentity) -> Vec<Ru
     let mut diffs = Vec::new();
 
     if baseline.machine_id != current.machine_id {
-        diffs.push(RunDifference::new(
-            "Machine ID (CPU/cache/BIOS)",
-            &baseline.machine_id,
-            &current.machine_id,
-            true,
-        ));
+        diffs.push(RunDifference::new("Machine ID (CPU/cache/BIOS)", &baseline.machine_id, &current.machine_id, true));
         // The hash is opaque, so name the fields that actually moved.
         let m = (&baseline.machine, &current.machine);
         if m.0.cpu_brand != m.1.cpu_brand {
@@ -869,24 +817,14 @@ pub fn compare_identity(baseline: &RunIdentity, current: &RunIdentity) -> Vec<Ru
             diffs.push(RunDifference::new("  System product", &m.0.system_product, &m.1.system_product, true));
         }
         if m.0.physical_cores != m.1.physical_cores {
-            diffs.push(RunDifference::new(
-                "  Physical cores",
-                m.0.physical_cores.to_string(),
-                m.1.physical_cores.to_string(),
-                true,
-            ));
+            diffs.push(RunDifference::new("  Physical cores", m.0.physical_cores.to_string(), m.1.physical_cores.to_string(), true));
         }
     }
 
     if baseline.memory_id != current.memory_id {
         // Deliberately separate from machine_id: RAM can change with the CPU untouched, and for a
         // memory tester that is the more consequential half.
-        diffs.push(RunDifference::new(
-            "Memory fingerprint",
-            &baseline.memory_id,
-            &current.memory_id,
-            true,
-        ));
+        diffs.push(RunDifference::new("Memory fingerprint", &baseline.memory_id, &current.memory_id, true));
         if baseline.memory_reported_gib != current.memory_reported_gib {
             diffs.push(RunDifference::new(
                 "  Reported capacity",
@@ -917,23 +855,13 @@ pub fn compare_identity(baseline: &RunIdentity, current: &RunIdentity) -> Vec<Ru
     }
 
     if baseline.l3_cache != current.l3_cache {
-        diffs.push(RunDifference::new(
-            "L3 cache",
-            baseline.l3_cache.to_string(),
-            current.l3_cache.to_string(),
-            true,
-        ));
+        diffs.push(RunDifference::new("L3 cache", baseline.l3_cache.to_string(), current.l3_cache.to_string(), true));
     }
 
     if baseline.simd_capabilities != current.simd_capabilities {
         // Auto-dispatch resolves width from this, so a change can silently swap the code path
         // under a test whose name did not change.
-        diffs.push(RunDifference::new(
-            "SIMD capabilities",
-            &baseline.simd_capabilities,
-            &current.simd_capabilities,
-            true,
-        ));
+        diffs.push(RunDifference::new("SIMD capabilities", &baseline.simd_capabilities, &current.simd_capabilities, true));
     }
 
     if differs_materially(baseline.tsc_frequency_ghz, current.tsc_frequency_ghz) {
@@ -947,12 +875,7 @@ pub fn compare_identity(baseline: &RunIdentity, current: &RunIdentity) -> Vec<Ru
     }
 
     if baseline.cache_detection_method != current.cache_detection_method {
-        diffs.push(RunDifference::new(
-            "Cache detection",
-            &baseline.cache_detection_method,
-            &current.cache_detection_method,
-            false,
-        ));
+        diffs.push(RunDifference::new("Cache detection", &baseline.cache_detection_method, &current.cache_detection_method, false));
     }
 
     diffs
@@ -986,12 +909,7 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
     }
 
     if b.threads.thread_count != c.threads.thread_count {
-        diffs.push(RunDifference::new(
-            "Thread count",
-            b.threads.thread_count.to_string(),
-            c.threads.thread_count.to_string(),
-            true,
-        ));
+        diffs.push(RunDifference::new("Thread count", b.threads.thread_count.to_string(), c.threads.thread_count.to_string(), true));
     }
 
     if b.threads.active_threads_per_core != c.threads.active_threads_per_core {
@@ -1004,40 +922,18 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
         ));
     }
 
-    if b.threads.assignments != c.threads.assignments
-        && b.threads.thread_count == c.threads.thread_count
-    {
-        let cpus = |s: &ThreadSnapshot| {
-            s.assignments
-                .iter()
-                .map(|a| a.logical_cpu.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        };
+    if b.threads.assignments != c.threads.assignments && b.threads.thread_count == c.threads.thread_count {
+        let cpus = |s: &ThreadSnapshot| s.assignments.iter().map(|a| a.logical_cpu.to_string()).collect::<Vec<_>>().join(",");
         // Same count, different placement. On a multi-CCD part this alone moves throughput
         // 13-25%, so it is worth flagging even though it is not a config error.
-        diffs.push(RunDifference::new(
-            "CPU placement",
-            cpus(&b.threads),
-            cpus(&c.threads),
-            false,
-        ));
+        diffs.push(RunDifference::new("CPU placement", cpus(&b.threads), cpus(&c.threads), false));
     }
 
     if b.threads.numa_distribution != c.threads.numa_distribution {
         let nodes = |s: &ThreadSnapshot| {
-            s.numa_distribution
-                .iter()
-                .map(|n| format!("node{}×{}", n.numa_node, n.threads))
-                .collect::<Vec<_>>()
-                .join(" ")
+            s.numa_distribution.iter().map(|n| format!("node{}×{}", n.numa_node, n.threads)).collect::<Vec<_>>().join(" ")
         };
-        diffs.push(RunDifference::new(
-            "NUMA distribution",
-            nodes(&b.threads),
-            nodes(&c.threads),
-            false,
-        ));
+        diffs.push(RunDifference::new("NUMA distribution", nodes(&b.threads), nodes(&c.threads), false));
     }
 
     if b.threads.pinned != c.threads.pinned {
@@ -1050,23 +946,13 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
     }
 
     if b.threads.thread_priority != c.threads.thread_priority {
-        diffs.push(RunDifference::new(
-            "Thread priority",
-            &b.threads.thread_priority,
-            &c.threads.thread_priority,
-            false,
-        ));
+        diffs.push(RunDifference::new("Thread priority", &b.threads.thread_priority, &c.threads.thread_priority, false));
     }
 
     if b.memory.page_mix.describe() != c.memory.page_mix.describe() {
         // Not a config difference — an environment one. The allocator takes what physical
         // contiguity allows, so this varies with uptime even for an identical command line.
-        diffs.push(RunDifference::new(
-            "Page-size mix",
-            b.memory.page_mix.describe(),
-            c.memory.page_mix.describe(),
-            false,
-        ));
+        diffs.push(RunDifference::new("Page-size mix", b.memory.page_mix.describe(), c.memory.page_mix.describe(), false));
     }
 
     if b.memory.spec != c.memory.spec {
@@ -1086,22 +972,12 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
 
     if b.execution.cycles_requested != c.execution.cycles_requested {
         let fmt = |v: Option<u32>| v.map(|n| n.to_string()).unwrap_or_else(|| "unlimited".into());
-        diffs.push(RunDifference::new(
-            "Cycles requested",
-            fmt(b.execution.cycles_requested),
-            fmt(c.execution.cycles_requested),
-            false,
-        ));
+        diffs.push(RunDifference::new("Cycles requested", fmt(b.execution.cycles_requested), fmt(c.execution.cycles_requested), false));
     }
 
     if b.execution.channels != c.execution.channels {
         // Changes SimpleTest's stride, i.e. the access pattern itself.
-        diffs.push(RunDifference::new(
-            "Memory channels",
-            b.execution.channels.to_string(),
-            c.execution.channels.to_string(),
-            true,
-        ));
+        diffs.push(RunDifference::new("Memory channels", b.execution.channels.to_string(), c.execution.channels.to_string(), true));
     }
 
     if b.memory.backend != c.memory.backend {
@@ -1129,12 +1005,7 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
             continue;
         };
         let mut note = |field: &str, bv: String, cv: String| {
-            diffs.push(RunDifference::new(
-                &format!("{}: {}", cur_test.name, field),
-                bv,
-                cv,
-                true,
-            ));
+            diffs.push(RunDifference::new(&format!("{}: {}", cur_test.name, field), bv, cv, true));
         };
         if base_test.extent_mode != cur_test.extent_mode {
             note("extent", base_test.extent_mode.clone(), cur_test.extent_mode.clone());
@@ -1143,11 +1014,7 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
             note("chunk", base_test.chunk_mode.clone(), cur_test.chunk_mode.clone());
         }
         if base_test.flush_before_verify != cur_test.flush_before_verify {
-            note(
-                "flush before verify",
-                base_test.flush_before_verify.to_string(),
-                cur_test.flush_before_verify.to_string(),
-            );
+            note("flush before verify", base_test.flush_before_verify.to_string(), cur_test.flush_before_verify.to_string());
         }
         if base_test.verify_reps != cur_test.verify_reps {
             note("verify reps", base_test.verify_reps.to_string(), cur_test.verify_reps.to_string());
@@ -1164,11 +1031,7 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
             note("test reps", base_test.test_reps.to_string(), cur_test.test_reps.to_string());
         }
         if base_test.write_read_cycles != cur_test.write_read_cycles {
-            note(
-                "write/read cycles",
-                base_test.write_read_cycles.to_string(),
-                cur_test.write_read_cycles.to_string(),
-            );
+            note("write/read cycles", base_test.write_read_cycles.to_string(), cur_test.write_read_cycles.to_string());
         }
         if base_test.function != cur_test.function {
             // Same registered name, different implementation — e.g. auto-dispatch resolved to a
@@ -1177,7 +1040,9 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
         }
         // A test that takes the run's width under one name, as Mem-Sequence and the Bench pairs do
         // (TODO 99); results written before the record have none
-        if let (Some(b), Some(c)) = (base_test.simd_width_bits, cur_test.simd_width_bits) && b != c {
+        if let (Some(b), Some(c)) = (base_test.simd_width_bits, cur_test.simd_width_bits)
+            && b != c
+        {
             note("SIMD width", format!("{b} bits"), format!("{c} bits"));
         }
     }
@@ -1273,11 +1138,7 @@ mod tests {
                 spec_is_deterministic: true,
                 ..Default::default()
             },
-            threads: ThreadSnapshot {
-                thread_count: threads,
-                active_threads_per_core: 1,
-                ..Default::default()
-            },
+            threads: ThreadSnapshot { thread_count: threads, active_threads_per_core: 1, ..Default::default() },
             ..Default::default()
         }
     }
@@ -1315,10 +1176,7 @@ mod tests {
 
     #[test]
     fn page_mix_describes_every_kind_used() {
-        let mut mix = PageSizeMix {
-            huge_1gib_gib: 1.0,
-            ..Default::default()
-        };
+        let mut mix = PageSizeMix { huge_1gib_gib: 1.0, ..Default::default() };
         assert_eq!(mix.describe(), "1.00 GiB 1 GiB pages");
 
         mix.large_2mib_gib = 54.0;
@@ -1333,12 +1191,17 @@ mod tests {
     #[test]
     fn the_run_records_its_seal_and_where_its_width_came_from() {
         use crate::seal::{SealKernel, SealPattern, SealWidth, SealWidthSource};
-        let capture = |seal| ExecutionSnapshot::capture(&crate::runner::TestSuiteTiming::cycles_only(1), crate::ErrorMode::Log,
-                                                        None, None, 2, seal);
+        let capture =
+            |seal| ExecutionSnapshot::capture(&crate::runner::TestSuiteTiming::cycles_only(1), crate::ErrorMode::Log, None, None, 2, seal);
         for (pattern, width, source, recorded) in [
             (SealPattern::Tmr, SealWidth::W128, SealWidthSource::Calibrated, ("tmr-128", "calibrated")),
             (SealPattern::Tm5, SealWidth::W256, SealWidthSource::Rule, ("tm5-256", "rule")),
-            (SealPattern::Tmr, SealWidth::W512, SealWidthSource::Setting("the config's seal_width"), ("tmr-512", "the config's seal_width")),
+            (
+                SealPattern::Tmr,
+                SealWidth::W512,
+                SealWidthSource::Setting("the config's seal_width"),
+                ("tmr-512", "the config's seal_width"),
+            ),
         ] {
             let execution = capture(Some((SealKernel::new(pattern, width), source)));
             assert_eq!((execution.seal.as_deref(), execution.seal_width_source.as_deref()), (Some(recorded.0), Some(recorded.1)));
@@ -1346,7 +1209,8 @@ mod tests {
         let unsealed = capture(None);
         assert_eq!((unsealed.seal.as_deref(), unsealed.seal_width_source.as_deref()), (None, None));
 
-        let mut json = serde_json::to_value(capture(Some((SealKernel::new(SealPattern::Tmr, SealWidth::W256), SealWidthSource::Rule)))).unwrap();
+        let mut json =
+            serde_json::to_value(capture(Some((SealKernel::new(SealPattern::Tmr, SealWidth::W256), SealWidthSource::Rule)))).unwrap();
         for key in ["seal", "seal_width_source"] {
             json.as_object_mut().unwrap().remove(key);
         }
@@ -1365,7 +1229,8 @@ mod tests {
         let forced = [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()).map(|w| (w, Some(w)));
         for (width, given) in forced.chain([(Width::widest(), None)]) {
             let _width = TestWidth::set(given);
-            let execution = ExecutionSnapshot::capture(&crate::runner::TestSuiteTiming::cycles_only(1), crate::ErrorMode::Log, None, None, 2, None);
+            let execution =
+                ExecutionSnapshot::capture(&crate::runner::TestSuiteTiming::cycles_only(1), crate::ErrorMode::Log, None, None, 2, None);
             let source = if given.is_some() { "a test's width" } else { "auto" };
             assert_eq!((execution.simd_width_bits, execution.simd_width_source.as_deref()), (Some(width.bits()), Some(source)));
             let definitions = crate::runner::create_test_definitions(cache_info);
@@ -1374,9 +1239,14 @@ mod tests {
                 TestConfigSnapshot::capture(def, cache_info, 1, 64 << 20).simd_width_bits
             };
             let sequence = width.max(Width::W256).bits();
-            for (name, bits) in [(format!("Mem-StuckBit{}_A", width.name()), Some(width.bits())), ("Mem-Sequence".to_string(), Some(sequence)),
-                                 ("Bench-Init-TMR-10".to_string(), Some(width.bits())), ("Bench-Verify-Random".to_string(), Some(width.bits())),
-                                 ("Mem-StuckBit128".to_string(), None), ("Mem-MovingInv".to_string(), None)] {
+            for (name, bits) in [
+                (format!("Mem-StuckBit{}_A", width.name()), Some(width.bits())),
+                ("Mem-Sequence".to_string(), Some(sequence)),
+                ("Bench-Init-TMR-10".to_string(), Some(width.bits())),
+                ("Bench-Verify-Random".to_string(), Some(width.bits())),
+                ("Mem-StuckBit128".to_string(), None),
+                ("Mem-MovingInv".to_string(), None),
+            ] {
                 assert_eq!(recorded(&name), bits, "{name} under {given:?}");
             }
         }
@@ -1392,8 +1262,12 @@ mod tests {
             config
         };
         let diffs = compare_config(&with_test(Some(512)), &with_test(Some(256)));
-        assert!(diffs.iter().any(|d| d.field == "Mem-Sequence: SIMD width" && d.invalidates
-                                     && d.baseline == "512 bits" && d.current == "256 bits"), "{diffs:?}");
+        assert!(
+            diffs
+                .iter()
+                .any(|d| d.field == "Mem-Sequence: SIMD width" && d.invalidates && d.baseline == "512 bits" && d.current == "256 bits"),
+            "{diffs:?}"
+        );
         assert!(compare_config(&with_test(Some(256)), &with_test(Some(256))).is_empty());
         assert!(compare_config(&with_test(None), &with_test(Some(512))).is_empty());
     }

@@ -1,10 +1,11 @@
+use std::collections::HashSet;
+
 /// Simplified conversion functions that work with the actual codebase structure
 /// This bridges the gap between the current codebase and the new reporting system
 use super::models::*;
-use crate::memory::allocation_strategy::{SystemMemoryInfo, AllocationResult};
-use crate::progress::TestSummary;
 use crate::constants::{HUGE_PAGE_SIZE_USIZE, bytes_to_gib_f64};
-use std::collections::HashSet;
+use crate::memory::allocation_strategy::{AllocationResult, SystemMemoryInfo};
+use crate::progress::TestSummary;
 
 /// A test's parameters for the plan and report: the first one set, in the input's own form
 pub(crate) fn format_parameter_context(ctx: &Option<crate::config::TestParameterContext>) -> String {
@@ -14,10 +15,11 @@ pub(crate) fn format_parameter_context(ctx: &Option<crate::config::TestParameter
                 return mirror.to_string();
             }
             if let Some(stride_cl) = c.stride_cachelines
-                && stride_cl > 0 {
-                    let stride_bytes = stride_cl * 64; // cache line = 64 bytes
-                    return format!("Stride({}cl/{}B)", stride_cl, stride_bytes);
-                }
+                && stride_cl > 0
+            {
+                let stride_bytes = stride_cl * 64; // cache line = 64 bytes
+                return format!("Stride({}cl/{}B)", stride_cl, stride_bytes);
+            }
             // TMR-native test parameters
             if let Some(sp) = c.stride_patterns {
                 return format!("StridePat({})", sp);
@@ -45,22 +47,19 @@ pub(crate) fn format_parameter_context(ctx: &Option<crate::config::TestParameter
 }
 
 /// Create a consolidated memory report combining system info and allocation planning
-pub fn create_consolidated_memory_report(
-    mem_info: &SystemMemoryInfo, 
-    allocation_result: &AllocationResult
-) -> ConsolidatedMemoryReport {
+pub fn create_consolidated_memory_report(mem_info: &SystemMemoryInfo, allocation_result: &AllocationResult) -> ConsolidatedMemoryReport {
     let mut warnings = Vec::new();
-    
+
     // Check for failure mode testing
     if allocation_result.allocation_type.contains("from Total") || allocation_result.allocation_type.contains("Target") {
         warnings.push("🧪 FAILURE MODE TESTING DETECTED - This configuration may intentionally cause allocation failures".to_string());
         warnings.push("Use only for development/testing purposes!".to_string());
-        
+
         if allocation_result.allocation_bytes > mem_info.available_physical_bytes * 2 {
             warnings.push("🚨 EXTREME: Allocation >2x available memory - will likely fail".to_string());
         }
     }
-    
+
     ConsolidatedMemoryReport {
         total_installed_bytes: mem_info.total_installed_bytes,
         total_physical_bytes: mem_info.total_physical_bytes,
@@ -77,8 +76,7 @@ pub fn create_consolidated_memory_report(
         per_thread_raw_bytes: allocation_result.per_thread_raw_bytes,
         rounding_step_bytes: allocation_result.rounding_step_bytes,
         rounding_direction: allocation_result.rounding_direction.to_string(),
-        rounding_asked: allocation_result.rounding_asked
-            .map(|asked| (asked.step_bytes, asked.direction.to_string())),
+        rounding_asked: allocation_result.rounding_asked.map(|asked| (asked.step_bytes, asked.direction.to_string())),
         per_thread_bytes: allocation_result.per_thread_bytes,
         allocation_bytes: allocation_result.allocation_bytes,
         reserve_bytes: allocation_result.reserve_bytes,
@@ -113,22 +111,21 @@ fn width_note(width: crate::simd::Width, source: &str, test_definitions: &[crate
     } else {
         String::new()
     };
-    format!("ℹ  Width: {} bits ({source}) for every test that picks its width at run time: the -Auto tests (named \
+    format!(
+        "ℹ  Width: {} bits ({source}) for every test that picks its width at run time: the -Auto tests (named \
              for it), Mem-Sequence and the Bench pairs; the seal too unless seal-width= sets its own. Tests named \
-             for a width keep theirs.{lacks}", width.bits())
+             for a width keep theirs.{lacks}",
+        width.bits()
+    )
 }
 
 /// The plan: one row per test, in the order of its first step, then the cycle's sequence when it
 /// isn't simply each test once, and the seal (TODO 74).
 pub fn create_test_configuration_report_v2(
-    test_definitions: &[crate::runner::TestDefinition],
-    suite_timing: &crate::runner::TestSuiteTiming,
-    cache_info: &crate::cache::CacheInfo,
-    thread_memory: &[usize],
-    tm5: Option<(u32, u32)>,
-    sequence: &PlanSequence,
+    test_definitions: &[crate::runner::TestDefinition], suite_timing: &crate::runner::TestSuiteTiming,
+    cache_info: &crate::cache::CacheInfo, thread_memory: &[usize], tm5: Option<(u32, u32)>, sequence: &PlanSequence,
 ) -> TestConfigurationReport {
-    use crate::reporting::formatters::{ReportFormatter, DefaultFormatter};
+    use crate::reporting::formatters::{DefaultFormatter, ReportFormatter};
     use crate::test_memory::{ChunkSpread, GRANULE};
     use crate::tests::{ChunkMode, ExtentMode};
     let formatter = DefaultFormatter::new();
@@ -139,8 +136,10 @@ pub fn create_test_configuration_report_v2(
 
     let mut notes = Vec::new();
     if let Some((window, lock)) = tm5 {
-        notes.push(format!("ℹ  TM5 import: every test covers the full allocation. The .cfg's {window} MiB Testing Window and \
-                            {lock} MiB Lock Memory Granularity only size Test Block Size codes 0-3 and cap larger blocks."));
+        notes.push(format!(
+            "ℹ  TM5 import: every test covers the full allocation. The .cfg's {window} MiB Testing Window and \
+                            {lock} MiB Lock Memory Granularity only size Test Block Size codes 0-3 and cap larger blocks."
+        ));
     }
 
     let suite_timing_str = match (suite_timing.global_cycles, suite_timing.global_duration_secs) {
@@ -258,11 +257,17 @@ pub fn create_test_configuration_report_v2(
     let label = |id: &str| if sequence.tm5 { id.to_string() } else { format!("\"{id}\"") };
     match sequence.order {
         Some(order) => {
-            let steps: Vec<String> = order.iter()
-                .map(|(id, runs)| if *runs { label(id) } else { format!("({} off)", label(id)) })
-                .collect();
-            let repeats: Vec<String> = firsts.iter().filter(|(_, n)| *n > 1)
-                .map(|(d, n)| format!("{} ×{n}", d.id.as_deref().map_or(d.display_name.clone(), |id| if sequence.tm5 { format!("Test {id}") } else { label(id) })))
+            let steps: Vec<String> =
+                order.iter().map(|(id, runs)| if *runs { label(id) } else { format!("({} off)", label(id)) }).collect();
+            let repeats: Vec<String> = firsts
+                .iter()
+                .filter(|(_, n)| *n > 1)
+                .map(|(d, n)| {
+                    format!(
+                        "{} ×{n}",
+                        d.id.as_deref().map_or(d.display_name.clone(), |id| if sequence.tm5 { format!("Test {id}") } else { label(id) })
+                    )
+                })
                 .collect();
             let extra = if repeats.is_empty() { String::new() } else { format!("; {}", repeats.join(", ")) };
             notes.push(format!("ℹ  Cycle: {} ({} steps{extra})", steps.join(" → "), test_definitions.len()));
@@ -273,9 +278,13 @@ pub fn create_test_configuration_report_v2(
         None => {}
     }
     notes.push(match sequence.seal {
-        Some((kernel, source)) => format!("🔒 Seal ({}, {}): all memory is sealed at each cycle's start and checked at its end. ✓: the seal is \
+        Some((kernel, source)) => format!(
+            "🔒 Seal ({}, {}): all memory is sealed at each cycle's start and checked at its end. ✓: the seal is \
                                  checked before every chunk and resealed after. data: the test works on the seal. –: never sealed; what it \
-                                 overwrites is checked first and resealed before the next sealed step.", kernel.name(), source.name()),
+                                 overwrites is checked first and resealed before the next sealed step.",
+            kernel.name(),
+            source.name()
+        ),
         None => format!("🔓 Seal: off ({})", sequence.seal_off_reason),
     });
     if let Some((width, source)) = sequence.width {
@@ -294,13 +303,11 @@ pub fn create_test_configuration_report_v2(
 
 /// Convert test summaries to cycle report
 #[expect(dead_code, reason = "TODO #29: the per-cycle report is to be revived, not deleted (from TODO #69 F)")]
-pub fn create_cycle_report(
-    cycle: u32,
-    duration_secs: u32,
-    summaries: &[TestSummary],
-) -> CycleReport {
-    let test_performances = summaries.iter().enumerate().map(|(i, summary)| {
-        TestPerformanceEntry {
+pub fn create_cycle_report(cycle: u32, duration_secs: u32, summaries: &[TestSummary]) -> CycleReport {
+    let test_performances = summaries
+        .iter()
+        .enumerate()
+        .map(|(i, summary)| TestPerformanceEntry {
             number: i + 1,
             name: summary.name.clone(),
             duration_secs: summary.duration_ms as f64 / 1000.0,
@@ -310,26 +317,21 @@ pub fn create_cycle_report(
             errors: summary.errors,
             whea_total: summary.whea_total,
             whea_corrected: summary.whea_corrected,
-        }
-    }).collect();
-    
-    CycleReport {
-        cycle_number: cycle,
-        duration_secs,
-        test_performances,
-    }
+        })
+        .collect();
+
+    CycleReport { cycle_number: cycle, duration_secs, test_performances }
 }
 
 /// The allocation report (TODO 81) from the stitched allocator's spans and the requests that
 /// built them. Takes the spans so their request record moves in, and goes with the report.
 pub fn create_allocation_report(
-    spans: Vec<crate::memory::stitched::ThreadSpan>,
-    elapsed: std::time::Duration,
-    numa_nodes: u32,
+    spans: Vec<crate::memory::stitched::ThreadSpan>, elapsed: std::time::Duration, numa_nodes: u32,
 ) -> AllocationReport {
-    use crate::memory::allocator::PageSizeLevel;
     use std::cmp::Reverse;
     use std::collections::BTreeMap;
+
+    use crate::memory::allocator::PageSizeLevel;
 
     let mut threads: Vec<AllocationThread> = spans
         .into_iter()
@@ -454,8 +456,7 @@ fn allocation_fairness(threads: &[AllocationThread]) -> Vec<DimensionFairness> {
                 .iter()
                 .enumerate()
                 .map(|(i, t)| {
-                    let others: Vec<f64> =
-                        values.iter().enumerate().filter(|&(j, _)| j != i).map(|(_, &v)| v).collect();
+                    let others: Vec<f64> = values.iter().enumerate().filter(|&(j, _)| j != i).map(|(_, &v)| v).collect();
                     let value = values[i];
                     let median_others = median(&others);
                     let deviation = median_others.map_or(0.0, |m| value - m);
@@ -490,11 +491,8 @@ fn allocation_fairness(threads: &[AllocationThread]) -> Vec<DimensionFairness> {
                         }
                         // Fed in small pieces: more than twice the others' requests.
                         FairnessDimension::Requests => {
-                            let flag = if median_others.is_some_and(|m| value > 2.0 * m) {
-                                FairnessFlag::Notice
-                            } else {
-                                FairnessFlag::Fine
-                            };
+                            let flag =
+                                if median_others.is_some_and(|m| value > 2.0 * m) { FairnessFlag::Notice } else { FairnessFlag::Fine };
                             (flag, deviation.max(0.0))
                         }
                     };
@@ -517,17 +515,13 @@ fn allocation_fairness(threads: &[AllocationThread]) -> Vec<DimensionFairness> {
 /// `whea` is the count attributed to *this test* (the delta across it), not the run total — it is
 /// what lets the aggregate row fail when the per-thread rows are all clean.
 pub fn create_thread_timing_report(
-    stats: &[(usize, usize, u64, std::time::Duration, u64, u64, u32)],  // (thread_id, cpu_id, bytes, time, errors, operations, cycles_completed)
+    stats: &[(usize, usize, u64, std::time::Duration, u64, u64, u32)], // (thread_id, cpu_id, bytes, time, errors, operations, cycles_completed)
     whea: crate::whea::WheaCounts,
 ) -> super::models::ThreadTimingReport {
-    use super::models::{ThreadTimingReport, ThreadTiming};
+    use super::models::{ThreadTiming, ThreadTimingReport};
 
     if stats.is_empty() {
-        return ThreadTimingReport {
-            average_elapsed_ms: 0,
-            thread_timings: Vec::new(),
-            whea,
-        };
+        return ThreadTimingReport { average_elapsed_ms: 0, thread_timings: Vec::new(), whea };
     }
 
     // Calculate averages
@@ -538,42 +532,39 @@ pub fn create_thread_timing_report(
     let avg_bytes = total_bytes / stats.len() as u64;
 
     // Build thread timing entries with deviations
-    let mut thread_timings: Vec<ThreadTiming> = stats.iter().map(|&(thread_id, cpu_id, bytes, elapsed, errors, _operations, cycles_completed)| {
-        let deviation_ms = elapsed.as_millis() as i128 - avg_elapsed as i128;
-        let deviation_data_bytes = bytes as i64 - avg_bytes as i64;
+    let mut thread_timings: Vec<ThreadTiming> = stats
+        .iter()
+        .map(|&(thread_id, cpu_id, bytes, elapsed, errors, _operations, cycles_completed)| {
+            let deviation_ms = elapsed.as_millis() as i128 - avg_elapsed as i128;
+            let deviation_data_bytes = bytes as i64 - avg_bytes as i64;
 
-        // Calculate throughput
-        let throughput_mib_s = if !elapsed.is_zero() {
-            (bytes as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64()
-        } else {
-            0.0
-        };
+            // Calculate throughput
+            let throughput_mib_s = if !elapsed.is_zero() { (bytes as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64() } else { 0.0 };
 
-        // Get physical core and NUMA node info from the real detected topology
-        // (NOT cpu_id/2 — that hardcoded 2-way SMT and mislabeled cores on non-SMT CPUs).
-        let physical_core_id = crate::cpu_topology::get_physical_core_for_cpu(cpu_id);
-        let numa_node = crate::cpu_topology::get_numa_node_for_cpu(cpu_id);
+            // Get physical core and NUMA node info from the real detected topology
+            // (NOT cpu_id/2 — that hardcoded 2-way SMT and mislabeled cores on non-SMT CPUs).
+            let physical_core_id = crate::cpu_topology::get_physical_core_for_cpu(cpu_id);
+            let numa_node = crate::cpu_topology::get_numa_node_for_cpu(cpu_id);
 
-        ThreadTiming {
-            thread_id,
-            cpu_id,
-            physical_core_id,
-            numa_node,
-            runtime_ms: elapsed.as_millis(),
-            deviation_ms,
-            data_bytes: bytes,
-            deviation_data_bytes,
-            throughput_mib_s,
-            deviation_speed_mib_s: 0.0, // Will calculate after we know avg speed
-            errors,
-            cycles_completed,
-        }
-    }).collect();
+            ThreadTiming {
+                thread_id,
+                cpu_id,
+                physical_core_id,
+                numa_node,
+                runtime_ms: elapsed.as_millis(),
+                deviation_ms,
+                data_bytes: bytes,
+                deviation_data_bytes,
+                throughput_mib_s,
+                deviation_speed_mib_s: 0.0, // Will calculate after we know avg speed
+                errors,
+                cycles_completed,
+            }
+        })
+        .collect();
 
     // Calculate average speed and then update speed deviations
-    let avg_speed_mib_s = thread_timings.iter()
-        .map(|t| t.throughput_mib_s)
-        .sum::<f64>() / thread_timings.len() as f64;
+    let avg_speed_mib_s = thread_timings.iter().map(|t| t.throughput_mib_s).sum::<f64>() / thread_timings.len() as f64;
 
     for timing in &mut thread_timings {
         timing.deviation_speed_mib_s = timing.throughput_mib_s - avg_speed_mib_s;
@@ -582,18 +573,12 @@ pub fn create_thread_timing_report(
     // Sort by deviation descending (highest deviation first)
     thread_timings.sort_by_key(|b| std::cmp::Reverse(b.deviation_ms));
 
-    ThreadTimingReport {
-        average_elapsed_ms: avg_elapsed,
-        thread_timings,
-        whea,
-    }
+    ThreadTimingReport { average_elapsed_ms: avg_elapsed, thread_timings, whea }
 }
 
 /// The final summary (TODO 74): one row per test, its steps combined (a test that runs twice a
 /// cycle is one row with twice the runs), the seal's stages, and the steps that found errors.
-pub fn create_overall_stats_summary_report(
-    result: &crate::results::TestRunResult,
-) -> super::models::FinalTestSummaryReport {
+pub fn create_overall_stats_summary_report(result: &crate::results::TestRunResult) -> super::models::FinalTestSummaryReport {
     use super::models::{FinalTestSummaryReport, SealStagesSummary, StepErrorsEntry, TestSummaryEntry};
     let overall_stats = &result.overall_stats;
 
@@ -660,9 +645,7 @@ pub fn create_overall_stats_summary_report(
     }
 
     let sealed: Vec<&crate::results::CycleSeal> = result.cycles.iter().filter_map(|c| c.seal.as_ref()).collect();
-    let seal = (!sealed.is_empty()).then(|| SealStagesSummary {
-        final_check_errors: sealed.iter().map(|s| s.final_check_errors).sum(),
-    });
+    let seal = (!sealed.is_empty()).then(|| SealStagesSummary { final_check_errors: sealed.iter().map(|s| s.final_check_errors).sum() });
     // Every operation, the ones the run did none of too (TODO 90)
     let intermediate = crate::ops::Op::ALL
         .iter()
@@ -675,7 +658,9 @@ pub fn create_overall_stats_summary_report(
             }
         })
         .collect();
-    let errors_by_step = overall_stats.per_step_averages.iter()
+    let errors_by_step = overall_stats
+        .per_step_averages
+        .iter()
         .filter(|s| s.total_errors + s.total_seal_errors > 0)
         .map(|s| StepErrorsEntry { step: s.step, label: s.label.clone(), errors: s.total_errors, seal_errors: s.total_seal_errors })
         .collect();
@@ -731,8 +716,12 @@ mod tests {
         let given = width_notes(notes(&with_sequence, Some((Width::W256, "width="))));
         assert!(given.len() == 1 && given[0].contains("256 bits (width=)") && !given[0].contains("has no"), "{given:?}");
         let given = width_notes(notes(&with_sequence, Some((Width::W128, "the config's width"))));
-        assert!(given.len() == 1 && given[0].contains("128 bits (the config's width)")
-                && given[0].contains("Mem-Sequence has no 128-bit kernel and runs at 256"), "{given:?}");
+        assert!(
+            given.len() == 1
+                && given[0].contains("128 bits (the config's width)")
+                && given[0].contains("Mem-Sequence has no 128-bit kernel and runs at 256"),
+            "{given:?}"
+        );
         let given = width_notes(notes(&without, Some((Width::W128, "width="))));
         assert!(given.len() == 1 && !given[0].contains("has no"), "no Mem-Sequence in the plan: {given:?}");
     }
@@ -753,7 +742,10 @@ mod tests {
         let kernel = |width| SealKernel::new(SealPattern::Tmr, width);
         assert!(seal_note(Some((kernel(SealWidth::W128), SealWidthSource::Calibrated))).starts_with("🔒 Seal (tmr-128, calibrated):"));
         assert!(seal_note(Some((kernel(SealWidth::W256), SealWidthSource::Rule))).starts_with("🔒 Seal (tmr-256, rule):"));
-        assert!(seal_note(Some((kernel(SealWidth::W512), SealWidthSource::Setting("seal-width=")))).starts_with("🔒 Seal (tmr-512, seal-width=):"));
+        assert!(
+            seal_note(Some((kernel(SealWidth::W512), SealWidthSource::Setting("seal-width="))))
+                .starts_with("🔒 Seal (tmr-512, seal-width=):")
+        );
         assert_eq!(seal_note(None), "🔓 Seal: off (seal=off)");
     }
 
@@ -780,10 +772,10 @@ mod tests {
 
         let commits = f.prepare_allocation_commits_table(&report);
         let rows: Vec<Vec<&str>> = commits.rows.iter().map(|r| r.iter().map(String::as_str).collect()).collect();
-        assert_eq!(rows, vec![
-            vec!["1024 MB", "1 GiB", "18", "1", "4", "18.00 GiB"],
-            vec!["128 MB", "2 MiB", "80", "-", "4", "10.00 GiB"],
-        ]);
+        assert_eq!(
+            rows,
+            vec![vec!["1024 MB", "1 GiB", "18", "1", "4", "18.00 GiB"], vec!["128 MB", "2 MiB", "80", "-", "4", "10.00 GiB"],]
+        );
 
         let by_thread = f.prepare_thread_commits_table(&report);
         assert_eq!(cell(&by_thread, 0, "1 GiB"), "1024×5");

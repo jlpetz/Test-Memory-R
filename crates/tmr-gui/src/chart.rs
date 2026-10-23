@@ -6,18 +6,12 @@
 
 use windows_reactor::*;
 
-use crate::model::{Series, SAMPLES, axis_label};
+use crate::model::{SAMPLES, Series, axis_label};
 use crate::palette::{Palette, brush};
 
 pub const HEIGHT: f64 = 200.0;
 /// Seconds ago, with the label shown under that point.
-const X_TICKS: [(f64, &str); 5] = [
-    (60.0, "60 s ago"),
-    (45.0, "45 s"),
-    (30.0, "30 s"),
-    (15.0, "15 s"),
-    (0.0, "now"),
-];
+const X_TICKS: [(f64, &str); 5] = [(60.0, "60 s ago"), (45.0, "45 s"), (30.0, "30 s"), (15.0, "15 s"), (0.0, "now")];
 const LEFT: f64 = 40.0;
 const RIGHT: f64 = 6.0;
 const TOP: f64 = 8.0;
@@ -36,13 +30,7 @@ struct Plot {
 
 impl Plot {
     fn new(width: f64, height: f64, y_max: f64) -> Self {
-        Self {
-            left: LEFT,
-            top: TOP,
-            width: (width - LEFT - RIGHT).max(1.0),
-            height: (height - TOP - BOTTOM).max(1.0),
-            y_max,
-        }
+        Self { left: LEFT, top: TOP, width: (width - LEFT - RIGHT).max(1.0), height: (height - TOP - BOTTOM).max(1.0), y_max }
     }
 
     fn y(&self, value: f64) -> f64 {
@@ -86,28 +74,17 @@ pub fn shapes_chart(series: &Series, width: f64, p: &Palette) -> View {
         let y = plot.y(value);
         children.push((
             KEY_GRID + k,
-            Line::new()
-                .x1(plot.left)
-                .y1(y)
-                .x2(plot.right())
-                .y2(y)
-                .stroke(brush(p.chart_grid))
-                .stroke_thickness(1.0)
-                .into(),
+            Line::new().x1(plot.left).y1(y).x2(plot.right()).y2(y).stroke(brush(p.chart_grid)).stroke_thickness(1.0).into(),
         ));
         // Canvas does not align, and TextBlock has no TextAlignment in reactor 0.100.0, so a
         // fixed-width Grid right-aligns the label.
         children.push((
             KEY_Y_LABEL + k,
-            Grid::new()
-                .width(LEFT - 6.0)
-                .canvas_left(0.0)
-                .canvas_top(y - 8.0)
-                .children((TextBlock::new()
-                    .text(axis_label(value))
-                    .font_size(11.0)
-                    .foreground(brush(p.text_secondary))
-                    .horizontal_alignment(HorizontalAlignment::Right),)),
+            Grid::new().width(LEFT - 6.0).canvas_left(0.0).canvas_top(y - 8.0).children((TextBlock::new()
+                .text(axis_label(value))
+                .font_size(11.0)
+                .foreground(brush(p.text_secondary))
+                .horizontal_alignment(HorizontalAlignment::Right),)),
         ));
     }
 
@@ -121,15 +98,11 @@ pub fn shapes_chart(series: &Series, width: f64, p: &Palette) -> View {
         };
         children.push((
             KEY_X_LABEL + k as u64,
-            Grid::new()
-                .width(60.0)
-                .canvas_left(left)
-                .canvas_top(plot.bottom() + 4.0)
-                .children((TextBlock::new()
-                    .text(label)
-                    .font_size(11.0)
-                    .foreground(brush(p.text_secondary))
-                    .horizontal_alignment(align),)),
+            Grid::new().width(60.0).canvas_left(left).canvas_top(plot.bottom() + 4.0).children((TextBlock::new()
+                .text(label)
+                .font_size(11.0)
+                .foreground(brush(p.text_secondary))
+                .horizontal_alignment(align),)),
         ));
     }
 
@@ -138,14 +111,7 @@ pub fn shapes_chart(series: &Series, width: f64, p: &Palette) -> View {
         let x = plot.x_samples_ago(ago);
         children.push((
             KEY_MARK_LINE + sample,
-            Line::new()
-                .x1(x)
-                .y1(plot.top)
-                .x2(x)
-                .y2(plot.bottom())
-                .stroke(brush(p.error))
-                .stroke_thickness(1.5)
-                .into(),
+            Line::new().x1(x).y1(plot.top).x2(x).y2(plot.bottom()).stroke(brush(p.error)).stroke_thickness(1.5).into(),
         ));
     }
 
@@ -154,17 +120,7 @@ pub fn shapes_chart(series: &Series, width: f64, p: &Palette) -> View {
     let points: Vec<(f64, f64)> = series.samples.iter().enumerate().map(|(i, &v)| (plot.x_samples_ago(n - 1 - i), plot.y(v))).collect();
     for (j, pair) in points.windows(2).enumerate() {
         let ((x1, y1), (x2, y2)) = (pair[0], pair[1]);
-        children.push((
-            j as u64,
-            Line::new()
-                .x1(x1)
-                .y1(y1)
-                .x2(x2)
-                .y2(y2)
-                .stroke(brush(p.accent))
-                .stroke_thickness(2.0)
-                .into(),
-        ));
+        children.push((j as u64, Line::new().x1(x1).y1(y1).x2(x2).y2(y2).stroke(brush(p.accent)).stroke_thickness(2.0).into()));
     }
 
     // The temperature series' segments would go here, keyed in their own range, coloured by a
@@ -175,18 +131,9 @@ pub fn shapes_chart(series: &Series, width: f64, p: &Palette) -> View {
         let (x, y) = (plot.x_samples_ago(ago), plot.y(value));
         children.push((
             KEY_MARK_DOT + sample,
-            Ellipse::new()
-                .fill(brush(p.error))
-                .width(DOT)
-                .height(DOT)
-                .canvas_left(x - DOT / 2.0)
-                .canvas_top(y - DOT / 2.0)
-                .into(),
+            Ellipse::new().fill(brush(p.error)).width(DOT).height(DOT).canvas_left(x - DOT / 2.0).canvas_top(y - DOT / 2.0).into(),
         ));
     }
 
-    Canvas::new()
-        .width(width)
-        .height(HEIGHT)
-        .keyed_children(children)
+    Canvas::new().width(width).height(HEIGHT).keyed_children(children)
 }

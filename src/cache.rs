@@ -1,5 +1,6 @@
 use raw_cpuid::CpuId;
-use crate::constants::{KB, MB, KB_F64, MB_F64};
+
+use crate::constants::{KB, KB_F64, MB, MB_F64};
 use crate::tsc::TscInfo;
 
 #[derive(Debug, Clone)]
@@ -15,9 +16,9 @@ pub struct CacheInfo {
     pub per_core_l1i: usize,
     pub per_core_l2: usize,
     pub core_count: usize,
-    pub tsc_frequency_ghz: f64,  // TSC frequency (kept for backward compat)
-    pub tsc_info: TscInfo,        // Full TSC detection info
-    pub is_virtual_machine: bool, // Running under hypervisor (VM)
+    pub tsc_frequency_ghz: f64,          // TSC frequency (kept for backward compat)
+    pub tsc_info: TscInfo,               // Full TSC detection info
+    pub is_virtual_machine: bool,        // Running under hypervisor (VM)
     pub hypervisor_name: Option<String>, // Hypervisor vendor if detected
 }
 
@@ -116,7 +117,7 @@ impl CacheInfo {
         default.recalculate_totals();
         default
     }
-    
+
     fn recalculate_totals(&mut self) {
         self.l1_data_cache = self.per_core_l1d * self.core_count;
         self.l1_instruction_cache = self.per_core_l1i * self.core_count;
@@ -127,40 +128,42 @@ impl CacheInfo {
     pub fn print_info(&self) {
         log::info!("Cache Architecture Detected ({})", self.detection_method);
         log::info!("  Cores: {} physical", self.core_count);
-        log::info!("  L1 Data Cache: {:.1} KB total ({:.1} KB × {} cores)",
-                  self.l1_data_cache as f64 / KB_F64,
-                  self.per_core_l1d as f64 / KB_F64,
-                  self.core_count);
-        log::info!("  L1 Instruction Cache: {:.1} KB total ({:.1} KB × {} cores)",
-                  self.l1_instruction_cache as f64 / KB_F64,
-                  self.per_core_l1i as f64 / KB_F64,
-                  self.core_count);
-        log::info!("  L2 Cache: {:.1} KB total ({:.1} KB × {} cores)",
-                  self.l2_cache as f64 / KB_F64,
-                  self.per_core_l2 as f64 / KB_F64,
-                  self.core_count);
+        log::info!(
+            "  L1 Data Cache: {:.1} KB total ({:.1} KB × {} cores)",
+            self.l1_data_cache as f64 / KB_F64,
+            self.per_core_l1d as f64 / KB_F64,
+            self.core_count
+        );
+        log::info!(
+            "  L1 Instruction Cache: {:.1} KB total ({:.1} KB × {} cores)",
+            self.l1_instruction_cache as f64 / KB_F64,
+            self.per_core_l1i as f64 / KB_F64,
+            self.core_count
+        );
+        log::info!(
+            "  L2 Cache: {:.1} KB total ({:.1} KB × {} cores)",
+            self.l2_cache as f64 / KB_F64,
+            self.per_core_l2 as f64 / KB_F64,
+            self.core_count
+        );
         log::info!("  L3 Cache: {:.1} MB (shared)", self.l3_cache as f64 / MB_F64);
         log::info!("  Total Cache: {:.1} MB", self.total_cache as f64 / MB_F64);
         log::info!("  Cache Line Size: {} bytes", self.cache_line_size);
         // TSC details
-        log::info!("  TSC Frequency: {:.3} GHz ({})",
-                   self.tsc_info.frequency_ghz,
-                   self.tsc_info.detection_method);
+        log::info!("  TSC Frequency: {:.3} GHz ({})", self.tsc_info.frequency_ghz, self.tsc_info.detection_method);
         if self.tsc_info.is_invariant {
             log::info!("  TSC Type: Invariant (constant rate)");
         }
         if let Some(secondary) = self.tsc_info.secondary_frequency_ghz {
-            log::info!("  TSC Validation: {:.3} GHz (secondary), confidence {:.0}%",
-                       secondary, self.tsc_info.confidence * 100.0);
+            log::info!("  TSC Validation: {:.3} GHz (secondary), confidence {:.0}%", secondary, self.tsc_info.confidence * 100.0);
         }
     }
-
 }
 
 impl SystemInfo {
     pub fn detect() -> Self {
         let cpuid = CpuId::new();
-        
+
         let (cpu_vendor, cpu_brand) = if let Some(vendor_info) = cpuid.get_vendor_info() {
             let vendor = vendor_info.as_str().to_string();
             let brand = if let Some(brand_info) = cpuid.get_processor_brand_string() {
@@ -174,11 +177,7 @@ impl SystemInfo {
         };
 
         let (cpu_family, cpu_model, cpu_stepping) = if let Some(feature_info) = cpuid.get_feature_info() {
-            (
-                feature_info.family_id().into(),
-                feature_info.model_id().into(),
-                feature_info.stepping_id().into(),
-            )
+            (feature_info.family_id().into(), feature_info.model_id().into(), feature_info.stepping_id().into())
         } else {
             (0, 0, 0)
         };
@@ -190,29 +189,20 @@ impl SystemInfo {
 
         let cache_info = CacheInfo::detect();
 
-        Self {
-            cpu_vendor,
-            cpu_brand,
-            cpu_family,
-            cpu_model,
-            cpu_stepping,
-            physical_cores,
-            logical_cores,
-            has_hyperthreading,
-            cache_info,
-        }
+        Self { cpu_vendor, cpu_brand, cpu_family, cpu_model, cpu_stepping, physical_cores, logical_cores, has_hyperthreading, cache_info }
     }
 
     pub fn print_system_info(&self) {
         log::info!("System Information:");
         log::info!("  CPU: {} ({})", self.cpu_brand, self.cpu_vendor);
-        log::info!("  Family: {}, Model: {}, Stepping: {}", 
-                  self.cpu_family, self.cpu_model, self.cpu_stepping);
-        log::info!("  Cores: {} physical, {} logical{}", 
-                  self.physical_cores, 
-                  self.logical_cores,
-                  if self.has_hyperthreading { " (Hyperthreading enabled)" } else { "" });
-        
+        log::info!("  Family: {}, Model: {}, Stepping: {}", self.cpu_family, self.cpu_model, self.cpu_stepping);
+        log::info!(
+            "  Cores: {} physical, {} logical{}",
+            self.physical_cores,
+            self.logical_cores,
+            if self.has_hyperthreading { " (Hyperthreading enabled)" } else { "" }
+        );
+
         self.cache_info.print_info();
     }
 
@@ -224,7 +214,7 @@ impl SystemInfo {
 // Method 1: Comprehensive raw_cpuid detection with all methods
 fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo> {
     let cpuid = CpuId::new();
-    
+
     let mut cache_info = CacheInfo {
         per_core_l1d: 0,
         per_core_l1i: 0,
@@ -237,29 +227,25 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
         l1_instruction_cache: 0,
         l2_cache: 0,
         total_cache: 0,
-        tsc_frequency_ghz: 0.0,  // Will be set by caller
-        tsc_info: TscInfo::default(),  // Will be set by caller
-        is_virtual_machine: false,  // Will be set by caller
-        hypervisor_name: None,  // Will be set by caller
+        tsc_frequency_ghz: 0.0,       // Will be set by caller
+        tsc_info: TscInfo::default(), // Will be set by caller
+        is_virtual_machine: false,    // Will be set by caller
+        hypervisor_name: None,        // Will be set by caller
     };
 
     let mut found_any = false;
-    
+
     // Method 1: Try deterministic cache parameters (CPUID leaf 4)
     if let Some(cache_params) = cpuid.get_cache_parameters() {
         log::debug!("raw_cpuid: Found cache parameters via leaf 4");
         for cache in cache_params {
-            let size = cache.associativity() *
-                      cache.physical_line_partitions() *
-                      cache.coherency_line_size() *
-                      cache.sets();
-            
+            let size = cache.associativity() * cache.physical_line_partitions() * cache.coherency_line_size() * cache.sets();
+
             let cache_type = cache.cache_type();
             let level = cache.level();
-            
-            log::debug!("raw_cpuid leaf 4: L{} cache, type={:?}, size={}KB", 
-                       level, cache_type, size / 1024);
-            
+
+            log::debug!("raw_cpuid leaf 4: L{} cache, type={:?}, size={}KB", level, cache_type, size / 1024);
+
             match (level, cache_type) {
                 (1, raw_cpuid::CacheType::Data) => {
                     cache_info.per_core_l1d = size;
@@ -279,97 +265,107 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
                 }
                 _ => {}
             }
-            
+
             if cache.coherency_line_size() > 0 {
                 cache_info.cache_line_size = cache.coherency_line_size();
             }
         }
-        
+
         if found_any {
             cache_info.detection_method = "raw_cpuid leaf 4".to_string();
         }
     }
-    
+
     // Method 2: Try extended topology (CPUID leaf 0x8000001D) - AMD preferred method
     if cpuid.get_vendor_info().map(|v| v.as_str() == "AuthenticAMD").unwrap_or(false) {
         log::debug!("raw_cpuid: Detected AMD CPU, trying extended topology");
-        
+
         // Try AMD's extended cache topology
         // Note: __cpuid_count is safe in edition 2024
         for subleaf in 0..16 {
             let result = std::arch::x86_64::__cpuid_count(0x8000001D, subleaf);
-            
+
             if result.eax == 0 {
                 break; // No more cache levels
             }
-            
+
             let cache_type = result.eax & 0x1F;
             let cache_level = (result.eax >> 5) & 0x7;
             let _self_init = (result.eax >> 8) & 0x1;
             let _fully_assoc = (result.eax >> 9) & 0x1;
             let num_sharing = ((result.eax >> 14) & 0xFFF) + 1;
-            
+
             let line_size = (result.ebx & 0xFFF) + 1;
             let partitions = ((result.ebx >> 12) & 0x3FF) + 1;
             let ways = ((result.ebx >> 22) & 0x3FF) + 1;
             let sets = result.ecx + 1;
-            
+
             let cache_size = (ways * partitions * line_size * sets) as usize;
-            
-            log::debug!("raw_cpuid AMD 0x8000001D[{}]: L{} type={} size={}KB, sharing={}", 
-                       subleaf, cache_level, cache_type, cache_size / KB, num_sharing);
-            
+
+            log::debug!(
+                "raw_cpuid AMD 0x8000001D[{}]: L{} type={} size={}KB, sharing={}",
+                subleaf,
+                cache_level,
+                cache_type,
+                cache_size / KB,
+                num_sharing
+            );
+
             // Cache type: 1=Data, 2=Instruction, 3=Unified
             match (cache_level, cache_type) {
-                (1, 1) => { // L1 Data
+                (1, 1) => {
+                    // L1 Data
                     cache_info.per_core_l1d = cache_size;
                     found_any = true;
                 }
-                (1, 2) => { // L1 Instruction
+                (1, 2) => {
+                    // L1 Instruction
                     cache_info.per_core_l1i = cache_size;
                     found_any = true;
                 }
-                (2, 3) => { // L2 Unified
+                (2, 3) => {
+                    // L2 Unified
                     cache_info.per_core_l2 = cache_size;
                     found_any = true;
                 }
-                (3, 3) => { // L3 Unified
+                (3, 3) => {
+                    // L3 Unified
                     cache_info.l3_cache = cache_size;
                     found_any = true;
                 }
                 _ => {}
             }
-            
+
             if line_size > 0 && line_size <= 256 {
                 cache_info.cache_line_size = line_size as usize;
             }
         }
-        
+
         if found_any {
             cache_info.detection_method = "raw_cpuid AMD extended topology".to_string();
         }
     }
-    
+
     // Method 3: Legacy AMD extended L2/L3 info (0x80000006)
     if cache_info.l3_cache == 0 {
         // Note: __cpuid is safe in edition 2024
         let result = std::arch::x86_64::__cpuid(0x80000006);
-        
+
         // ECX contains L3 cache info
         let _l3_line_size = result.ecx & 0xFF;
         let _l3_assoc = (result.ecx >> 12) & 0xF;
         let l3_size_kb = (result.ecx >> 18) & 0x3FFF;
-        
+
         if l3_size_kb > 0 {
             cache_info.l3_cache = (l3_size_kb as usize) * 512 * KB; // Units of 512KB
             found_any = true;
             log::debug!("raw_cpuid 0x80000006: L3 cache {}MB", cache_info.l3_cache / MB);
-            
+
             if cache_info.detection_method.is_empty() {
                 cache_info.detection_method = "raw_cpuid legacy AMD".to_string();
             }
         }
-        
+
         // EDX contains L2 cache info if not already found
         if cache_info.per_core_l2 == 0 {
             let l2_size_kb = (result.edx >> 16) & 0xFFFF;
@@ -379,13 +375,19 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
             }
         }
     }
-    
+
     if found_any {
         // Fill in reasonable defaults for missing values
-        if cache_info.per_core_l1d == 0 { cache_info.per_core_l1d = 32 * KB; }
-        if cache_info.per_core_l1i == 0 { cache_info.per_core_l1i = 32 * KB; }
-        if cache_info.per_core_l2 == 0 { cache_info.per_core_l2 = 512 * KB; }
-        
+        if cache_info.per_core_l1d == 0 {
+            cache_info.per_core_l1d = 32 * KB;
+        }
+        if cache_info.per_core_l1i == 0 {
+            cache_info.per_core_l1i = 32 * KB;
+        }
+        if cache_info.per_core_l2 == 0 {
+            cache_info.per_core_l2 = 512 * KB;
+        }
+
         cache_info.recalculate_totals();
         Some(cache_info)
     } else {
@@ -398,7 +400,7 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
 fn detect_via_windows_wmi(_physical_cores: usize) -> Option<CacheInfo> {
     // For now, we'll use a simple Win32 API approach
     // Full WMI would require additional dependencies (wmi crate)
-    
+
     // This is a placeholder - implementing full WMI requires the wmi crate
     log::debug!("WMI detection not implemented yet");
     None
@@ -412,15 +414,11 @@ fn detect_via_windows_wmi(_physical_cores: usize) -> Option<CacheInfo> {
 // Method 3: Hardcoded database for known CPUs
 fn detect_via_hardcoded_database(physical_cores: usize) -> Option<CacheInfo> {
     let cpuid = CpuId::new();
-    
-    let brand = cpuid.get_processor_brand_string()
-        .map(|b| b.as_str().to_lowercase())
-        .unwrap_or_default();
-    
-    let (family, model) = cpuid.get_feature_info()
-        .map(|f| (f.family_id(), f.model_id()))
-        .unwrap_or((0, 0));
-    
+
+    let brand = cpuid.get_processor_brand_string().map(|b| b.as_str().to_lowercase()).unwrap_or_default();
+
+    let (family, model) = cpuid.get_feature_info().map(|f| (f.family_id(), f.model_id())).unwrap_or((0, 0));
+
     // AMD CPU database
     let (per_core_l1d, per_core_l1i, per_core_l2, l3_cache) = if brand.contains("amd") {
         match (family, model) {
@@ -449,7 +447,7 @@ fn detect_via_hardcoded_database(physical_cores: usize) -> Option<CacheInfo> {
     } else {
         return None;
     };
-    
+
     let mut cache_info = CacheInfo {
         per_core_l1d,
         per_core_l1i,
@@ -462,10 +460,10 @@ fn detect_via_hardcoded_database(physical_cores: usize) -> Option<CacheInfo> {
         l1_instruction_cache: 0,
         l2_cache: 0,
         total_cache: 0,
-        tsc_frequency_ghz: 0.0,  // Will be set by caller
-        tsc_info: TscInfo::default(),  // Will be set by caller
-        is_virtual_machine: false,  // Will be set by caller
-        hypervisor_name: None,  // Will be set by caller
+        tsc_frequency_ghz: 0.0,       // Will be set by caller
+        tsc_info: TscInfo::default(), // Will be set by caller
+        is_virtual_machine: false,    // Will be set by caller
+        hypervisor_name: None,        // Will be set by caller
     };
 
     cache_info.recalculate_totals();
@@ -482,15 +480,14 @@ fn detect_hypervisor() -> (bool, Option<String>) {
     // This bit is set by hypervisors to indicate we're running in a VM
     // raw_cpuid exposes this via has_hypervisor() on FeatureInfo
     if let Some(feature_info) = cpuid.get_feature_info()
-        && feature_info.has_hypervisor() {
-            // We're in a VM - try to identify the hypervisor via CPUID leaf 0x40000000
-            let hypervisor_name = cpuid.get_hypervisor_info()
-                .map(|info| format!("{:?}", info.identify()));
+        && feature_info.has_hypervisor()
+    {
+        // We're in a VM - try to identify the hypervisor via CPUID leaf 0x40000000
+        let hypervisor_name = cpuid.get_hypervisor_info().map(|info| format!("{:?}", info.identify()));
 
-            log::info!("Hypervisor detected: {} (running in VM)",
-                      hypervisor_name.as_deref().unwrap_or("Unknown"));
-            return (true, hypervisor_name);
-        }
+        log::info!("Hypervisor detected: {} (running in VM)", hypervisor_name.as_deref().unwrap_or("Unknown"));
+        return (true, hypervisor_name);
+    }
 
     log::debug!("No hypervisor detected (running on physical hardware)");
     (false, None)

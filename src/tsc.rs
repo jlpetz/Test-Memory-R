@@ -53,13 +53,7 @@ pub struct CalibrationStats {
 
 impl Default for CalibrationStats {
     fn default() -> Self {
-        Self {
-            samples: 0,
-            mean_ghz: 0.0,
-            m2: 0.0,
-            calibration_time_ms: 0,
-            converged: false,
-        }
+        Self { samples: 0, mean_ghz: 0.0, m2: 0.0, calibration_time_ms: 0, converged: false }
     }
 }
 
@@ -182,8 +176,7 @@ impl TscInfo {
         // differ on every boot, falsely invalidating calibration.
         let frequency_ghz = snap_to_nearest_mhz(raw_frequency_ghz);
 
-        log::info!("  TSC: Selected {:.3} GHz via {} (confidence: {:.0}%)",
-                   frequency_ghz, detection_method, confidence * 100.0);
+        log::info!("  TSC: Selected {:.3} GHz via {} (confidence: {:.0}%)", frequency_ghz, detection_method, confidence * 100.0);
 
         TscInfo {
             frequency_ghz,
@@ -208,11 +201,7 @@ fn check_tsc_invariant() -> bool {
     use raw_cpuid::CpuId;
 
     let cpuid = CpuId::new();
-    if let Some(adv_pm) = cpuid.get_advanced_power_mgmt_info() {
-        adv_pm.has_invariant_tsc()
-    } else {
-        false
-    }
+    if let Some(adv_pm) = cpuid.get_advanced_power_mgmt_info() { adv_pm.has_invariant_tsc() } else { false }
 }
 
 /// Detect TSC via CPUID leaf 0x15 (Time Stamp Counter/Core Crystal Clock)
@@ -245,8 +234,7 @@ fn detect_via_cpuid_leaf_15() -> Option<(f64, TscDetectionMethod)> {
     let tsc_hz = (crystal_hz * numerator) / denominator;
     let tsc_ghz = tsc_hz as f64 / 1_000_000_000.0;
 
-    log::debug!("CPUID 0x15: crystal={}Hz, num={}, denom={} -> TSC={:.3}GHz",
-                crystal_hz, numerator, denominator, tsc_ghz);
+    log::debug!("CPUID 0x15: crystal={}Hz, num={}, denom={} -> TSC={:.3}GHz", crystal_hz, numerator, denominator, tsc_ghz);
 
     Some((tsc_ghz, TscDetectionMethod::CpuidLeaf15))
 }
@@ -268,8 +256,7 @@ fn detect_via_cpuid_leaf_16() -> Option<(f64, TscDetectionMethod)> {
 
     let tsc_ghz = base_mhz as f64 / 1000.0;
 
-    log::debug!("CPUID 0x16: base={}MHz, max={}MHz -> TSC={:.3}GHz",
-                base_mhz, freq_info.processor_max_frequency(), tsc_ghz);
+    log::debug!("CPUID 0x16: base={}MHz, max={}MHz -> TSC={:.3}GHz", base_mhz, freq_info.processor_max_frequency(), tsc_ghz);
 
     Some((tsc_ghz, TscDetectionMethod::CpuidLeaf16))
 }
@@ -290,7 +277,7 @@ fn detect_via_timing_calibration() -> (f64, CalibrationStats) {
     // Longer samples (2ms) reduce OS timing overhead and give more stable readings
     // At 2ms per sample, we can get ~100 samples in 200ms which is plenty for convergence
     const MAX_CALIBRATION_TIME: Duration = Duration::from_millis(200);
-    const MIN_SAMPLES: u32 = 100;  // Require more samples for better statistics
+    const MIN_SAMPLES: u32 = 100; // Require more samples for better statistics
     const TARGET_RELATIVE_ERROR: f64 = 0.00001; // 0.001% relative error (quanta's original threshold)
     const SAMPLE_DURATION_US: u64 = 2000; // 2ms per sample - longer for better stability
 
@@ -368,10 +355,7 @@ fn snap_to_nearest_mhz(ghz: f64) -> f64 {
 /// Returns (frequency, method, confidence, optional_secondary)
 #[cfg(target_arch = "x86_64")]
 fn validate_and_select(
-    cpuid_15: Option<(f64, TscDetectionMethod)>,
-    cpuid_16: Option<(f64, TscDetectionMethod)>,
-    timing: f64,
-    timing_stats: &CalibrationStats,
+    cpuid_15: Option<(f64, TscDetectionMethod)>, cpuid_16: Option<(f64, TscDetectionMethod)>, timing: f64, timing_stats: &CalibrationStats,
 ) -> (f64, TscDetectionMethod, f64, Option<f64>) {
     const TOLERANCE: f64 = 0.02; // 2% tolerance for validation
 
@@ -399,16 +383,17 @@ fn validate_and_select(
         if frequencies_match(freq_15, timing) {
             return (
                 freq_15,
-                TscDetectionMethod::Validated {
-                    primary: Box::new(method_15),
-                    secondary: Box::new(TscDetectionMethod::TimingCalibration),
-                },
+                TscDetectionMethod::Validated { primary: Box::new(method_15), secondary: Box::new(TscDetectionMethod::TimingCalibration) },
                 0.99, // High confidence - hardware + measurement agree
                 Some(timing),
             );
         } else {
-            log::warn!("TSC: CPUID 0x15 ({:.3} GHz) differs from calibration ({:.3} GHz) by {:.1}%",
-                       freq_15, timing, ((freq_15 - timing).abs() / timing) * 100.0);
+            log::warn!(
+                "TSC: CPUID 0x15 ({:.3} GHz) differs from calibration ({:.3} GHz) by {:.1}%",
+                freq_15,
+                timing,
+                ((freq_15 - timing).abs() / timing) * 100.0
+            );
         }
     }
 
@@ -417,30 +402,27 @@ fn validate_and_select(
         if frequencies_match(freq_16, timing) {
             return (
                 freq_16,
-                TscDetectionMethod::Validated {
-                    primary: Box::new(method_16),
-                    secondary: Box::new(TscDetectionMethod::TimingCalibration),
-                },
+                TscDetectionMethod::Validated { primary: Box::new(method_16), secondary: Box::new(TscDetectionMethod::TimingCalibration) },
                 0.97, // Good confidence - leaf 0x16 may report nominal, not actual
                 Some(timing),
             );
         } else {
-            log::warn!("TSC: CPUID 0x16 ({:.3} GHz) differs from calibration ({:.3} GHz) by {:.1}%",
-                       freq_16, timing, ((freq_16 - timing).abs() / timing) * 100.0);
+            log::warn!(
+                "TSC: CPUID 0x16 ({:.3} GHz) differs from calibration ({:.3} GHz) by {:.1}%",
+                freq_16,
+                timing,
+                ((freq_16 - timing).abs() / timing) * 100.0
+            );
         }
     }
 
     // Case 3: CPUID values match each other (even if different from timing)
     if let (Some((freq_15, _)), Some((freq_16, _))) = (cpuid_15.clone(), cpuid_16.clone())
-        && frequencies_match(freq_15, freq_16) {
-            log::info!("TSC: CPUID 0x15 and 0x16 agree, using hardware value");
-            return (
-                freq_15,
-                TscDetectionMethod::CpuidLeaf15,
-                0.92,
-                Some(timing),
-            );
-        }
+        && frequencies_match(freq_15, freq_16)
+    {
+        log::info!("TSC: CPUID 0x15 and 0x16 agree, using hardware value");
+        return (freq_15, TscDetectionMethod::CpuidLeaf15, 0.92, Some(timing));
+    }
 
     // Case 4: Fall back to timing calibration with dynamic confidence
     // For AMD and other CPUs without CPUID frequency leaves, calibration is authoritative
@@ -458,12 +440,7 @@ fn validate_and_select(
     }
 
     // Pure timing calibration - confidence based on statistical quality
-    (
-        timing,
-        TscDetectionMethod::TimingCalibration,
-        calibration_confidence,
-        cpuid_16.map(|(f, _)| f),
-    )
+    (timing, TscDetectionMethod::TimingCalibration, calibration_confidence, cpuid_16.map(|(f, _)| f))
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -488,9 +465,7 @@ fn detect_via_timing_calibration() -> (f64, CalibrationStats) {
 
 #[cfg(not(target_arch = "x86_64"))]
 fn validate_and_select(
-    _cpuid_15: Option<(f64, TscDetectionMethod)>,
-    _cpuid_16: Option<(f64, TscDetectionMethod)>,
-    _timing: f64,
+    _cpuid_15: Option<(f64, TscDetectionMethod)>, _cpuid_16: Option<(f64, TscDetectionMethod)>, _timing: f64,
     _timing_stats: &CalibrationStats,
 ) -> (f64, TscDetectionMethod, f64, Option<f64>) {
     (0.0, TscDetectionMethod::NotAvailable, 0.0, None)

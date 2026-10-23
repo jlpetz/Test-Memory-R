@@ -229,11 +229,7 @@ mod tests {
     use super::*;
 
     fn format_colour(c: Color) -> String {
-        if c.a == 0xFF {
-            format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b)
-        } else {
-            format!("#{:02X}{:02X}{:02X}{:02X}", c.a, c.r, c.g, c.b)
-        }
+        if c.a == 0xFF { format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b) } else { format!("#{:02X}{:02X}{:02X}{:02X}", c.a, c.r, c.g, c.b) }
     }
 
     /// What each key colours, for the example file (same order as `KEYS`).
@@ -304,13 +300,19 @@ mod tests {
     #[test]
     fn a_colours_file_overrides_key_by_key() {
         let mut problems = Vec::new();
-        let parsed = Palettes::parse(r##"{"_note": 1, "dark": {"text_primary": "#8C8C8C", "error": "#80FF0000", "accent": "blue",
-                                          "nope": "#000000"}, "dim": {}}"##, &mut problems);
+        let parsed = Palettes::parse(
+            r##"{"_note": 1, "dark": {"text_primary": "#8C8C8C", "error": "#80FF0000", "accent": "blue",
+                                          "nope": "#000000"}, "dim": {}}"##,
+            &mut problems,
+        );
         assert_eq!(parsed.dark.text_primary, Color::rgb(0x8C, 0x8C, 0x8C));
         assert_eq!(parsed.dark.error, Color::argb(0x80, 0xFF, 0, 0));
         assert_eq!((parsed.dark.accent, parsed.light), (Palette::DARK.accent, Palette::LIGHT));
-        assert_eq!(problems, ["dark.accent = \"blue\" is not #RRGGBB or #AARRGGBB", "dark.nope is not a colour key",
-                              "unknown scheme \"dim\" (dark or light)"]);
+        assert_eq!(problems, [
+            "dark.accent = \"blue\" is not #RRGGBB or #AARRGGBB",
+            "dark.nope is not a colour key",
+            "unknown scheme \"dim\" (dark or light)"
+        ]);
         let mut problems = Vec::new();
         assert_eq!(Palettes::parse("[", &mut problems).dark, Palette::DARK);
         assert_eq!(problems.len(), 1);

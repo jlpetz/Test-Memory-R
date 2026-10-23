@@ -33,27 +33,25 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::failing_bits::FailingBits;
-use crate::reporting::models::{ConsolidatedMemoryReport, FinalTestSummaryReport};
-
 pub use crate::ErrorMode;
+use crate::failing_bits::FailingBits;
 pub use crate::memory::allocator::PageSizeLevel;
 pub use crate::progress::{LiveFigures, ProgressSnapshot, ProgressTracker, RunOutcome, TestSnapshot, TestSummary};
+// The reports as tables, for a frontend to render: the default formatting's, through its renderer
+pub use crate::reporting::Reporter;
 pub use crate::reporting::models::{
-    AllocationReport, AllocationThread, CacheInfo, CpuInfo, CpuPerformance, CpuTopologyEntry, CpuTopologyReport, LatencyLevelSummary,
-    LatencyPercentiles, LatencyTestSummaryReport, LatencyThreadResult, PerformanceByCpuReport, PerformanceByPhysicalCoreReport,
-    PerformanceByThreadReport, PhysicalCorePerformance, SystemInfoReport, TestConfigurationReport, ThreadPerformance, ThreadTiming,
-    ThreadTimingReport, TopologySummary, TscCalibrationInfo,
+    AllocationReport, AllocationThread, CacheInfo, ColumnAlignment, CpuInfo, CpuPerformance, CpuTopologyEntry, CpuTopologyReport,
+    LatencyLevelSummary, LatencyPercentiles, LatencyTestSummaryReport, LatencyThreadResult, PerformanceByCpuReport,
+    PerformanceByPhysicalCoreReport, PerformanceByThreadReport, PhysicalCorePerformance, SystemInfoReport, TableData,
+    TestConfigurationReport, ThreadPerformance, ThreadTiming, ThreadTimingReport, TopologySummary, TscCalibrationInfo,
 };
+use crate::reporting::models::{ConsolidatedMemoryReport, FinalTestSummaryReport};
+pub use crate::reporting::renderers::Renderer;
 pub use crate::runner::RunStatus;
 pub use crate::smbios::MemoryModule;
 pub use crate::tests::Stage;
 pub use crate::thread_pool::SealOp;
 pub use crate::whea::WheaCounts;
-// The reports as tables, for a frontend to render: the default formatting's, through its renderer
-pub use crate::reporting::Reporter;
-pub use crate::reporting::models::{ColumnAlignment, TableData};
-pub use crate::reporting::renderers::Renderer;
 
 /// Whoever shows a run. Two engine threads call it, so it is `Send + Sync` and takes `&self`: the
 /// thread that runs the suite sends the events, and the monitor thread ticks.

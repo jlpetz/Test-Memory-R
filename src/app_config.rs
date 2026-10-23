@@ -4,14 +4,15 @@
 //! Holds machine identity, calibration results, UI preferences, and session state.
 //! All fields are optional — missing fields use defaults, unknown fields are preserved.
 
-use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::cache::SystemInfo;
 use crate::calibration::{CalibrationResults, SealCalibration};
-use crate::smbios::{SmbiosData, MemoryModule};
+use crate::smbios::{MemoryModule, SmbiosData};
 
 /// Readable CPU + BIOS identity snapshot stored alongside the hash.
 /// When machine_id mismatches, these fields let you see exactly what changed.
@@ -98,8 +99,7 @@ impl MachineFingerprint {
             Some(stored_id) => {
                 let current_id = AppConfig::generate_machine_id(system_info, smbios);
                 if stored_id != &current_id {
-                    log::warn!("{what}: machine ID mismatch (CPU/cache/BIOS changed): stored={}, current={}",
-                        stored_id, current_id);
+                    log::warn!("{what}: machine ID mismatch (CPU/cache/BIOS changed): stored={}, current={}", stored_id, current_id);
                     valid = false;
                 }
             }
@@ -111,18 +111,22 @@ impl MachineFingerprint {
 
         // Check system UUID (motherboard/VM instance identity)
         if let (Some(stored_uuid), Some(current_uuid)) = (&self.system_uuid, &Some(smbios.system.uuid.clone()))
-            && !current_uuid.is_empty() && stored_uuid != current_uuid {
-                log::warn!("{what}: system UUID mismatch (VM migration or motherboard swap): stored={}, current={}",
-                    stored_uuid, current_uuid);
-                valid = false;
-            }
+            && !current_uuid.is_empty()
+            && stored_uuid != current_uuid
+        {
+            log::warn!("{what}: system UUID mismatch (VM migration or motherboard swap): stored={}, current={}", stored_uuid, current_uuid);
+            valid = false;
+        }
 
         // Check memory configuration (DIMM swaps, XMP changes)
         if let Some(stored_mem_id) = &self.memory_id {
             let current_mem_id = AppConfig::generate_memory_id(smbios);
             if stored_mem_id != &current_mem_id {
-                log::warn!("{what}: memory configuration changed (DIMM swap, XMP change, or capacity change): stored={}, current={}",
-                    stored_mem_id, current_mem_id);
+                log::warn!(
+                    "{what}: memory configuration changed (DIMM swap, XMP change, or capacity change): stored={}, current={}",
+                    stored_mem_id,
+                    current_mem_id
+                );
                 valid = false;
             }
         }
@@ -135,8 +139,12 @@ impl MachineFingerprint {
             if stored_tsc > 0.0 {
                 let drift_pct = ((current_tsc - stored_tsc) / stored_tsc * 100.0).abs();
                 if drift_pct > 0.01 {
-                    log::warn!("{what}: TSC frequency changed: stored={:.3} GHz, current={:.3} GHz (drift: {:.4}%)",
-                        stored_tsc, current_tsc, drift_pct);
+                    log::warn!(
+                        "{what}: TSC frequency changed: stored={:.3} GHz, current={:.3} GHz (drift: {:.4}%)",
+                        stored_tsc,
+                        current_tsc,
+                        drift_pct
+                    );
                     valid = false;
                 }
             }
@@ -211,18 +219,16 @@ impl AppConfig {
     /// Load config from a JSON file. Returns Default if file doesn't exist.
     pub fn load(path: &std::path::Path) -> Self {
         match std::fs::read_to_string(path) {
-            Ok(contents) => {
-                match serde_json::from_str(&contents) {
-                    Ok(config) => {
-                        log::info!("Loaded app config from {}", path.display());
-                        config
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to parse {}: {} — using defaults", path.display(), e);
-                        Self::default()
-                    }
+            Ok(contents) => match serde_json::from_str(&contents) {
+                Ok(config) => {
+                    log::info!("Loaded app config from {}", path.display());
+                    config
                 }
-            }
+                Err(e) => {
+                    log::warn!("Failed to parse {}: {} — using defaults", path.display(), e);
+                    Self::default()
+                }
+            },
             Err(_) => {
                 log::info!("No config file at {} — using defaults", path.display());
                 Self::default()
@@ -234,16 +240,14 @@ impl AppConfig {
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent()
-            && !parent.exists() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create directory {}: {}", parent.display(), e))?;
-            }
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory {}: {}", parent.display(), e))?;
+        }
 
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| format!("Failed to serialize config: {}", e))?;
+        let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-        std::fs::write(path, json)
-            .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
+        std::fs::write(path, json).map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
 
         log::info!("Saved app config to {}", path.display());
         Ok(())
@@ -291,9 +295,7 @@ impl AppConfig {
     fn get_cpu_base_frequency_mhz(smbios: &SmbiosData) -> u32 {
         use raw_cpuid::CpuId;
         let cpuid = CpuId::new();
-        let cpuid_mhz = cpuid.get_processor_frequency_info()
-            .map(|f| f.processor_base_frequency() as u32)
-            .unwrap_or(0);
+        let cpuid_mhz = cpuid.get_processor_frequency_info().map(|f| f.processor_base_frequency() as u32).unwrap_or(0);
         if cpuid_mhz > 0 {
             cpuid_mhz
         } else {
@@ -334,17 +336,12 @@ impl AppConfig {
 
     /// Update all identity fields to match the current system
     pub fn update_identity(&mut self, system_info: &SystemInfo, smbios: &SmbiosData) {
-        let MachineFingerprint { machine_id, system_uuid, memory_id, tsc_frequency_ghz } =
-            MachineFingerprint::detect(system_info, smbios);
+        let MachineFingerprint { machine_id, system_uuid, memory_id, tsc_frequency_ghz } = MachineFingerprint::detect(system_info, smbios);
         self.machine_id = machine_id;
         self.machine_identity = Some(MachineIdentity::detect(system_info, smbios));
         self.system_uuid = system_uuid;
         self.memory_id = memory_id;
-        self.memory_modules = if smbios.memory_modules.is_empty() {
-            None
-        } else {
-            Some(smbios.memory_modules.clone())
-        };
+        self.memory_modules = if smbios.memory_modules.is_empty() { None } else { Some(smbios.memory_modules.clone()) };
         self.tsc_frequency_ghz = tsc_frequency_ghz;
     }
 
@@ -365,10 +362,8 @@ impl AppConfig {
     /// The seal calibration a run on this machine takes, if any: one whose own fingerprint is this
     /// machine's now, whatever the config's identity (which a cache calibration's save rewrites).
     pub fn valid_seal_calibration(&self, system_info: &SystemInfo, smbios: &SmbiosData) -> Option<&SealCalibration> {
-        self.seal_calibration.as_ref()
-            .filter(|seal| seal.fingerprint.matches(system_info, smbios, "Seal calibration"))
+        self.seal_calibration.as_ref().filter(|seal| seal.fingerprint.matches(system_info, smbios, "Seal calibration"))
     }
-
 }
 
 #[cfg(test)]
@@ -465,21 +460,19 @@ mod tests {
             system_uuid: Some("12345678-1234-1234-1234-123456789ABC".to_string()),
             memory_id: Some("fedcba9876543210".to_string()),
             tsc_frequency_ghz: Some(2.496012345),
-            memory_modules: Some(vec![
-                {
-                    let cap: u64 = 32 * 1024 * 1024 * 1024;
-                    MemoryModule {
-                        locator: "DIMM_A1".to_string(),
-                        manufacturer: "UnknownMemoryMaker".to_string(),
-                        serial_number: "12345678".to_string(),
-                        part_number: "123456789-12345".to_string(),
-                        speed_mts: 4800,
-                        memory_type: 0x22,
-                        capacity_bytes: cap,
-                        capacity_human: crate::smbios::format_capacity(cap),
-                    }
-                },
-            ]),
+            memory_modules: Some(vec![{
+                let cap: u64 = 32 * 1024 * 1024 * 1024;
+                MemoryModule {
+                    locator: "DIMM_A1".to_string(),
+                    manufacturer: "UnknownMemoryMaker".to_string(),
+                    serial_number: "12345678".to_string(),
+                    part_number: "123456789-12345".to_string(),
+                    speed_mts: 4800,
+                    memory_type: 0x22,
+                    capacity_bytes: cap,
+                    capacity_human: crate::smbios::format_capacity(cap),
+                }
+            }]),
             ..Default::default()
         };
 
@@ -601,17 +594,13 @@ mod tests {
     fn a_config_without_a_seal_calibration_loads_and_one_round_trips() {
         use crate::calibration::{CalibrationResults, CpuSignature};
         let (system_info, smbios) = this_machine();
-        let mut config = AppConfig {
-            calibration: Some(CalibrationResults::new(CpuSignature::default())),
-            ..Default::default()
-        };
+        let mut config = AppConfig { calibration: Some(CalibrationResults::new(CpuSignature::default())), ..Default::default() };
         config.update_identity(system_info, smbios);
         config.set_seal_calibration(test_seal_calibration(256), system_info, smbios);
         let mut json: serde_json::Value = serde_json::to_value(&config).unwrap();
         let loaded: AppConfig = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(loaded.seal_calibration, config.seal_calibration);
-        assert_eq!(loaded.valid_seal_calibration(system_info, smbios).and_then(SealCalibration::width),
-                   Some(crate::seal::SealWidth::W256));
+        assert_eq!(loaded.valid_seal_calibration(system_info, smbios).and_then(SealCalibration::width), Some(crate::seal::SealWidth::W256));
 
         // A seal calibration without a fingerprint
         let seal = json["seal_calibration"].as_object_mut().unwrap();

@@ -33,11 +33,7 @@ pub fn detect_simd_capabilities() -> String {
         capabilities.push("AVX-512VL");
     }
 
-    if capabilities.is_empty() {
-        "None detected".to_string()
-    } else {
-        capabilities.join(", ")
-    }
+    if capabilities.is_empty() { "None detected".to_string() } else { capabilities.join(", ") }
 }
 
 /// A SIMD width: what `width=` gives every test that picks its width at run time (TODO 99), and
@@ -123,8 +119,11 @@ impl Width {
 /// their `#[target_feature]` set. The one test for it, behind `Width::check` (and so the run's
 /// choice of tests, `runner::leave_out_what_the_cpu_lacks`) and the seal's widths.
 pub fn has_avx512() -> bool {
-    is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") && is_x86_feature_detected!("avx512cd")
-        && is_x86_feature_detected!("avx512dq") && is_x86_feature_detected!("avx512vl")
+    is_x86_feature_detected!("avx512f")
+        && is_x86_feature_detected!("avx512bw")
+        && is_x86_feature_detected!("avx512cd")
+        && is_x86_feature_detected!("avx512dq")
+        && is_x86_feature_detected!("avx512vl")
 }
 
 /// The instruction sets a width needs, as a CPU reports them: AVX-512 (`has_avx512`) and AVX2.
@@ -172,8 +171,9 @@ pub fn set_width(width: Option<Width>, source: &'static str) -> Result<(), Strin
 /// `set_width` on `setting`, `check` saying whether the CPU has a width (`Width::check`): the first
 /// width set holds, a later one isn't checked, and a width the CPU lacks is refused, leaving
 /// `setting` unset.
-fn set_width_on(setting: &WidthSetting, check: impl Fn(Width) -> Result<Width, String>, width: Option<Width>,
-                source: &'static str) -> Result<(), String> {
+fn set_width_on(
+    setting: &WidthSetting, check: impl Fn(Width) -> Result<Width, String>, width: Option<Width>, source: &'static str,
+) -> Result<(), String> {
     if setting.get().is_some() {
         return Ok(());
     }
@@ -237,7 +237,11 @@ thread_local! {
 /// test takes one.
 #[cfg(test)]
 pub(crate) fn note_dispatch(f: *const ()) {
-    DISPATCHED.with_borrow_mut(|record| if let Some(record) = record { record.push(f) });
+    DISPATCHED.with_borrow_mut(|record| {
+        if let Some(record) = record {
+            record.push(f)
+        }
+    });
 }
 
 /// Runs `f`, and returns its value and the functions the dispatchers it ran called on this thread,

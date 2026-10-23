@@ -120,14 +120,38 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  {} --compare-results baseline.json current.json [output.json]", program_name)?;
     writeln!(out, "                                          # Compare two test results from .\\results\\")?;
     writeln!(out, "  {} --setup-large-pages              # Configure large pages for optimal performance", program_name)?;
-    writeln!(out, "  {} --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt", program_name)?;
-    writeln!(out, "  {} --calibrate-cache-ext            #   ...finer, around each tier's edge (preferred when both are saved)", program_name)?;
-    writeln!(out, "  {} --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto", program_name)?;
+    writeln!(
+        out,
+        "  {} --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt",
+        program_name
+    )?;
+    writeln!(
+        out,
+        "  {} --calibrate-cache-ext            #   ...finer, around each tier's edge (preferred when both are saved)",
+        program_name
+    )?;
+    writeln!(
+        out,
+        "  {} --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto",
+        program_name
+    )?;
     writeln!(out, "                                          #   then runs the fastest (a narrower one if it is as fast)")?;
-    writeln!(out, "  {} --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)", program_name)?;
-    writeln!(out, "  {} --calibrate-cache --yes          #   any calibration: --yes saves without asking, --no-save keeps what is", program_name)?;
+    writeln!(
+        out,
+        "  {} --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)",
+        program_name
+    )?;
+    writeln!(
+        out,
+        "  {} --calibrate-cache --yes          #   any calibration: --yes saves without asking, --no-save keeps what is",
+        program_name
+    )?;
     writeln!(out, "                                          #   stored; with neither it asks, and saves if no answer can come")?;
-    writeln!(out, "  {} plan=stability                   # The default: the stability tests at the widest width (or width=)", program_name)?;
+    writeln!(
+        out,
+        "  {} plan=stability                   # The default: the stability tests at the widest width (or width=)",
+        program_name
+    )?;
     writeln!(out, "  {} plan=quick                       # The stability tests once", program_name)?;
     writeln!(out, "  {} plan=widths                      # Every width of the tests that have them, side by side", program_name)?;
     writeln!(out, "  {} plan=perf                        # Latency and bandwidth", program_name)?;
@@ -137,7 +161,11 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  {} --cache-latency                  # Run full cache hierarchy latency tests (12 tests)", program_name)?;
     writeln!(out, "  {} test=Spd-*                       # Run tests matching pattern (glob wildcards)", program_name)?;
     writeln!(out, "  {} test=Mem-Mirror*,Lat-L3-*        # Run multiple patterns (comma-separated)", program_name)?;
-    writeln!(out, "  {} config=x.cfg --startup-debug     # Print the memory and test plan; allocate no test memory, run nothing", program_name)?;
+    writeln!(
+        out,
+        "  {} config=x.cfg --startup-debug     # Print the memory and test plan; allocate no test memory, run nothing",
+        program_name
+    )?;
     writeln!(out, "  {} --version                         # Show version information", program_name)?;
     writeln!(out, "  {} --show-topology                   # Show CPU Topology Mapping for debugging", program_name)?;
     writeln!(out, "  {} --debug-topology                  # Runs multiple CPU Topology checks to debug if one works better", program_name)?;
@@ -440,9 +468,10 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
 
 /// `--calibrate-cache` (`extended`: `--calibrate-cache-ext`): the cache tiers, shown, saved if
 /// `save` says to and written to `--output`'s file when given.
-fn calibrate_cache(args: &[String], config: crate::calibration::CalibrationConfig, system_info: &crate::SystemInfo,
-                   smbios: &crate::smbios::SmbiosData, extended: bool, out: &mut dyn Write,
-                   save: &mut Save) -> io::Result<RunStatus> {
+fn calibrate_cache(
+    args: &[String], config: crate::calibration::CalibrationConfig, system_info: &crate::SystemInfo, smbios: &crate::smbios::SmbiosData,
+    extended: bool, out: &mut dyn Write, save: &mut Save,
+) -> io::Result<RunStatus> {
     let cache_info = system_info.get_cache_info();
     // Run calibration (extended: phase 1 sweep + phase 2 fine-grain)
     let calibration_test = crate::calibration::CalibrationTest::with_config(cache_info.clone(), config);
@@ -455,11 +484,8 @@ fn calibrate_cache(args: &[String], config: crate::calibration::CalibrationConfi
             // Save to tmr-cfg.json — compare with existing if present
             let cfg_path = crate::app_config::AppConfig::default_path();
             let mut app_config = crate::app_config::AppConfig::load(&cfg_path);
-            let (existing, cal_type) = if extended {
-                (&app_config.calibration_extended, "extended")
-            } else {
-                (&app_config.calibration, "standard")
-            };
+            let (existing, cal_type) =
+                if extended { (&app_config.calibration_extended, "extended") } else { (&app_config.calibration, "standard") };
             let stored = existing.is_some();
             let should_save = prompt_calibration_save(existing, &results, cal_type, out, save)?;
             if should_save {
@@ -483,12 +509,10 @@ fn calibrate_cache(args: &[String], config: crate::calibration::CalibrationConfi
             if let Some(output_idx) = args.iter().position(|a| a == "--output") {
                 if let Some(output_path) = args.get(output_idx + 1) {
                     match serde_json::to_string_pretty(&results) {
-                        Ok(json) => {
-                            match std::fs::write(output_path, json) {
-                                Ok(()) => writeln!(out, "Results saved to: {}", output_path)?,
-                                Err(e) => writeln!(out, "Failed to write results: {}", e)?,
-                            }
-                        }
+                        Ok(json) => match std::fs::write(output_path, json) {
+                            Ok(()) => writeln!(out, "Results saved to: {}", output_path)?,
+                            Err(e) => writeln!(out, "Failed to write results: {}", e)?,
+                        },
                         Err(e) => writeln!(out, "Failed to serialize results: {}", e)?,
                     }
                 } else {
@@ -507,8 +531,9 @@ fn calibrate_cache(args: &[String], config: crate::calibration::CalibrationConfi
 /// `--calibrate-seal`, and `--calibrate-all`'s second part (TODO 99): the seal's fill and check at
 /// every width the CPU has, on one thread (`calibration::calibrate_seal`), shown, and saved if
 /// `save` says to as what `seal-width=auto` runs on this machine.
-fn calibrate_seal(page_size: &str, system_info: &crate::SystemInfo, smbios: &crate::smbios::SmbiosData, out: &mut dyn Write,
-                  save: &mut Save) -> io::Result<RunStatus> {
+fn calibrate_seal(
+    page_size: &str, system_info: &crate::SystemInfo, smbios: &crate::smbios::SmbiosData, out: &mut dyn Write, save: &mut Save,
+) -> io::Result<RunStatus> {
     let cache_info = system_info.get_cache_info();
     match crate::calibration::calibrate_seal(cache_info, page_size) {
         Ok(seal) => {
@@ -540,11 +565,8 @@ fn calibrate_seal(page_size: &str, system_info: &crate::SystemInfo, smbios: &cra
 /// Returns true if the new results should be saved.
 /// If no existing results, saves automatically (no question), unless `--no-save`.
 fn prompt_calibration_save(
-    existing: &Option<crate::calibration::CalibrationResults>,
-    new_results: &crate::calibration::CalibrationResults,
-    cal_type: &str,
-    out: &mut dyn Write,
-    save: &mut Save,
+    existing: &Option<crate::calibration::CalibrationResults>, new_results: &crate::calibration::CalibrationResults, cal_type: &str,
+    out: &mut dyn Write, save: &mut Save,
 ) -> io::Result<bool> {
     let existing = match existing {
         Some(e) => e,
@@ -561,8 +583,11 @@ fn prompt_calibration_save(
     // Show comparison table
     writeln!(out, "\n📊 Calibration Comparison (existing vs new)")?;
     writeln!(out, "───────────────────────────────────────────────────────────────────────────")?;
-    writeln!(out, "{:<10} {:>12} {:>12} {:>8}  {:>10} {:>10} {:>8}",
-        "Tier", "Old Size", "New Size", "Delta", "Old Lat", "New Lat", "Delta")?;
+    writeln!(
+        out,
+        "{:<10} {:>12} {:>12} {:>8}  {:>10} {:>10} {:>8}",
+        "Tier", "Old Size", "New Size", "Delta", "Old Lat", "New Lat", "Delta"
+    )?;
     writeln!(out, "───────────────────────────────────────────────────────────────────────────")?;
 
     for tier in crate::calibration::CacheTier::all_tiers() {
@@ -571,14 +596,13 @@ fn prompt_calibration_save(
 
         match (old_tier, new_tier) {
             (Some(old), Some(new)) => {
-                let size_pct = if old.optimal_size > 0 {
-                    ((new.optimal_size as f64 / old.optimal_size as f64) - 1.0) * 100.0
-                } else { 0.0 };
-                let lat_pct = if old.median_latency_ns > 0.0 {
-                    ((new.median_latency_ns / old.median_latency_ns) - 1.0) * 100.0
-                } else { 0.0 };
+                let size_pct = if old.optimal_size > 0 { ((new.optimal_size as f64 / old.optimal_size as f64) - 1.0) * 100.0 } else { 0.0 };
+                let lat_pct =
+                    if old.median_latency_ns > 0.0 { ((new.median_latency_ns / old.median_latency_ns) - 1.0) * 100.0 } else { 0.0 };
 
-                writeln!(out, "{:<10} {:>12} {:>12} {:>+7.1}%  {:>9.1}ns {:>9.1}ns {:>+7.1}%",
+                writeln!(
+                    out,
+                    "{:<10} {:>12} {:>12} {:>+7.1}%  {:>9.1}ns {:>9.1}ns {:>+7.1}%",
                     tier.name(),
                     format_calibration_size(old.optimal_size),
                     format_calibration_size(new.optimal_size),
@@ -589,14 +613,30 @@ fn prompt_calibration_save(
                 )?;
             }
             (None, Some(new)) => {
-                writeln!(out, "{:<10} {:>12} {:>12} {:>8}  {:>10} {:>9.1}ns {:>8}",
-                    tier.name(), "-", format_calibration_size(new.optimal_size), "new",
-                    "-", new.median_latency_ns, "new")?;
+                writeln!(
+                    out,
+                    "{:<10} {:>12} {:>12} {:>8}  {:>10} {:>9.1}ns {:>8}",
+                    tier.name(),
+                    "-",
+                    format_calibration_size(new.optimal_size),
+                    "new",
+                    "-",
+                    new.median_latency_ns,
+                    "new"
+                )?;
             }
             (Some(old), None) => {
-                writeln!(out, "{:<10} {:>12} {:>12} {:>8}  {:>9.1}ns {:>10} {:>8}",
-                    tier.name(), format_calibration_size(old.optimal_size), "-", "gone",
-                    old.median_latency_ns, "-", "gone")?;
+                writeln!(
+                    out,
+                    "{:<10} {:>12} {:>12} {:>8}  {:>9.1}ns {:>10} {:>8}",
+                    tier.name(),
+                    format_calibration_size(old.optimal_size),
+                    "-",
+                    "gone",
+                    old.median_latency_ns,
+                    "-",
+                    "gone"
+                )?;
             }
             (None, None) => {}
         }
@@ -612,10 +652,7 @@ fn prompt_calibration_save(
 /// stored it saves (unless `--no-save`); otherwise it shows each width's fill + check, old and new,
 /// and the width each chose, and asks `save`.
 fn prompt_seal_calibration_save(
-    existing: &Option<crate::calibration::SealCalibration>,
-    new: &crate::calibration::SealCalibration,
-    out: &mut dyn Write,
-    save: &mut Save,
+    existing: &Option<crate::calibration::SealCalibration>, new: &crate::calibration::SealCalibration, out: &mut dyn Write, save: &mut Save,
 ) -> io::Result<bool> {
     let Some(existing) = existing else {
         if !save.first() {
@@ -642,8 +679,9 @@ fn prompt_seal_calibration_save(
         }
     }
     writeln!(out, "───────────────────────────────────────────────────────────────────────────")?;
-    let line = |seal: &crate::calibration::SealCalibration| format!("{} ({}, {} bits)",
-        seal.timestamp.format("%Y-%m-%d %H:%M"), seal.page_size, seal.width_bits);
+    let line = |seal: &crate::calibration::SealCalibration| {
+        format!("{} ({}, {} bits)", seal.timestamp.format("%Y-%m-%d %H:%M"), seal.page_size, seal.width_bits)
+    };
     writeln!(out, "  Existing: {}", line(existing))?;
     writeln!(out, "  New:      {}", line(new))?;
 
@@ -682,8 +720,10 @@ mod tests {
             ("--version", Command::Version),
             ("--help", Command::Help("tmr.exe".to_string())),
             ("--compare-results without its files", Command::Compare(args(&["tmr.exe", "--compare-results", "a.json"]))),
-            ("--compare-results of a file that isn't there",
-             Command::Compare(args(&["tmr.exe", "--compare-results", "nowhere.json", fixture]))),
+            (
+                "--compare-results of a file that isn't there",
+                Command::Compare(args(&["tmr.exe", "--compare-results", "nowhere.json", fixture])),
+            ),
             ("--compare-results of a run with itself", Command::Compare(args(&["tmr.exe", "--compare-results", fixture, fixture]))),
         ];
         let mut no_question = |question: &str| -> bool { panic!("asked: {question}") };
@@ -692,7 +732,8 @@ mod tests {
             let mut out = Vec::new();
             let status = run(&command, &mut out, &mut no_question).unwrap();
             let written = String::from_utf8(out).unwrap();
-            let written: String = written.split_inclusive('\n')
+            let written: String = written
+                .split_inclusive('\n')
                 .map(|line| if line.starts_with("Comparison Time: ") { "Comparison Time: <time>\n" } else { line })
                 .collect();
             text += &format!("## {case}: {status:?}\n{written}");

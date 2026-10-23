@@ -1,10 +1,10 @@
 /// Global constants used throughout the TMR application
-/// 
+///
 /// This module centralizes magic numbers and commonly used values
 /// to improve maintainability and code clarity.
 /// Memory page size constants as usize (for chunk_size comparisons)
 pub const HUGE_PAGE_SIZE_USIZE: usize = 1024 * 1024 * 1024; // 1GB
-pub const LARGE_PAGE_SIZE_USIZE: usize = 2 * 1024 * 1024;   // 2MB  
+pub const LARGE_PAGE_SIZE_USIZE: usize = 2 * 1024 * 1024; // 2MB  
 
 /// Memory size conversion constants
 pub const BYTES_PER_MIB: u64 = 1024 * 1024;

@@ -55,11 +55,7 @@ pub(super) fn text(setup: &Setup) -> String {
             let _ = writeln!(text, "  Command Line: {}", command_line.join(" "));
 
             // Display build type (helps identify performance issues in logs)
-            let (build_type, build_icon) = if !release {
-                ("Debug (unoptimized)", "❌")
-            } else {
-                ("Release (optimized)", "✅")
-            };
+            let (build_type, build_icon) = if !release { ("Debug (unoptimized)", "❌") } else { ("Release (optimized)", "✅") };
             let _ = writeln!(text, "  Build Type: {} {}", build_icon, build_type);
         }
         Setup::StartupParams { rust_log, rust_backtrace, explicit, defaults } => {
@@ -167,8 +163,11 @@ pub(super) fn text(setup: &Setup) -> String {
             let _ = writeln!(text);
         }
         Setup::RealtimeOnEveryCpu => {
-            let _ = writeln!(text, "⚠️  priority=realtime with a worker on every logical CPU: the console and input can freeze \
-                      until the run ends. Leave a core free (skip-cores=1) or use priority=high.");
+            let _ = writeln!(
+                text,
+                "⚠️  priority=realtime with a worker on every logical CPU: the console and input can freeze \
+                      until the run ends. Leave a core free (skip-cores=1) or use priority=high."
+            );
         }
         Setup::Plan { name, about, is_default } => {
             let default = if *is_default { " (the default)" } else { "" };
@@ -180,8 +179,19 @@ pub(super) fn text(setup: &Setup) -> String {
 
 /// The CPUs chosen, and the run's error mode, limits and SIMD, then a blank line.
 fn selection_text(text: &mut String, selection: &Selection) {
-    let Selection { error_mode, threads, available, cputype, cpu_list, pinned, cpus_to_skip, avoid_smt_doubling,
-                    cycles, duration_secs, simd } = selection;
+    let Selection {
+        error_mode,
+        threads,
+        available,
+        cputype,
+        cpu_list,
+        pinned,
+        cpus_to_skip,
+        avoid_smt_doubling,
+        cycles,
+        duration_secs,
+        simd,
+    } = selection;
     text.push_str("  Error Mode: ");
     let _ = match error_mode {
         ErrorMode::Log => writeln!(text, "Log and continue"),
@@ -216,7 +226,7 @@ fn selection_text(text: &mut String, selection: &Selection) {
 
 /// The system's memory as a table, then a blank line.
 fn memory_status_text(text: &mut String, status: &MemoryStatus) {
-    use crate::table::{TableBuilder, Alignment};
+    use crate::table::{Alignment, TableBuilder};
 
     let _ = writeln!(text, "📊 Current System Memory Status:");
 
@@ -270,7 +280,10 @@ fn end_text(end: &SessionEnd, program: &str) -> String {
             if *plan_only {
                 if *status == RunStatus::Passed {
                     let _ = writeln!(text, "\n================================================================================");
-                    let _ = writeln!(text, "  --startup-debug: Startup sequence and test plan complete. No test memory allocated, no test run.");
+                    let _ = writeln!(
+                        text,
+                        "  --startup-debug: Startup sequence and test plan complete. No test memory allocated, no test run."
+                    );
                     let _ = writeln!(text, "================================================================================");
                 }
             } else {
@@ -280,7 +293,9 @@ fn end_text(end: &SessionEnd, program: &str) -> String {
                     RunStatus::Passed => writeln!(text, "✅ All memory tests completed successfully in {}", format_duration(*elapsed)),
                     RunStatus::Failed => writeln!(text, "❌ Tests failed or encountered errors in {}", format_duration(*elapsed)),
                     RunStatus::NotRun => writeln!(text, "❌ Stopped before testing: see the message above"),
-                    RunStatus::Interrupted => writeln!(text, "⚠️  Interrupted after {}: only the tests that finished were checked", format_duration(*elapsed)),
+                    RunStatus::Interrupted => {
+                        writeln!(text, "⚠️  Interrupted after {}: only the tests that finished were checked", format_duration(*elapsed))
+                    }
                 };
             }
         }

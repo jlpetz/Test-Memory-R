@@ -14,13 +14,12 @@
 //!
 //! See TODO #19 Part A for the design and the three-tier execution model.
 
-use std::time::{Duration, Instant};
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use crate::ErrorMode;
-use crate::tests::{Stage, TestBlock, TestStats, TestAction, TestTiming, TestProgress, TestMemoryConfig};
-
 use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
+use crate::tests::{Stage, TestAction, TestBlock, TestMemoryConfig, TestProgress, TestStats, TestTiming};
 
 /// Per-test bookkeeping shared by the loop-owning v1 tests.
 ///
@@ -76,14 +75,8 @@ impl<'a> TestRunner<'a> {
     /// Returns `(runner, extent)`: the first bytes of the thread's span (TODO 76).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        blocks: &'a [AllocationBlock],
-        thread_id: usize,
-        error_mode: ErrorMode,
-        timing: &'a TestTiming,
-        config: &'a TestMemoryConfig,
-        progress: Option<&'a TestProgress>,
-        test_name: &'static str,
-        action: TestAction,
+        blocks: &'a [AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &'a TestTiming, config: &'a TestMemoryConfig,
+        progress: Option<&'a TestProgress>, test_name: &'static str, action: TestAction,
     ) -> (Self, TestBlock<'a>) {
         // The extent is the first `extent_size` bytes of the thread's span (TODO 76).
         let (extent, extent_size) = test_extent(blocks, config, test_name);
@@ -131,7 +124,8 @@ impl<'a> TestRunner<'a> {
         let log_name = config.display_name.as_deref().unwrap_or(test_name);
         log::info!(
             "[Thread {}] Running {} on {} (extent {}), {}",
-            thread_id, log_name,
+            thread_id,
+            log_name,
             crate::test_memory::size_str(total_test_size),
             crate::test_memory::size_str(extent_size),
             crate::test_memory::describe_chunks(runner.chunks(total_test_size)),
@@ -275,7 +269,9 @@ impl<'a> TestRunner<'a> {
     }
 
     #[inline]
-    pub fn bytes_processed(&self) -> usize { self.total_bytes_processed }
+    pub fn bytes_processed(&self) -> usize {
+        self.total_bytes_processed
+    }
 
     /// Fold this cycle's error count into the running total. Call once at cycle end.
     #[inline]
@@ -296,10 +292,9 @@ impl<'a> TestRunner<'a> {
             return false;
         }
         match self.error_mode {
-            ErrorMode::Panic => panic!(
-                "{}: {} memory errors detected in cycle {} (see logs above)",
-                self.test_name, cycle_errors, self.cycle
-            ),
+            ErrorMode::Panic => {
+                panic!("{}: {} memory errors detected in cycle {} (see logs above)", self.test_name, cycle_errors, self.cycle)
+            }
             ErrorMode::Halt => true,
             ErrorMode::Log => false,
         }
@@ -355,8 +350,11 @@ impl<'a> TestRunner<'a> {
         let timed = self.start.elapsed().saturating_sub(self.inside);
         let halted = matches!(self.error_mode, ErrorMode::Halt) && self.total_error_count + cycle_errors + self.seal_errors > 0;
         if halted {
-            log::info!("[Thread {}] {}: halted on an error, so the extent keeps what the test found (no reseal)",
-                       self.thread_id, self.test_name);
+            log::info!(
+                "[Thread {}] {}: halted on an error, so the extent keeps what the test found (no reseal)",
+                self.thread_id,
+                self.test_name
+            );
         }
         if self.seal.wrap && (self.cycle > 1 || aborted) && !halted {
             self.set_stage(Stage::Resealing);

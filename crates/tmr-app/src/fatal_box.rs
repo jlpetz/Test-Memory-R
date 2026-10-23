@@ -27,9 +27,7 @@ use std::thread::Thread;
 use std::time::{Duration, Instant};
 
 use windows::Win32::System::Diagnostics::Debug::{EXCEPTION_POINTERS, LPTOP_LEVEL_EXCEPTION_FILTER, SetUnhandledExceptionFilter};
-use windows::Win32::System::Threading::{
-    GetCurrentThread, GetCurrentThreadId, SetThreadPriority, Sleep, THREAD_PRIORITY_TIME_CRITICAL,
-};
+use windows::Win32::System::Threading::{GetCurrentThread, GetCurrentThreadId, SetThreadPriority, Sleep, THREAD_PRIORITY_TIME_CRITICAL};
 
 use crate::Fault;
 
@@ -119,9 +117,7 @@ pub fn arm() {
         }
         // SAFETY: the text ends with a NUL (its last unit is never written) and isn't written after
         // READY; the caption is NUL-terminated and outlives the call
-        unsafe {
-            MessageBoxW(null_mut(), TEXT.0.get().cast(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST)
-        };
+        unsafe { MessageBoxW(null_mut(), TEXT.0.get().cast(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST) };
         DISMISSED.store(true, Ordering::Release);
     });
 }
@@ -230,8 +226,11 @@ mod tests {
         let text = |units: &[u16]| String::from_utf16(&units[..units.iter().position(|&u| u == 0).unwrap()]).unwrap();
         let mut units = [0u16; TEXT_UNITS];
         fault.box_text(&mut Utf16 { units: &mut units, len: 0 }).unwrap();
-        assert_eq!(text(&units), "FATAL: ACCESS_VIOLATION (0xC0000005) at IP=0x7ff612345678 (RVA=0x5678)\n\
-                                  WRITE to address 0x10\nModule base: 0x7ff612340000");
+        assert_eq!(
+            text(&units),
+            "FATAL: ACCESS_VIOLATION (0xC0000005) at IP=0x7ff612345678 (RVA=0x5678)\n\
+                                  WRITE to address 0x10\nModule base: 0x7ff612340000"
+        );
 
         let mut units = [0u16; 8];
         fault.box_text(&mut Utf16 { units: &mut units, len: 0 }).unwrap();

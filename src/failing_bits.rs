@@ -103,10 +103,13 @@ impl FailingBits {
             listed.truncate(LISTED_BITS);
             listed.sort_by_key(|b| b.bit);
         }
-        let mut cells: Vec<String> = listed.iter().map(|b| match b.words() {
-            0 => format!("{}: {} / 0", b.bit, b.checks),
-            n => format!("{}: {} / {n} ({} + {})", b.bit, b.checks, b.words_0to1, b.words_1to0),
-        }).collect();
+        let mut cells: Vec<String> = listed
+            .iter()
+            .map(|b| match b.words() {
+                0 => format!("{}: {} / 0", b.bit, b.checks),
+                n => format!("{}: {} / {n} ({} + {})", b.bit, b.checks, b.words_0to1, b.words_1to0),
+            })
+            .collect();
         match self.0.len().saturating_sub(LISTED_BITS) {
             0 => {}
             1 => cells.push("1 more bit".to_string()),
@@ -172,10 +175,12 @@ mod tests {
         bits.add_check(1 << 31 | 1 << 7);
         bits.add_word(0, 1 << 31);
         bits.add_word(u64::MAX, !(1 << 7));
-        assert_eq!(bits.0, [
-            BitFailures { bit: 7, checks: 1, words_0to1: 0, words_1to0: 1 },
-            BitFailures { bit: 31, checks: 2, words_0to1: 1, words_1to0: 0 },
-        ]);
+        assert_eq!(bits.0, [BitFailures { bit: 7, checks: 1, words_0to1: 0, words_1to0: 1 }, BitFailures {
+            bit: 31,
+            checks: 2,
+            words_0to1: 1,
+            words_1to0: 0
+        },]);
         assert_eq!(bits.brief(), " (bits 7, 31)");
         assert_eq!(bits.detail(), "7: 1 / 1 (0 + 1), 31: 2 / 1 (1 + 0)");
         let mut sum = bits.clone();
