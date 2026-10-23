@@ -1,13 +1,34 @@
 # TMR (Test Memory R)
 
-**TMR** is a high-performance memory testing tool focused on DDR5 systems, built in Rust for speed, stability, and extensibility.
+**TMR** is short for **Test Memory R**, the R for Rust. It's a remake of TM5 (TestMem5 by Serj,
+<https://testmem.tz.ru>), the memory tester highly acclaimed by memory overclockers. I contacted Serj,
+who was kind enough to fix a broken link on his website that gave me TM5's original assembly source.
+I then used Claude AI (with a little bit of Astra/Codex) to reimplement TM5 in Rust for modern Windows
+and hardware, with DDR5 systems in mind.
 
-## Features
+## Key changes from TM5
 
-- Windows-native memory stress testing
-- Multithreaded CPU core usage
-- Extensible test patterns (MirrorMove, SimpleTest, etc.)
-- A console (CLI) and, optionally, a window (GUI, WinUI 3 through `windows-reactor`) in one `tmr.exe`
+- **Fixed allocations instead of a sliding window.** TM5 slides an AWE window over the memory it
+  tests; TMR gives each thread its own fixed allocation, with native 64-bit addressing.
+- **Huge (1 GB) and large (2 MB) pages**, locked in memory (non-pageable). Both are faster than
+  regular 4 KB pages. No driver: TMR runs in user mode, and `tmr.exe --setup-large-pages` (elevated)
+  grants the privilege they need once.
+- **Wider SIMD:** each test comes in 128-bit (SSE4.2), 256-bit (AVX2) and 512-bit (AVX-512) widths,
+  the widest the CPU has by default (`width=` picks one). AMX/ACE are next to look at.
+- **TM5 configs still work:** TMR loads TM5 `.cfg` files and runs the equivalent tests.
+- **TM5's test 0 becomes the seal:** all memory is sealed at the start of a cycle and checked at its
+  end, and each block a checking test works on is checked before and resealed after it, so an error
+  in memory no test is touching is still caught.
+- **Errors say more:** a failed check is rescanned to tell a misread from a wrong stored value,
+  failures are counted by bit position (one bit failing everywhere points at one data line), and
+  Windows' hardware error log (WHEA) is watched for errors the tests can't see themselves.
+- **Built for today's CPUs:** threads are pinned to physical cores and take their memory from their
+  own NUMA node while it has room, CPUs beyond 64 (processor groups) are used, and checks can bypass the caches
+  (non-temporal stores, CLFLUSHOPT) so they read DRAM.
+- **New data patterns** alongside TM5's, some shaped by the memory's transfer width (DDR5's 32-bit
+  subchannels), and built-in test plans (`plan=`; `stability` by default).
+- **Results as JSON**, saved during the run and comparable between runs, and a console (CLI) and,
+  optionally, a window (GUI, WinUI 3 through `windows-reactor`) in one `tmr.exe`.
 
 ## Windows support
 
@@ -22,7 +43,8 @@ a script or a remote session; `--gui` and `--cli` choose explicitly. The window 
 | Windows 11 24H2 and later, Server 2025 | 26100 and later | Yes | Yes, fully supported |
 
 The window also needs the Windows App Runtime 2.x installed; when it is missing, TMR shows a dialog
-with the download link. Older Windows (Windows 10, Server 2019) is not supported.
+with the download link. Older Windows (Windows 10, Server 2019) is not supported. The CPU needs AVX2
+and CLFLUSHOPT (Intel Skylake or AMD Zen and later); TMR checks at startup.
 
 ## License
 
@@ -32,3 +54,11 @@ This project is licensed under either of:
 - Apache 2.0 License ([LICENSE-APACHE](./LICENSE-APACHE))
 
 at your option.
+
+## Credits
+
+TMR was inspired by TM5, and wouldn't exist without it. Many thanks to Serj for his kind donation of
+TM5 to the community.
+
+- Serj's work: <https://testmem.tz.ru>
+- TM5 page: <https://testmem.tz.ru/testmem5.htm>
