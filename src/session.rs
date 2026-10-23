@@ -122,7 +122,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     // This catches typos and deprecated flags early with helpful error messages
     let known_flags = [
         "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-cache-ext",
-        "--calibrate-seal", "--calibrate-all", "--calibration-file", "--output", "--no-calibration",
+        "--calibrate-seal", "--calibrate-all", "--calibration-file", "--output", "--no-calibration", "--yes", "--no-save",
         "--create-demo-configs", "--compare-results", "--debug-topology",
         "--show-topology", "--setup-large-pages", "--startup-debug", "--disable-pinning",
         "--help", "-h", "-?", "--version", "-v"
@@ -227,6 +227,9 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     // Check for special commands
     if let Some(command) = Command::parse(&args) {
         return Ok(SessionEnd::Command(command));
+    }
+    if let Some(e) = calibration_flag_without_calibration(&args) {
+        return Ok(SessionEnd::Stopped(Stopped::Invalid(e)));
     }
 
     // Parse and validate ALL command-line arguments using centralized registry
@@ -760,6 +763,15 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     Ok(SessionEnd::Ran { status, elapsed: start_time.elapsed(), plan_only })
 }
 
+/// Why `args` can't be run, if they give `--yes` or `--no-save` to anything but a calibration
+/// (`commands::Command::Calibrate` takes them first): they answer its save question, which nothing
+/// else asks.
+fn calibration_flag_without_calibration(args: &[String]) -> Option<String> {
+    args.iter().find(|a| *a == "--yes" || *a == "--no-save").map(|flag| format!(
+        "{flag} answers a calibration's save question: give it with --calibrate-cache, --calibrate-cache-ext, \
+         --calibrate-seal or --calibrate-all"))
+}
+
 /// The seal's width under `auto`, at startup (TODO 99): this machine's seal calibration
 /// (`AppConfig::valid_seal_calibration`), whose width `set` makes the one `auto` resolves to
 /// (`seal::set_calibrated_width` in a run), else none, so the rule; and which it was.
@@ -889,6 +901,19 @@ fn parse_enhanced_memory_parameter(param: &str) -> Result<crate::memory::allocat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--yes` and `--no-save` go with a calibration, which takes them before this check; a run
+    /// that gives either is stopped with what they are for.
+    #[test]
+    fn the_save_flags_go_only_with_a_calibration() {
+        let args = |line: &[&str]| line.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(calibration_flag_without_calibration(&args(&["tmr", "memory=50%"])), None);
+        for flag in ["--yes", "--no-save"] {
+            let e = calibration_flag_without_calibration(&args(&["tmr", "memory=50%", flag])).expect(flag);
+            assert!(e.starts_with(flag) && e.contains("--calibrate-all"), "{e}");
+        }
+        assert!(matches!(Command::parse(&args(&["tmr", "--calibrate-seal", "--yes"])), Some(Command::Calibrate(_))));
+    }
 
     /// TODO 99: at startup, a seal calibration measured on this machine gives `auto` its width
     /// (`set`, `seal::set_calibrated_width` in a run), which the run's seal then resolves to, and

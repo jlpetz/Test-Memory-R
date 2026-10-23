@@ -247,6 +247,13 @@ cache calibration's save leaves the seal's alone: a CPU swap followed by only `-
 keeps the old cache calibration stale, and one followed by only `--calibrate-cache` keeps the old
 seal width stale. `--no-calibration` skips it.
 
+Every calibration (`--calibrate-cache`, `--calibrate-cache-ext`, `--calibrate-seal`,
+`--calibrate-all`) asks before saving over a stored one, `[Y/n]`; with none stored it saves. `--yes`
+saves without asking, `--no-save` shows the results and keeps what is stored (with none stored,
+it saves nothing), and the answer is shown after the question. With neither, a run that can't be
+answered (no console, as over WinRM; the input ended) takes the default, yes. The two go only with a
+calibration: a run given either stops with what they are for.
+
 A `tm5` seal takes the same width: only `tmr` is measured. Its kernels hold a page's three vectors
 in registers and only store or load, XOR and OR them, where `tmr`'s compute a hash per vector, so
 `tm5` is the more purely memory-bound of the two and less likely to separate the widths (Rule 3 of

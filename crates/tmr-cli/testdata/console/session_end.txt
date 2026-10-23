@@ -45,6 +45,8 @@ USAGE:
   tmr.exe --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto
                                           #   then runs the fastest (a narrower one if it is as fast)
   tmr.exe --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)
+  tmr.exe --calibrate-cache --yes          #   any calibration: --yes saves without asking, --no-save keeps what is
+                                          #   stored; with neither it asks, and saves if no answer can come
   tmr.exe plan=stability                   # The default: the stability tests at the widest width (or width=)
   tmr.exe plan=quick                       # The stability tests once
   tmr.exe plan=widths                      # Every width of the tests that have them, side by side

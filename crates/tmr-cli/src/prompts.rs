@@ -62,14 +62,16 @@ pub fn large_page_restart(input: &mut dyn BufRead, out: &mut dyn Write) -> io::R
     }
 }
 
-/// Asks `question` [Y/n]: yes for Enter, y or yes; no for anything else, and when no answer comes
-/// (the input ended, or can't be read), so nothing is saved that no one agreed to.
+/// Asks `question` [Y/n]: yes for Enter, y or yes; no for anything else. When no answer can come
+/// (the input ended, or can't be read: a run with no console to answer from, over WinRM), the
+/// default, yes, as the [Y/n] says: the one question is a calibration's save, whose command was the
+/// request to calibrate. `--no-save` is how such a run keeps what is stored.
 pub fn confirm(input: &mut dyn BufRead, out: &mut dyn Write, question: &str) -> bool {
     let _ = write!(out, "\n{question} [Y/n]: ");
     let _ = out.flush();
     let mut answer = String::new();
     match input.read_line(&mut answer) {
-        Ok(0) | Err(_) => false,
+        Ok(0) | Err(_) => true,
         Ok(_) => {
             let answer = answer.trim().to_lowercase();
             answer.is_empty() || answer == "y" || answer == "yes"
@@ -102,11 +104,11 @@ mod tests {
         crate::golden::check("large_page_restart", &text);
     }
 
-    /// A calibration's save: Enter, y and yes save; n, anything else and no answer at all (the
-    /// input's end: a run with no console to answer from; or an input that can't be read) keep
-    /// what is stored. cli.rs saved on both of those.
+    /// A calibration's save: Enter, y and yes save, and so does no answer at all (the input's end:
+    /// a run with no console to answer from; or an input that can't be read), as the [Y/n] default
+    /// says; n and anything else keep what is stored.
     #[test]
-    fn a_calibration_is_saved_only_when_the_user_says_so() {
+    fn a_calibration_is_saved_unless_the_user_says_no() {
         let ask = |input: &[u8]| {
             let mut out = Vec::new();
             let yes = confirm(&mut &*input, &mut out, "Save new standard calibration?");
@@ -118,7 +120,7 @@ mod tests {
         assert!(ask(b"y\n") && ask(b"Yes\n"));
         assert!(!ask(b"n\n"), "n");
         assert!(!ask(b"later\n"));
-        assert!(!ask(b""), "the input's end");
-        assert!(!ask(b"\xff\xfe\n"), "an input that isn't text");
+        assert!(ask(b""), "the input's end");
+        assert!(ask(b"\xff\xfe\n"), "an input that isn't text");
     }
 }

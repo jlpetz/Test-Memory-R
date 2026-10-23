@@ -6,8 +6,8 @@
 //! the window doesn't offer them.
 //!
 //! A calibration asks whether to save what it measured over what tmr-cfg.json holds. That question
-//! is the caller's to put: it passes `confirm`, which gets the question and says yes or no, so
-//! nothing here answers it for the user.
+//! is the caller's to put: it passes `confirm`, which gets the question and says yes or no, unless
+//! the command line has answered it already (`--yes`, `--no-save`: `SaveChoice`).
 
 use std::io::{self, Write};
 
@@ -125,6 +125,8 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  {} --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto", program_name)?;
     writeln!(out, "                                          #   then runs the fastest (a narrower one if it is as fast)")?;
     writeln!(out, "  {} --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)", program_name)?;
+    writeln!(out, "  {} --calibrate-cache --yes          #   any calibration: --yes saves without asking, --no-save keeps what is", program_name)?;
+    writeln!(out, "                                          #   stored; with neither it asks, and saves if no answer can come")?;
     writeln!(out, "  {} plan=stability                   # The default: the stability tests at the widest width (or width=)", program_name)?;
     writeln!(out, "  {} plan=quick                       # The stability tests once", program_name)?;
     writeln!(out, "  {} plan=widths                      # Every width of the tests that have them, side by side", program_name)?;
@@ -319,12 +321,71 @@ fn compare(args: &[String], out: &mut dyn Write) -> io::Result<RunStatus> {
     Ok(RunStatus::Passed)
 }
 
+/// What a calibration does with what it measured, from its command line: asks (`confirm`), or,
+/// without asking, saves (`--yes`) or keeps what tmr-cfg.json holds (`--no-save`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveChoice {
+    Ask,
+    Save,
+    Keep,
+}
+
+impl SaveChoice {
+    /// The command line's choice, or why there is none: `--yes` and `--no-save` together.
+    fn of(args: &[String]) -> Result<Self, &'static str> {
+        let given = |flag: &str| args.iter().any(|a| a == flag);
+        match (given("--yes"), given("--no-save")) {
+            (true, true) => Err("--yes and --no-save contradict each other: give one"),
+            (true, false) => Ok(SaveChoice::Save),
+            (false, true) => Ok(SaveChoice::Keep),
+            (false, false) => Ok(SaveChoice::Ask),
+        }
+    }
+}
+
+/// A calibration's save question, answered by the command line (`SaveChoice`) or, when that
+/// leaves it open, by `confirm`.
+struct Save<'a> {
+    choice: SaveChoice,
+    confirm: &'a mut dyn FnMut(&str) -> bool,
+}
+
+impl Save<'_> {
+    /// Whether to save over what is stored: `confirm`'s answer to `question`, or the command line's,
+    /// which `out` then shows after the question.
+    fn answer(&mut self, question: &str, out: &mut dyn Write) -> io::Result<bool> {
+        match self.choice {
+            SaveChoice::Ask => Ok((self.confirm)(question)),
+            SaveChoice::Save => {
+                writeln!(out, "\n{question} yes (--yes)")?;
+                Ok(true)
+            }
+            SaveChoice::Keep => {
+                writeln!(out, "\n{question} no (--no-save)")?;
+                Ok(false)
+            }
+        }
+    }
+
+    /// Whether to save when nothing is stored yet: without a question, unless `--no-save`.
+    fn first(&self) -> bool {
+        self.choice != SaveChoice::Keep
+    }
+}
+
 /// The calibration commands: `--calibrate-cache` and `--calibrate-cache-ext` (the cache tiers),
 /// `--calibrate-seal` (the seal's width, TODO 99) and `--calibrate-all` (the cache tiers as
 /// `--calibrate-cache` measures them, then the seal's width). Each part measures, shows what it
-/// found and saves it to tmr-cfg.json if `confirm` says to; a failure stops it before any more
-/// runs. `maxpage=` sets the page size both ask for.
+/// found and saves it to tmr-cfg.json if `confirm` (or `--yes` / `--no-save`) says to; a failure
+/// stops it before any more runs. `maxpage=` sets the page size both ask for.
 fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str) -> bool) -> io::Result<RunStatus> {
+    let mut save = match SaveChoice::of(args) {
+        Ok(choice) => Save { choice, confirm },
+        Err(e) => {
+            writeln!(out, "❌ {e}")?;
+            return Ok(RunStatus::NotRun);
+        }
+    };
     let command = args[1].as_str();
     let (cache, extended, seal) = match command {
         "--calibrate-cache" => (true, false, false),
@@ -368,20 +429,20 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
     }
     let page_size = config.page_size.clone();
 
-    if cache && calibrate_cache(args, config, &system_info, smbios, extended, out, confirm)? == RunStatus::NotRun {
+    if cache && calibrate_cache(args, config, &system_info, smbios, extended, out, &mut save)? == RunStatus::NotRun {
         return Ok(RunStatus::NotRun);
     }
     if seal {
-        return calibrate_seal(&page_size, &system_info, smbios, out, confirm);
+        return calibrate_seal(&page_size, &system_info, smbios, out, &mut save);
     }
     Ok(RunStatus::Passed)
 }
 
 /// `--calibrate-cache` (`extended`: `--calibrate-cache-ext`): the cache tiers, shown, saved if
-/// `confirm` says to and written to `--output`'s file when given.
+/// `save` says to and written to `--output`'s file when given.
 fn calibrate_cache(args: &[String], config: crate::calibration::CalibrationConfig, system_info: &crate::SystemInfo,
                    smbios: &crate::smbios::SmbiosData, extended: bool, out: &mut dyn Write,
-                   confirm: &mut dyn FnMut(&str) -> bool) -> io::Result<RunStatus> {
+                   save: &mut Save) -> io::Result<RunStatus> {
     let cache_info = system_info.get_cache_info();
     // Run calibration (extended: phase 1 sweep + phase 2 fine-grain)
     let calibration_test = crate::calibration::CalibrationTest::with_config(cache_info.clone(), config);
@@ -399,7 +460,8 @@ fn calibrate_cache(args: &[String], config: crate::calibration::CalibrationConfi
             } else {
                 (&app_config.calibration, "standard")
             };
-            let should_save = prompt_calibration_save(existing, &results, cal_type, out, confirm)?;
+            let stored = existing.is_some();
+            let should_save = prompt_calibration_save(existing, &results, cal_type, out, save)?;
             if should_save {
                 app_config.update_machine_id(system_info, smbios);
                 if extended {
@@ -411,8 +473,10 @@ fn calibrate_cache(args: &[String], config: crate::calibration::CalibrationConfi
                     Ok(()) => writeln!(out, "{} saved to {}", what, cfg_path.display())?,
                     Err(e) => writeln!(out, "Warning: Failed to save calibration: {}", e)?,
                 }
-            } else {
+            } else if stored {
                 writeln!(out, "Calibration not saved (kept existing).")?;
+            } else {
+                writeln!(out, "Calibration not saved.")?;
             }
 
             // Check for --output flag to save results
@@ -442,23 +506,26 @@ fn calibrate_cache(args: &[String], config: crate::calibration::CalibrationConfi
 
 /// `--calibrate-seal`, and `--calibrate-all`'s second part (TODO 99): the seal's fill and check at
 /// every width the CPU has, on one thread (`calibration::calibrate_seal`), shown, and saved if
-/// `confirm` says to as what `seal-width=auto` runs on this machine.
+/// `save` says to as what `seal-width=auto` runs on this machine.
 fn calibrate_seal(page_size: &str, system_info: &crate::SystemInfo, smbios: &crate::smbios::SmbiosData, out: &mut dyn Write,
-                  confirm: &mut dyn FnMut(&str) -> bool) -> io::Result<RunStatus> {
+                  save: &mut Save) -> io::Result<RunStatus> {
     let cache_info = system_info.get_cache_info();
     match crate::calibration::calibrate_seal(cache_info, page_size) {
         Ok(seal) => {
             crate::calibration::display_seal_calibration(&seal, cache_info, out)?;
             let cfg_path = crate::app_config::AppConfig::default_path();
             let mut app_config = crate::app_config::AppConfig::load(&cfg_path);
-            if prompt_seal_calibration_save(&app_config.seal_calibration, &seal, out, confirm)? {
+            let stored = app_config.seal_calibration.is_some();
+            if prompt_seal_calibration_save(&app_config.seal_calibration, &seal, out, save)? {
                 app_config.set_seal_calibration(seal, system_info, smbios);
                 match app_config.save(&cfg_path) {
                     Ok(()) => writeln!(out, "Seal calibration saved to {}", cfg_path.display())?,
                     Err(e) => writeln!(out, "Warning: Failed to save seal calibration: {}", e)?,
                 }
-            } else {
+            } else if stored {
                 writeln!(out, "Seal calibration not saved (kept existing).")?;
+            } else {
+                writeln!(out, "Seal calibration not saved.")?;
             }
             Ok(RunStatus::Passed)
         }
@@ -469,21 +536,25 @@ fn calibrate_seal(page_size: &str, system_info: &crate::SystemInfo, smbios: &cra
     }
 }
 
-/// Compare new calibration results with existing and ask `confirm` whether to save them.
+/// Compare new calibration results with existing and ask `save` whether to save them.
 /// Returns true if the new results should be saved.
-/// If no existing results, saves automatically (no question).
+/// If no existing results, saves automatically (no question), unless `--no-save`.
 fn prompt_calibration_save(
     existing: &Option<crate::calibration::CalibrationResults>,
     new_results: &crate::calibration::CalibrationResults,
     cal_type: &str,
     out: &mut dyn Write,
-    confirm: &mut dyn FnMut(&str) -> bool,
+    save: &mut Save,
 ) -> io::Result<bool> {
     let existing = match existing {
         Some(e) => e,
-        None => {
+        None if save.first() => {
             writeln!(out, "\nNo existing {} calibration — saving new results.", cal_type)?;
             return Ok(true);
+        }
+        None => {
+            writeln!(out, "\nNo existing {} calibration; --no-save keeps it that way.", cal_type)?;
+            return Ok(false);
         }
     };
 
@@ -534,19 +605,23 @@ fn prompt_calibration_save(
     writeln!(out, "  Existing: {} ({})", existing.timestamp.format("%Y-%m-%d %H:%M"), existing.page_size)?;
     writeln!(out, "  New:      {} ({})", new_results.timestamp.format("%Y-%m-%d %H:%M"), new_results.page_size)?;
 
-    Ok(confirm(&format!("Save new {} calibration?", cal_type)))
+    save.answer(&format!("Save new {} calibration?", cal_type), out)
 }
 
 /// The seal calibration's save prompt (TODO 99), as `prompt_calibration_save`'s: with none
-/// stored it saves; otherwise it shows each width's fill + check, old and new, and the width each
-/// chose, and asks `confirm`.
+/// stored it saves (unless `--no-save`); otherwise it shows each width's fill + check, old and new,
+/// and the width each chose, and asks `save`.
 fn prompt_seal_calibration_save(
     existing: &Option<crate::calibration::SealCalibration>,
     new: &crate::calibration::SealCalibration,
     out: &mut dyn Write,
-    confirm: &mut dyn FnMut(&str) -> bool,
+    save: &mut Save,
 ) -> io::Result<bool> {
     let Some(existing) = existing else {
+        if !save.first() {
+            writeln!(out, "\nNo existing seal calibration; --no-save keeps it that way.")?;
+            return Ok(false);
+        }
         writeln!(out, "\nNo existing seal calibration — saving new results.")?;
         return Ok(true);
     };
@@ -572,7 +647,7 @@ fn prompt_seal_calibration_save(
     writeln!(out, "  Existing: {}", line(existing))?;
     writeln!(out, "  New:      {}", line(new))?;
 
-    Ok(confirm("Save new seal calibration?"))
+    save.answer("Save new seal calibration?", out)
 }
 
 fn format_calibration_size(bytes: usize) -> String {
@@ -645,6 +720,37 @@ mod tests {
         assert!(matches!(parse(&line), Some(Command::Compare(given)) if given == args(&line)));
         for none in [&["tmr.exe"][..], &["tmr.exe", "memory=50%", "--help"], &["tmr.exe", "--startup-debug"]] {
             assert!(parse(none).is_none(), "{none:?}");
+        }
+    }
+
+    /// A calibration's save: `--yes` saves and `--no-save` keeps, each without asking and saying
+    /// so after the question; with neither, `confirm` answers it. Both together are refused. With
+    /// nothing stored yet it saves without a question, unless `--no-save`.
+    #[test]
+    fn a_calibrations_save_takes_the_command_lines_answer() {
+        let choice = |line: &[&str]| SaveChoice::of(&args(line));
+        assert_eq!(choice(&["tmr.exe", "--calibrate-seal"]), Ok(SaveChoice::Ask));
+        assert_eq!(choice(&["tmr.exe", "--calibrate-seal", "--yes"]), Ok(SaveChoice::Save));
+        assert_eq!(choice(&["tmr.exe", "--calibrate-all", "maxpage=regular", "--no-save"]), Ok(SaveChoice::Keep));
+        assert!(choice(&["tmr.exe", "--calibrate-cache", "--yes", "--no-save"]).is_err());
+
+        for (choice, confirms, answer, shown) in [
+            (SaveChoice::Ask, true, true, ""),
+            (SaveChoice::Ask, false, false, ""),
+            (SaveChoice::Save, false, true, "\nSave new seal calibration? yes (--yes)\n"),
+            (SaveChoice::Keep, true, false, "\nSave new seal calibration? no (--no-save)\n"),
+        ] {
+            let mut asked = Vec::new();
+            let mut confirm = |question: &str| {
+                asked.push(question.to_string());
+                confirms
+            };
+            let mut save = Save { choice, confirm: &mut confirm };
+            let mut out = Vec::new();
+            assert_eq!(save.answer("Save new seal calibration?", &mut out).unwrap(), answer, "{choice:?}");
+            assert_eq!(save.first(), choice != SaveChoice::Keep, "{choice:?}");
+            assert_eq!(String::from_utf8(out).unwrap(), shown, "{choice:?}");
+            assert_eq!(asked.len(), usize::from(choice == SaveChoice::Ask), "{choice:?}: confirm asked {asked:?}");
         }
     }
 }
