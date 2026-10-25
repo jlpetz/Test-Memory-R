@@ -58,7 +58,7 @@ pub(super) fn text(setup: &Setup) -> String {
             let _ = writeln!(text, "  Build Type: {} {}", build_icon, build_type);
         }
         Setup::StartupParams { rust_log, rust_backtrace, explicit, defaults } => {
-            let _ = writeln!(text, "  RUST_LOG: {} (logs to .\\logs\\TMR_YYYY-MM-DD_HH-MM-SS.log)", rust_log);
+            let _ = writeln!(text, "  RUST_LOG: {} (logs to logs\\TMR_YYYY-MM-DD_HH-MM-SS.log beside tmr.exe, or in TMR_HOME)", rust_log);
             if let Some(rust_backtrace) = rust_backtrace {
                 let _ = writeln!(text, "  RUST_BACKTRACE: {}", rust_backtrace);
             }

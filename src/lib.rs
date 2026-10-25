@@ -24,7 +24,9 @@
         target_feature = "f16c",
         target_feature = "fma",
         target_feature = "lzcnt",
-        target_feature = "movbe"
+        target_feature = "movbe",
+        target_feature = "popcnt",
+        target_feature = "xsave"
     ),
     doc,
     tmr_docs_rs
@@ -37,14 +39,15 @@ compile_error!(
 
 // The engine. Its public items are what tmr.exe (`crates/tmr-app`), the CLI (`crates/tmr-cli`) and the window (`crates/tmr-gui`) call:
 // `session` (a command line's setup and run), `frontend` (the interface a session is shown through, with the types its events carry),
-// `commands` (the one-shot commands), `cpu_check` (whether this CPU can run TMR), `logfile`, `BUILD` and `request_stop`. Everything else
-// is private, so `dead_code` checks it. While `main.rs` held the CLI and every module here was `pub`, all of them counted as public API,
-// and an uncalled `pub fn` was never reported (TODO 69 E).
+// `commands` (the one-shot commands), `cpu_check` (whether this CPU can run TMR), `home` (the folder TMR keeps its files in), `logfile`,
+// `BUILD` and `request_stop`. Everything else is private, so `dead_code` checks it. While `main.rs` held the CLI and every module here
+// was `pub`, all of them counted as public API, and an uncalled `pub fn` was never reported (TODO 69 E).
 pub mod commands; // the one-shot commands, writing to their caller's writer (TODO 29)
 pub mod cpu_check; // whether this CPU has the features TMR is built for (TODO 104)
 pub mod frontend; // the engine's interface to whoever shows a session: its events (TODO 29)
-pub mod logfile;
-pub mod session; // a command line's setup, then its run, through a frontend (TODO 29) // the log file, which every frontend's logger writes (TODO 29)
+pub mod home; // the folder TMR keeps its configs, results, logs and settings in: beside the exe, or TMR_HOME (TODO 104)
+pub mod logfile; // the log file, which every frontend's logger writes (TODO 29)
+pub mod session; // a command line's setup, then its run, through a frontend (TODO 29)
 pub use build_info::BUILD;
 pub use runner::request_stop;
 // What the CLI's tests drive the engine with, under the `test-support` feature (TODO 29)

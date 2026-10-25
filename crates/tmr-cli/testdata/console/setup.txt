@@ -26,11 +26,11 @@ Startup Mode & Parameters:
   Command Line: tmr.exe
   Build Type: ❌ Debug (unoptimized)
 ## the parameters, given and defaults
-  RUST_LOG: info (logs to .\logs\TMR_YYYY-MM-DD_HH-MM-SS.log)
+  RUST_LOG: info (logs to logs\TMR_YYYY-MM-DD_HH-MM-SS.log beside tmr.exe, or in TMR_HOME)
   Explicit Parameters: memory=50%, --startup-debug
   Default Parameters: cputype=threads (default), errors=log (default)
 ## the parameters, a backtrace set and none given
-  RUST_LOG: debug (logs to .\logs\TMR_YYYY-MM-DD_HH-MM-SS.log)
+  RUST_LOG: debug (logs to logs\TMR_YYYY-MM-DD_HH-MM-SS.log beside tmr.exe, or in TMR_HOME)
   RUST_BACKTRACE: 1
 ## cores
   CPU Type: cores (avoiding SMT/Hyperthreading)

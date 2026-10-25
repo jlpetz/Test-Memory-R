@@ -13,7 +13,7 @@ use crate::runner::RunStatus;
 
 /// A one-shot command, as the command line names it after the session's own parameters.
 pub enum Command {
-    /// `--create-demo-configs`: two demo configs in the working directory
+    /// `--create-demo-configs`: two demo configs in the configs folder in TMR's home
     DemoConfigs,
     /// `--compare-results <baseline.json> <current.json> [output.json]`: the command line, the exe's name first
     Compare(Vec<String>),
@@ -113,7 +113,7 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  {} config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)", program_name)?;
     writeln!(out, "  {} --create-demo-configs              # Create demo configuration files", program_name)?;
     writeln!(out, "  {} --compare-results baseline.json current.json [output.json]", program_name)?;
-    writeln!(out, "                                          # Compare two test results from .\\results\\")?;
+    writeln!(out, "                                          # Compare two test results (here, or in results\\)")?;
     writeln!(out, "  {} --setup-large-pages              # Configure large pages for optimal performance", program_name)?;
     writeln!(
         out,
@@ -241,11 +241,12 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "LOGGING:")?;
     writeln!(out, "  RUST_LOG=info                       # Set log level (error/warn/info/debug/trace)")?;
     writeln!(out, "                                        # Use debug for detailed per-thread logs")?;
-    writeln!(out, "  Logs saved to: .\\logs\\TMR_YYYY-MM-DD_HH-MM-SS.log      (local time)")?;
-    writeln!(out, "  Results saved to: .\\results\\TMR_YYYY-MM-DD_HH-MM-SS.json (same name as the log)")?;
+    writeln!(out, "  Logs saved to: logs\\TMR_YYYY-MM-DD_HH-MM-SS.log      (local time)")?;
+    writeln!(out, "  Results saved to: results\\TMR_YYYY-MM-DD_HH-MM-SS.json (same name as the log)")?;
+    writeln!(out, "  Both beside tmr.exe, as are configs\\ and tmr-cfg.json; TMR_HOME=<folder> puts them there instead")?;
     writeln!(out)?;
     writeln!(out, "RESULT COMPARISON:")?;
-    writeln!(out, "  Test results are automatically saved as JSON files to .\\results\\")?;
+    writeln!(out, "  Test results are automatically saved as JSON files to results\\")?;
     writeln!(out, "  Use --compare-results to analyze performance differences")?;
     writeln!(out, "  Useful for memory overclocking and timing optimization")?;
     writeln!(out)?;
@@ -269,16 +270,17 @@ fn usage(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  {} config=test.json             # Load comprehensive JSON config", program_name)?;
     writeln!(out, "  {} config=legacy.cfg            # Auto-convert TM5 config + add stuck bit test", program_name)?;
     writeln!(out, "  {} --create-demo-configs        # Create demo configurations", program_name)?;
-    writeln!(out, "  {} --compare-results old.json new.json # Compare results from .\\results\\", program_name)?;
+    writeln!(out, "  {} --compare-results old.json new.json # Compare results from results\\", program_name)?;
     Ok(())
 }
 
-/// `--create-demo-configs`: writes the two demo configs to the working directory, then says what each is.
+/// `--create-demo-configs`: writes the two demo configs to the configs folder in TMR's home, then says what each is.
 fn demo_configs(out: &mut dyn Write) -> io::Result<RunStatus> {
     if let Err(e) = save_demo_configs() {
         writeln!(out, "❌ Failed to create demo configs: {}", e)?;
         return Ok(RunStatus::NotRun);
     }
+    writeln!(out, "In {}:", crate::home::configs().display())?;
     writeln!(out, "✅ Created demo_comprehensive_test.json - Modern comprehensive memory testing")?;
     writeln!(out, "   Features: Full memory stuck bit test + timed stress tests")?;
     writeln!(out, "   Timing: 3 cycles, ~2-3 minutes per cycle with comprehensive coverage")?;
@@ -298,16 +300,19 @@ fn demo_configs(out: &mut dyn Write) -> io::Result<RunStatus> {
     Ok(RunStatus::Passed)
 }
 
-/// The two demo configs, saved.
+/// The two demo configs, saved where a relative `config=` finds them.
 fn save_demo_configs() -> Result<(), String> {
     use crate::config::ModernConfig;
+    let configs = crate::home::configs();
+    std::fs::create_dir_all(&configs).map_err(|e| format!("{}: {e}", configs.display()))?;
+    let in_configs = |name: &str| configs.join(name).display().to_string();
     // Create modern comprehensive config
     let modern_config = ModernConfig::create_demo_config();
-    modern_config.save_to_file("demo_comprehensive_test.json")?;
+    modern_config.save_to_file(&in_configs("demo_comprehensive_test.json"))?;
 
     // Create TM5-compatible config
     let tm5_config = ModernConfig::create_tm5_compatible_config();
-    tm5_config.save_to_file("demo_tm5_compatible.json")
+    tm5_config.save_to_file(&in_configs("demo_tm5_compatible.json"))
 }
 
 /// `--compare-results <baseline.json> <current.json> [output.json]`, `args` the command line: the comparison of two results files, saved to
@@ -317,8 +322,19 @@ fn compare(args: &[String], out: &mut dyn Write) -> io::Result<RunStatus> {
         writeln!(out, "❌ Usage: {} --compare-results <baseline.json> <current.json> [output.json]", args[0])?;
         return Ok(RunStatus::NotRun);
     }
-    let baseline = &args[2];
-    let current = &args[3];
+    // Each as typed, from the current folder, or a results file in TMR's home by its name (`home::find`, TODO 104). The output is as
+    // typed: from the current folder.
+    let mut files = Vec::new();
+    for path in &args[2..4] {
+        match crate::home::find(path, &crate::home::results()) {
+            Ok(found) => files.push(found.display().to_string()),
+            Err(looked) => {
+                writeln!(out, "❌ Comparison failed: Test result file does not exist: {path} ({looked})")?;
+                return Ok(RunStatus::NotRun);
+            }
+        }
+    }
+    let (baseline, current) = (&files[0], &files[1]);
     let output = args.get(4).map(|s| s.as_str());
 
     let comparison = match crate::results::compare_test_results(baseline, current) {
@@ -406,6 +422,13 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
             return Ok(RunStatus::NotRun);
         }
     };
+    // Where it saves (tmr-cfg.json, in TMR's home), checked before it measures, unless it won't save (TODO 104): not found out after
+    if !matches!(save.choice, SaveChoice::Keep)
+        && let Err(e) = crate::home::can_save(&crate::app_config::AppConfig::default_path())
+    {
+        writeln!(out, "❌ {e}")?;
+        return Ok(RunStatus::NotRun);
+    }
     let command = args[1].as_str();
     let (cache, extended, seal) = match command {
         "--calibrate-cache" => (true, false, false),
@@ -487,10 +510,12 @@ fn calibrate_cache(
                 } else {
                     app_config.calibration = Some(results.clone());
                 }
-                match app_config.save(&cfg_path) {
-                    Ok(()) => writeln!(out, "{} saved to {}", what, cfg_path.display())?,
-                    Err(e) => writeln!(out, "Warning: Failed to save calibration: {}", e)?,
+                // A save that was asked for and failed is the command's failure (exit 2), as a script would want to know
+                if let Err(e) = app_config.save(&cfg_path) {
+                    writeln!(out, "❌ Failed to save calibration: {}", e)?;
+                    return Ok(RunStatus::NotRun);
                 }
+                writeln!(out, "{} saved to {}", what, cfg_path.display())?;
             } else if stored {
                 writeln!(out, "Calibration not saved (kept existing).")?;
             } else {
@@ -534,10 +559,11 @@ fn calibrate_seal(
             let stored = app_config.seal_calibration.is_some();
             if prompt_seal_calibration_save(&app_config.seal_calibration, &seal, out, save)? {
                 app_config.set_seal_calibration(seal, system_info, smbios);
-                match app_config.save(&cfg_path) {
-                    Ok(()) => writeln!(out, "Seal calibration saved to {}", cfg_path.display())?,
-                    Err(e) => writeln!(out, "Warning: Failed to save seal calibration: {}", e)?,
+                if let Err(e) = app_config.save(&cfg_path) {
+                    writeln!(out, "❌ Failed to save seal calibration: {}", e)?;
+                    return Ok(RunStatus::NotRun);
                 }
+                writeln!(out, "Seal calibration saved to {}", cfg_path.display())?;
             } else if stored {
                 writeln!(out, "Seal calibration not saved (kept existing).")?;
             } else {
@@ -700,7 +726,7 @@ mod tests {
 
     /// The commands that read and change nothing on this machine, as they write, each after a `## case` line with how it ended (TODO 29):
     /// `--version`, `--help`, and `--compare-results` without its files, of one that isn't there, and of a results file with itself (its
-    /// time masked). None asks a question.
+    /// time masked, and TMR's home, which is the test binary's folder). None asks a question.
     #[test]
     fn commands_write_as_their_golden() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("result_files").join("before_todo_72.json");
@@ -720,7 +746,7 @@ mod tests {
         for (case, command) in cases {
             let mut out = Vec::new();
             let status = run(&command, &mut out, &mut no_question).unwrap();
-            let written = String::from_utf8(out).unwrap();
+            let written = String::from_utf8(out).unwrap().replace(&crate::home::dir().display().to_string(), "<home>");
             let written: String = written
                 .split_inclusive('\n')
                 .map(|line| if line.starts_with("Comparison Time: ") { "Comparison Time: <time>\n" } else { line })

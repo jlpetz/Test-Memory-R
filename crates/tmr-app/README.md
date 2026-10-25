@@ -11,8 +11,9 @@ an installer (for all users, or for you only), or the bare `tmr.exe`; or with wi
 The crates (`test-memory-r-engine`, `test-memory-r-cli`, `test-memory-r-gui` and this one) are
 published so TMR's releases and its dependencies can be tracked, and to build on. `cargo install`
 builds `tmr.exe` from them, but builds it as TMR's releases are only with the baseline and the
-release profile they're built with, which a package can't carry (a build without them stops and says
-so):
+release profile they're built with, which a package can't carry. A build without the baseline or
+the panic setting stops and says so; LTO and the codegen units can't be checked, so set all of
+them:
 
 ```powershell
 $env:RUSTFLAGS = "-C target-cpu=x86-64-v3"

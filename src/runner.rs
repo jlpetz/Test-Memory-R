@@ -4778,9 +4778,9 @@ fn display_and_save_results(
     fe.event(Run::FinalSummary(Box::new(report)).into());
 
     // Save results to file
-    let filename = result.get_filename();
-    match result.save_atomic(filename) {
-        Ok(_) => fe.event(Run::ResultsSaved { path: filename.to_string() }.into()),
+    let path = result.save_path();
+    match result.save_atomic(&path) {
+        Ok(_) => fe.event(Run::ResultsSaved { path }.into()),
         Err(e) => log::error!("Failed to save results: {}", e),
     }
 }
@@ -4824,8 +4824,7 @@ fn save_after_cycle(test_run_result: &Mutex<TestRunResult>, cycle: u32, elapsed:
     result.finalize(elapsed);
     result.set_whea_totals(whea.counts(), whea.is_active());
     result.overall_stats.in_progress = true;
-    let filename = result.get_filename();
-    if let Err(e) = result.save_atomic(filename) {
+    if let Err(e) = result.save_atomic(&result.save_path()) {
         log::warn!("Failed to save the results after cycle {cycle}: {e}");
     }
 }

@@ -1,11 +1,11 @@
 //! The colour palette (TODO 7, the owner's note 1: colours are a setting): built-in defaults per light/dark, overridable from
-//! `colours.json` next to tmr.exe. The file is read once, when the window opens; a missing file means the defaults, and a bad key or value
-//! is reported on the console and that one colour keeps its default.
+//! `colours.json` next to tmr.exe (in TMR's home, `tmr::home`). The file is read once, when the window opens; a missing file means the
+//! defaults, and a bad key or value is reported on the console and that one colour keeps its default.
 //!
 //! `colours.json` holds a `"dark"` and/or a `"light"` object, each mapping a key below to a colour string, `"#RRGGBB"` or `"#AARRGGBB"`
 //! (alpha first, as XAML writes it). Keys starting with `_` are ignored, so the file can carry notes. Any key left out keeps its default.
-//! `crates/tmr-gui/colours.example.json` has every key at its default (a test keeps it so): copy it next to tmr.exe as `colours.json` and
-//! edit it.
+//! `crates/tmr-gui/colours.example.json` has every key at its default (a test keeps it so): copy it into TMR's folder (beside tmr.exe, or
+//! `TMR_HOME`) as `colours.json` and edit it.
 //!
 //! | key               | used for                                                             |
 //! |-------------------|----------------------------------------------------------------------|
@@ -29,8 +29,6 @@
 //! (the owner's pick; egui's grey is `#8C8C8C` in dark, `#505050` in light, for anyone who wants it). `error` is egui 0.37's
 //! `error_fg_color` (`#FF0000` in both schemes), the darker, richer red the owner chose over WinUI's critical red. The progress bar takes
 //! egui's colours (track `extreme_bg_color`, fill `selection.bg_fill`, text `selection.stroke`).
-
-use std::path::PathBuf;
 
 use windows_reactor::{Brush, Color};
 
@@ -137,18 +135,19 @@ impl Palettes {
         if dark { &self.dark } else { &self.light }
     }
 
-    /// The defaults, with `colours.json` next to the exe applied over them if it exists, and what it gets wrong, for the window's errors:
-    /// it opens before Start sets up its logger, and maybe with no console.
+    /// The defaults, with `colours.json` in TMR's home (next to the exe, `tmr::home`) applied over them if it exists, and what it gets
+    /// wrong, for the window's errors: it opens before Start sets up its logger, and maybe with no console.
     pub fn load() -> (Self, Vec<String>) {
         let mut problems = Vec::new();
-        let palettes = beside_exe("colours.json").map_or(Self::DEFAULT, |path| match std::fs::read_to_string(&path) {
+        let path = tmr::home::dir().join("colours.json");
+        let palettes = match std::fs::read_to_string(&path) {
             Ok(text) => Self::parse(&text, &mut problems),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::DEFAULT,
             Err(e) => {
                 problems.push(format!("{}: {e}", path.display()));
                 Self::DEFAULT
             }
-        });
+        };
         (palettes, problems)
     }
 
@@ -200,10 +199,6 @@ impl Palettes {
     }
 }
 
-fn beside_exe(name: &str) -> Option<PathBuf> {
-    Some(std::env::current_exe().ok()?.parent()?.join(name))
-}
-
 /// `#RRGGBB` (opaque) or `#AARRGGBB`.
 fn parse_colour(text: &str) -> Option<Color> {
     let hex = text.trim().strip_prefix('#')?;
@@ -250,7 +245,7 @@ mod tests {
         let mut out = String::from("{\n");
         out.push_str(
             "  \"_about\": [\n    \
-             \"Copy this file next to tmr.exe as colours.json and edit it; it is read when the window opens.\",\n    \
+             \"Copy this file into TMR's folder (beside tmr.exe, or TMR_HOME) as colours.json and edit it; it is read when the window opens.\",\n    \
              \"Colours are #RRGGBB or #AARRGGBB (alpha first). Leave a key out to keep its default; keys starting with _ are ignored.\",\n    \
              \"egui's grey text instead of WinUI's white: dark.text_primary #8C8C8C, light.text_primary #505050.\"\n  ],\n",
         );
@@ -274,7 +269,7 @@ mod tests {
         out
     }
 
-    /// `colours.example.json` is every key at its default; `TMR_BLESS=1 cargo test -p tmr-gui` rewrites it, as it does the console's
+    /// `colours.example.json` is every key at its default; `TMR_BLESS=1 cargo test -p test-memory-r-gui` rewrites it, as it does the console's
     /// goldens
     #[test]
     fn the_example_file_has_every_key_at_its_default() {
@@ -284,7 +279,12 @@ mod tests {
             std::fs::write(&path, &text).unwrap();
         }
         let saved = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}; `TMR_BLESS=1` writes it", path.display()));
-        assert_eq!(saved.replace("\r\n", "\n"), text, "{} is stale: `TMR_BLESS=1 cargo test -p tmr-gui` rewrites it", path.display());
+        assert_eq!(
+            saved.replace("\r\n", "\n"),
+            text,
+            "{} is stale: `TMR_BLESS=1 cargo test -p test-memory-r-gui` rewrites it",
+            path.display()
+        );
         let mut problems = Vec::new();
         let parsed = Palettes::parse(&text, &mut problems);
         assert_eq!((parsed.dark, parsed.light, problems.len()), (Palette::DARK, Palette::LIGHT, 0), "{problems:?}");

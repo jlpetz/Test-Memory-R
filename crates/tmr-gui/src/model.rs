@@ -1378,14 +1378,21 @@ mod tests {
         assert_eq!((m.runtime, m.series.received, m.time_left.as_ref()), (Duration::from_secs(95), 4, None));
     }
 
-    /// The ticker's golden (crates/tmr-cli's `testdata/console/ticker.txt`), each `## case` and its lines
-    fn ticker_golden() -> Vec<(String, String)> {
-        let text = include_str!("../../tmr-cli/testdata/console/ticker.txt").replace("\r\n", "\n");
-        text.split("## ")
-            .filter(|case| !case.is_empty())
-            .filter_map(|case| case.split_once('\n'))
-            .map(|(n, t)| (n.into(), t.into()))
-            .collect()
+    /// The ticker's golden (crates/tmr-cli's `testdata/console/ticker.txt`), each `## case` and its lines. Read when the test runs, not
+    /// built in, so the published crate, which the CLI's isn't beside, builds its tests (TODO 104): `None` there.
+    fn ticker_golden() -> Option<Vec<(String, String)>> {
+        let cli = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tmr-cli");
+        if !cli.join("Cargo.toml").exists() {
+            return None;
+        }
+        let text = std::fs::read_to_string(cli.join("testdata/console/ticker.txt")).expect("the CLI's ticker golden").replace("\r\n", "\n");
+        Some(
+            text.split("## ")
+                .filter(|case| !case.is_empty())
+                .filter_map(|case| case.split_once('\n'))
+                .map(|(n, t)| (n.into(), t.into()))
+                .collect(),
+        )
     }
 
     /// A golden case's parts: its lines cut at ` | `, the runtime without its `Runtime: `, and the time left in its bracket a part of its
@@ -1406,7 +1413,10 @@ mod tests {
     /// order): the window and the console's ticker say the same, which a change to the ticker that the window doesn't follow breaks, a
     /// part the ticker adds as much as a part reworded
     fn in_the_ticker(case: &str, parts: &[&str]) {
-        let golden = ticker_golden();
+        let Some(golden) = ticker_golden() else {
+            eprintln!("the CLI's goldens aren't beside this crate: {case:?} not compared with the ticker");
+            return;
+        };
         let (_, text) = golden.iter().find(|(name, _)| name == case).unwrap_or_else(|| panic!("no case {case:?} in {golden:?}"));
         let mut window: Vec<&str> = parts.iter().flat_map(|part| part.split(" · ")).collect();
         let mut ticker = ticker_parts(text);

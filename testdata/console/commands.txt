@@ -12,7 +12,7 @@ USAGE:
   tmr.exe config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)
   tmr.exe --create-demo-configs              # Create demo configuration files
   tmr.exe --compare-results baseline.json current.json [output.json]
-                                          # Compare two test results from .\results\
+                                          # Compare two test results (here, or in results\)
   tmr.exe --setup-large-pages              # Configure large pages for optimal performance
   tmr.exe --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt
   tmr.exe --calibrate-cache-ext            #   ...finer, around each tier's edge (preferred when both are saved)
@@ -112,11 +112,12 @@ CONFIG FILE OVERRIDES:
 LOGGING:
   RUST_LOG=info                       # Set log level (error/warn/info/debug/trace)
                                         # Use debug for detailed per-thread logs
-  Logs saved to: .\logs\TMR_YYYY-MM-DD_HH-MM-SS.log      (local time)
-  Results saved to: .\results\TMR_YYYY-MM-DD_HH-MM-SS.json (same name as the log)
+  Logs saved to: logs\TMR_YYYY-MM-DD_HH-MM-SS.log      (local time)
+  Results saved to: results\TMR_YYYY-MM-DD_HH-MM-SS.json (same name as the log)
+  Both beside tmr.exe, as are configs\ and tmr-cfg.json; TMR_HOME=<folder> puts them there instead
 
 RESULT COMPARISON:
-  Test results are automatically saved as JSON files to .\results\
+  Test results are automatically saved as JSON files to results\
   Use --compare-results to analyze performance differences
   Useful for memory overclocking and timing optimization
 
@@ -135,11 +136,11 @@ Quick Usage Examples:
   tmr.exe config=test.json             # Load comprehensive JSON config
   tmr.exe config=legacy.cfg            # Auto-convert TM5 config + add stuck bit test
   tmr.exe --create-demo-configs        # Create demo configurations
-  tmr.exe --compare-results old.json new.json # Compare results from .\results\
+  tmr.exe --compare-results old.json new.json # Compare results from results\
 ## --compare-results without its files: NotRun
 ❌ Usage: tmr.exe --compare-results <baseline.json> <current.json> [output.json]
 ## --compare-results of a file that isn't there: NotRun
-❌ Comparison failed: Test result file does not exist: nowhere.json
+❌ Comparison failed: Test result file does not exist: nowhere.json (looked in the current folder, <home>\results and <home>)
 ## --compare-results of a run with itself: Passed
 === TMR Test Result Comparison ===
 Comparison Time: <time>

@@ -21,10 +21,10 @@ fn is_false(b: &bool) -> bool {
 
 /// Writes `bytes` to `path` and flushes them to the disk (`FlushFileBuffers`) before it returns (TODO 72). NTFS logs a rename at once but
 /// writes a file's data back later, so without the flush a system that went down just after a save could keep the rename and lose the data
-/// it names.
-fn write_to_disk(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+/// it names. `new`: only as a new file, never one already there (`save_atomic`'s temp).
+fn write_to_disk(path: &str, bytes: &[u8], new: bool) -> std::io::Result<()> {
     use std::io::Write as _;
-    let mut file = fs::File::create(path)?;
+    let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).create_new(new).open(path)?;
     file.write_all(bytes)?;
     file.sync_all()
 }
@@ -415,8 +415,8 @@ impl TestRunResult {
     /// returned and the thread pool exists — and because the placeholder-snapshot bug this replaced was caused precisely by an optional
     /// setter nothing called. Callers must therefore build it after `ThreadPool::new`.
     pub fn new(run_config: crate::run_context::RunConfigSnapshot) -> Self {
-        // Create results directory if it doesn't exist
-        if let Err(e) = std::fs::create_dir_all("results") {
+        // In TMR's home, which the session made and checked it can write to (`home::prepare`)
+        if let Err(e) = std::fs::create_dir_all(crate::home::results()) {
             log::warn!("Failed to create results directory: {}", e);
         }
 
@@ -758,8 +758,10 @@ impl TestRunResult {
         self.overall_stats.whea_monitored = monitored;
     }
 
-    pub fn get_filename(&self) -> &str {
-        &self.metadata.filename
+    /// Where the file is saved: its name (`results/<stem>.json`, as the file records it, with no user's folder in it) in TMR's home. An
+    /// absolute name, as a test gives, is where it says.
+    pub fn save_path(&self) -> String {
+        crate::home::dir().join(self.metadata.filename.replace('/', std::path::MAIN_SEPARATOR_STR)).display().to_string()
     }
 
     /// Writes the file whole or not at all (TODO 72): to `<path>.tmp`, on the disk, then renamed over `path`, so a run killed mid-write, or
@@ -769,10 +771,13 @@ impl TestRunResult {
     pub fn save_atomic(&self, path: &str) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize test result: {}", e))?;
         let temp = format!("{path}.tmp");
-        write_to_disk(&temp, json.as_bytes()).map_err(|e| format!("Failed to write test result file {temp}: {e}"))?;
+        // A new file (TODO 104): in an install for all users results\ is writable by every user, and TMR may run elevated, so the temp is
+        // never a file someone else put there, a link among them. One a failed save left is removed first (a link, not what it names).
+        let _ = fs::remove_file(&temp);
+        write_to_disk(&temp, json.as_bytes(), true).map_err(|e| format!("Failed to write test result file {temp}: {e}"))?;
         if let Err(refused) = fs::rename(&temp, path) {
             log::warn!("Couldn't replace {path} with {temp} ({refused}): writing it in place");
-            write_to_disk(path, json.as_bytes())
+            write_to_disk(path, json.as_bytes(), false)
                 .map_err(|e| format!("Couldn't replace {path} ({refused}) or write it in place ({e}): this save is in {temp}"))?;
             let _ = fs::remove_file(&temp);
         }

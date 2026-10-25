@@ -511,9 +511,20 @@ pub fn diagnose_and_setup_large_pages() -> String {
 /// `secedit`, with no console window of its own. Its output is piped to TMR (`output()`), but a console program started by a process with
 /// no console gets a console window, which flashes on the desktop: the window's, launched with a double-click (TODO 29 S6). Nothing changes
 /// for the CLI, whose console its output never reached.
+///
+/// System32's, by its full path (TODO 104): a bare name is looked for in the exe's folder first, which the user may be able to write to
+/// (Downloads, for a bare tmr.exe, or a per-user install's folder), and TMR runs it elevated, so a secedit.exe put there would run as
+/// admin.
 fn secedit() -> Command {
     use std::os::windows::process::CommandExt;
-    let mut command = Command::new("secedit");
+    let mut system = [0u16; 260];
+    // SAFETY: the buffer is writable for its length, which the slice passes; the call writes at most that and returns how much it wrote
+    let len = unsafe { windows::Win32::System::SystemInformation::GetSystemDirectoryW(Some(&mut system)) } as usize;
+    let program = match system.get(..len).filter(|path| !path.is_empty()) {
+        Some(path) => std::path::PathBuf::from(String::from_utf16_lossy(path)).join("secedit.exe"),
+        None => std::path::PathBuf::from("secedit"),
+    };
+    let mut command = Command::new(program);
     command.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
     command
 }
@@ -676,16 +687,19 @@ pub fn check_restart_needed() -> bool {
 }
 
 fn check_if_privilege_in_policy() -> Result<bool, String> {
-    let output = secedit()
-        .args(["/export", "/cfg", "temp_quick_check.inf", "/quiet"])
-        .output()
-        .map_err(|e| format!("Failed to export policy: {}", e))?;
+    // In TEMP, as the grant's export is: not the current folder, which an elevated prompt has as System32 (TODO 104)
+    let export = std::env::temp_dir().join("tmr_quick_check.inf");
+    let output =
+        secedit().arg("/export").arg("/cfg").arg(&export).arg("/quiet").output().map_err(|e| format!("Failed to export policy: {}", e))?;
 
     if !output.status.success() {
         return Err("Could not export security policy".to_string());
     }
 
-    let bytes = std::fs::read("temp_quick_check.inf").map_err(|e| format!("Failed to read policy file: {}", e))?;
+    // The export is the whole security policy: gone before anything can return early
+    let bytes = std::fs::read(&export).map_err(|e| format!("Failed to read policy file: {}", e));
+    let _ = std::fs::remove_file(&export);
+    let bytes = bytes?;
 
     let content = if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
         // Decode UTF-16 LE (skip 2-byte BOM) — see the note in the other decode site: fixed-size [u8; 2] chunks avoid per-index bounds
@@ -696,8 +710,6 @@ fn check_if_privilege_in_policy() -> Result<bool, String> {
         // Assume UTF-8 or ASCII
         String::from_utf8_lossy(&bytes).into_owned()
     };
-
-    let _ = std::fs::remove_file("temp_quick_check.inf");
 
     // Simple check: does SeLockMemoryPrivilege line exist with any assignments?
     let has_privilege = content.lines().any(|line| {

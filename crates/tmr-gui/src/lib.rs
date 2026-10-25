@@ -8,7 +8,7 @@
 //! suite's progress and the log's lines as it does (`window::listen`). `model.rs` turns what it brings into what the window shows, and
 //! `window.rs` draws it.
 //!
-//! Where the window runs (the README's table): Windows build 22000 or later, with the Windows App Runtime 2.x installed.
+//! Where the window runs (the README's table): Windows build 22000 or later, with the Windows App Runtime 2.4 or later installed.
 //! - Below 22000 (Server 2022 is 20348) Reactor's bootstrap call doesn't exist, so tmr.exe never opens the window there: a double-click
 //!   runs the CLI, and `--gui` says why and runs nothing (exit 2) (`FIRST_GUI_BUILD` and `Launch::refused` in crates/tmr-app's
 //!   `launch.rs`; the delay-load in its `build.rs` is what lets the exe start there at all).
@@ -147,7 +147,7 @@ pub struct Closed {
 
 /// Opens the window, to run `args` (the command line, its exe's name first, less `--gui`), and returns when it closes and the session has
 /// ended (`end_session`), with the exit status and the window's error, if it had one (`closed`). `icon` is the exe's icon, an .ico file's
-/// bytes, for the title bar. The window needs the Windows App Runtime 2.x, which Reactor offers to download when it is missing.
+/// bytes, for the title bar. The window needs the Windows App Runtime 2.4 or later, which Reactor offers to download when it is missing.
 pub fn main(args: Vec<String>, icon: &'static [u8]) -> Closed {
     let _ = ICON.set(icon);
     let shown = windows_reactor::App::run_component::<window::Window>(args);

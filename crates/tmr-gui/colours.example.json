@@ -1,6 +1,6 @@
 {
   "_about": [
-    "Copy this file next to tmr.exe as colours.json and edit it; it is read when the window opens.",
+    "Copy this file into TMR's folder (beside tmr.exe, or TMR_HOME) as colours.json and edit it; it is read when the window opens.",
     "Colours are #RRGGBB or #AARRGGBB (alpha first). Leave a key out to keep its default; keys starting with _ are ignored.",
     "egui's grey text instead of WinUI's white: dark.text_primary #8C8C8C, light.text_primary #505050."
   ],

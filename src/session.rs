@@ -22,6 +22,8 @@ use crate::{ErrorMode, load_config, params};
 pub(crate) const RAM_LATENCY_FILTER: &str = "Lat-DRAM-*,Lat-DRAMFull-*";
 /// `--cache-latency`: Read/Write/Copy at L1, L2, L3 and DRAM, 12 tests; DRAMFull is `--ram-latency`'s (TODO 92)
 pub(crate) const CACHE_LATENCY_FILTER: &str = "Lat-L1-*,Lat-L2-*,Lat-L3-*,Lat-DRAM-*";
+/// The flags that pick a mode's defaults, which `run` takes out before it looks for a one-shot command (`logfile::wanted` too)
+pub(crate) const MODE_FLAGS: [&str; 3] = ["--ram-latency", "--cache-latency", "--quick-test"];
 
 /// How a session ended. An error that stops it is `run`'s `Err`.
 pub enum SessionEnd {
@@ -217,6 +219,9 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     if let Some(command) = Command::parse(&args) {
         return Ok(SessionEnd::Command(command));
     }
+    // TMR's home and its folders, which a run writes its results and log to (TODO 104): one it can't write to stops it here, before it
+    // allocates, rather than at the end with no results file
+    crate::home::prepare()?;
     if let Some(e) = calibration_flag_without_calibration(&args) {
         return Ok(SessionEnd::Stopped(Stopped::Invalid(e)));
     }

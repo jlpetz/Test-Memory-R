@@ -33,8 +33,8 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// testing, so it exits 2 like every other "stopped before testing" case (`RunStatus::NotRun`);
 /// the console gets it once, the log file too.
 pub fn main(args: Vec<String>) -> i32 {
-    // Initialize enhanced logging with file output
-    setup_logging();
+    // Initialize enhanced logging, with the log file for a session and the commands that change the system (`tmr::logfile::wanted`)
+    setup_logging(tmr::logfile::wanted(&args));
 
     println!("🚀 Test Memory R (TMR) v{} - High-Performance Memory Testing Tool", tmr::BUILD.version);
     println!("================================================================================");
@@ -110,16 +110,11 @@ pub(crate) fn take_ctrl_c() {
     .expect("Error setting CTRL+C handler");
 }
 
-/// The console's logging: VT escape processing, then env_logger, each record on the console in colour above the ticker and in the log file
-/// (`tmr::logfile`).
-fn setup_logging() {
+/// The console's logging: VT escape processing, then env_logger, each record on the console in colour above the ticker, and with
+/// `log_file` in the log file too (`tmr::logfile`).
+fn setup_logging(log_file: bool) {
     // VT escape processing, for the log colours and the progress ticker (see console.rs).
     crate::console::init();
-
-    // Create logs directory if it doesn't exist
-    if let Err(e) = tmr::logfile::create_dir() {
-        eprintln!("Warning: Failed to create logs directory: {}", e);
-    }
 
     // Shared with the result filename so a run's log and result can be paired by name
     let log_filename = tmr::logfile::path();
@@ -127,8 +122,15 @@ fn setup_logging() {
     // The records the log file gets, as the window's logger has them too
     let (log_level, level_filter) = tmr::logfile::level();
 
-    // Initialize file logger for dual logging
-    tmr::logfile::open(&log_filename);
+    // Whether the log file is open, so the line below says so only when it is
+    let log_file = log_file && {
+        // Create logs directory if it doesn't exist
+        if let Err(e) = tmr::logfile::create_dir() {
+            eprintln!("Warning: Failed to create logs directory: {}", e);
+        }
+        // Initialize file logger for dual logging
+        tmr::logfile::open(&log_filename).inspect_err(|e| eprintln!("Warning: no log file, {}: {e}", log_filename.display())).is_ok()
+    };
 
     // Set up env_logger for console with original nice formatting (colors + module info)
     Builder::new()
@@ -177,5 +179,7 @@ fn setup_logging() {
 
     // Log startup info
     log::info!("TMR v{} started - console logging with colors and module info restored", tmr::BUILD.version);
-    log::info!("Log level: {} - detailed logs also saved to {}", log_level, log_filename);
+    if log_file {
+        log::info!("Log level: {} - detailed logs also saved to {}", log_level, log_filename.display());
+    }
 }

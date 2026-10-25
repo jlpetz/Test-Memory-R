@@ -78,16 +78,17 @@ pub(crate) fn install() -> LogLines {
     let made = tmr::logfile::create_dir();
     let (rust_log, level) = tmr::logfile::level();
     let path = tmr::logfile::path();
-    tmr::logfile::open(&path);
+    let opened = tmr::logfile::open(&path);
     let (logger, lines) = logger(level, QUEUED);
     if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(level);
     }
     log::info!("TMR v{} started - warnings and errors also shown in the window", tmr::BUILD.version);
-    log::info!("Log level: {} - detailed logs also saved to {}", rust_log, path);
-    // In the errors list, where the CLI prints it on the console
-    if let Err(e) = made {
-        log::warn!("Failed to create logs directory: {}", e);
+    // In the errors list, where the CLI prints them on the console
+    match (made, opened) {
+        (Err(e), _) => log::warn!("Failed to create logs directory: {}", e),
+        (Ok(()), Err(e)) => log::warn!("No log file, {}: {e}", path.display()),
+        (Ok(()), Ok(())) => log::info!("Log level: {} - detailed logs also saved to {}", rust_log, path.display()),
     }
     lines
 }

@@ -1,6 +1,6 @@
 //! TMR Application Configuration
 //!
-//! Persistent configuration file (`tmr-cfg.json`) stored next to the executable.
+//! Persistent configuration file (`tmr-cfg.json`) stored in TMR's home, next to the executable (`home.rs`).
 //! Holds machine identity, calibration results, UI preferences, and session state.
 //! All fields are optional — missing fields use defaults, unknown fields are preserved.
 
@@ -248,12 +248,9 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Get the default config file path (next to the executable)
+    /// The config file's path: in TMR's home, beside the real exe or in `TMR_HOME` (`home.rs`)
     pub fn default_path() -> PathBuf {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join(CONFIG_FILENAME)))
-            .unwrap_or_else(|| PathBuf::from(CONFIG_FILENAME))
+        crate::home::dir().join(CONFIG_FILENAME)
     }
 
     /// Generate a machine ID from system information + BIOS info.

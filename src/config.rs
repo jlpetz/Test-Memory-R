@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -1898,11 +1897,13 @@ impl LegacyConfig {
     }
 }
 
-// Configuration loader that handles both formats
+// Configuration loader that handles both formats. `path` as typed, from the current folder; a relative one not there, from the configs
+// folder in TMR's home (`home::find`, TODO 104).
 pub fn load_config(path: &str) -> Result<ModernConfig, String> {
-    if !Path::new(path).exists() {
-        return Err(format!("Config file does not exist: {}", path));
-    }
+    let found =
+        crate::home::find(path, &crate::home::configs()).map_err(|looked| format!("Config file does not exist: {path} ({looked})"))?;
+    let found = found.display().to_string();
+    let path = found.as_str();
 
     // Try to detect format by file extension or content
     let config = if path.ends_with(".json") {

@@ -51,10 +51,11 @@ def speeds_of(path):
 
 def reparse(out_path, host):
     """A saved run's speeds, from its console output's results file."""
-    m = re.search(r"Results saved: (\S+\.json)", open(out_path, encoding="utf-8", errors="replace").read())
+    m = re.search(r"Results saved: (.+\.json)", open(out_path, encoding="utf-8", errors="replace").read())
     if not m:
         sys.exit(f"no results file named in {out_path}")
-    # A host's results were fetched beside the output; a local run's are under the app
+    # A host's results were fetched beside the output; a local run's line gives its full path (an old output's relative one is under the
+    # app)
     local = os.path.join(os.path.dirname(os.path.abspath(out_path)), os.path.basename(m.group(1)))
     return speeds_of(local if host or os.path.exists(local) else os.path.join(APP, m.group(1))), m.group(1)
 
@@ -73,11 +74,12 @@ def run(exe, args, out_path, host=None):
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(proc.stdout)
             f.write(proc.stderr)
-    m = re.search(r"Results saved: (\S+\.json)", stdout)
+    m = re.search(r"Results saved: (.+\.json)", stdout)
     if not m:
         sys.exit(f"{exe}: no results file; see {out_path}")
     if host:
-        ps(os.path.join(host[1], "fetch.ps1"), "-HostLabel", host[0], "-Dir", m.group(1).replace("/", "\\"),
+        # The path is the host's, beside the exe in the folder fetch.ps1 copies from (TODO 104): results\<name>
+        ps(os.path.join(host[1], "fetch.ps1"), "-HostLabel", host[0], "-Dir", "results\\" + os.path.basename(m.group(1).replace("\\", "/")),
            "-LocalDir", os.path.dirname(os.path.abspath(out_path)))
         path = os.path.join(os.path.dirname(os.path.abspath(out_path)), os.path.basename(m.group(1)))
     else:

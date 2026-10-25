@@ -1087,8 +1087,8 @@ fn align_to_boundary(size: usize, alignment: usize) -> usize {
 /// silently misses a DRAM bit error). Use it between a write phase and a verify phase whenever the verify must observe what actually landed
 /// in DRAM — refresh/bit-fade tests, or any cache-resident working set. See `doc/cache_management.md`.
 ///
-/// CLFLUSHOPT is emitted unconditionally: the startup CPUID gate (tmr.exe's `require_cpu_features`) guarantees the feature, so there is no
-/// `_mm_clflush` fallback. The function carries `#[target_feature(enable = "clflushopt")]` (gated by the unstable
+/// CLFLUSHOPT is emitted unconditionally: the CPUID check (`cpu_check`, which tmr.exe runs before anything else and `session::run` before
+/// it starts) guarantees the feature, so there is no `_mm_clflush` fallback. The function carries `#[target_feature(enable = "clflushopt")]` (gated by the unstable
 /// `clflushopt_target_feature`, landed in nightly via rustc PR #157098).
 ///
 /// This flush-only loop uses the `_mm_clflushopt` intrinsic (stdarch PR #2141, now synced into nightly behind `simd_x86_clflushopt`,

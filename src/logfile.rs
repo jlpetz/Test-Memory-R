@@ -1,7 +1,7 @@
-//! The log file (TODO 29): `logs/<stem>.log`, with the stem the run's results file shares, a header, then one line per record, `[stamp
-//! LEVEL module] message`, in local time to the millisecond. A frontend's logger hands each record here as well as showing it, the CLI's on
-//! the console (`tmr_cli::setup_logging`), the window's in its errors list (`tmr_gui`'s logger), and both let through the records `level`
-//! says, so every frontend writes the same file.
+//! The log file (TODO 29): `logs\<stem>.log` in TMR's home (`home.rs`), with the stem the run's results file shares, a header, then one
+//! line per record, `[stamp LEVEL module] message`, in local time to the millisecond. A frontend's logger hands each record here as well as
+//! showing it, the CLI's on the console (`tmr_cli::setup_logging`), the window's in its errors list (`tmr_gui`'s logger), and both let
+//! through the records `level` says, so every frontend writes the same file.
 
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};
@@ -28,38 +28,51 @@ pub fn level() -> (String, log::LevelFilter) {
     (log_level, level_filter)
 }
 
-/// Creates `logs`, where the log file goes, if it isn't there.
-pub fn create_dir() -> std::io::Result<()> {
-    std::fs::create_dir_all("logs")
+/// Whether a command line (the exe's name first) keeps a log file: a session does, and so do the one-shot commands that change the system
+/// (`--setup-large-pages`, the calibrations, which save to tmr-cfg.json). `--help`, `--version`, the topology commands, `--compare-results`
+/// and `--create-demo-configs` don't: a log of every `tmr --version` was a folder of files, and winget's checks run it and fail a package
+/// that leaves files behind.
+pub fn wanted(args: &[String]) -> bool {
+    use crate::commands::Command;
+    // Without the mode flags, as the session parses it (`session::MODE_FLAGS`): `tmr --quick-test --help` is `--help`
+    let args: Vec<String> = args.iter().filter(|a| !crate::session::MODE_FLAGS.contains(&a.as_str())).cloned().collect();
+    matches!(Command::parse(&args), None | Some(Command::SetupLargePages | Command::Calibrate(_)))
 }
 
-/// The log file's name. Shared with the result filename so a run's log and result can be paired by name; see `run_context::run_start`.
-/// Local time — this file is read on the machine that wrote it.
-pub fn path() -> String {
-    format!("logs/{}.log", crate::run_context::run_file_stem())
+/// Creates `logs\` in TMR's home, where the log file goes, if it isn't there.
+pub fn create_dir() -> std::io::Result<()> {
+    std::fs::create_dir_all(crate::home::logs())
+}
+
+/// The log file's path. Its name is shared with the result filename so a run's log and result can be paired by name; see
+/// `run_context::run_start`. Local time — this file is read on the machine that wrote it.
+pub fn path() -> std::path::PathBuf {
+    crate::home::logs().join(format!("{}.log", crate::run_context::run_file_stem()))
 }
 
 /// Creates the log file at `path` with its header; `write` adds each record's line from then on. When it can't be created there is no log
-/// file, and the records still go wherever the frontend shows them.
-pub fn open(path: &str) {
-    if let Ok(mut log_file) = std::fs::File::create(path) {
-        // Stamp the zone once here rather than on every line: every line in the file has the same offset, so repeating it thousands of
-        // times buys nothing, but a reader (or a later consolidation pass) still needs to know these are local times and which local that
-        // was. The UTC equivalent is recorded so this file can be lined up with results from other boxes.
-        let started = crate::run_context::run_start();
-        let _ = writeln!(
-            log_file,
-            "# TMR {} — run started {} (UTC {}); all timestamps below are local time\n\
-             # build: {}\n\
-             # paired result file: results/{}.json",
-            crate::BUILD.version,
-            started.format("%Y-%m-%d %H:%M:%S %:z"),
-            started.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S"),
-            crate::BUILD.describe(),
-            crate::run_context::run_file_stem(),
-        );
-        let _ = FILE.set(Mutex::new(log_file));
-    }
+/// file, the records still go wherever the frontend shows them, and the error says why, for the frontend to show. Only a new file: in an
+/// install for all users `logs\` is writable by every user, and TMR may run elevated, so it never opens a file someone else put there, a
+/// link among them (TODO 104). A second run in the same second, whose name is taken, has no log file.
+pub fn open(path: &std::path::Path) -> std::io::Result<()> {
+    let mut log_file = std::fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    // Stamp the zone once here rather than on every line: every line in the file has the same offset, so repeating it thousands of
+    // times buys nothing, but a reader (or a later consolidation pass) still needs to know these are local times and which local that
+    // was. The UTC equivalent is recorded so this file can be lined up with results from other boxes.
+    let started = crate::run_context::run_start();
+    let _ = writeln!(
+        log_file,
+        "# TMR {} — run started {} (UTC {}); all timestamps below are local time\n\
+         # build: {}\n\
+         # paired result file: results/{}.json",
+        crate::BUILD.version,
+        started.format("%Y-%m-%d %H:%M:%S %:z"),
+        started.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S"),
+        crate::BUILD.describe(),
+        crate::run_context::run_file_stem(),
+    );
+    let _ = FILE.set(Mutex::new(log_file));
+    Ok(())
 }
 
 /// Adds `record`'s line to the log file, without colours, when there is one.
