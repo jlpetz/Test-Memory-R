@@ -1,0 +1,7 @@
+# The third-party notices for tmr.exe (TODO 104): `cargo about generate`, in release.yml, writes THIRD-PARTY-NOTICES.html from this and
+# about.hbs. tmr.exe links its dependencies statically, and their licences (MIT, Apache-2.0 and the rest below) ask that their notices go
+# with every copy. Only what tmr.exe links: no build or dev dependencies.
+accepted = ["MIT", "Apache-2.0", "Unicode-3.0", "Unlicense"]
+targets = ["x86_64-pc-windows-msvc"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

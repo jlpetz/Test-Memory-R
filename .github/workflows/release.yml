@@ -3,7 +3,7 @@ name: Release Build
 on:
   push:
     tags:
-      - 'v*.*.*'  # Matches tags like v1.0.0, v2.1.3, etc.
+      - 'v*.*.*'  # Matches tags like v0.1.0, and v0.1.0-rc.1 (a pre-release)
 
 # Creating the release and uploading to it writes to the repository, and its workflows get a read-only token by default
 permissions:
@@ -19,19 +19,85 @@ jobs:
 
     - name: 🦀 Install Rust Nightly
       uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: clippy
+
+    # A tag that isn't the workspace's version would ship a tmr.exe that names another (TODO 104)
+    - name: 🏷️ Check the tag is the version
+      shell: pwsh
+      run: |
+        $version = ((cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages | Where-Object name -eq 'test-memory-r').version
+        if ("v$version" -ne "${{ github.ref_name }}") { throw "The tag ${{ github.ref_name }} isn't the workspace's version, v$version" }
+        "VERSION=$version" >> $env:GITHUB_ENV
+
+    - name: ⚙️ Install cargo-nextest and cargo-about
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-nextest,cargo-about
+
+    # CI doesn't run on tags, so a release checks what it ships as CI does (Rust-nightly-build.yml)
+    - name: 🧹 Run clippy
+      run: |
+        cargo +nightly clippy --workspace --all-targets --all-features --locked -- -D warnings
+        cargo +nightly clippy --workspace --locked -- -D warnings
+
+    - name: 🧪 Run tests
+      run: cargo +nightly nextest run --workspace --all-targets --locked --no-fail-fast
 
     # The one tmr.exe, the console and the window (a default feature, the owner's: one download, not two)
     - name: 🚧 Build release binary
-      run: cargo +nightly build --release
+      run: cargo +nightly build --release --locked
 
-    - name: 📦 Upload release binary
+    # What the installer installs (dist/tmr.iss): tmr.exe; docs\, the guide, the licences and the third-party notices; configs\, its
+    # README and the two demo configs, which tmr.exe writes into the home TMR_HOME names (the runner's CPU passes its startup check)
+    - name: 📂 Stage the installer's files
+      shell: pwsh
+      run: |
+        $stage = "target\stage"
+        New-Item -ItemType Directory -Force "$stage\docs", "$stage\configs" | Out-Null
+        Copy-Item target\release\tmr.exe $stage
+        Copy-Item dist\docs\* "$stage\docs" -Recurse
+        Copy-Item LICENSE-MIT, LICENSE-APACHE "$stage\docs"
+        cargo about generate --config dist\about.toml --manifest-path crates\tmr-app\Cargo.toml --output-file "$stage\docs\THIRD-PARTY-NOTICES.html" dist\about.hbs
+        if ($LASTEXITCODE -ne 0) { throw "cargo about failed" }
+        Copy-Item dist\configs\* "$stage\configs"
+        $env:TMR_HOME = (Resolve-Path $stage).Path
+        & "$stage\tmr.exe" --cli --create-demo-configs
+        if ($LASTEXITCODE -ne 0) { throw "tmr.exe --create-demo-configs failed" }
+        Remove-Item "$stage\results", "$stage\logs" -Recurse -ErrorAction SilentlyContinue
+        Get-ChildItem $stage -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+
+    # Inno Setup 6, if the runner lacks it
+    - name: 📦 Build the installer
+      shell: pwsh
+      run: |
+        $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+        if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y; if ($LASTEXITCODE -ne 0) { throw "Inno Setup didn't install" } }
+        & $iscc /DAppVersion=$env:VERSION /DStage="$PWD\target\stage" /O"$PWD\target\installer" dist\tmr.iss
+        if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+    # The checksums, for the winget manifest and for anyone checking a download
+    - name: 🔢 Checksums
+      shell: pwsh
+      run: |
+        $files = "target\release\tmr.exe", "target\release\tmr.pdb", "target\installer\tmr-$env:VERSION-setup.exe", "target\stage\docs\THIRD-PARTY-NOTICES.html"
+        $files | ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $(Split-Path $_ -Leaf)" } | Set-Content target\SHA256SUMS.txt
+        Get-Content target\SHA256SUMS.txt
+        Get-Content target\SHA256SUMS.txt | Out-File -Append $env:GITHUB_STEP_SUMMARY
+
+    - name: 📦 Upload the release
       uses: softprops/action-gh-release@v3
       # tmr.pdb beside tmr.exe: only the PDB from the same build matches it, and the runner's is gone when the job ends. A file
-      # missing fails the job, rather than publishing a release without it.
+      # missing fails the job, rather than publishing a release without it. A tag with a '-' (v0.1.0-rc.1) is a pre-release.
       with:
         fail_on_unmatched_files: true
+        prerelease: ${{ contains(github.ref_name, '-') }}
+        generate_release_notes: true
         files: |
+          target/installer/tmr-${{ env.VERSION }}-setup.exe
           target/release/tmr.exe
           target/release/tmr.pdb
+          target/stage/docs/THIRD-PARTY-NOTICES.html
+          target/SHA256SUMS.txt
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

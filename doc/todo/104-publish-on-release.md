@@ -19,8 +19,8 @@ second agent) came first; the owner's calls on it:
   run`, whose exe is under `target\` (`cargo clean` would take the results with it), the scripts
   and the test hosts. The current folder was wherever TMR started: the shell's, System32 for an
   Explorer-style launch or an elevated prompt, Documents over WinRM; and even `--help` made
-  `logs\` there. Through winget's `Links` symlink, `current_exe()` gives the link's path, so the
-  path is resolved first.
+  `logs\` there. `current_exe()` gives the path the exe was started by, which can be a
+  symlink or a short (8.3) name, so it is resolved first (`src/home.rs`).
 - **A light installer, Inno Setup**, which gives TMR its own folder with `docs\` and `configs\`
   in it: all users by default (UAC), "install for me only" offered on its first page and by
   `/CURRENTUSER`. For all users it's `C:\Program Files\TMR`, which users can't write, and TMR
@@ -74,50 +74,77 @@ holds only a 2021 placeholder, the name-holding crates.io's policy now forbids).
 `test-memory-r-engine`, `test-memory-r-cli`, `test-memory-r-gui`, `tmr-engine`, `tmr-gui`,
 `tmr-app`. The proposal, one family after the repo: the app `test-memory-r` (bin `tmr`), the engine
 `test-memory-r-engine`, the console `test-memory-r-cli`, the window `test-memory-r-gui`. Each keeps
-its lib name (`[lib] name = "tmr"`, `tmr_cli`, `tmr_gui`), so no code changes. The owner decides.
+its lib name (`[lib] name = "tmr"`, `tmr_cli`, `tmr_gui`), so no code changes. The owner took it
+(2026-10-25).
 
 **The baseline check, first.** `cargo install` doesn't read the package's `.cargo/config.toml`, so
 a crates.io build compiles at the default x86-64 level, and the kernels that take their 256-bit
 width from the x86-64-v3 baseline come out as pairs of 128-bit instructions: slower, and not TMR
 as tested, with no warning. A `RUSTFLAGS` in the repo does the same today (it replaces the config's
 flags). So the engine stops the build: a `compile_error!` at its root unless the whole x86-64-v3
-set is on (AVX2 alone would let `-C target-feature=+avx2` past without BMI, FMA, LZCNT, MOVBE),
+set is on (AVX2 alone would let `-C target-feature=+avx2` past without BMI, FMA, LZCNT, MOVBE,
+POPCNT, XSAVE),
 naming the fix (`RUSTFLAGS="-C target-cpu=x86-64-v3" cargo +nightly install test-memory-r`). Docs
 builds are exempt: rustdoc never gets `build.rustflags`, and docs.rs builds a dependent's docs
 with the engine as a plain dependency, so the engine's build script exempts a docs.rs build
 (`DOCS_RS`) rather than each dependent setting `rustc-args`. CLFLUSHOPT stays the startup gate's:
 it isn't in any baseline; the gate moves into the engine, so a frontend built on it has it too.
 
-**Each crate's package.**
-- `version` beside each `path` dependency, and publish in dependency order: engine, CLI, window, app.
-- The engine is the root package, so an `include` list (`src/`, `Cargo.toml`, the README and
-  licences), or it would take `doc/`, `tools/` and the baselines. The app's needs `build.rs`,
-  `tmr.ico` and `tmr.manifest`.
-- `readme` a short crates.io page each: what the crate is, that the app is at the GitHub releases,
-  that it's published for tracking and for building on; `repository`, `description`, `keywords`,
-  `categories`, `license` (MIT OR Apache-2.0).
-- docs.rs: `[package.metadata.docs.rs] targets = ["x86_64-pc-windows-msvc"]` (Windows-only crates).
-- Versions: the workspace is 1.0.0. A library at 1.x promises a stable API, which the engine's
-  isn't (the owner decides: 0.x for the libraries, or 1.x and major bumps on breaks).
-- `cargo publish --dry-run` for each, then the owner publishes (`cargo login` with their token).
-  A version can be yanked, never deleted.
+**Each crate's package (built in stage 2, 2b41455).**
+- Names, version 0.1.0 and the exact pins (`=0.1.0`) between the four: the Decided list above.
+- The engine is the root package, so an `include` list (`src/`, `build.rs`, its crates.io README,
+  the licences and `testdata/`); each member carries copies of the licence texts and a README.
+- docs.rs: `default-target = "x86_64-pc-windows-msvc"`, `targets = []`.
+- The app's release profile doesn't travel with its package, so tmr.exe's release build stops
+  without `panic = "abort"` (the part the code can see); its README gives the
+  `CARGO_PROFILE_RELEASE_*` settings for `cargo install`.
+
+**Publishing (the owner).** From a clean checkout of the tag, at the repo root (with
+`--manifest-path` from elsewhere `.cargo/config.toml` is left out, and the baseline check stops
+the build): first delete `%USERPROFILE%\.cargo\registry\src\-*\test-memory-r-*`, the unpacked copies an earlier
+`cargo package` or `publish` left (the folders whose names start with `-`, never crates.io's
+`index.crates.io-*`): cargo would check the members against a stale engine. Then
+`cargo +nightly publish --workspace --dry-run`, `cargo login` with a crates.io token (an account
+with a verified email), and `cargo +nightly publish --workspace`, which publishes the engine, the
+CLI, the window and the app in that order, waiting for each (four new crates is within crates.io's
+burst of five). A version can never be replaced, only yanked; a crate another depends on can't be
+deleted, so once the app is out the others stay. Trusted publishing (`release.yml`, no stored
+token) can follow once the crates exist.
 
 ## winget
 
-- A manifest per release in `microsoft/winget-pkgs` (a pull request; `wingetcreate` generates
-  one from the release's URL). `InstallerType: portable`: the release's bare `tmr.exe`, which
-  winget puts on the PATH as `tmr`, with its SHA-256.
+- A manifest per release in `microsoft/winget-pkgs` (a pull request), `Petz.TMR`, schema 1.12:
+  three files (version, defaultLocale, installer). `InstallerType: inno`, the release's
+  `tmr-<version>-setup.exe` and its SHA-256 (`SHA256SUMS.txt` in the release), listed twice, `Scope:
+  machine` with `InstallerSwitches: Custom: /ALLUSERS` and `Scope: user` with `/CURRENTUSER`, and
+  `ElevationRequirement: elevatesSelf` (Inno asks UAC itself for all users). winget's silent
+  switches for Inno are its defaults. `Commands: [tmr]`, `Moniker: tmr`, `MinimumOSVersion:
+  10.0.20348.0`, `ProductCode` the installer's AppId (`{A1BC7167-67F4-461D-BE00-B57FBAF0B53C}_is1`).
 - `Dependencies: PackageDependencies`: `Microsoft.VCRedist.2015+.x64`, and
   `Microsoft.WindowsAppRuntime.2` with `MinimumVersion` 2.4 (Reactor 0.100's minimum; not
   `Microsoft.WindowsAppRuntime.2.0`, an older 2.0 release).
-- The package identifier (`Publisher.Name`, for example `JarrodPetz.TMR`) is the owner's choice;
-  it stays across releases.
-- Each later release: a new manifest version (`wingetcreate update` with the new URL), or a GitHub
-  Action in `release.yml` that submits it on each tag.
+- The first: `wingetcreate new <the installer's URL>`, then the fields above by hand, `winget
+  validate`, a test in Windows Sandbox (`Tools\SandboxTest.ps1` in winget-pkgs), the pull request,
+  and the Microsoft CLA. Its checks run the installed exe: `tmr --version` exits 0 and leaves no file.
+- Each later release: `wingetcreate update Petz.TMR --version <v> --urls <url>` (it keeps the
+  dependencies and scopes), or a job in `release.yml` (`needs: build`, winget-releaser or Komac, a
+  classic PAT as a secret), which can only start once the first version is merged.
 - The first submission is Microsoft's to approve: their checks install the package on a test
   machine and scan it, then a moderator merges it. That is slow for a new package: of the
   new-package pull requests opened in September 2026, 483 had merged by 2026-10-25 (median 27.5
   days) and 725 were still open, so four weeks at best. Updates to a package merge in hours.
+
+## The release (stage 4)
+
+`release.yml`, on a `v*.*.*` tag: refuses a tag that isn't the workspace's version, runs CI's
+clippy and tests (CI doesn't run on tags), builds with `--locked`, stages the installer's files
+(`tmr.exe`; `docs\`: `dist/docs/guide.md`, the licences, `THIRD-PARTY-NOTICES.html` from `cargo
+about` with `dist/about.toml` and `about.hbs`; `configs\`: `dist/configs/README.txt` and the two
+demo configs, which `tmr --create-demo-configs` writes with `TMR_HOME` on the stage), builds
+`dist/tmr.iss` with Inno Setup 6, and uploads the installer, `tmr.exe`, `tmr.pdb`, the notices
+and `SHA256SUMS.txt`. A tag with a `-` is a pre-release. For all users, `{app}\configs`,
+`results`, `logs` and a `{}` `tmr-cfg.json` (`dist/tmr-cfg.json`, which TMR reads as no settings)
+get `users-modify`; `{app}` and `tmr.exe` keep Program Files' ACL.
 
 ## An installer? (weighed 2026-10-24; Inno Setup chosen 2026-10-25, above)
 
