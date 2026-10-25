@@ -8,6 +8,29 @@ who was kind enough to fix a broken link on his website that gave me TM5's origi
 I then used Claude AI (with a little bit of Astra/Codex) to reimplement TM5 in Rust for modern Windows
 and hardware, with DDR5 systems in mind.
 
+**Status: 0.1, the first public release.** TMR works, but it is young: its settings and files may
+change between versions until 1.0. **An unstable overclock can freeze, crash or restart your PC
+while TMR runs**, as any memory test can: save your work and close other programs first.
+
+## Install and run
+
+- **The installer**, `tmr-<version>-setup.exe` from
+  [GitHub Releases](https://github.com/jlpetz/Test-Memory-R/releases): for all users (in Program
+  Files, after a UAC prompt), or for you only. It adds TMR to the Start menu and `tmr` to the PATH.
+- **winget**, once TMR's package is accepted there: `winget install Petz.TMR`.
+- **The bare `tmr.exe`** from the same releases, in a folder of its own that you can write to.
+
+Then grant the large-page privilege once, from a console run as administrator,
+`tmr --setup-large-pages`, and sign out and back in. Double-click TMR for its window, or type `tmr`
+in a console: on its own it runs the stability plan, 3 cycles; `tmr --help` lists every setting,
+and `config=file.cfg` runs a TM5 config. The [user guide](dist/docs/guide.md), which the installer
+puts in TMR's `docs\` folder, has the rest.
+
+TMR keeps its files beside `tmr.exe`: `configs\`, `results\` (one JSON file a run, saved as it
+goes), `logs\` and `tmr-cfg.json` (its calibrations). `TMR_HOME` puts them in another folder. A
+results file describes the system it came from: the CPU, the BIOS, the memory modules (their part
+and serial numbers) and the motherboard's system UUID, so mind that before you post one.
+
 ## Key changes from TM5
 
 - **Fixed allocations instead of a sliding window.** TM5 slides an AWE window over the memory it
@@ -15,7 +38,7 @@ and hardware, with DDR5 systems in mind.
 - **Huge (1 GB) and large (2 MB) pages**, locked in memory (non-pageable). Both are faster than
   regular 4 KB pages. No driver: TMR runs in user mode, and `tmr.exe --setup-large-pages` (elevated)
   grants the privilege they need once.
-- **Wider SIMD:** each test comes in 128-bit (SSE4.2), 256-bit (AVX2) and 512-bit (AVX-512) widths,
+- **Wider SIMD:** most tests come in 128-bit, 256-bit (AVX2) and 512-bit (AVX-512) widths,
   the widest the CPU has by default (`width=` picks one). An experimental tile test runs on AMX
   (Intel Xeon); ACE is next to look at.
 - **TM5 configs still work:** TMR loads TM5 `.cfg` files and runs the equivalent tests.
@@ -107,13 +130,17 @@ L3, so they reach it.
   should keep its one copy up to date (`winget upgrade --all`, or each package by its name above),
   and it keeps `tmr.exe` and this repository small.
 - **Optional: the "Lock pages in memory" privilege**, for huge and large pages: run
-  `tmr.exe --setup-large-pages` once from an elevated prompt, then start TMR again. Without it TMR
+  `tmr.exe --setup-large-pages` once from an elevated prompt, then sign out of Windows and back in
+  (a privilege reaches your programs at your next sign-in). Without it TMR
   warns, and asks before running on regular 4 KB pages, which are slower.
 
 **Building from source** takes Rust nightly (`rustup toolchain install nightly`) and Microsoft's
 C++ build tools for the linker (Visual Studio Build Tools, "Desktop development with C++").
 `cargo +nightly build --release` builds both frontends into the one `target\release\tmr.exe`, as
-each release is; `--no-default-features` leaves the window out.
+each release is; `--no-default-features` leaves the window out. A built `tmr.exe` keeps its
+configs, results and logs beside itself, in `target\release\`, which `cargo clean` empties: set
+`TMR_HOME` to another folder to keep them there (`$env:TMR_HOME = "$PWD"` in the repository keeps
+them in its `results\` and `logs\`, which git ignores).
 
 ## License
 
