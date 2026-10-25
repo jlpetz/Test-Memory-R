@@ -323,3 +323,32 @@ The plan above, with what the build settled:
   are spread over the threads (`t % group`), so on a big machine they sit on different CCDs, where
   GSAT's are neighbours; and each thread replays its picks to check every byte exactly, where GSAT
   compares a sum's low byte. Defaults are GSAT's: 2 structures, 1000 bumps a check.
+
+## Hardware acceptance, the desktops (2026-10-25, TODO 107)
+
+`tmr-107.exe` (1fe70d6), `test=Mem-PageExchange*,Mem-CoherenceStorm,Mem-SimpleV2-Auto memory=50%
+cputype=cores cpus=100% skip-cores=0 cycles=12`, the five as steps of each cycle, 30 s a step,
+both hosts at once. Both PASS: 0 errors, 0 seal errors, 0 WHEA. petz007 had just been restarted;
+its bit-31 read fault didn't show in any step, the reference's included, so the run says nothing
+yet about detection.
+
+| Test | petz007 (8600G, DDR5, 6 cores, 512-bit) | daddy-petz (5700X, DDR4, 8 cores, 256-bit) |
+|---|---|---|
+| Mem-PageExchange (copy, cached) | 52.5 GB/s | 32.9 GB/s |
+| Mem-PageExchange-Invert (cached) | 72.4 GB/s | 43.3 GB/s |
+| Mem-PageExchange-Rewrite (NT) | 74.7 GB/s | 42.9 GB/s |
+| Mem-SimpleV2-Auto (the reference) | 64.6 GB/s | 41.5 GB/s |
+| Mem-CoherenceStorm (bytes bumped) | 211 MB/s (197-243 by cycle) | 144 MB/s |
+
+Each test's speed held within about 3% over the 12 cycles (the storm on petz007 apart). The
+counted bytes are what a test reads and writes, not DRAM's: a cached copy also reads each
+destination line before writing it, so it moves 1.5 times what it counts. On petz007, a config
+run of the copy with each store type and the invert with NT, as steps of one run (4 cycles):
+copy cached 53.1 GB/s (47 passes in 30 s), copy NT 78.1 GB/s (70), invert NT 72.2 GB/s (67).
+So the NT copy is the fastest test of the set, and generating the pattern in the copy loop keeps
+up with the memory; the cached copy's third less is its destination's read (53 x 1.5 = 80), and
+an invert gains nothing from NT stores (the load has already brought the line in).
+
+The storm on these two runs one CCD (the 8600G is monolithic, the 5700X one CCD): about 27 ns
+a bump a thread on petz007, 55 ns on daddy-petz. Its point, lines crossing CCDs and nodes, needs
+a multi-CCD machine.
