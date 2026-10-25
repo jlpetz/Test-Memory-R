@@ -210,3 +210,36 @@ a halt test. Left as concerns: a thread's node is its CPU's, not its memory's (t
 `ThreadSpan` knows the memory's); no CCD-level group, so on one node only `any` crosses CCDs; the
 per-thread time includes the wait at the second barrier (a step's speed takes the slowest thread's
 anyway); the results file records no SIMD width for it (it runs at the seal's).
+
+## The owner's direction for the exchange (2026-10-25)
+
+After comparing the build with stressapptest (GSAT), the owner asked for an **operation switch**,
+each operation paired with its pattern and verify, and a **pattern switch** beside it. The
+comparison, in short: the exchange keeps GSAT's pool of pages crossing threads and nodes and its
+two-tier detection, but its core operation differs. GSAT copies a full page into an empty one,
+checking a checksum on the way, so data moves between addresses (and between nodes, in one
+operation) and a fault anywhere on the path shows at the destination; the exchange checks a tile
+and rewrites it in place. GSAT also runs a library of patterns (walking bits, checkerboards, solid,
+pseudo-random, by bus width) where the exchange has one. GSAT runs for its `-s` time, copy threads
+looping without passes; the exchange runs for its step's time too, a pass being only its
+arrangement's unit.
+
+The operations, as discussed:
+- **Copy** (GSAT's): claim a full tile and an empty one, copy while checking the source, swap
+  their roles. Needs a pattern from the offset within a tile, not the address (the seal's `tmr` is
+  address-hashed, so copied data wouldn't match its new place): a new kernel, with its asm check.
+  One pass reads and writes, where the rewrite takes two.
+- **Rewrite, NT stores** (today's): the next claimer reads the tile from DRAM.
+- **Rewrite, cached stores**: lines stay in the writer's cache, so a tile handed on soon after its
+  write passes cache to cache (coherence traffic), which needs that handing on (a small ring of
+  recently released tiles a pool). Cached stores with a CLFLUSHOPT after give about what NT does
+  (the data in DRAM) for more traffic (each store first reads its line), so not worth a mode of its
+  own; other tests exercise the flush (`flush_before_verify`).
+- **Invert** (GSAT's invert threads): each word read and written back inverted, in place.
+
+On cache residency: GSAT picks pages at random from gigabytes, so a page is rarely still in the
+caches (tens of MB) when it comes round again; most of its traffic is DRAM, and a just-copied page
+is hot only briefly. Deliberate cache-to-cache handoff needs the ring above.
+
+Tiles of 1 MiB and up (the owner); at 1 MiB the pool's counter takes twice the claims it does at
+2 MiB, still about 2% of what one cache line can serve on a 256-thread machine.
