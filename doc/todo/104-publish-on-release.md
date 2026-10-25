@@ -99,17 +99,22 @@ it isn't in any baseline; the gate moves into the engine, so a frontend built on
   without `panic = "abort"` (the part the code can see); its README gives the
   `CARGO_PROFILE_RELEASE_*` settings for `cargo install`.
 
-**Publishing (the owner).** From a clean checkout of the tag, at the repo root (with
-`--manifest-path` from elsewhere `.cargo/config.toml` is left out, and the baseline check stops
-the build): first delete `%USERPROFILE%\.cargo\registry\src\-*\test-memory-r-*`, the unpacked copies an earlier
-`cargo package` or `publish` left (the folders whose names start with `-`, never crates.io's
-`index.crates.io-*`): cargo would check the members against a stale engine. Then
+**Publishing (the owner).** From a fresh clone of the tag in a new folder (`git clone --branch
+v0.1.0 https://github.com/jlpetz/Test-Memory-R tmr-publish`), at its root: with `--manifest-path`
+from elsewhere `.cargo/config.toml` is left out, and the baseline check stops the build. A fresh
+folder matters: `cargo publish --workspace` checks each member against the members it packaged,
+from a local registry built out of `target\package\*.crate` and unpacked under
+`%USERPROFILE%\.cargo\registry\src\-<hash>\`, and cargo never rebuilds a registry crate it
+built before. In the working tree an earlier package's `.crate` files or build made the CLI check
+against the engine as it was the day before (2026-10-26); clearing them took `target\package`,
+those `-<hash>` folders (never crates.io's `index.crates.io-*`) and a new `--target-dir`. Then
 `cargo +nightly publish --workspace --dry-run`, `cargo login` with a crates.io token (an account
 with a verified email), and `cargo +nightly publish --workspace`, which publishes the engine, the
 CLI, the window and the app in that order, waiting for each (four new crates is within crates.io's
-burst of five). A version can never be replaced, only yanked; a crate another depends on can't be
-deleted, so once the app is out the others stay. Trusted publishing (`release.yml`, no stored
-token) can follow once the crates exist.
+burst of five). Checked 2026-10-26 at dd106e4: the dry run packages and verifies all four. A
+version can never be replaced, only yanked; a crate another depends on can't be deleted, so once
+the app is out the others stay. Trusted publishing (`release.yml`, no stored token) can follow once
+the crates exist.
 
 ## winget
 
