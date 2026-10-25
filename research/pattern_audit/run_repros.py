@@ -17,7 +17,7 @@ def main():
     staging.mkdir(parents=True, exist_ok=True)
     for name in ("Cargo.toml", "Cargo.lock"):
         shutil.copy2(repo / name, staging / name)
-    for name in ("src", "test_configs"):
+    for name in ("src", "testdata"):
         shutil.copytree(repo / name, staging / name, dirs_exist_ok=True)
     for source, extra in (("runner.rs", "runner_repros.rs"), ("tests.rs", "kernel_repros.rs")):
         dest = staging / "src" / source

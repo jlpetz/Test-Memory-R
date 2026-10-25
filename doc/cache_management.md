@@ -374,7 +374,7 @@ them into DRAM tests. The two test types coexist; don't conflate them.
 ## Measured: what the flush actually buys (2026-07-30)
 
 `Mem-StuckBit128`, same binary, chunk size swept via **fixed absolute chunks**
-(`test_configs/flush_chunk_sweep.json`), flush off vs on. Intel Xeon 6975P-C
+(`testdata/configs/flush_chunk_sweep.json`), flush off vs on. Intel Xeon 6975P-C
 (Granite Rapids, 48 KiB L1d / 2 MiB L2 per core), MiB/s. One run per
 configuration — treat single-digit-percent differences as noise; the effects
 below are 20-500%.

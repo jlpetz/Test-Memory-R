@@ -124,6 +124,10 @@ This project is licensed under either of:
 
 at your option.
 
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
+TMR by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any
+additional terms or conditions.
+
 ## Credits
 
 TMR was inspired by TM5, and wouldn't exist without it. Many thanks to Serj for his kind donation of

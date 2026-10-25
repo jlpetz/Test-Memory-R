@@ -25,8 +25,8 @@ tmr-cli = { path = "../tmr-cli" }
 tmr-gui = { path = "../tmr-gui", optional = true }
 log = "0.4"
 # The crash handler and the crash box's thread, and the launch's facts (the console, standard
-# output, the Windows build): features the engine and the CLI enable already, so the crate builds
-# once, as it did
+# output, the Windows build): features the engine and the CLI enable already, but for LibraryLoader,
+# tmr.exe's own (the crash report's module base)
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",

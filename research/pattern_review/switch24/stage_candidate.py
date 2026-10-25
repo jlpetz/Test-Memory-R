@@ -15,7 +15,7 @@ COPY = ROOT / "target" / "switch24-candidate"
 def main(review_probes=False):
     COPY.mkdir(parents=True, exist_ok=True)
     inputs = {}
-    for directory in ("src", "test_configs"):
+    for directory in ("src", "testdata"):
         for path in (ROOT / directory).rglob("*"):
             if path.is_file():
                 inputs[path.relative_to(ROOT).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()

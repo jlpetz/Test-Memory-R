@@ -2214,7 +2214,7 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
         // little work to overlap the drain against. There is no minimum-chunk floor here beyond SIMD alignment, so nothing would clamp
         // that. 1.0 lands at 2 MiB / 1 MiB respectively — both in the measured flat zone, still cache-resident by construction.
         //
-        // Those numbers come from a fixed-absolute-chunk sweep of Mem-StuckBit128 (test_configs/flush_chunk_sweep.json), i.e. they isolate
+        // Those numbers come from a fixed-absolute-chunk sweep of Mem-StuckBit128 (testdata/configs/flush_chunk_sweep.json), i.e. they isolate
         // "does the verify reach DRAM" by holding chunk size constant. Compared instead at *operational defaults* — plain at its then ~6%
         // fraction (512 MiB since 2026-10-03) vs this at Cache{L2} — the guarantee turns out to be free (8T, MiB/s): scalar 43056 → 43763,
         // 128 47681 → 45705, 256 48060 → 46965, 512 46301 → 47886. Two are faster; all four are inside this box's noise. Both configs are

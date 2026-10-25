@@ -20,7 +20,7 @@ def main():
     STAGING.mkdir(parents=True, exist_ok=True)
     for name in ("Cargo.toml", "Cargo.lock"):
         shutil.copy2(ROOT / name, STAGING / name)
-    for name in ("src", "test_configs"):
+    for name in ("src", "testdata"):
         shutil.copytree(ROOT / name, STAGING / name, dirs_exist_ok=True)
     for source, probe in (
         ("results.rs", "results_probes.rs"),

@@ -22,6 +22,9 @@ research/**/Cargo.lock
 *.bak
 /.claude
 /.codex
+# Local tool configs: an MCP server's path on one machine
+.mcp.json
+__pycache__/
 CLAUDE.md
 AGENTS.md
 /temp_backup

@@ -2287,10 +2287,10 @@ mod tests {
         }
     }
 
-    /// The tracked JSON config under `test_configs/` still loads.
+    /// The tracked JSON config under `testdata/configs/` still loads.
     #[test]
     fn tracked_json_configs_load() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/test_configs/flush_chunk_sweep.json");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/configs/flush_chunk_sweep.json");
         let config = load_config(path).unwrap();
         assert!(config.get_test_configs().is_ok());
     }

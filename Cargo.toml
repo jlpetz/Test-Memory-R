@@ -22,23 +22,18 @@ authors = ["Jarrod Petz <unknown@example.com>"]
 autobins = false
 
 [dependencies]
-### windows = { version = "0.62", features = [
 windows = { version = "0.62", features = [
-    "Win32_System_Memory",
-	"Win32_System_Kernel",
-    "Win32_Foundation", 
-	"Win32_System_Diagnostics_Debug",
-    "Win32_System_SystemInformation",
-    "Win32_System_Threading",
+    "Win32_Foundation",
     "Win32_Security",
-    "Win32_Storage_FileSystem",    # Add this for CreateFileA, FILE_SHARE_*, etc.
-    "Win32_System_IO",              # Add this for DeviceIoControl
-	"Win32_System_ProcessStatus",    # Add for GetNumaHighestNodeNumber
-	"Win32_System_WindowsProgramming", # Sometimes needed for NUMA
-	"Win32_System_SystemServices",
-	"Win32_System_Registry",
-	"Win32_System_LibraryLoader",
-	"Win32_System_EventLog",         # WHEA monitoring (#63): EvtSubscribe/EvtNext/EvtRender
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_EventLog", # WHEA monitoring (TODO 63): EvtSubscribe, EvtNext, EvtRender
+    "Win32_System_Kernel",
+    "Win32_System_Memory",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
 ] }
 num_cpus = "1.17"
 log = "0.4"
