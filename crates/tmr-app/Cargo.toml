@@ -1,9 +1,13 @@
 [package]
-name = "tmr-app"
+name = "test-memory-r"
 version.workspace = true
 edition.workspace = true
-description = "tmr.exe: TMR's crash hooks and CPU gate, then the CLI or the window (TODO 29)"
-publish = false
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TMR (Test Memory R), a DDR5 memory tester for Windows that runs TestMem5 configs: tmr.exe, the console and the window"
+keywords = ["memory", "ram", "ddr5", "overclocking", "stress-test"]
+categories = ["command-line-utilities", "hardware-support"]
 
 # The output is still target/<profile>/tmr.exe, the path release.yml uploads. Not documented: its
 # docs would land where the `tmr` lib's do, doc/tmr/, and one would overwrite the other.
@@ -20,9 +24,9 @@ default = ["gui"]
 gui = ["dep:tmr-gui"]
 
 [dependencies]
-tmr = { path = "../.." }
-tmr-cli = { path = "../tmr-cli" }
-tmr-gui = { path = "../tmr-gui", optional = true }
+tmr.workspace = true
+tmr-cli.workspace = true
+tmr-gui = { workspace = true, optional = true }
 log = "0.4"
 # The crash handler and the crash box's thread, and the launch's facts (the console, standard
 # output, the Windows build): features the engine and the CLI enable already, but for LibraryLoader,

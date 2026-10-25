@@ -1,9 +1,9 @@
 ## --version: Passed
-Test Memory R (TMR) version 1.0.0
+Test Memory R (TMR) version 0.1.0
 High-Performance Memory Testing Tool with TM5 Compatibility
 Three-Stage Memory Architecture with Comprehensive Testing
 ## --help: Passed
-🚀 Test Memory R (TMR) v1.0.0 - High-Performance Memory Testing Tool
+🚀 Test Memory R (TMR) v0.1.0 - High-Performance Memory Testing Tool
 ===================================================================================
 
 USAGE:

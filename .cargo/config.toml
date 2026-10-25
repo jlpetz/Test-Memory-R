@@ -25,9 +25,11 @@ rustflags = ["-C", "target-cpu=x86-64-v3"]
 # through stdarch's _mm_clflushopt intrinsic inside one #[target_feature(enable =
 # "clflushopt")] fn (flush_range_to_dram in tests.rs; its doc has the nightly gates and
 # why the intrinsic replaced the earlier inline asm!). Because the binary CONTAINS
-# clflushopt, TMR GATES AT STARTUP (crates/tmr-app main.rs): it requires AVX2 +
-# CLFLUSHOPT via is_x86_feature_detected! (clflushopt detection is behind a nightly gate at
-# its crate root) and exits cleanly if absent rather than #UD-faulting. This drops pre-2015
+# clflushopt, TMR GATES AT STARTUP (src/cpu_check.rs, which tmr.exe's main.rs and
+# session::run call): it requires AVX2 + CLFLUSHOPT via is_x86_feature_detected! (clflushopt
+# detection is behind a nightly gate at the engine's root) and exits cleanly if absent
+# rather than #UD-faulting. A build without this file's baseline stops (src/lib.rs, TODO
+# 104). This drops pre-2015
 # CPUs (Intel pre-Skylake incl. Haswell/Broadwell which have AVX2 but no CLFLUSHOPT; AMD
 # pre-Excavator/pre-Zen) — all DDR3/DDR4 era and irrelevant to a DDR5 tester.
 #

@@ -17,7 +17,7 @@ general-purpose and SIMD (vector and mask) registers. Two more columns count loo
 constant read from the binary's data every iteration).
 
 ```bash
-cargo rustc --release -p tmr-app --bin tmr -- --emit asm   # the real binary's code; --lib is pre-LTO
+cargo rustc --release -p test-memory-r --bin tmr -- --emit asm   # the real binary's code; --lib is pre-LTO
 python tools/hot_loop_spills.py                    # the table, worst kernels first
 python tools/hot_loop_spills.py --detail cache_busting --all   # one kernel's loops, clean ones too
 ```
@@ -25,10 +25,10 @@ python tools/hot_loop_spills.py --detail cache_busting --all   # one kernel's lo
 Run it before and after touching a hot loop, and save both `--detail` outputs: the loop bodies are
 also the place to check the width and the instructions.
 
-The binary is `crates/tmr-app`'s since TODO 29 S3, hence `-p tmr-app`; its asm lands under
-`target/release/build/tmr-app/`, which the tool's glob finds. The old command,
-`cargo rustc --release -- --emit asm`, still succeeds, but builds the lib's asm
-(`build/tmr/<hash>/out/tmr-<hash>.s`), pre-LTO, whose kernels make a believable table. So both
+The binary is `crates/tmr-app`'s since TODO 29 S3, its package `test-memory-r` since TODO 104,
+hence `-p test-memory-r`; its asm lands under `target/release/build/test-memory-r/`, which the
+tool's glob finds. The old command, `cargo rustc --release -- --emit asm`, still succeeds, but
+builds the lib's asm (`build/test-memory-r-engine/<hash>/out/tmr-<hash>.s`), pre-LTO, whose kernels make a believable table. So both
 tools look for that file too, and refuse an asm with no `main` (exit 1), the newest one included,
 rather than read it or pass it over for an older `tmr.s`. A table with no hot loop would read as a
 clean one, so finding none fails it too: the symbols are no longer the `tmr` crate's (`3tmr`), or
@@ -104,7 +104,7 @@ only there as `lines`, which doesn't fail it (TODO 29 S1, where lines added to `
 in the worker loop).
 
 ```bash
-cargo rustc --release -p tmr-app --bin tmr -- --emit asm
+cargo rustc --release -p test-memory-r --bin tmr -- --emit asm
 python tools/asm_fingerprint.py --save before.json      # on the old code
 python tools/asm_fingerprint.py --compare before.json   # on the new: changed, gone, new (1 if any), lines
 python tools/asm_fingerprint.py --dump DIR              # each normalised body, to diff two builds
@@ -113,7 +113,7 @@ python tools/asm_fingerprint.py --dump DIR              # each normalised body, 
 Save the old code's fingerprint before building the new, and keep a copy of its asm: the build
 replaces the file. The command builds the window in (tmr-app's default feature since TODO 7, as
 each release is), so compare its asm with a stage's `_gui` fingerprints; the CLI alone's asm,
-`cargo rustc --release -p tmr-app --bin tmr --no-default-features -- --emit asm`, compares with
+`cargo rustc --release -p test-memory-r --bin tmr --no-default-features -- --emit asm`, compares with
 the `_cli` ones. When you build both, rename each asm file before building the other: both tools
 read the newest `tmr.s` (the window's symbols name `windows_reactor`, the CLI build's none).
 Compare builds of one toolchain: a nightly bump changes the code itself. The

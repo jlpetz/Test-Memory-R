@@ -28,13 +28,13 @@ const TICK: Duration = Duration::from_millis(500);
 /// The rows and error lines drawn, the newest: a night's run has thousands, and every redraw builds the ones drawn
 const SHOWN: usize = 200;
 
-/// The title bar's icon (TODO 7), the exe's own (crates/tmr-app/tmr.ico). WinUI's AppWindow takes an icon only as an .ico file's path,
-/// so it is written once to the temp directory; `None` when it can't be, and the window keeps Windows' default.
+/// The title bar's icon (TODO 7), the exe's own (`main`'s, crates/tmr-app/tmr.ico for tmr.exe). WinUI's AppWindow takes an icon only as an
+/// .ico file's path, so it is written once to the temp directory; `None` when it can't be, and the window keeps Windows' default.
 fn icon_path() -> Option<&'static str> {
     static PATH: OnceLock<Option<String>> = OnceLock::new();
     PATH.get_or_init(|| {
         let path = std::env::temp_dir().join("tmr-icon.ico");
-        std::fs::write(&path, include_bytes!("../../tmr-app/tmr.ico")).ok()?;
+        std::fs::write(&path, crate::ICON.get()?).ok()?;
         Some(path.to_string_lossy().into_owned())
     })
     .as_deref()

@@ -39,7 +39,7 @@ S1: lines added to runner.rs above `pin_thread_to_cpu_with_config` showed in the
 line in a panic's location is in its data, as bytes of a string, and isn't masked.
 
 Build the asm, then:
-    cargo rustc --release -p tmr-app --bin tmr -- --emit asm
+    cargo rustc --release -p test-memory-r --bin tmr -- --emit asm
     python tools/asm_fingerprint.py [file.s]                    # name, lines hashed, hash
     python tools/asm_fingerprint.py [file.s] --save FILE.json   # a baseline
     python tools/asm_fingerprint.py [file.s] --compare FILE.json

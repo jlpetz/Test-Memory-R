@@ -11,12 +11,37 @@
 // (2026-10-23). Tests may do either.
 #![cfg_attr(not(test), warn(clippy::undocumented_unsafe_blocks, clippy::unwrap_used))]
 
+// A build without the x86-64-v3 baseline isn't TMR as tested: the kernels that take their width from it would come out as pairs of
+// 128-bit instructions, without a word. The repo's `.cargo/config.toml` sets it, but `cargo install` doesn't read a package's config,
+// and a RUSTFLAGS replaces the config's flags (TODO 104). The whole level, not AVX2 alone, which `-C target-feature=+avx2` would pass.
+// Docs builds are let through: rustdoc never gets the baseline (`doc`), and docs.rs builds the crate as a dependency of the one it
+// documents (`tmr_docs_rs`, from build.rs). CLFLUSHOPT is in no baseline: `cpu_check` checks it at run time.
+#[cfg(not(any(
+    all(
+        target_feature = "avx2",
+        target_feature = "bmi1",
+        target_feature = "bmi2",
+        target_feature = "f16c",
+        target_feature = "fma",
+        target_feature = "lzcnt",
+        target_feature = "movbe"
+    ),
+    doc,
+    tmr_docs_rs
+)))]
+compile_error!(
+    "TMR builds for x86-64-v3 (AVX2, BMI, FMA). In the repo, .cargo/config.toml sets it; a RUSTFLAGS of your own replaces that, so add \
+     `-C target-cpu=x86-64-v3` to it. For cargo install, set it first: $env:RUSTFLAGS = \"-C target-cpu=x86-64-v3\" (PowerShell), or \
+     RUSTFLAGS=\"-C target-cpu=x86-64-v3\" (bash)."
+);
+
 // The engine. Its public items are what tmr.exe (`crates/tmr-app`), the CLI (`crates/tmr-cli`) and the window (`crates/tmr-gui`) call:
 // `session` (a command line's setup and run), `frontend` (the interface a session is shown through, with the types its events carry),
-// `commands` (the one-shot commands), `logfile`, `BUILD` and `request_stop`. Everything else is private, so `dead_code` checks it. While
-// `main.rs` held the CLI and every module here was `pub`, all of them counted as public API, and an uncalled `pub fn` was never reported
-// (TODO 69 E).
+// `commands` (the one-shot commands), `cpu_check` (whether this CPU can run TMR), `logfile`, `BUILD` and `request_stop`. Everything else
+// is private, so `dead_code` checks it. While `main.rs` held the CLI and every module here was `pub`, all of them counted as public API,
+// and an uncalled `pub fn` was never reported (TODO 69 E).
 pub mod commands; // the one-shot commands, writing to their caller's writer (TODO 29)
+pub mod cpu_check; // whether this CPU has the features TMR is built for (TODO 104)
 pub mod frontend; // the engine's interface to whoever shows a session: its events (TODO 29)
 pub mod logfile;
 pub mod session; // a command line's setup, then its run, through a frontend (TODO 29) // the log file, which every frontend's logger writes (TODO 29)

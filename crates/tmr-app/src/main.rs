@@ -3,10 +3,19 @@
 //! `--gui` opens (`launch.rs`). `--gui` and `--cli` are this exe's own: they pick the frontend and are taken out of the arguments before
 //! the session sees them. The engine is the `tmr` library.
 
-// The CPU gate detects CLFLUSHOPT, which std has behind a nightly gate
-#![feature(clflushopt_target_feature)]
 // As the engine's (src/lib.rs): a `// SAFETY:` on every `unsafe` block, and `expect` for `unwrap()`
 #![cfg_attr(not(test), warn(clippy::undocumented_unsafe_blocks, clippy::unwrap_used))]
+
+// A release build is TMR's only as the workspace's `[profile.release]` builds it (TODO 104): fat LTO, one codegen unit, and a panic that
+// ends the process, rather than unwinding one worker's thread while the others run on. A package doesn't carry the workspace's profile,
+// so `cargo install` would build without it; the panic strategy is the part the code can see. Tests always unwind.
+#[cfg(all(not(debug_assertions), not(panic = "abort"), not(test)))]
+compile_error!(
+    "TMR's release builds abort on a panic and link with fat LTO, which `cargo install` doesn't take from the package. Set the profile \
+     first (PowerShell): $env:CARGO_PROFILE_RELEASE_PANIC = \"abort\"; $env:CARGO_PROFILE_RELEASE_LTO = \"true\"; \
+     $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = \"1\"; $env:CARGO_PROFILE_RELEASE_DEBUG = \"line-tables-only\". Or take tmr.exe from \
+     GitHub Releases."
+);
 
 #[cfg(feature = "gui")]
 mod fatal_box; // the window's message boxes, the crash box among them (TODO 29 S6)
@@ -127,31 +136,11 @@ unsafe extern "system" fn crash_exception_handler(info: *mut EXCEPTION_POINTERS)
     0
 }
 
-/// Verify the running CPU has the instruction-set features TMR is built against.
-///
-/// TMR compiles at the `x86-64-v3` baseline (AVX2) and emits CLFLUSHOPT unconditionally in the cache-flush path. CLFLUSHOPT is a standalone
-/// CPUID feature (not part of any psABI microarch level), so it must be checked at runtime. Missing either feature means the binary would
-/// hit an illegal-instruction fault during testing — so we detect it up front, explain why, and exit cleanly. This excludes pre-2015 CPUs
-/// (Intel pre-Skylake, incl. Haswell/Broadwell which have AVX2 but no CLFLUSHOPT; AMD pre-Excavator/pre-Zen), all of which are
-/// DDR3/DDR4-era and out of scope for a DDR5 tester.
+/// Stops here, with the reason on the console and in a box, when the CPU lacks a feature TMR is built for (`tmr::cpu_check`): rather than
+/// an illegal-instruction fault mid-test.
 fn require_cpu_features() {
-    let mut missing: Vec<&str> = Vec::new();
-    if !is_x86_feature_detected!("avx2") {
-        missing.push("AVX2");
-    }
-    // clflushopt detection landed in std behind the unstable `clflushopt_target_feature` gate (rustc PR #157098) — gated at the crate root,
-    // above.
-    if !is_x86_feature_detected!("clflushopt") {
-        missing.push("CLFLUSHOPT");
-    }
-
-    if !missing.is_empty() {
-        let text = format!(
-            "FATAL: this CPU is missing required instruction set features: {}\n\
-             TMR is built for x86-64-v3 (AVX2) + CLFLUSHOPT — a 2015-or-newer CPU\n\
-             (Intel Skylake+ / AMD Excavator+ / any Zen). Pre-2015 CPUs are not supported.",
-            missing.join(", ")
-        );
+    if let Some(refusal) = tmr::cpu_check::refusal() {
+        let text = format!("FATAL: {refusal}");
         eprintln!("{text}");
         show_fatal(&text);
         exit(RunStatus::NotRun.exit_code());
@@ -228,7 +217,7 @@ fn main() {
     // too (tmr_gui's logger)
     #[cfg(feature = "gui")]
     if launch.mode == Mode::Gui {
-        let closed = tmr_gui::main(args);
+        let closed = tmr_gui::main(args, include_bytes!("../tmr.ico"));
         if let Some(error) = &closed.error {
             eprintln!("{error}");
             show_fatal(error);

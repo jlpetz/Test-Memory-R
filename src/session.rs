@@ -49,6 +49,10 @@ pub enum Stopped {
 
 /// A session: `command_line` (the exe's name first) set up, then run, its events to `fe`. Returns how it ended.
 pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<SessionEnd> {
+    // A frontend checks first (tmr.exe does), and this is for one that didn't: the kernels would fault on a CPU without them
+    if let Some(refusal) = crate::cpu_check::refusal() {
+        return Err(refusal.into());
+    }
     // The command line as typed, for the results file (`RunConfigSnapshot::command_line`): `args` gains the defaults the modes below add
     let mut args = command_line.clone();
 

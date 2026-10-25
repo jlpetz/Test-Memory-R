@@ -1,12 +1,23 @@
 [package]
-name = "tmr-gui"
+name = "test-memory-r-gui"
 version.workspace = true
 edition.workspace = true
-description = "TMR's window: a run's events and progress in WinUI 3, through windows-reactor (TODO 7)"
-publish = false
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The window of TMR (Test Memory R), a DDR5 memory tester for Windows: a run's progress in WinUI 3, through windows-reactor"
+keywords = ["memory", "ram", "ddr5", "overclocking", "stress-test"]
+categories = ["hardware-support", "gui"]
+
+[lib]
+name = "tmr_gui"
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = []
 
 [dependencies]
-tmr = { path = "../.." }
+tmr.workspace = true
 # A preview API (TODO 7): pinned, and migrations expected. No windows-canvas: the chart is XAML shapes.
 windows-reactor = "=0.100.0"
 serde_json = "1.0"

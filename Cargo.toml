@@ -8,18 +8,47 @@ members = [".", "crates/tmr-app", "crates/tmr-cli", "crates/tmr-gui"]
 # `gui` feature; `--workspace` adds tmr-gui's own tests.
 default-members = [".", "crates/tmr-app", "crates/tmr-cli"]
 
+# The four crates are released together, at one version (TODO 104): a new one moves this and the
+# three pins below
 [workspace.package]
-version = "1.0.0"
+version = "0.1.0"
 edition = "2024"
+authors = ["Jarrod Petz"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jlpetz/Test-Memory-R"
+
+# On crates.io the crates are `test-memory-r-*` (`tmr` and `tmr-cli` are others'); each keeps the
+# name its code knows it by. Pinned exactly: the window's title and the console's banner read
+# different crates' versions, so a build takes the four from one release.
+[workspace.dependencies]
+tmr = { package = "test-memory-r-engine", version = "=0.1.0", path = "." }
+tmr-cli = { package = "test-memory-r-cli", version = "=0.1.0", path = "crates/tmr-cli" }
+tmr-gui = { package = "test-memory-r-gui", version = "=0.1.0", path = "crates/tmr-gui" }
 
 [package]
-name = "tmr"
+name = "test-memory-r-engine"
 version.workspace = true
 edition.workspace = true
-description = "Test Memory R - High-Performance DDR5 Memory Testing Tool"
-authors = ["Jarrod Petz <unknown@example.com>"]
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The engine of TMR (Test Memory R), a DDR5 memory tester for Windows: its tests, memory allocation, sessions and results"
+readme = "README.crates-io.md"
+keywords = ["memory", "ram", "ddr5", "overclocking", "stress-test"]
+categories = ["hardware-support"]
+# What the crate ships: without a list it would take every tracked file, doc/, research/ and tools/ among them. testdata/ is the
+# tests' fixtures.
+include = ["/src/**", "/build.rs", "/README.crates-io.md", "/LICENSE-MIT", "/LICENSE-APACHE", "/testdata/**"]
 # A library only: tmr.exe is `crates/tmr-app`'s bin
 autobins = false
+
+[lib]
+name = "tmr"
+
+# Windows only. The baseline check (src/lib.rs) lets docs.rs's build through (build.rs).
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = []
 
 [dependencies]
 windows = { version = "0.62", features = [

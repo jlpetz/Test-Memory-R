@@ -37,7 +37,7 @@ access a unit test records it by (`tests::access`) is named without it: `Direct`
 in the binary.
 
 Build the asm, then run this (with no file, the newest one under target/release/build):
-    cargo rustc --release -p tmr-app --bin tmr -- --emit asm
+    cargo rustc --release -p test-memory-r --bin tmr -- --emit asm
     python tools/hot_loop_spills.py [file.s] [--detail SUBSTRING [--all]] [--max N]
 --detail prints each flagged loop (stack or any review flag) of the kernels whose name contains
 SUBSTRING (with --all, their clean hot loops too); --max exits 1 when the loops touching the stack
@@ -75,10 +75,10 @@ MEM_CALLS = ("memcpy", "memmove", "memset")
 CONST_SIZE = re.compile(r"^mov[lq]\s+\$(\d+), %r8d?$")
 MAX_INSTRUCTIONS = 600
 # The binary's post-LTO asm: the bin is tmr-app's (TODO 29 S3)
-BUILD = "cargo rustc --release -p tmr-app --bin tmr -- --emit asm"
+BUILD = "cargo rustc --release -p test-memory-r --bin tmr -- --emit asm"
 # Where the build leaves asm: the bin's `tmr.s`; the lib's `tmr-<hash>.s`, to refuse when it is the
 # newest; and the layout before cargo's build directories, `deps/tmr-<hash>.s`
-ASM = ["target/release/build/tmr*/**/tmr.s", "target/release/build/tmr*/**/tmr-*.s", "target/release/deps/tmr-*.s"]
+ASM = ["target/release/build/test-memory-r*/**/tmr.s", "target/release/build/test-memory-r*/**/tmr-*.s", "target/release/deps/tmr-*.s"]
 LONG = 150
 
 LABEL = re.compile(r"^(\.L\w+):")

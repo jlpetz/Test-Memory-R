@@ -46,7 +46,7 @@ jobs:
 
     # tmr.exe without the window (`--no-default-features`), which no release ships, so it still builds
     - name: 🧹 Run clippy, tmr.exe without the window
-      run: cargo +nightly clippy -p tmr-app --no-default-features -- -D warnings
+      run: cargo +nightly clippy -p test-memory-r --no-default-features -- -D warnings
 
     # tmr.exe with both frontends, as release.yml builds it
     - name: 🚧 Build release version

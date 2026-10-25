@@ -1,12 +1,23 @@
 [package]
-name = "tmr-cli"
+name = "test-memory-r-cli"
 version.workspace = true
 edition.workspace = true
-description = "TMR's command line: a session on the console, its logging and its Ctrl+C (TODO 29)"
-publish = false
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The console of TMR (Test Memory R), a DDR5 memory tester for Windows: a session on the console, its logging and its Ctrl+C"
+keywords = ["memory", "ram", "ddr5", "overclocking", "stress-test"]
+categories = ["hardware-support"]
+
+[lib]
+name = "tmr_cli"
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = []
 
 [dependencies]
-tmr = { path = "../.." }
+tmr.workspace = true
 log = "0.4"
 env_logger = "0.11"
 ctrlc = "3.5"
@@ -20,4 +31,4 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 # The engine's run and reports, driven through the CLI's frontend for the console's goldens
-tmr = { path = "../..", features = ["test-support"] }
+tmr = { workspace = true, features = ["test-support"] }

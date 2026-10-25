@@ -89,6 +89,9 @@ static EXIT_CODE: OnceLock<i32> = OnceLock::new();
 static WINDOW_OPENED: AtomicBool = AtomicBool::new(false);
 static WINDOW_CLOSED: AtomicBool = AtomicBool::new(false);
 
+/// The exe's icon, an .ico file's bytes, from `main`: the title bar's (`window::icon_path`)
+static ICON: OnceLock<&'static [u8]> = OnceLock::new();
+
 /// Set when the restart's question went unanswered, the window having gone: the session ended as for a restart, but nobody chose it
 static UNANSWERED: AtomicBool = AtomicBool::new(false);
 
@@ -143,9 +146,10 @@ pub struct Closed {
 }
 
 /// Opens the window, to run `args` (the command line, its exe's name first, less `--gui`), and returns when it closes and the session has
-/// ended (`end_session`), with the exit status and the window's error, if it had one (`closed`). The window needs the Windows App Runtime
-/// 2.x, which Reactor offers to download when it is missing.
-pub fn main(args: Vec<String>) -> Closed {
+/// ended (`end_session`), with the exit status and the window's error, if it had one (`closed`). `icon` is the exe's icon, an .ico file's
+/// bytes, for the title bar. The window needs the Windows App Runtime 2.x, which Reactor offers to download when it is missing.
+pub fn main(args: Vec<String>, icon: &'static [u8]) -> Closed {
+    let _ = ICON.set(icon);
     let shown = windows_reactor::App::run_component::<window::Window>(args);
     WINDOW_CLOSED.store(true, Ordering::Relaxed);
     let session = SESSION.lock().unwrap_or_else(PoisonError::into_inner).take();

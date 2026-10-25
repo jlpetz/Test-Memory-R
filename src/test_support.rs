@@ -4,7 +4,7 @@
 //! take the engine's code to build, each from a fixed model. A unit test build has it, and a build with the `test-support` feature, which
 //! only tmr-cli's tests turn on (its dev-dependency), so a plain build of tmr.exe or the window has none of it. Cargo builds the engine
 //! once a command, with every feature that command's targets ask for: under `cargo build --all-targets` tmr.exe links it too. Ship,
-//! benchmark and read the asm of a plain build only (`cargo build --release`, `cargo rustc --release -p tmr-app --bin tmr`).
+//! benchmark and read the asm of a plain build only (`cargo build --release`, `cargo rustc --release -p test-memory-r --bin tmr`).
 
 use std::path::Path;
 use std::time::Duration;

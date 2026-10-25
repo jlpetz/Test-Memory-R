@@ -4,7 +4,7 @@
 /// A build of TMR.
 #[derive(Debug, Clone, Copy)]
 pub struct BuildInfo {
-    /// The package's version, `1.0.0`
+    /// The package's version, `0.1.0`
     pub version: &'static str,
     /// The commit built (`git rev-parse HEAD`), `unknown` without git
     pub commit: &'static str,

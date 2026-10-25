@@ -855,6 +855,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-memory-r"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "test-memory-r-cli",
+ "test-memory-r-engine",
+ "test-memory-r-gui",
+ "windows",
+]
+
+[[package]]
+name = "test-memory-r-cli"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ctrlc",
+ "env_logger",
+ "log",
+ "test-memory-r-engine",
+ "windows",
+]
+
+[[package]]
+name = "test-memory-r-engine"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "globset",
+ "log",
+ "num_cpus",
+ "proptest",
+ "raw-cpuid",
+ "serde",
+ "serde_json",
+ "windows",
+]
+
+[[package]]
+name = "test-memory-r-gui"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "log",
+ "serde_json",
+ "test-memory-r-engine",
+ "windows-reactor",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -872,55 +921,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
-]
-
-[[package]]
-name = "tmr"
-version = "1.0.0"
-dependencies = [
- "chrono",
- "globset",
- "log",
- "num_cpus",
- "proptest",
- "raw-cpuid",
- "serde",
- "serde_json",
- "windows",
-]
-
-[[package]]
-name = "tmr-app"
-version = "1.0.0"
-dependencies = [
- "log",
- "tmr",
- "tmr-cli",
- "tmr-gui",
- "windows",
-]
-
-[[package]]
-name = "tmr-cli"
-version = "1.0.0"
-dependencies = [
- "chrono",
- "ctrlc",
- "env_logger",
- "log",
- "tmr",
- "windows",
-]
-
-[[package]]
-name = "tmr-gui"
-version = "1.0.0"
-dependencies = [
- "chrono",
- "log",
- "serde_json",
- "tmr",
- "windows-reactor",
 ]
 
 [[package]]
