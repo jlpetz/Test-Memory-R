@@ -37,7 +37,7 @@ mod constants;
 mod cpu_selection; // two-stage CPU selection: skip-cores filter + cpu-stride spacing
 mod cpu_topology;
 mod error_context; // where a worker is in the run, for its error lines (TODO 74)
-mod exchange; // Mem-PageExchange: tiles that cross threads, CCDs and NUMA nodes (TODO 28)
+mod exchange; // the page exchange: tiles that cross threads, CCDs and NUMA nodes, copied, inverted or rewritten (TODO 28)
 mod failing_bits; // which bit positions failed checks, from the verifies' cold path (TODO 97)
 mod formatting;
 mod latency_tests; // Latency measurement tests
@@ -59,6 +59,7 @@ mod seal; // the seal: TM5's test 0, checked and resealed around every chunk (TO
 mod sequence; // Mem-Sequence's passes: writes, reads and read-then-writes in an order (TODO 97)
 mod simd;
 mod smbios; // SMBIOS table parser (system identity, memory modules)
+mod storm; // Mem-CoherenceStorm: cache lines every thread writes at once, GSAT's coherency test (TODO 28)
 mod test_harness; // v2 zero-cost test orchestration harness
 mod test_memory; // where a test's extent lies in a thread's blocks (TODO 76)
 mod test_scaffolding; // shared zero-cost bookkeeping for loop-owning v1 tests (TODO #19 Part A)

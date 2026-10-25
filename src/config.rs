@@ -645,10 +645,24 @@ pub struct TestConfig {
     /// (TODO 102).
     #[serde(default)]
     pub tile_load: Option<u32>,
-    /// Mem-PageExchange: whose tiles a thread claims, `any` (every thread's, the default), `node` (its own node's threads') or `cross`
-    /// (the other nodes', so every claim crosses a link) (TODO 28).
+    /// The page exchange's tests: whose tiles a thread claims, `any` (every thread's, the default), `node` (its own node's threads') or
+    /// `cross` (the other nodes', so every claim crosses a link) (TODO 28).
     #[serde(default)]
     pub exchange_share: Option<String>,
+    /// The page exchange's tests: how a claim stores, `cached` (the copy's and the invert's default, as GSAT's) or `nt` (the rewrite's)
+    /// (TODO 28).
+    #[serde(default)]
+    pub exchange_stores: Option<String>,
+    /// Mem-PageExchange: the share of its threads that invert while the rest copy, in percent, 0 (the default) to 100: GSAT's copy and
+    /// invert threads at once (TODO 28).
+    #[serde(default)]
+    pub exchange_invert: Option<u32>,
+    /// Mem-CoherenceStorm: the shared structures its threads bump bytes of, 1 to 4096, 2 by default (GSAT's `--cc_line_count`) (TODO 28).
+    #[serde(default)]
+    pub storm_lines: Option<u32>,
+    /// Mem-CoherenceStorm: a thread's bumps between its checks, 1 to 16777216, 1000 by default (GSAT's `--cc_inc_count`) (TODO 28).
+    #[serde(default)]
+    pub storm_increments: Option<u32>,
 
     // Per-chunk repetition: how long each chunk is worked (TODO 79 B2). Unset is the test's own default; loading a TM5 `.cfg` fills them
     // from `Time (%)`.
@@ -787,8 +801,15 @@ pub struct TestParameterContext {
     pub tile_patterns: Option<u32>,
     /// Mem-TileTransform: extra multiplies a tile in its check, the matrix unit's load, 0 (the default) to 65534 (TODO 102).
     pub tile_load: Option<u32>,
-    /// Mem-PageExchange: whose tiles a thread claims (TODO 28); `None` is `any`.
+    /// The page exchange's tests: whose tiles a thread claims (TODO 28); `None` is `any`.
     pub exchange_share: Option<crate::exchange::Share>,
+    /// The page exchange's tests: how a claim stores (TODO 28); `None` is the operation's default.
+    pub exchange_stores: Option<crate::exchange::Stores>,
+    /// Mem-PageExchange: the share of its threads that invert, in percent (TODO 28); `None` is none.
+    pub exchange_invert: Option<u32>,
+    /// Mem-CoherenceStorm: its shared structures and a thread's bumps a check (TODO 28); `None` is GSAT's default.
+    pub storm_lines: Option<u32>,
+    pub storm_increments: Option<u32>,
 }
 
 /// Interpret TM5 Parameter correctly based on test function name.
@@ -1051,15 +1072,16 @@ impl ModernConfig {
         // name gives, `Bench-Init-TMR-30` mode 30, when the entry names none
         let native = test.pattern_mode.and_then(crate::pattern::Family::from_number);
         let pattern_mode = if native.is_some() { None } else { test.pattern_mode.or_else(|| bench_mode(&test.function)) };
-        let is_sequence = test.function == "Mem-Sequence";
-        let native_test = test.function.starts_with("Mem-SimpleV2") || is_sequence;
-        if is_sequence && pattern_mode.is_some() {
+        let native_only = test.function == "Mem-Sequence" || crate::exchange::is_exchange(&test.function);
+        let native_test = test.function.starts_with("Mem-SimpleV2") || native_only;
+        if native_only && pattern_mode.is_some() {
             return Err(Self::test_error(
                 i,
                 test,
-                "Mem-Sequence runs native patterns only: give it a \"program\", or a native \
-                family's number as its pattern_mode"
-                    .to_string(),
+                format!(
+                    "{} runs native patterns only: give it a \"program\", or a native family's number as its pattern_mode",
+                    test.function
+                ),
             ));
         }
         let program = match &test.program {
@@ -1069,8 +1091,8 @@ impl ModernConfig {
                         i,
                         test,
                         format!(
-                            "only the Mem-SimpleV2 tests and Mem-Sequence run native patterns \
-                        (pattern_mode {})",
+                            "only the Mem-SimpleV2 tests, Mem-Sequence and the page exchange's tests run \
+                        native patterns (pattern_mode {})",
                             test.pattern_mode.unwrap_or(0)
                         ),
                     ));
@@ -1078,7 +1100,11 @@ impl ModernConfig {
                 native => native.map(crate::pattern::Program::single),
             },
             Some(_) if !native_test => {
-                return Err(Self::test_error(i, test, "only the Mem-SimpleV2 tests and Mem-Sequence read \"program\"".to_string()));
+                return Err(Self::test_error(
+                    i,
+                    test,
+                    "only the Mem-SimpleV2 tests, Mem-Sequence and the page exchange's tests read \"program\"".to_string(),
+                ));
             }
             Some(_) if test.pattern_mode.is_some() => {
                 return Err(Self::test_error(
@@ -1113,11 +1139,37 @@ impl ModernConfig {
         {
             return Err(Self::test_error(i, test, format!("\"tile_load\" is at most {}, not {r}", crate::xform::MAX_R)));
         }
-        if test.function != crate::exchange::TEST_NAME && test.exchange_share.is_some() {
-            return Err(Self::test_error(i, test, format!("only {} reads \"exchange_share\"", crate::exchange::TEST_NAME)));
+        let exchange = crate::exchange::is_exchange(&test.function);
+        for (set, field) in [(test.exchange_share.is_some(), "exchange_share"), (test.exchange_stores.is_some(), "exchange_stores")] {
+            if set && !exchange {
+                let names = crate::exchange::NAMES.join(", ");
+                return Err(Self::test_error(i, test, format!("only the page exchange's tests ({names}) read \"{field}\"")));
+            }
+        }
+        if test.exchange_invert.is_some() && test.function != crate::exchange::TEST_NAME {
+            return Err(Self::test_error(i, test, format!("only {} reads \"exchange_invert\"", crate::exchange::TEST_NAME)));
+        }
+        if let Some(p) = test.exchange_invert
+            && p > 100
+        {
+            return Err(Self::test_error(i, test, format!("\"exchange_invert\" is a share of the threads, 0 to 100 (percent), not {p}")));
+        }
+        for (value, field, max) in [
+            (test.storm_lines, "storm_lines", crate::storm::MAX_LINES),
+            (test.storm_increments, "storm_increments", crate::storm::MAX_INCREMENTS),
+        ] {
+            match value {
+                Some(_) if test.function != crate::storm::TEST_NAME => {
+                    return Err(Self::test_error(i, test, format!("only {} reads \"{field}\"", crate::storm::TEST_NAME)));
+                }
+                Some(n) if n == 0 || n > max => return Err(Self::test_error(i, test, format!("\"{field}\" is 1 to {max}, not {n}"))),
+                _ => {}
+            }
         }
         let exchange_share =
             test.exchange_share.as_deref().map(crate::exchange::Share::parse).transpose().map_err(|e| Self::test_error(i, test, e))?;
+        let exchange_stores =
+            test.exchange_stores.as_deref().map(crate::exchange::Stores::parse).transpose().map_err(|e| Self::test_error(i, test, e))?;
         if let ChunkMode::Absolute { size_bytes } = chunk_mode
             && !size_bytes.is_multiple_of(crate::test_memory::GRANULE)
         {
@@ -1158,6 +1210,10 @@ impl ModernConfig {
             || test.tile_patterns.is_some()
             || test.tile_load.is_some()
             || exchange_share.is_some()
+            || exchange_stores.is_some()
+            || test.exchange_invert.is_some()
+            || test.storm_lines.is_some()
+            || test.storm_increments.is_some()
         {
             let ctx = config.parameter_context.get_or_insert(TestParameterContext::default());
             if let Some(v) = test.stride_patterns {
@@ -1181,6 +1237,10 @@ impl ModernConfig {
             ctx.tile_patterns = test.tile_patterns.or(ctx.tile_patterns);
             ctx.tile_load = test.tile_load.or(ctx.tile_load);
             ctx.exchange_share = exchange_share.or(ctx.exchange_share);
+            ctx.exchange_stores = exchange_stores.or(ctx.exchange_stores);
+            ctx.exchange_invert = test.exchange_invert.or(ctx.exchange_invert);
+            ctx.storm_lines = test.storm_lines.or(ctx.storm_lines);
+            ctx.storm_increments = test.storm_increments.or(ctx.storm_increments);
         }
         if let Some(ms) = test.wait_ms
             && !(test.function.starts_with("Mem-Refresh") || test.function == "RefreshStable")
@@ -2030,7 +2090,9 @@ mod tests {
         );
         let mut mirror = modern.clone();
         mirror.test_sequence[0].function = "Mem-MirrorV2-Auto".into();
-        assert!(mirror.get_test_configs().unwrap_err().contains("only the Mem-SimpleV2 tests and Mem-Sequence run native patterns"));
+        assert!(
+            mirror.get_test_configs().unwrap_err().contains("only the Mem-SimpleV2 tests, Mem-Sequence and the page exchange's tests run")
+        );
 
         // A program must name families TMR has, on a SimpleTest
         modern.test_sequence[0].pattern_mode = None;
@@ -2083,6 +2145,57 @@ mod tests {
         assert!(load(TestConfig { program: Some(vec!["header".into()]), ..entry(None, None) }).is_ok());
         let not_it = TestConfig { enabled: true, function: "Mem-StuckBitAuto".into(), sequence: Some("W R".into()), ..Default::default() };
         assert!(load(not_it).unwrap_err().contains("only Mem-Sequence reads"));
+    }
+
+    /// The page exchange's settings load on its tests alone: `exchange_share` and `exchange_stores` on all three, `exchange_invert` (a
+    /// percentage) on the copy; they run native patterns only (TODO 28).
+    #[test]
+    fn page_exchange_entries() {
+        use crate::exchange::{Share, Stores};
+        let mut modern = legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
+        let entry = |function: &str| TestConfig { enabled: true, function: function.to_string(), ..Default::default() };
+        let mut load = |t: TestConfig| {
+            modern.test_sequence[0] = t;
+            modern.get_test_configs().map(|c| c[0].1.clone())
+        };
+        for name in crate::exchange::NAMES {
+            let set = TestConfig { exchange_share: Some("node".into()), exchange_stores: Some("NT".into()), ..entry(name) };
+            let ctx = load(set).unwrap().parameter_context.expect("the exchange's settings");
+            assert_eq!((ctx.exchange_share, ctx.exchange_stores), (Some(Share::Node), Some(Stores::Nt)), "{name}");
+            assert!(load(TestConfig { exchange_stores: Some("wb".into()), ..entry(name) }).unwrap_err().contains("cached or nt"));
+            let program = load(TestConfig { program: Some(vec!["switch".into(), "ident".into()]), ..entry(name) }).unwrap().program;
+            assert_eq!(program.map(|p| p.name()), Some("switch+ident".to_string()), "{name}");
+            assert!(load(TestConfig { pattern_mode: Some(30), ..entry(name) }).unwrap_err().contains("native patterns only"), "{name}");
+        }
+        let half = load(TestConfig { exchange_invert: Some(50), ..entry("Mem-PageExchange") }).unwrap();
+        assert_eq!(half.parameter_context.and_then(|c| c.exchange_invert), Some(50));
+        assert!(load(TestConfig { exchange_invert: Some(101), ..entry("Mem-PageExchange") }).unwrap_err().contains("0 to 100"));
+        assert!(
+            load(TestConfig { exchange_invert: Some(50), ..entry("Mem-PageExchange-Rewrite") })
+                .unwrap_err()
+                .contains("only Mem-PageExchange reads")
+        );
+        let not_it = TestConfig { exchange_stores: Some("nt".into()), ..entry("Mem-Sequence") };
+        assert!(load(not_it).unwrap_err().contains("only the page exchange's tests"));
+    }
+
+    /// The coherence storm's settings load on it alone, in their ranges (TODO 28).
+    #[test]
+    fn coherence_storm_entries() {
+        let mut modern = legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
+        let entry = |function: &str| TestConfig { enabled: true, function: function.to_string(), ..Default::default() };
+        let mut load = |t: TestConfig| {
+            modern.test_sequence[0] = t;
+            modern.get_test_configs().map(|c| c[0].1.clone())
+        };
+        let storm = TestConfig { storm_lines: Some(8), storm_increments: Some(5000), ..entry(crate::storm::TEST_NAME) };
+        let ctx = load(storm).unwrap().parameter_context.expect("the storm's settings");
+        assert_eq!((ctx.storm_lines, ctx.storm_increments), (Some(8), Some(5000)));
+        assert!(load(TestConfig { storm_lines: Some(0), ..entry(crate::storm::TEST_NAME) }).unwrap_err().contains("1 to 4096"));
+        assert!(load(TestConfig { storm_increments: Some(1 << 25), ..entry(crate::storm::TEST_NAME) }).unwrap_err().contains("1 to"));
+        assert!(
+            load(TestConfig { storm_lines: Some(2), ..entry("Mem-PageExchange") }).unwrap_err().contains("only Mem-CoherenceStorm reads")
+        );
     }
 
     /// The audit's verification-free settings are refused: a correctness test that never verifies, or never runs a round, reports nothing.

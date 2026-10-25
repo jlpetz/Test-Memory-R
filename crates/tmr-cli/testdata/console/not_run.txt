@@ -87,6 +87,9 @@ Reserve Rounding Diff     +0.00 B           -  Threads × per-thread rounding
   - Mem-MovingInv
   - Mem-TileTransform
   - Mem-PageExchange
+  - Mem-PageExchange-Invert
+  - Mem-PageExchange-Rewrite
+  - Mem-CoherenceStorm
   - Mem-ModuloX
   - Mem-Sequence
   - Mem-BlockMove

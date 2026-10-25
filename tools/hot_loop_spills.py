@@ -57,9 +57,9 @@ from collections import defaultdict
 
 # The test modules, as they appear in v0 symbols (`3tmr` + length + name)
 MODULES = ["5tests", "8sequence", "4seal", "15bandwidth_tests", "13latency_tests", "16latency_tests_v2",
-           "12test_harness", "7pattern", "11pattern_gen", "16pattern_switch24", "5xform", "8exchange"]
+           "12test_harness", "7pattern", "11pattern_gen", "16pattern_switch24", "5xform", "8exchange", "5storm"]
 # Functions in them that run off the hot path: on an error, once per test, or at load time
-COLD = ["rescan", "parse", "percentiles", "finalize_stats", "TestRunner", "scale_or",
+COLD = ["rescan", "parse", "percentiles", "finalize_stats", "TestRunner", "scale_or", "bad_byte",
         # Mem-TileTransform's set-up (once a test) and tier 2's helpers (TODO 102)
         "PatternSet", "Matrices", "distinct_odd", "gen_patterns", "self_test", "group_checksum", "still_wrong", "signature"]
 # Calls a hot-shaped loop may make off its hot path, by symbol substring: timing (once a chunk), error and panic paths, the
@@ -67,7 +67,7 @@ COLD = ["rescan", "parse", "percentiles", "finalize_stats", "TestRunner", "scale
 COLD_CALLS = {
     "timing": ["3std4time", "QueryPerformanceCounter", "perf_counter", "9functions5sleep"],
     "error": ["unwrap_failed", "expect_failed", "slice_index_fail", "panicking", "handle_error", "Rescan", "rescan", "13error_context",
-              "bad_tile"],
+              "bad_tile", "bad_byte"],
     "bookkeeping": ["16test_scaffolding", "raw_vec", "HeapFree", "GetProcessHeap", "process_heap_alloc", "alloc3fmt", "once_lock"],
 }
 # memcpy and its kind: with a constant size it is a struct moved, not a copy loop LLVM collapsed

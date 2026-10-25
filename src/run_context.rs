@@ -697,10 +697,10 @@ impl TestConfigSnapshot {
             // The page exchange's tiles sit apart, the last one shorter (TODO 28)
             chunks: spread
                 .as_ref()
-                .map_or(0, |s| if def.actual_name == crate::exchange::TEST_NAME { extent.div_ceil(s.chunk().max(1)) } else { s.count() }),
+                .map_or(0, |s| if crate::exchange::is_exchange(def.actual_name) { extent.div_ceil(s.chunk().max(1)) } else { s.count() }),
             overlap_bytes: spread
                 .as_ref()
-                .map_or(0, |s| if def.actual_name == crate::exchange::TEST_NAME { 0 } else { s.overlap() as u64 }),
+                .map_or(0, |s| if crate::exchange::is_exchange(def.actual_name) { 0 } else { s.overlap() as u64 }),
             cycle_limit: def.config.timing.cycles,
             time_limit_secs: def.config.timing.duration_secs,
             simd_width_bits: def.simd_width().map(crate::simd::Width::bits),

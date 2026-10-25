@@ -123,11 +123,13 @@ multiply a tile, about 10% of the unit at DRAM speed; each step adds one more. P
 - **JSON config field:** `"tile_load": 8`
 
 ### `exchange_share: Option<String>`
-**Used by:** Mem-PageExchange (TODO 28)
+**Used by:** the page exchange's tests, Mem-PageExchange, Mem-PageExchange-Invert and
+Mem-PageExchange-Rewrite (TODO 28)
 
 Whose tiles a thread claims in the page exchange. Each thread's extent is cut into tiles of the
-test's chunk (2 MiB by default), and threads claim tiles from each other's extents, check the
-pattern their last writer left and write their own:
+test's chunk (2 MiB by default), and threads claim tiles from each other's extents and check the
+image each holds; Mem-PageExchange then copies the tile into the one the thread holds (GSAT's
+copy), -Invert writes each word back inverted, -Rewrite writes a new image over it:
 
 - `any`: every thread's tiles, so tiles cross threads, CCDs and NUMA nodes as they come.
 - `node`: only the tiles of threads on the claimer's own node: the exchange without the links
@@ -138,13 +140,55 @@ pattern their last writer left and write their own:
 - **Default:** `any`
 - **JSON config field:** `"exchange_share": "cross"`
 - The tile size is the test's `chunk` (`"chunk": {"mode": "absolute", "size": "2MiB"}`); the last
-  tile of an extent is shorter when the chunk doesn't divide it, so every word is tested.
+  tile of an extent is shorter when the chunk doesn't divide it, so every word is tested (a copy
+  can't copy it into a full tile, so it rewrites it in place).
+- The images are the native families (`program`, below; all seven when unset), and the tests run
+  native patterns only: a numbered `pattern_mode` is refused.
+
+### `exchange_stores: Option<String>`
+**Used by:** the page exchange's tests (TODO 28)
+
+How a claim stores:
+
+- `cached`: through the caches, as GSAT's copy and invert. A store usually reads its line first,
+  and the cache writes it back when it evicts it, so a copied line moves three times (its source
+  read, its destination read, then written back), mixed in with later reads.
+- `nt`: non-temporal, straight to DRAM: a copied line moves twice, and the next claimer reads the
+  tile from DRAM (over the links when it is on another node).
+
+- **Default:** `cached` for Mem-PageExchange and -Invert, `nt` for -Rewrite
+- **JSON config field:** `"exchange_stores": "nt"`
+
+### `exchange_invert: Option<u32>`
+**Used by:** Mem-PageExchange (TODO 28)
+
+The share of the copy's threads that invert instead, in percent, spread evenly over the threads:
+GSAT's copy and invert threads working the same pages at once (`-m 8 -i 4`). At 50, every other
+thread inverts.
+
+- **Default:** 0 (every thread copies, as GSAT's default)
+- **Range:** 0 to 100
+- **JSON config field:** `"exchange_invert": 25`
+
+### `storm_lines: Option<u32>`, `storm_increments: Option<u32>`
+**Used by:** Mem-CoherenceStorm (TODO 28)
+
+GSAT's cache coherency test (`--cc_test`). Each shared structure holds a byte for every thread,
+64 threads to a cache line (spread over the threads, so a line's sharers sit on different CCDs);
+each thread bumps its own byte in a structure picked at random `storm_increments` times, then
+checks every byte it owns against a replay of its picks. A byte that doesn't hold its thread's
+count is a write lost or changed between the cores: one error each.
+
+- **Defaults:** 2 structures, 1000 bumps a check (GSAT's `--cc_line_count`, `--cc_inc_count`)
+- **Ranges:** `storm_lines` 1 to 4096, `storm_increments` 1 to 16777216
+- **JSON config fields:** `"storm_lines": 4`, `"storm_increments": 10000`
+- The test writes none of its memory span (its lines are its own), so it takes no seal.
 
 ## SimpleTest patterns (pattern spec 2)
 
 | Where | Field | Meaning |
 |---|---|---|
-| test entry (Mem-SimpleV2*, Mem-Sequence) | `"program": ["random", "switch"]` | The native program: families in order, each run as a P/~P pair (`doc/pattern_spec.md`). Unset with no `pattern_mode`, `["random", "header", "random", "switch", "random", "quiet"]`. Not with `pattern_mode`, and only on a SimpleTest or Mem-Sequence |
+| test entry (Mem-SimpleV2*, Mem-Sequence, the page exchange's) | `"program": ["random", "switch"]` | The native program: families in order, each run as a P/~P pair (`doc/pattern_spec.md`). Unset with no `pattern_mode`, `["random", "header", "random", "switch", "random", "quiet"]`; on the page exchange, every family, a tile's image taking the family at its claim's number and its complement every other lap. Not with `pattern_mode`, and only on a SimpleTest, Mem-Sequence or the page exchange |
 | test entry | `"pattern_mode": 30` | One of TMR's numbered modes (spec 1, `doc/pattern_gen_modes.md`: 0-2, 10, 11, 13, 20, 30) instead of a program, or a native family's number (15 `ident`, 16 `random`, 17 `linepair`, 21 `lines`, 31 `switch`, 32 `quiet`, 33 `header`) for a program of it alone |
 | command line | `seed=0x1234` | The native patterns' run seed (default from the clock); logged, printed and saved, so a run's bytes can be replayed on the same layout |
 | command line | `beat=auto\|12\|16\|24\|32\|64` or a memory type | The transfer width `switch` (and mode 30) flips at; auto takes SMBIOS's memory type, else `switch` alternates 64 and 32 and mode 30 takes 32. A memory type names its width: `ddr3`/`ddr4` 64, `ddr5`/`lpddr3` 32, `lpddr4`/`lpddr5` 16, `ddr6` 24, `lpddr6` 12. The last two are models (`doc/pattern_spec.md`): SMBIOS has no code TMR knows for them, so set `beat=` there |
@@ -232,7 +276,9 @@ All parameters are validated before tests run (in `runner.rs`):
 - `stride_patterns` and `copy_directions` must be >= 1 (no power-of-2 constraint)
 - `mirror` is checked when it is parsed (`MirrorMode::from_str`, shared by JSON, the CLI and the importer): subblocks 2 or 4, any jump
 - `tile_patterns` must be 16, 32 or 64 and `tile_load` at most 65534, when the config is loaded; another test refuses both
-- `exchange_share` must be `any`, `node` or `cross`, when the config is loaded; another test refuses it
+- `exchange_share` must be `any`, `node` or `cross` and `exchange_stores` `cached` or `nt`, when the config is loaded; a test other
+  than the page exchange's refuses both; `exchange_invert` is 0 to 100, on Mem-PageExchange alone
+- `storm_lines` is 1 to 4096 and `storm_increments` 1 to 16777216, on Mem-CoherenceStorm alone
 - Tests panic with a clear error message if their required parameter is missing from `parameter_context`
 
 ## Sequencing and the seal (TODO 74)

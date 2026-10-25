@@ -262,8 +262,11 @@ impl std::fmt::Display for MemoryEffect {
 fn apply_pattern_mode(defs: &mut [TestDefinition], mode: u32) {
     let Some(family) = crate::pattern::Family::from_number(mode) else {
         for def in defs.iter_mut() {
-            if def.actual_name == "Mem-Sequence" {
-                log::info!("pattern-mode={mode} is a numbered mode, and Mem-Sequence runs native patterns only: it keeps its program");
+            if def.actual_name == "Mem-Sequence" || crate::exchange::is_exchange(def.actual_name) {
+                log::info!(
+                    "pattern-mode={mode} is a numbered mode, and {} runs native patterns only: it keeps its program",
+                    def.actual_name
+                );
                 continue;
             }
             def.config.pattern_mode = Some(mode);
@@ -271,11 +274,16 @@ fn apply_pattern_mode(defs: &mut [TestDefinition], mode: u32) {
         }
         return;
     };
-    let mut native = defs.iter_mut().filter(|d| d.actual_name.starts_with("Mem-SimpleV2") || d.actual_name == "Mem-Sequence").peekable();
+    let mut native = defs
+        .iter_mut()
+        .filter(|d| {
+            d.actual_name.starts_with("Mem-SimpleV2") || d.actual_name == "Mem-Sequence" || crate::exchange::is_exchange(d.actual_name)
+        })
+        .peekable();
     if native.peek().is_none() {
         log::warn!(
-            "pattern-mode={mode} is the native `{}` family, which only the SimpleTests and Mem-Sequence run, and \
-            this plan has neither: it changes nothing",
+            "pattern-mode={mode} is the native `{}` family, which only the SimpleTests, Mem-Sequence and the page \
+            exchange's tests run, and this plan has none: it changes nothing",
             family.name()
         );
     }
@@ -590,7 +598,7 @@ pub fn seal_use(test_name: &str) -> SealUse {
         SealUse::Check
     } else if test_name.starts_with("Mem-MirrorV2") {
         SealUse::Data
-    } else if test_name.starts_with("Mem-") && test_name != "Mem-Random" {
+    } else if test_name.starts_with("Mem-") && test_name != "Mem-Random" && test_name != crate::storm::TEST_NAME {
         SealUse::Wrap
     } else {
         SealUse::Never
@@ -2359,14 +2367,40 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
                 .with_timing(TestTiming::duration_only(30))
                 .with_memory_type(None),
         ),
-        // A GSAT-style page exchange (TODO 28): every thread's extent in tiles of the chunk, 2 MiB (a large page), which threads claim
-        // from each other, check against their last writer's pattern and rewrite, so they cross threads, CCDs and NUMA nodes
+        // The GSAT-style page exchange (TODO 28): every thread's extent in tiles of the chunk, 2 MiB (a large page), which threads claim
+        // from each other and check against their image, so they cross threads, CCDs and NUMA nodes. Mem-PageExchange copies each into the
+        // claimer's held tile (GSAT's default), -Invert inverts it in place, -Rewrite writes it a new image
         (
             "Mem-PageExchange",
             TestFunction::MultiBlock(crate::exchange::page_exchange_multi),
             TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 2 * MB })
                 .with_timing(TestTiming::duration_only(30))
                 .with_memory_type(None),
+        ),
+        (
+            "Mem-PageExchange-Invert",
+            TestFunction::MultiBlock(crate::exchange::page_exchange_invert_multi),
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 2 * MB })
+                .with_timing(TestTiming::duration_only(30))
+                .with_memory_type(None),
+        ),
+        (
+            "Mem-PageExchange-Rewrite",
+            TestFunction::MultiBlock(crate::exchange::page_exchange_rewrite_multi),
+            TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 2 * MB })
+                .with_timing(TestTiming::duration_only(30))
+                .with_memory_type(None),
+        ),
+        // GSAT's cache coherency test (TODO 28): every thread bumps its own byte of a few shared cache lines, so they move from core to core
+        // over the fabric. Its lines are the step's, not its span: a granule's extent, which it leaves alone
+        (
+            "Mem-CoherenceStorm",
+            TestFunction::MultiBlock(crate::storm::coherence_storm_multi),
+            TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: crate::test_memory::GRANULE }, ChunkMode::Absolute {
+                size_bytes: crate::test_memory::GRANULE,
+            })
+            .with_timing(TestTiming::duration_only(30))
+            .with_memory_type(None),
         ),
         // Protected victims, memtest86's modulo-20 (TODO 97): chunks twice the L3, as the moving inversions'
         (
@@ -5153,8 +5187,10 @@ mod tests {
             if matches!(def.config.chunk_mode, ChunkMode::Absolute { .. }) {
                 def.config.chunk_mode = ChunkMode::Absolute { size_bytes: 68 * KIB };
             }
-            // Writers cover the whole extent; read-only bandwidth tests and dependent verifies don't
-            let writes_all = def.actual_name.starts_with("Mem-") || def.actual_name.starts_with("Bench-Init-");
+            // Writers cover the whole extent; read-only bandwidth tests, dependent verifies and the coherence storm (its lines are the
+            // step's) don't
+            let writes_all = (def.actual_name.starts_with("Mem-") && def.actual_name != crate::storm::TEST_NAME)
+                || def.actual_name.starts_with("Bench-Init-");
             if writes_all {
                 region.words().fill(UNTOUCHED);
             }
@@ -5212,9 +5248,9 @@ mod tests {
     }
 
     /// TODO 76: chunks overlap where they don't tile, so a word's value may depend only on its position. Each writer whose last pass covers
-    /// every word leaves the same image at 68 KiB and 100 KiB chunks (Mem-Stride's last pass doesn't, and Mem-PageExchange's tiles hold
-    /// their last writer's pattern by design: they never overlap, TODO 28), and each Bench-Verify finds its Bench-Init's image clean at a
-    /// third size, 132 KiB.
+    /// every word leaves the same image at 68 KiB and 100 KiB chunks (Mem-Stride's last pass doesn't, and the page exchange's tiles hold
+    /// their own images by design: they never overlap, TODO 28), and each Bench-Verify finds its Bench-Init's image clean at a third
+    /// size, 132 KiB.
     #[test]
     fn writers_leave_the_same_image_at_any_chunk_size() {
         let mut region = Region::new(&[256 * KIB, 256 * KIB, 128 * KIB]);
@@ -5229,7 +5265,8 @@ mod tests {
             let name = def.actual_name;
             if !(name.starts_with("Mem-") || name.starts_with("Bench-Init-"))
                 || name.starts_with("Mem-Stride")
-                || name == crate::exchange::TEST_NAME
+                || crate::exchange::is_exchange(name)
+                || name == crate::storm::TEST_NAME
             {
                 continue;
             }

@@ -749,8 +749,8 @@ pub struct TestMemoryConfig {
     pub display_name: Option<String>,
     /// The seal as this step runs it (TODO 74), set per step by the runner.
     pub seal: crate::seal::SealStep,
-    /// The native program a SimpleTest runs (pattern spec v2, `crate::pattern`). `None` with no `pattern_mode` is the default program; a
-    /// `pattern_mode` runs that TMR mode (spec 1).
+    /// The native program a SimpleTest, Mem-Sequence or the page exchange runs (pattern spec v2, `crate::pattern`). `None` with no
+    /// `pattern_mode` is the test's default program; a `pattern_mode` runs that TMR mode (spec 1).
     pub program: Option<crate::pattern::Program>,
     /// Mem-Sequence's passes (`crate::sequence`); `None` is its default, `W 5R`. Boxed: the registry builds a config per test by value, and
     /// 132 bytes more each made the release build 3x slower
@@ -758,9 +758,12 @@ pub struct TestMemoryConfig {
     /// Where this step runs in the suite (run seed, suite cycle, step), for the native patterns' keys; set per dispatch by the runner, all
     /// zero outside a run and for the Bench pairs.
     pub epoch: crate::pattern::StepEpoch,
-    /// The page exchange's step, which its workers share (TODO 28, `exchange::Step`): set per dispatch by the worker pool for
-    /// Mem-PageExchange, `None` for every other test and outside a run.
+    /// The page exchange's step, which its workers share (TODO 28, `exchange::Step`): set per dispatch by the worker pool for the
+    /// page exchange's tests, `None` for every other test and outside a run.
     pub exchange: Option<std::sync::Arc<crate::exchange::Step>>,
+    /// The coherence storm's step, its shared lines (TODO 28, `storm::Step`): set per dispatch by the worker pool for
+    /// Mem-CoherenceStorm, `None` for every other test and outside a run.
+    pub storm: Option<std::sync::Arc<crate::storm::Step>>,
 }
 
 impl TestMemoryConfig {
@@ -789,6 +792,7 @@ impl TestMemoryConfig {
             sequence: None,                                      // Mem-Sequence's passes; its default when unset
             epoch: crate::pattern::StepEpoch::default(),         // Set per dispatch by the runner
             exchange: None,                                      // Set per dispatch by the worker pool, for the page exchange
+            storm: None,                                         // Set per dispatch by the worker pool, for the coherence storm
         }
     }
 
@@ -993,7 +997,8 @@ impl TestMemoryConfig {
             "Mem-ModuloX" => 64,                               // Whole lines
             "Mem-Sequence" => 64,                              // Native lines at 256 or 512 bits
             "Mem-TileTransform" => 1024,                       // AMX tiles, 1 KiB each; a chunk's ends may cut a group (TODO 102)
-            "Mem-PageExchange" => 4096,                        // Its tiles: whole pages (TODO 28)
+            "Mem-PageExchange" | "Mem-PageExchange-Invert" | "Mem-PageExchange-Rewrite" => 4096, // Their tiles: whole pages (TODO 28)
+            "Mem-CoherenceStorm" => 4096,                      // Its extent, which it leaves alone: one granule (TODO 28)
             // v2 tests
             "Mem-SimpleV2-128" => 16,  // u64x2 (128-bit)
             "Mem-SimpleV2-256" => 32,  // u64x4 (256-bit)
@@ -6209,15 +6214,15 @@ impl NativeRun {
 /// `phase`'s. Sequential, or TM5's strided walk (`strided_walk!`) when `period`, its period in words, isn't 0. Each walk at each width is a
 /// function of its own (`native_simple_impl!`'s walks module), called once a chunk, so its loops keep every value in registers (TODO 99):
 /// in the per-chunk closures, with both walks of every family and beat in one function, values spilled to the stack in loops of a dozen
-/// instructions.
+/// instructions. The page exchange's kernels walk their tiles with the sequential walks (`exchange::kernels`).
 #[derive(Clone, Copy)]
-struct NativeChunk {
-    base: *mut u64,
-    start: usize,
-    end: usize,
-    lid0: u64,
-    period: usize,
-    phase: crate::pattern::Phase,
+pub(crate) struct NativeChunk {
+    pub(crate) base: *mut u64,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) lid0: u64,
+    pub(crate) period: usize,
+    pub(crate) phase: crate::pattern::Phase,
 }
 
 /// `p` as it went in, through an optimisation barrier: TODO 99's one helper for it, with `opaque_u64` its form for an integer (Rule 6.14 of
@@ -6252,7 +6257,7 @@ struct NativeChunk {
 /// Its effect is the compiler's, not a promise: a new toolchain may see through it, or schedule around it differently. On a toolchain
 /// update, re-read the release asm of the walks above (`tools/hot_loop_spills.py`, Rule 6).
 #[inline(always)]
-fn opaque_ptr(mut p: *mut u64) -> *mut u64 {
+pub(crate) fn opaque_ptr(mut p: *mut u64) -> *mut u64 {
     // SAFETY: the template is a comment: the register comes out as it went in
     unsafe { std::arch::asm!("/* {0} */", inout(reg) p, options(pure, readonly, nostack, preserves_flags)) };
     p
@@ -6301,6 +6306,8 @@ macro_rules! native_write_seq {
         }
     }};
 }
+
+pub(crate) use native_write_seq;
 
 /// The strided write of `$c` (see `native_write_seq`): TM5's walk, `strided_walk!`.
 macro_rules! native_write_strided {
@@ -8853,6 +8860,9 @@ pub fn get_test_function_by_name(name: &str) -> Option<crate::runner::TestFuncti
         "Mem-Sequence" => Some(TestFunction::MultiBlock(sequence_auto_multi)),
         "Mem-TileTransform" => Some(TestFunction::MultiBlock(crate::xform::tile_transform_multi)),
         "Mem-PageExchange" => Some(TestFunction::MultiBlock(crate::exchange::page_exchange_multi)),
+        "Mem-PageExchange-Invert" => Some(TestFunction::MultiBlock(crate::exchange::page_exchange_invert_multi)),
+        "Mem-PageExchange-Rewrite" => Some(TestFunction::MultiBlock(crate::exchange::page_exchange_rewrite_multi)),
+        "Mem-CoherenceStorm" => Some(TestFunction::MultiBlock(crate::storm::coherence_storm_multi)),
 
         // Sequential Bandwidth Tests (Spd-*-Auto → auto-dispatched)
         // Cached (L1/L2/L3) variants

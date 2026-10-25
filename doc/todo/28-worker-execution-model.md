@@ -243,3 +243,83 @@ is hot only briefly. Deliberate cache-to-cache handoff needs the ring above.
 
 Tiles of 1 MiB and up (the owner); at 1 MiB the pool's counter takes twice the claims it does at
 2 MiB, still about 2% of what one cache line can serve on a 256-thread machine.
+
+## The plan (2026-10-25)
+
+stressapptest's source, read for it (`sat.cc`, `worker.cc`, `adler32memcpy.cc`, `sattypes.h`): pages
+of 1 MiB, about 2/5 kept empty as copy targets; by default copy threads only, one a CPU (invert
+`-i` and check `-c` threads are off unless asked); strict on, so every copy checks its source.
+The copy is a plain C loop (cached stores) summing an Adler checksum as it goes, and a mismatch
+rechecks the source word by word. NT stores (`movntdq`) are only in `-W`'s warm copy. Invert works
+32 bits at a time in place, up, down, down, up (ending as it began), checked before and after only.
+A page's pattern comes from its library at the fill and moves with its data.
+
+The owner's plan, from that:
+- **Three tests on one engine**, the claim protocol, sharing groups, seal and tiles as built:
+  `Mem-PageExchange` copies (GSAT's default), `Mem-PageExchange-Invert` checks and flips in place,
+  `Mem-PageExchange-Rewrite` checks and writes a new image (the build of 2026-10-24). Each op a
+  loop of its own and a traffic of its own, so the results tell them apart, and as named tests
+  they run as steps of one run, on the same memory.
+- **Stores** (`exchange_stores`): cached or NT, for each. Copy and invert default to cached
+  (GSAT's), the rewrite to NT (as built). A cached store usually reads its line first and the
+  cache writes it back on eviction: three transfers a copied line to NT's two, a different
+  read/write mix. No ring of recently released tiles: GSAT has none, and its cache-to-cache
+  traffic is incidental.
+- **Patterns**: the native families by `program` (all seven by default), each tile's image its
+  own family, key and polarity, named by its state word. A word's value comes from its position
+  in its tile, not its address, so a copy is right where it lands. Polarity is the pattern's:
+  new images alternate it a program lap in turn; a copy moves data as it is; invert flips it.
+- **Copy**: each thread holds one empty tile, not GSAT's 2/5. A claim copies its tile into the
+  held one, checking it on the way; the held tile goes back to the pool with the image, and the
+  claimed one is held next. One claim a copy, and nearly all memory holds checked data. A tile's
+  first claim fills it (after the seal's check, in a sealed step); a short last tile can't be
+  copied into a full one, so it is checked and rewritten in place.
+- **Checking** compares every word against the pattern (TMR's accumulator), not GSAT's checksum:
+  exact, where a plain sum misses two flips of a word's top bit. If generating the pattern in the
+  copy loop can't keep up, a GSAT-style checksum is the fallback.
+- **Invert** is one checked pass a claim, upward only (with no physical addresses, the walk's
+  direction says little about cell order).
+- **Not planned**: GSAT's warm copy (CPU heat) and its check threads (every op checks its reads).
+- **Acceptance**: petz007's fault with the three and a reference test as steps of one run,
+  daddy-petz clean over a long run, a two-node machine for scaling; the results pick the plan.
+
+After the exchange, TODO 28's v1 keeps one part: the coherence storm, its own test. GSAT's
+`--cc_test` (off by default) gives each thread its own byte in each of a few shared lines; a
+thread bumps its byte in random lines, so the lines bounce between cores (across CCDs and nodes)
+with almost no DRAM traffic, and at the end it checks its bytes add up to its increments (a lost
+write is a coherence failure). Dropped (the owner, 2026-10-25): different tests at once across
+threads, since GSAT runs only its own thread types together. That GSAT form, copy and invert
+threads on one pool at once (`-m 8 -i 4`), falls out of the three ops: a setting giving some of
+the exchange's threads invert, off by default.
+
+## As built (2026-10-25)
+
+The plan above, with what the build settled:
+- **One engine, three tests** (`src/exchange.rs`): the state word names an image (its writer, its
+  family's place in the program, its number, its polarity), and a second word on the tile's line
+  names who last wrote its bytes, for a bad word's story. A first claim fills; then the copy copies
+  into the held tile, the invert flips in place, the rewrite writes a new image. A copy's short last
+  tile is checked and rewritten in place. A claim that finds bad words writes the image whole again
+  (the held tile, the inverted tile), so each is counted once; under a halt the source keeps them.
+- **The held tile**: each copier takes its first full tile before the barrier (its seal checked in
+  a sealed step; if the check fails, the tile holds no image and gets one at the end). At the end a
+  held tile goes back with the image it holds, or a new one if it never held one (a one-pass step),
+  so the end's check covers it.
+- **`exchange_invert`** (percent) gives that share of the copy's threads invert, spread evenly over
+  thread indices: GSAT's copy and invert threads at once.
+- **The kernels** (`src/exchange/kernels.rs`), at 256 and 512 bits: the cached fill is native
+  SimpleTest's write; the check, copy and invert take spelled-out steps, 4 vectors for the families
+  computed as vectors and a line for the switching ones, each arm of `with_phase_vectors!` naming
+  only its own (its `switching` body). The first build left the steps to the compiler: at 512 bits
+  the heavier families' accumulators went to a stack array (28 SIMD round trips over the kernels).
+  Spelled out, the switching families still spilled their scalar hashes at a step of two or four
+  lines; a line a step they don't. A branch on the family beside the dispatch wasn't folded into its
+  arms, so both shapes were compiled for every family until the macro took the second body. Final
+  asm: no round trip in any exchange or storm loop (the table's 3 and 3 are the baseline's), the
+  rest of the table unchanged; every NT variant has `vmovntdq` and its SFENCE, no cached one does,
+  no `memcpy` or `memset`, and the 256-bit kernels use no zmm. The storm's bump is the pick, a
+  pointer load and an unlocked `incb`, unrolled twice.
+- **Mem-CoherenceStorm** (`src/storm.rs`): GSAT's `--cc_test` with two changes. A line's 64 sharers
+  are spread over the threads (`t % group`), so on a big machine they sit on different CCDs, where
+  GSAT's are neighbours; and each thread replays its picks to check every byte exactly, where GSAT
+  compares a sum's low byte. Defaults are GSAT's: 2 structures, 1000 bumps a check.

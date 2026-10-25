@@ -124,7 +124,7 @@ impl<'a> TestRunner<'a> {
             log_name,
             crate::test_memory::size_str(total_test_size),
             crate::test_memory::size_str(extent_size),
-            if test_name == crate::exchange::TEST_NAME {
+            if crate::exchange::is_exchange(test_name) {
                 crate::test_memory::describe_tiles(total_test_size, chunk)
             } else {
                 crate::test_memory::describe_chunks(runner.chunks(total_test_size))

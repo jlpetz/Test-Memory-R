@@ -345,9 +345,15 @@ pub fn linepair_line_v<const N: usize, const V: usize>(lid: u64, key: u64) -> [V
 }
 
 /// Runs `$body` with `$line` the phase's line function at `$n` lanes (a line id to its `8 / $n` vectors, the polarity applied), matched
-/// once outside the body, so a loop in it is compiled per family and beat with no branch on either.
+/// once outside the body, so a loop in it is compiled per family and beat with no branch on either. With a second body after `switching`,
+/// the switching families (`switch`, `quiet`, `header`) run that one instead: each arm names only its own body's functions, so a kernel
+/// whose shape differs by family isn't compiled in both shapes for every family (the page exchange's, TODO 28; a branch on the family
+/// beside the match isn't folded into its arms).
 macro_rules! with_phase_vectors {
-    ($n:tt, $phase:expr, |$line:ident| $body:block) => {{
+    ($n:tt, $phase:expr, |$line:ident| $body:block) => {
+        $crate::pattern::with_phase_vectors!($n, $phase, |$line| $body, switching | $line | $body)
+    };
+    ($n:tt, $phase:expr, |$line:ident| $body:block, switching |$sline:ident| $sbody:block) => {{
         const V: usize = $crate::pattern::LINE_WORDS / $n;
         let phase: $crate::pattern::Phase = $phase;
         let key = phase.key;
@@ -372,67 +378,67 @@ macro_rules! with_phase_vectors {
                 $body
             }
             (Family::Switch, BusBeat::Bits12) => {
-                let $line = |lid: u64| $crate::pattern::switch_line_v::<$n, V>(lid, key, BusBeat::Bits12).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::switch_line_v::<$n, V>(lid, key, BusBeat::Bits12).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Switch, BusBeat::Bits16) => {
-                let $line = |lid: u64| $crate::pattern::switch_line_v::<$n, V>(lid, key, BusBeat::Bits16).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::switch_line_v::<$n, V>(lid, key, BusBeat::Bits16).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Switch, BusBeat::Bits24) => {
-                let $line = |lid: u64| {
+                let $sline = |lid: u64| {
                     let hash = $crate::pattern::fmix(lid.wrapping_add(key));
                     $crate::pattern_switch24::vectors!($n, hash).map(|x| x ^ mask)
                 };
-                $body
+                $sbody
             }
             (Family::Switch, BusBeat::Bits32) => {
-                let $line = |lid: u64| $crate::pattern::switch_line_v::<$n, V>(lid, key, BusBeat::Bits32).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::switch_line_v::<$n, V>(lid, key, BusBeat::Bits32).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Switch, BusBeat::Bits64) => {
-                let $line = |lid: u64| $crate::pattern::switch_line_v::<$n, V>(lid, key, BusBeat::Bits64).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::switch_line_v::<$n, V>(lid, key, BusBeat::Bits64).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Quiet, BusBeat::Bits12) => {
-                let $line = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits12).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits12).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Quiet, BusBeat::Bits16) => {
-                let $line = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits16).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits16).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Quiet, BusBeat::Bits24) => {
-                let $line = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits24).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits24).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Quiet, BusBeat::Bits32) => {
-                let $line = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits32).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits32).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Quiet, BusBeat::Bits64) => {
-                let $line = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits64).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::quiet_line_v::<$n, V>(lid, key, BusBeat::Bits64).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Header, BusBeat::Bits12) => {
-                let $line = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits12).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits12).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Header, BusBeat::Bits16) => {
-                let $line = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits16).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits16).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Header, BusBeat::Bits24) => {
-                let $line = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits24).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits24).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Header, BusBeat::Bits32) => {
-                let $line = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits32).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits32).map(|x| x ^ mask);
+                $sbody
             }
             (Family::Header, BusBeat::Bits64) => {
-                let $line = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits64).map(|x| x ^ mask);
-                $body
+                let $sline = |lid: u64| $crate::pattern::header_line_v::<$n, V>(lid, key, BusBeat::Bits64).map(|x| x ^ mask);
+                $sbody
             }
         }
     }};
@@ -499,6 +505,12 @@ impl Program {
     pub fn default_simple() -> Self {
         Program::new(&[Family::Random, Family::Header, Family::Random, Family::Switch, Family::Random, Family::Quiet])
             .expect("a valid program")
+    }
+
+    /// The page exchange's program when its config names none (TODO 28): every family, so its tiles hold a mix at every moment, as
+    /// GSAT gives each page a pattern of its library's.
+    pub fn default_exchange() -> Self {
+        Program::new(&Family::ALL).expect("a valid program")
     }
 
     /// What a TM5 `.cfg`'s SimpleTest `Pattern Mode` imports as: its intent's family and switching, then mixed data and switching. `None`

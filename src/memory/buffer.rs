@@ -81,6 +81,7 @@ unsafe impl Send for MemoryBuffer {}
 //
 // The page exchange (TODO 28, `exchange.rs`) reads and writes other workers' blocks, a tile at a time, and only a tile it holds: each tile
 // has a state word, claimed with a compare-and-swap (Acquire) and released with a store (Release), so one thread at a time works a tile
-// and each sees the stores of the one before. During its step no worker touches its span but through that protocol, and after it (a
+// (a copy's held tile stays claimed while it is held) and each sees the stores of the one before. During its step no worker touches its
+// span but through that protocol, and after it (a
 // barrier) each touches only its own again. A new test that shares memory across threads must keep to it, or one of its own as explicit.
 unsafe impl Sync for MemoryBuffer {}

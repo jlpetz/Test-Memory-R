@@ -10,4 +10,4 @@ overflow_delimited_expr = true
 group_imports = "StdExternalCrate"
 imports_granularity = "Module"
 # The kernels' instantiation tables: one call a width, laid out as rows by hand
-skip_macro_invocations = ["tmr_kernels", "tm5_kernels", "simple_simd_loops", "simple_test_v2_impl", "native_simple_impl", "mirror_move_v2_impl", "bench_seal_fns"]
+skip_macro_invocations = ["tmr_kernels", "tm5_kernels", "exchange_kernels", "simple_simd_loops", "simple_test_v2_impl", "native_simple_impl", "mirror_move_v2_impl", "bench_seal_fns"]

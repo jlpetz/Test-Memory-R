@@ -36,8 +36,25 @@ pub(crate) fn format_parameter_context(ctx: &Option<crate::config::TestParameter
             if c.tile_patterns.is_some() || c.tile_load.is_some() {
                 return format!("Tiles({},r{})", c.tile_patterns.unwrap_or(crate::xform::DEFAULT_X), c.tile_load.unwrap_or(0));
             }
-            if let Some(share) = c.exchange_share {
-                return format!("Share({})", share.name());
+            if c.exchange_share.is_some() || c.exchange_stores.is_some() || c.exchange_invert.is_some() {
+                let mut parts = Vec::new();
+                if let Some(share) = c.exchange_share {
+                    parts.push(format!("Share({})", share.name()));
+                }
+                if let Some(stores) = c.exchange_stores {
+                    parts.push(format!("Stores({})", stores.name()));
+                }
+                if let Some(p) = c.exchange_invert {
+                    parts.push(format!("Invert({p}%)"));
+                }
+                return parts.join(",");
+            }
+            if c.storm_lines.is_some() || c.storm_increments.is_some() {
+                return format!(
+                    "Lines({}),Bumps({})",
+                    c.storm_lines.unwrap_or(crate::storm::DEFAULT_LINES),
+                    c.storm_increments.unwrap_or(crate::storm::DEFAULT_INCREMENTS)
+                );
             }
             if let Some(ms) = c.wait_ms {
                 return match ms {
