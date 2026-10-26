@@ -1,4 +1,4 @@
-; TMR's installer (TODO 104), for Inno Setup 6. release.yml builds it on each tag, from the files it stages:
+; TMR's installer (TODO 104), for Inno Setup 7.1. release.yml builds it on each tag, from the files it stages:
 ;
 ;   iscc /DAppVersion=0.1.0 /DStage=<folder> dist\tmr.iss
 ;
@@ -34,8 +34,10 @@ DefaultDirName={autopf}\TMR
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=dialog commandline
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+; A 64-bit setup program (Inno Setup 7), as tmr.exe is: no WOW64 needed, which Server Core can be without. It installs and runs on
+; x64compatible Windows only, in 64-bit mode (Program Files, the registry's 64-bit view): what SetupArchitecture=x64 sets as their
+; defaults
+SetupArchitecture=x64
 ; The console runs from Server 2022 (build 20348); the window needs build 22000 (crates/tmr-app/build.rs)
 MinVersion=10.0.20348
 ChangesEnvironment=yes
@@ -136,7 +138,7 @@ var
 begin
   Result := True;
   if WizardSilent then exit;
-  if RegQueryDWordValue(HKLM64, VCRedistKey, 'Installed', Installed) and (Installed = 1) then exit;
+  if RegQueryDWordValue(HKEY_LOCAL_MACHINE, VCRedistKey, 'Installed', Installed) and (Installed = 1) then exit;
   Result := MsgBox('TMR needs the Microsoft Visual C++ Redistributable (x64), which this PC doesn''t have. TMR doesn''t bundle it, '
     + 'so that Windows keeps one copy up to date.' + #13#10#13#10
     + 'Get it from https://aka.ms/vs/17/release/vc_redist.x64.exe, or with:' + #13#10

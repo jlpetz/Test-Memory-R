@@ -141,15 +141,16 @@ the crates exist.
 
 ## The release (stage 4)
 
-`release.yml`, on a `v*.*.*` tag: refuses a tag that isn't the workspace's version, runs CI's
-clippy and tests (CI doesn't run on tags), builds with `--locked`, stages the installer's files
-(`tmr.exe`; `docs\`: `dist/docs/guide.md`, the licences, `THIRD-PARTY-NOTICES.html` from `cargo
-about` with `dist/about.toml` and `about.hbs`; `configs\`: `dist/configs/README.txt` and the two
-demo configs, which `tmr --create-demo-configs` writes with `TMR_HOME` on the stage), builds
-`dist/tmr.iss` with Inno Setup 6, and uploads the installer, `tmr.exe`, `tmr.pdb`, the notices
-and `SHA256SUMS.txt`. A tag with a `-` is a pre-release. For all users, `{app}\configs`,
-`results`, `logs` and a `{}` `tmr-cfg.json` (`dist/tmr-cfg.json`, which TMR reads as no settings)
-get `users-modify`; `{app}` and `tmr.exe` keep Program Files' ACL.
+`release.yml`, on a `v*.*.*` tag: refuses a tag that isn't the workspace's version, runs CI's clippy
+and tests (CI doesn't run on tags), builds with `--locked`, stages the installer's files (`tmr.exe`;
+`docs\`: `dist/docs/guide.md`, the licences, `THIRD-PARTY-NOTICES.html` from `cargo about` with
+`dist/about.toml` and `about.hbs`; `configs\`: `dist/configs/README.txt` and the two demo configs,
+which `tmr --create-demo-configs` writes with `TMR_HOME` on the stage), builds `dist/tmr.iss` with
+Inno Setup 7.1 (a 64-bit setup, `SetupArchitecture=x64`, the owner 2026-10-26; the runners have only
+6.7, so the job takes 7.1.0's release, pinned by its SHA-256), and uploads the installer, `tmr.exe`,
+`tmr.pdb`, the notices and `SHA256SUMS.txt`. A tag with a `-` is a pre-release. For all users,
+`{app}\configs`, `results`, `logs` and a `{}` `tmr-cfg.json` (`dist/tmr-cfg.json`, which TMR reads
+as no settings) get `users-modify`; `{app}` and `tmr.exe` keep Program Files' ACL.
 
 ## An installer? (weighed 2026-10-24; Inno Setup chosen 2026-10-25, above)
 
