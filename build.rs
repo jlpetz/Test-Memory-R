@@ -3,7 +3,8 @@
 //! the commit reads `unknown`. A crate from crates.io (TODO 104) has no git, but the commit it was packaged from, in its
 //! `.cargo_vcs_info.json`.
 //!
-//! And whether docs.rs is building it (`tmr_docs_rs`), which lets its build through the baseline check (`src/lib.rs`).
+//! And whether docs.rs is building it (`tmr_docs_rs`), which lets its build through the baseline check (`src/lib.rs`); and the target
+//! features the build enables (`TMR_TARGET_FEATURES`), for `cpu_check`'s test that it checks each.
 
 use std::path::Path;
 use std::process::Command;
@@ -14,6 +15,7 @@ fn main() {
     if std::env::var_os("DOCS_RS").is_some() {
         println!("cargo::rustc-cfg=tmr_docs_rs");
     }
+    println!("cargo::rustc-env=TMR_TARGET_FEATURES={}", std::env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default());
 
     // A command's trimmed output, `None` when it can't run or fails
     let output = |program: &str, args: &[&str]| {

@@ -26,12 +26,15 @@ rustflags = ["-C", "target-cpu=x86-64-v3"]
 # "clflushopt")] fn (flush_range_to_dram in tests.rs; its doc has the nightly gates and
 # why the intrinsic replaced the earlier inline asm!). Because the binary CONTAINS
 # clflushopt, TMR GATES AT STARTUP (src/cpu_check.rs, which tmr.exe's main.rs and
-# session::run call): it requires AVX2 + CLFLUSHOPT via is_x86_feature_detected! (clflushopt
-# detection is behind a nightly gate at the engine's root) and exits cleanly if absent
-# rather than #UD-faulting. A build without this file's baseline stops (src/lib.rs, TODO
+# session::run call): it reads CPUID (and XCR0, for the OS's AVX support) for every
+# x86-64-v3 feature and CLFLUSHOPT, and exits cleanly when one is absent rather than
+# #UD-faulting mid-test: a CPU with AVX reaches it, one without faults on main's first
+# instructions (its module doc). Not is_x86_feature_detected!, which is a constant `true` for
+# a feature this file enables. A build without this file's baseline stops (src/lib.rs, TODO
 # 104). This drops pre-2015
 # CPUs (Intel pre-Skylake incl. Haswell/Broadwell which have AVX2 but no CLFLUSHOPT; AMD
-# pre-Excavator/pre-Zen) — all DDR3/DDR4 era and irrelevant to a DDR5 tester.
+# before Zen, Excavator having AVX2 but no CLFLUSHOPT) — all DDR3/DDR4 era and irrelevant to
+# a DDR5 tester.
 #
 # Use "native" only for local development benchmarking on a known CPU.
 # rustflags = ["-C", "target-cpu=native"]

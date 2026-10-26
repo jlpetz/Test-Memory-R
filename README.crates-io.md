@@ -22,8 +22,8 @@ Building it needs:
 - **The x86-64-v3 baseline**, `RUSTFLAGS="-C target-cpu=x86-64-v3"`: the kernels take their 256-bit
   width from it, so a build without it stops. The repository's `.cargo/config.toml` sets it.
 
-At run time the CPU needs AVX2 and CLFLUSHOPT, a 2015-or-newer CPU: `tmr::cpu_check` says whether
-it has them, and a session refuses to start without them.
+At run time the CPU needs AVX2 and CLFLUSHOPT, an Intel Skylake (2015) or AMD Zen (2017) or newer
+CPU: `tmr::cpu_check` says whether it has them, and a session refuses to start without them.
 
 TMR is pre-1.0: its API can change with each minor version.
 

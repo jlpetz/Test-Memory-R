@@ -137,12 +137,16 @@ unsafe extern "system" fn crash_exception_handler(info: *mut EXCEPTION_POINTERS)
 }
 
 /// Stops here, with the reason on the console and in a box, when the CPU lacks a feature TMR is built for (`tmr::cpu_check`): rather than
-/// an illegal-instruction fault mid-test.
+/// an illegal-instruction fault mid-test. In the window's mode the box is `fatal_box::ascii_box`, which a CPU with AVX but not AVX2 or BMI2
+/// can run, not `show_fatal`'s (the module doc of `cpu_check`).
 fn require_cpu_features() {
     if let Some(refusal) = tmr::cpu_check::refusal() {
         let text = format!("FATAL: {refusal}");
         eprintln!("{text}");
-        show_fatal(&text);
+        #[cfg(feature = "gui")]
+        if GUI_MODE.load(Ordering::Relaxed) {
+            fatal_box::ascii_box(&text);
+        }
         exit(RunStatus::NotRun.exit_code());
     }
 }
@@ -188,22 +192,24 @@ fn main() {
         // shows a box too). A build without the window has no box.
         let text = launch.message().expect("a refused launch says why");
         eprintln!("{text}");
+        // The ANSI box, as the CPU gate's: this comes before the gate (`fatal_box::ascii_box`), and the text is ASCII
         #[cfg(feature = "gui")]
-        message_box(&text);
+        fatal_box::ascii_box(&text);
         exit(RunStatus::NotRun.exit_code());
     }
     GUI_MODE.store(launch.mode == Mode::Gui, Ordering::Relaxed);
-    #[cfg(feature = "gui")]
-    if launch.mode == Mode::Gui {
-        fatal_box::arm();
-    }
     if launch.alloc_console {
         launch::alloc_console();
     }
 
     // 4. CPU capability gate — TMR is built for x86-64-v3 (AVX2) and requires CLFLUSHOPT (not part of any psABI level, so the compiler
-    //    baseline can't guarantee it). Reject unsupported CPUs cleanly here rather than letting them #UD-fault mid-test.
+    //    baseline can't guarantee it). Reject unsupported CPUs cleanly here rather than letting them #UD-fault mid-test. Before the crash
+    //    box arms: its UTF-16 caption takes BMI2 code, which the CPUs refused for AVX2 lack (`tmr::cpu_check`'s module doc).
     require_cpu_features();
+    #[cfg(feature = "gui")]
+    if launch.mode == Mode::Gui {
+        fatal_box::arm();
+    }
 
     // The console Windows opened for the window is left only now, so the gate's text above was on it
     if launch.free_console {

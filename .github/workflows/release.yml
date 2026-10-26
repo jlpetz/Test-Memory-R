@@ -35,11 +35,17 @@ jobs:
       with:
         tool: cargo-nextest,cargo-about
 
-    # CI doesn't run on tags, so a release checks what it ships as CI does (Rust-nightly-build.yml)
+    # CI doesn't run on tags, so a release checks what it ships as CI does (Rust-nightly-build.yml), a step each: a pwsh step's result is
+    # its last command's, so a failed command before it would pass unseen. The last is tmr.exe without the window, which crates.io's
+    # `cargo install --no-default-features` builds.
     - name: 🧹 Run clippy
-      run: |
-        cargo +nightly clippy --workspace --all-targets --all-features --locked -- -D warnings
-        cargo +nightly clippy --workspace --locked -- -D warnings
+      run: cargo +nightly clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+    - name: 🧹 Run clippy, the engine as tmr.exe builds it
+      run: cargo +nightly clippy --workspace --locked -- -D warnings
+
+    - name: 🧹 Run clippy, tmr.exe without the window
+      run: cargo +nightly clippy -p test-memory-r --no-default-features --locked -- -D warnings
 
     - name: 🧪 Run tests
       run: cargo +nightly nextest run --workspace --all-targets --locked --no-fail-fast

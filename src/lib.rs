@@ -15,7 +15,8 @@
 // 128-bit instructions, without a word. The repo's `.cargo/config.toml` sets it, but `cargo install` doesn't read a package's config,
 // and a RUSTFLAGS replaces the config's flags (TODO 104). The whole level, not AVX2 alone, which `-C target-feature=+avx2` would pass.
 // Docs builds are let through: rustdoc never gets the baseline (`doc`), and docs.rs builds the crate as a dependency of the one it
-// documents (`tmr_docs_rs`, from build.rs). CLFLUSHOPT is in no baseline: `cpu_check` checks it at run time.
+// documents (`tmr_docs_rs`, from build.rs). The CPU's side is `cpu_check`'s, at run time: the level's features, read from CPUID, and
+// CLFLUSHOPT, which is in no level.
 #[cfg(not(any(
     all(
         target_feature = "avx2",

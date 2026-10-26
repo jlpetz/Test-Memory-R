@@ -58,11 +58,13 @@ range invalidated again just before it (the follow-up of the pattern audit,
 `doc/pattern_followup_2026-10-10.md`). For a retention test the order is: write,
 flush and fence, wait, invalidate if needed, verify.
 
-**Hardware availability**: Intel Skylake+ (2015), AMD Excavator+ (2015) / Zen+.
+**Hardware availability**: Intel Skylake+ (2015), AMD Zen+ (2017; Excavator has none).
 CPUID feature flag: `clflushopt` (leaf 7, EBX bit 23). NOT part of any psABI
 microarch level (v1-v4) — it is a standalone flag, so the compiler baseline
 cannot guarantee it. TMR **requires** it: a startup CPUID check (`src/cpu_check.rs`,
-which tmr.exe and `session::run` call) rejects CPUs lacking AVX2 + CLFLUSHOPT and exits cleanly. We therefore emit
+which tmr.exe and `session::run` call) rejects CPUs lacking any x86-64-v3 feature (AVX2
+among them) or CLFLUSHOPT and exits cleanly (a CPU without AVX faults before it: its module
+doc). We therefore emit
 CLFLUSHOPT unconditionally (behind `#[target_feature(enable = "clflushopt")]`)
 with **no `_mm_clflush` fallback** — pre-2015 CPUs are out of scope (all
 DDR3/DDR4-era; a DDR5 tester never runs on them). Older CPUs do have plain
@@ -276,7 +278,8 @@ The two emit identical machine code; see the strategy section of
 `doc/nt_stores.md`.
 
 **No runtime fallback in TMR.** CLFLUSHOPT is guaranteed by the startup CPUID
-check (`src/cpu_check.rs` requires AVX2 + CLFLUSHOPT, and TMR exits cleanly otherwise), so the
+check (`src/cpu_check.rs` requires x86-64-v3's features and CLFLUSHOPT, read from CPUID, and
+TMR exits cleanly otherwise), so the
 flush helper emits CLFLUSHOPT unconditionally behind
 `#[target_feature(enable = "clflushopt")]`. We do **not** carry a `_mm_clflush`
 path — pre-2015 CPUs are out of scope for a DDR5 tester (see "Hardware

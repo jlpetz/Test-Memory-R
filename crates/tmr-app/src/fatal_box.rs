@@ -33,6 +33,7 @@ use crate::Fault;
 #[link(name = "user32", kind = "raw-dylib")]
 unsafe extern "system" {
     fn MessageBoxW(owner: *mut c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
+    fn MessageBoxA(owner: *mut c_void, text: *const u8, caption: *const u8, kind: u32) -> i32;
     fn SetWindowsHookExW(id: i32, hook: Option<HookProc>, module: *mut c_void, thread: u32) -> *mut c_void;
     fn CallNextHookEx(hook: *mut c_void, code: i32, wparam: usize, lparam: isize) -> isize;
 }
@@ -54,6 +55,19 @@ pub fn message_box(text: &str) {
     let (text, caption) = (wide(text), wide(CAPTION));
     // SAFETY: both are NUL-terminated UTF-16 that outlive the call, and there is no owner window
     unsafe { MessageBoxW(null_mut(), text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST) };
+}
+
+/// ASCII `text` in a message box, for the CPU gate (main.rs), which must show it on a CPU with AVX but not the rest of x86-64-v3. Not
+/// `message_box`: its UTF-16 conversion is a generic compiled in this crate for x86-64-v3, and the divide by 3 in its size hint is a MULX
+/// (BMI2; the release asm, 2026-10-26). This copies the bytes and adds the NUL. Blocks the calling thread until it is dismissed.
+pub fn ascii_box(text: &str) {
+    let mut bytes = Vec::with_capacity(text.len() + 1);
+    bytes.extend_from_slice(text.as_bytes());
+    bytes.push(0);
+    // SAFETY: both are NUL-terminated byte strings that outlive the call, and there is no owner window
+    unsafe {
+        MessageBoxA(null_mut(), bytes.as_ptr(), c"Test Memory R (TMR)".as_ptr().cast(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST)
+    };
 }
 
 /// How long a fault waits for its box to show before it ends the process without one. A box shows in milliseconds; its thread outranks the
