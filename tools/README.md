@@ -122,6 +122,16 @@ and then exits 2 rather than 1 on a change. TODO 29's baselines, at 25ff780, are
 `doc/todo/29-baselines/` with the spill table of the same build, and from S3 on each stage's own
 fingerprints, CLI and GUI (`asm_fingerprint_s4_cli.json`), which the next stage compares against.
 
+An array type in a symbol (`[u64; 128]` is `Ayj80_`: its element, then its length as a const) was
+read as an identifier as long as the const's digits, which took the crate hashes after it along.
+Checked on 2026-10-26 (TODO 104), when the crates' rename gave the engine a new hash: the release
+(1223dba) against the commit before it (4f8c20a) read `xform::Matrix`'s Debug and
+`distinct_odd_matrices` as changed, their instructions the same. An array of a basic type, a
+reference or pointer to one, or such arrays, is now read whole (`type_end`), and the release
+compares 1 changed, `tests::parse_size_string`, whose source didn't change: LTO compiled it
+otherwise (its registers and order), the code around it having changed. Against a baseline saved
+before the fix, those 2 read as changed.
+
 Since release builds carry line tables (`debug = "line-tables-only"`, d54fb4c), LLVM puts a `.Ltmp`
 label at almost every instruction, for the debug sections; the tool drops those that nothing in
 the function names. Checked on 2026-10-24: one tree built with line tables and without compares

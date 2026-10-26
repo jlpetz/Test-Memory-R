@@ -91,11 +91,39 @@ WORKERS = ["11thread_pool", "16test_scaffolding"]
 PRODUCER = re.compile(r'"[^"]*\(rustc version ([^"]+)\)"')
 
 
+# v0's basic types, and a const value after its type: `j80_` is a usize 0x80
+BASIC = "abcdefhijlmnostuxyz"
+CONST = re.compile(r"[a-z]n?[0-9a-f]*_|p")
+
+
+def type_end(sym, j):
+    """Where the type at `sym[j]` ends, when it is a basic type, a reference or pointer to one, or an
+    array of those (`A`, its element, its length); `None` for another. An array's length is a const
+    (`Ayj80_`, `[u64; 128]`), whose digits read as an identifier's length would swallow the rest of
+    the symbol, crate hashes and all."""
+    c = sym[j:j + 1]
+    if not c:
+        return None
+    if c in BASIC:
+        return j + 1
+    if c in "RQPO":
+        k = j + 1
+        # A reference's lifetime
+        if c in "RQ" and (m := re.match(r"L[0-9A-Za-z]*_", sym[k:])):
+            k += m.end()
+        return type_end(sym, k)
+    if c == "A":
+        k = type_end(sym, j + 1)
+        m = CONST.match(sym, k) if k is not None else None
+        return m.end() if m else None
+    return None
+
+
 def plain_symbol(sym):
     """A v0 symbol without its crate hashes (`Cs<base62>_`), its back-references (`B<base62>_`)
     and the crate a generic was instantiated in (a crate root ending the symbol): which crate's copy
     of `<&T as Display>::fmt` a call reaches moves with the hashes. Identifiers, disambiguators
-    (`s0_`), lifetimes and const values are copied whole."""
+    (`s0_`), lifetimes, const values and arrays of basic types (`type_end`) are copied whole."""
     out, i, root = [], 0, None
     while i < len(sym):
         c = sym[i]
@@ -121,6 +149,9 @@ def plain_symbol(sym):
             if sym[i + m.end():i + m.end() + 1] != "0":
                 out.append(m.group(0))
             i += m.end()
+        elif c == "A" and (end := type_end(sym, i)):
+            out.append(sym[i:end])
+            i = end
         elif c == "K" and (m := re.match(r"K(p|[a-z]n?[0-9a-f]*_)", sym[i:])):
             out.append(m.group(0))
             i += m.end()
