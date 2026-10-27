@@ -33,7 +33,10 @@ second agent) came first; the owner's calls on it:
   (winget-cli `UserSettings.h`), so a winget user gets a per-user install unless they set
   `machine` or pass `--scope machine`; the installer then asks UAC itself, so no elevated terminal
   is needed (that is a portable package's limit). Listing machine only would force it, and break
-  `--scope user`.
+  `--scope user`. But `--scope` asks the same of the dependencies, and neither runtime offers both
+  (the 2026-10-26 manifest review): `--scope machine` fails where the Windows App Runtime is
+  missing, `--scope user` where the VC++ runtime is. A plain `winget install Petz.TMR` installs
+  them; the guide says to install them first for all users (0.1.1).
 - **No bundled runtimes** (the owner: each system keeps its own up to date), so no `+crt-static`:
   winget brings `Microsoft.VCRedist.2015+.x64` and `Microsoft.WindowsAppRuntime.2` (2.4+) as
   dependencies, which it installs for every installer type; the installer checks for them and says

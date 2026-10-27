@@ -50,6 +50,13 @@ jobs:
     - name: 🧪 Run tests
       run: cargo +nightly nextest run --workspace --all-targets --locked --no-fail-fast
 
+    # crates.io's check of the four crates (TODO 104), before anything is uploaded: each packaged, then built from its package against
+    # the others' packages, as crates.io takes them. A crate that won't package stops the release here, and the crates-io job publishes
+    # these packages unbuilt. At the repo root, so .cargo/config.toml's x86-64-v3 baseline applies (src/lib.rs stops a build without it).
+    # A pre-release is checked too; a dry run publishes nothing.
+    - name: 📦 Check the crates' packages
+      run: cargo +nightly publish --workspace --dry-run
+
     # The one tmr.exe, the console and the window (a default feature, the owner's: one download, not two)
     - name: 🚧 Build release binary
       run: cargo +nightly build --release --locked
@@ -103,6 +110,9 @@ jobs:
       # missing fails the job, rather than publishing a release without it. A tag with a '-' (v0.1.0-rc.1) is a pre-release.
       with:
         fail_on_unmatched_files: true
+        # Never over a published asset: winget's manifest names the installer by its SHA-256, and a rebuild isn't byte for byte the same.
+        # An upload that half-failed is deleted by hand before a re-run.
+        overwrite_files: false
         prerelease: ${{ contains(github.ref_name, '-') }}
         generate_release_notes: true
         files: |
@@ -113,3 +123,96 @@ jobs:
           target/SHA256SUMS.txt
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The four crates on crates.io (TODO 104), once the release is up: a version there can't be replaced, only yanked, so it comes after
+  # everything that can fail and be fixed. Trusted publishing, so no stored token: crates.io swaps this job's OIDC token for one that
+  # lasts 30 minutes and covers every crate whose trusted publisher names this repository, release.yml and the release environment, all
+  # four in one `cargo publish`. Off until the owner sets the PUBLISH_CRATES variable, once each crate has its trusted publisher (which
+  # needs the crate published by hand first: trusted publishing can't create one); a pre-release (a '-' in the tag) stays off crates.io.
+  crates-io:
+    needs: build
+    if: vars.PUBLISH_CRATES == 'true' && !contains(github.ref_name, '-')
+    runs-on: windows-latest
+    # Only a tag may deploy to it (its rule), and the crates' trusted publishers name it, so no other ref's run gets a token
+    environment: release
+    # id-token for crates.io's exchange, contents for the checkout: a job's own permissions leave the rest at none
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v7
+
+    - name: 🦀 Install Rust Nightly
+      uses: dtolnay/rust-toolchain@nightly
+
+    # The token is the action's `token` output; its post step revokes it when the job ends
+    - name: 🔑 Get a crates.io token
+      id: auth
+      # Pinned to v1.0.6's commit, as Inno Setup and Komac are by their SHA-256: v1 is a branch, which moves; this job mints a publish token
+      uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9
+
+    # The build job checked these packages, so --no-verify: nothing compiles while the token is in the environment. A crate crates.io
+    # has at this version already is left out (`cargo publish --workspace` stops at one), so a re-run after a partial publish, or of
+    # the whole run, publishes only what's missing. crates.io's sparse index lists a crate's versions, a JSON line each; @() keeps an
+    # empty list empty, where a bare $null would reach cargo as one empty argument.
+    - name: 📤 Publish the crates
+      shell: pwsh
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+      run: |
+        $version = $env:GITHUB_REF_NAME.Substring(1)
+        $exclude = @(foreach ($name in 'test-memory-r-engine', 'test-memory-r-cli', 'test-memory-r-gui', 'test-memory-r') {
+          $index = (Invoke-WebRequest "https://index.crates.io/$($name.Substring(0, 2))/$($name.Substring(2, 2))/$name").Content
+          $versions = $index -split "`n" | Where-Object { $_ } | ForEach-Object { ($_ | ConvertFrom-Json).vers }
+          if ($versions -contains $version) { '--exclude'; $name }
+        })
+        if ($exclude.Count -eq 8) { "crates.io has all four at $version"; exit 0 }
+        cargo +nightly publish --workspace --no-verify @exclude
+        if ($LASTEXITCODE -ne 0) { throw "cargo publish failed" }
+
+  # winget (TODO 104): a pull request to microsoft/winget-pkgs adding this version of Petz.TMR, from the bot account's fork. A job here, not
+  # a workflow on `release: published`: the build job makes the release with GITHUB_TOKEN, whose events start no workflow. Komac's `update`
+  # adds to a package, taking its latest version as the base, so this waits for the WINGET_TOKEN secret, which the owner adds once
+  # Petz.TMR's first version is merged. A pre-release stays out of winget.
+  winget:
+    needs: build
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: windows-latest
+    # Only a tag may deploy to it, so only a tag's run reads its WINGET_TOKEN
+    environment: release
+    # Komac works with the WINGET_TOKEN, and nothing here needs a GITHUB_TOKEN
+    permissions: {}
+    # Whether the secret is set, not the secret: a step's `if` can't read secrets
+    env:
+      HAS_WINGET_TOKEN: ${{ secrets.WINGET_TOKEN != '' }}
+
+    steps:
+    - name: ℹ️ No winget token
+      if: env.HAS_WINGET_TOKEN != 'true'
+      run: echo "::notice::No WINGET_TOKEN secret, so no winget pull request for $env:GITHUB_REF_NAME"
+
+    # Komac 2.17.1, its release pinned by its SHA-256 (its SHA256SUMS). It reads the installers afresh from the new setup: both scopes
+    # and their switches (/ALLUSERS, /CURRENTUSER, from PrivilegesRequiredOverridesAllowed), the ProductCode (the AppId's, which never
+    # changes) and this version's Apps & Features name. The installer manifest's root fields (Commands, Dependencies, MinimumOSVersion)
+    # carry over from the version before, unchanged (a new MinVersion or runtime is the pull request's to edit by hand); a field under
+    # an installer doesn't. Komac 2.17 reads Inno Setup up to 7.1, so a newer Inno Setup above needs a newer Komac. A pull request for this
+    # version in any state makes it exit without another, so a re-run opens no second one. The fork is synced first, as winget-releaser
+    # does: winget-pkgs changes its own workflows often, and a fork behind them can't take the branch (so the token has public_repo and
+    # workflow; it is a separate bot account's, the owner 2026-10-28, so a leak reaches that account, not Test-Memory-R).
+    - name: 📦 Submit to winget
+      if: env.HAS_WINGET_TOKEN == 'true'
+      shell: pwsh
+      env:
+        GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      run: |
+        $komac = "$env:RUNNER_TEMP\komac.exe"
+        Invoke-WebRequest https://github.com/russellbanks/Komac/releases/download/v2.17.1/komac-2.17.1-x86_64-pc-windows-msvc.exe -OutFile $komac
+        if ((Get-FileHash $komac -Algorithm SHA256).Hash -ne 'A97C002C5FFA15F232AF117EFAC6774E755D27ACC47EBA00F1661033267D7438') { throw "Komac's download isn't 2.17.1's" }
+        $version = $env:GITHUB_REF_NAME.Substring(1)
+        $url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/tmr-$version-setup.exe"
+        & $komac sync-fork
+        if ($LASTEXITCODE -ne 0) { throw "komac sync-fork failed" }
+        & $komac update Petz.TMR --version $version --urls $url --submit
+        if ($LASTEXITCODE -ne 0) { throw "komac update failed" }

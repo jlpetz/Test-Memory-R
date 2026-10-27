@@ -16,8 +16,11 @@ change between versions. The project's page has the details:
   `C:\Program Files\TMR`, after a UAC prompt; or choose "Install for me only" on its first page, in
   `%LOCALAPPDATA%\Programs\TMR`, with no prompt. It adds TMR to the Start menu and `tmr` to the PATH,
   and Settings > Apps uninstalls it.
-- **winget**, once TMR's package is accepted there: `winget install Petz.TMR`. winget installs for
-  you only unless you ask for all users (`--scope machine`), and brings the two runtimes below.
+- **winget**, once TMR's package is accepted there: `winget install Petz.TMR`. winget installs it
+  for you only, and brings the two runtimes below with it. For all users, install the runtimes
+  first, `winget install Microsoft.VCRedist.2015+.x64 Microsoft.WindowsAppRuntime.2`, then
+  `winget install Petz.TMR --scope machine`: with `--scope`, winget asks the same scope of each
+  package TMR depends on, and neither runtime offers both.
 - **The bare `tmr.exe`**, from the same releases: put it in a folder of its own that you can write
   to. TMR keeps its files beside it.
 
