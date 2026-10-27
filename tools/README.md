@@ -237,3 +237,16 @@ change in their order.
 Not a check: the two scripts that draw TMR's icon and its artwork, a DDR5 DIMM in red neon, and
 pack the icon that is copied to `crates/tmr-app/tmr.ico`. How to run them and what they assert:
 `tools/icon/README.md`.
+
+## `winget_manifest.py`: Petz.TMR's first winget manifest
+
+Not a check: the manifest for the version Petz.TMR enters winget-pkgs with, submitted by hand (TODO
+104). It takes the reviewed one in `dist/winget/` (0.1.0's) and gives it a released version: the
+version, the release's URLs, the installer's SHA-256 from the release's `SHA256SUMS.txt` and the
+release's date, into `target/winget/manifests/p/Petz/TMR/<version>/`, then runs `winget validate`.
+Given 0.1.0 it writes `dist/winget/`'s files back unchanged (checked 2026-10-28); a version with no
+release yet stops. Later versions are release.yml's (Komac's `update`, from the one before).
+
+```
+python tools/winget_manifest.py 0.1.1
+```

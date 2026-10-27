@@ -1,0 +1,42 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: Petz.TMR
+PackageVersion: 0.1.0
+InstallerLocale: en-US
+MinimumOSVersion: 10.0.20348.0
+InstallerType: inno
+UpgradeBehavior: install
+ElevationRequirement: elevatesSelf
+Commands:
+- tmr
+ReleaseDate: 2026-10-26
+Dependencies:
+  PackageDependencies:
+  - PackageIdentifier: Microsoft.VCRedist.2015+.x64
+  - PackageIdentifier: Microsoft.WindowsAppRuntime.2
+    MinimumVersion: 2.4.0
+ProductCode: '{A1BC7167-67F4-461D-BE00-B57FBAF0B53C}_is1'
+AppsAndFeaturesEntries:
+- DisplayName: TMR (Test Memory R) 0.1.0
+  ProductCode: '{A1BC7167-67F4-461D-BE00-B57FBAF0B53C}_is1'
+UnsupportedOSArchitectures:
+- arm64
+Installers:
+- Architecture: x64
+  Scope: user
+  InstallerUrl: https://github.com/jlpetz/Test-Memory-R/releases/download/v0.1.0/tmr-0.1.0-setup.exe
+  InstallerSha256: 20ACC1FA5E0F3760087D0AB3590107F11D977CE0756ACB4174CE99463F855636
+  InstallerSwitches:
+    Custom: /CURRENTUSER
+  InstallationMetadata:
+    DefaultInstallLocation: '%LocalAppData%\Programs\TMR'
+- Architecture: x64
+  Scope: machine
+  InstallerUrl: https://github.com/jlpetz/Test-Memory-R/releases/download/v0.1.0/tmr-0.1.0-setup.exe
+  InstallerSha256: 20ACC1FA5E0F3760087D0AB3590107F11D977CE0756ACB4174CE99463F855636
+  InstallerSwitches:
+    Custom: /ALLUSERS
+  InstallationMetadata:
+    DefaultInstallLocation: '%ProgramFiles%\TMR'
+ManifestType: installer
+ManifestVersion: 1.12.0

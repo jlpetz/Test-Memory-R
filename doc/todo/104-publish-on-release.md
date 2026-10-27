@@ -54,6 +54,47 @@ install` of the app would get no LTO and `panic = unwind`; `--version` must exit
 behind (winget's checks run it, and fail a package whose uninstall leaves files); the privilege
 check exported the security policy into the current folder.
 
+## 0.1.1: the first on crates.io and winget (the owner, 2026-10-28)
+
+0.1.0 is on GitHub Releases only: its guide's winget advice was wrong, and the owner has app changes
+for the next release, so 0.1.1 is the first version on crates.io and winget (0.1.0 isn't rebuilt:
+it was public, and its published checksums would stop matching). Ready: release.yml's crates-io
+and winget jobs (20b52f0, off until set up), the `release` environment (only `v*.*.*` tags deploy
+to it, no reviewers; created 2026-10-28), the reviewed manifest in `dist/winget/` and
+`tools/winget_manifest.py`. In order:
+
+1. The version: `[workspace.package] version` and the three `=` pins in `[workspace.dependencies]`
+   to 0.1.1, `TMR_BLESS=1 cargo test --workspace` for the two goldens' version lines, the checks;
+   push; CI green; tag `v0.1.1`. release.yml checks the packages and uploads; its crates-io job is
+   skipped (no `PUBLISH_CRATES`) and its winget job only says there's no token.
+2. The owner tries the release on a desktop (Windows 11): the installer, for all users and for one;
+   a run unelevated; an upgrade; an uninstall. Then `python tools/winget_manifest.py 0.1.1`, and
+   with local manifests on (`winget settings --enable LocalManifestFiles`, elevated) a plain
+   `winget install --manifest <its folder>` (no `--scope`: that installs both runtimes).
+3. crates.io by hand (Publishing, above): an account with a verified email, a token
+   (`publish-new`, `publish-update`, a few days), `cargo login`, then from a fresh clone of
+   `v0.1.1` the dry run and `cargo +nightly publish --workspace`.
+4. Each crate's trusted publisher (crate > Settings > Trusted Publishing > GitHub): owner `jlpetz`,
+   repository `Test-Memory-R`, workflow `release.yml`, environment `release`; then the repository
+   variable `PUBLISH_CRATES` = `true`. After the first release it publishes: "Require trusted
+   publishing" on each crate, and the step 3 token revoked.
+5. winget by hand: fork microsoft/winget-pkgs (jlpetz), a branch with the three files in
+   `manifests/p/Petz/TMR/0.1.1/` and nothing else, the PR `New package: Petz.TMR version 0.1.1`
+   with the template's boxes and a note for the validator: tmr.exe with no arguments starts a
+   memory test that runs until stopped, so its executable check should run `tmr.exe --version`
+   (exits 0, writes no file); the installer is unsigned; an uninstall leaves the user's configs,
+   results and logs. The owner posts the CLA agreement on it. Four weeks or more.
+6. Once it's merged: a bot GitHub account (the owner's choice, 2026-10-28) forks winget-pkgs; its
+   classic PAT with `public_repo` and `workflow`, an expiry and a renewal reminder, is the
+   `release` environment's secret `WINGET_TOKEN`. Its first pull request asks it to sign the CLA
+   too. From then on each tag's winget job syncs the fork and opens the version's PR (Komac
+   2.17.1: a newer Inno Setup in release.yml needs a newer Komac, checked with `komac update
+   --dry-run` first).
+
+A re-run of a release run is safe: the upload replaces no asset, the crates-io job leaves out what
+crates.io has, and Komac opens no second PR for a version (one in any state stops it, even a
+closed one: resubmit by hand, `--skip-pr-check`).
+
 ## Why
 
 - **crates.io** is for tracking and discovery, not installing: each page says where the app is (the
