@@ -210,7 +210,7 @@ fn named_apart(mut dimms: Vec<Dimm>) -> Vec<Dimm> {
 }
 
 /// The SMBIOS memory type's name (Type 17 offset 0x12), for the ones a DDR5 tester meets
-fn memory_type(code: u8) -> Option<&'static str> {
+pub(crate) fn memory_type(code: u8) -> Option<&'static str> {
     match code {
         0x1A => Some("DDR4"),
         0x1E => Some("LPDDR4"),

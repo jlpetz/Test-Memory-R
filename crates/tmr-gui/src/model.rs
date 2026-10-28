@@ -2,10 +2,11 @@
 //! no Reactor type, so the translation is tested apart from the window, which `window.rs` builds from it.
 //!
 //! The events come as the engine sends them, at most a batch every 500 ms; a snapshot comes with each batch, and with each 500 ms that
-//! brought none (`tick`), and so do the warnings and errors logged since (`logged`). The fast figures, the runtime and the time left, the
-//! live error count, the position, the test's figures, the progress and the chart's speed, are the snapshot's, each in the words of the
-//! console's ticker (crates/tmr-cli's `render/ticker.rs`, whose golden the tests check them against); the events give the rest: the
-//! setup's the system panel and the first facts, the run's the rest.
+//! brought none (`tick`), and so do the lines logged since (`logged`). The fast figures, the runtime and the time left, the live error
+//! count, the position, the test's figures, the progress and the chart's speed, are the snapshot's, each in the words of the console's
+//! ticker (crates/tmr-cli's `render/ticker.rs`, whose golden the tests check them against); the events give the rest: the setup's the
+//! system panel, the first facts and the tabs' sections (`sections.rs`), the run's the rest, each step's report and the final summary's
+//! among them (`report.rs`, TODO 109).
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -18,7 +19,9 @@ use tmr::frontend::{
 };
 use tmr::session::{SessionEnd, Stopped};
 
+use crate::logger::LogLine;
 use crate::report::Report;
+use crate::sections::Sections;
 use crate::sysinfo::{Machine, MemoryLine, SystemPanel};
 
 const MIB: f64 = 1024.0 * 1024.0;
@@ -27,6 +30,9 @@ const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 /// The entries the errors list keeps, the newest (the window shows the newest 200 of them): an error storm over a night would hold
 /// gigabytes of log lines. The log file has every line.
 pub const ERRORS_KEPT: usize = 10_000;
+
+/// The log lines the Log tab keeps, the newest (TODO 109): the log file has every line
+pub const LOG_KEPT: usize = 10_000;
 
 /// The step reports kept, the newest steps': as many as the window draws rows (TODO 109), so every row drawn opens one. A report holds a
 /// line for each thread.
@@ -283,18 +289,23 @@ pub fn axis_label(value: f64) -> String {
     format!("{}{unit}", text.trim_end_matches('0').trim_end_matches('.'))
 }
 
-/// The errors list: its newest `ERRORS_KEPT` entries, oldest first, and how many came before them. Each entry has a number, its place among
-/// all of them, which stays its own as older ones go: the window's key for it.
-#[derive(Debug, Default)]
-pub struct Errors {
+/// A list of lines, the errors list's and the log's: its newest `cap` entries, oldest first, and how many came before them. Each entry has a
+/// number, its place among all of them, which stays its own as older ones go: the window's key for it.
+#[derive(Debug)]
+pub struct Lines {
     kept: VecDeque<String>,
-    /// The entries let go, the oldest, to keep `ERRORS_KEPT`
+    /// The entries let go, the oldest, to keep `cap`
     let_go: u64,
+    cap: usize,
 }
 
-impl Errors {
+impl Lines {
+    pub fn new(cap: usize) -> Self {
+        Lines { kept: VecDeque::new(), let_go: 0, cap }
+    }
+
     pub fn push(&mut self, entry: String) {
-        if self.kept.len() == ERRORS_KEPT {
+        if self.kept.len() == self.cap {
             self.kept.pop_front();
             self.let_go += 1;
         }
@@ -316,7 +327,7 @@ impl Errors {
     }
 }
 
-impl Extend<String> for Errors {
+impl Extend<String> for Lines {
     fn extend<I: IntoIterator<Item = String>>(&mut self, entries: I) {
         for entry in entries {
             self.push(entry);
@@ -326,7 +337,7 @@ impl Extend<String> for Errors {
 
 /// The entries kept, oldest first, as a test lists them
 #[cfg(test)]
-impl<const N: usize> PartialEq<[&str; N]> for Errors {
+impl<const N: usize> PartialEq<[&str; N]> for Lines {
     fn eq(&self, entries: &[&str; N]) -> bool {
         self.kept == *entries
     }
@@ -414,8 +425,12 @@ pub struct Model {
     /// The report open beside the results
     pub opened: Option<Opened>,
     /// Steps with errors, final seal checks that found some, WHEA reports, the warnings and errors logged, and why a run stopped, oldest
-    /// first
-    pub errors: Errors,
+    /// first, the newest `ERRORS_KEPT`
+    pub errors: Lines,
+    /// The lines logged, the Log tab's, the newest `LOG_KEPT` (TODO 109)
+    pub log: Lines,
+    /// The System, Threads and Memory tabs' (TODO 109)
+    pub sections: Sections,
     pub series: Series,
     /// The stage the chart last marked: its cycle, its number and its name (TODO 109)
     stage: Option<(u32, u64, String)>,
@@ -457,7 +472,9 @@ impl Model {
             reports: VecDeque::new(),
             summary: None,
             opened: None,
-            errors: Errors::default(),
+            errors: Lines::new(ERRORS_KEPT),
+            log: Lines::new(LOG_KEPT),
+            sections: Sections::default(),
             series: Series::default(),
             stage: None,
             args: args_text(args.get(1..).unwrap_or_default()),
@@ -570,6 +587,7 @@ impl Model {
     }
 
     fn setup(&mut self, setup: Setup) {
+        self.sections.setup(&setup);
         match setup {
             // The console's alone: the parameters as given, and the detail behind the facts below
             Setup::TestFilter { .. }
@@ -640,10 +658,15 @@ impl Model {
         }
     }
 
-    /// The warnings and errors logged since the last batch, into the errors list, and how many the logger has dropped so far
-    /// (`logger::LogLines`)
-    pub fn logged(&mut self, lines: Vec<String>, dropped: u64) {
-        self.errors.extend(lines);
+    /// The lines logged since the last batch, into the log, the warnings and errors into the errors list too, and how many the logger has
+    /// dropped so far (`logger::LogLines`)
+    pub fn logged(&mut self, lines: Vec<LogLine>, dropped: u64) {
+        for LogLine { text, alarm } in lines {
+            if alarm {
+                self.errors.push(text.clone());
+            }
+            self.log.push(text);
+        }
         self.log_lines_dropped = dropped;
     }
 
@@ -654,6 +677,7 @@ impl Model {
     }
 
     fn run(&mut self, run: Run) {
+        self.sections.run(&run);
         match run {
             Run::MemoryPlan(plan) => self.ram_bytes = Some(plan.total_physical_bytes),
             Run::NotRun(why) => self.errors.push(not_run(&why)),
@@ -1429,20 +1453,24 @@ mod tests {
         ]);
     }
 
-    /// The warnings and errors logged join the errors list, and the logger's drops are one line; the list keeps its newest `ERRORS_KEPT`
-    /// entries, each with its number for good, and the newest are what the window shows (TODO 29 S6)
+    /// Every line logged joins the log, the warnings and errors the errors list too, and the logger's drops are one line; the lists keep
+    /// their newest entries, `ERRORS_KEPT` and `LOG_KEPT`, each with its number for good, and the newest are what the window shows (TODO 29
+    /// S6, TODO 109)
     #[test]
-    fn logged_lines_join_the_errors_and_the_newest_are_kept() {
+    fn logged_lines_join_the_log_and_the_errors_and_the_newest_are_kept() {
+        let line = |text: &str, alarm| LogLine { text: text.to_string(), alarm };
         let mut m = model();
         m.logged(Vec::new(), 0);
-        assert_eq!((m.errors.total(), m.dropped_line()), (0, None));
-        m.logged(vec!["[12:00:00 ERROR tmr::tests] bad word".to_string()], 0);
+        assert_eq!((m.errors.total(), m.log.total(), m.dropped_line()), (0, 0, None));
+        m.logged(vec![line("[12:00:00 INFO tmr::tests] a step began", false), line("[12:00:00 ERROR tmr::tests] bad word", true)], 0);
         m.logged(Vec::new(), 1);
         assert_eq!(m.errors, ["[12:00:00 ERROR tmr::tests] bad word"]);
+        assert_eq!(m.log, ["[12:00:00 INFO tmr::tests] a step began", "[12:00:00 ERROR tmr::tests] bad word"]);
         assert_eq!(m.dropped_line().as_deref(), Some("1 log line dropped, all in the log file"));
 
         // A storm past the cap: the oldest go, and the newest, a step's errors last, are kept
-        m.logged((0..ERRORS_KEPT + 2).map(|i| format!("line {i}")).collect(), 1_500);
+        m.logged((0..ERRORS_KEPT + 2).map(|i| line(&format!("line {i}"), true)).collect(), 1_500);
+        assert_eq!((m.log.total(), m.log.newest(usize::MAX).count()), (ERRORS_KEPT as u64 + 4, LOG_KEPT));
         m.apply(step(1, 1, 3, None, WheaCounts::default()).into());
         assert_eq!(m.errors.total(), ERRORS_KEPT as u64 + 4);
         let newest: Vec<(u64, &str)> = m.errors.newest(2).collect();
@@ -1597,6 +1625,77 @@ mod tests {
         assert_eq!(summary.cells, ["", "", "Final summary", "01:02:05", &throughput, "3", "2", "1"].map(str::to_string));
         assert_eq!(summary.flagged, [false, false, false, false, false, true, true, true]);
         assert_eq!(m.opened_report().map(|report| report.title.as_str()), Some("Final summary"));
+    }
+
+    /// A section's outline: each table's title, each line or heading as it is
+    fn outline(blocks: &[crate::report::Block]) -> Vec<String> {
+        use crate::report::Block;
+        blocks
+            .iter()
+            .map(|block| match block {
+                Block::Heading(text) | Block::Text(text) | Block::Warning(text) => text.clone(),
+                Block::Table(table) => format!("table {}", table.title.as_deref().unwrap_or("")),
+                Block::Separator => "—".to_string(),
+            })
+            .collect()
+    }
+
+    /// TODO 109: the System, Threads and Memory tabs take the console's sections as setup and the run send them, the reports as the
+    /// engine's tables
+    #[test]
+    fn the_tabs_take_the_consoles_startup_sections() {
+        let mut m = model();
+        let module = MemoryModule {
+            locator: "DIMM_A2".to_string(),
+            capacity_bytes: 32 << 30,
+            memory_type: 0x22,
+            speed_mts: 6000,
+            manufacturer: "G.Skill ".to_string(),
+            part_number: "F5-6000J3040G32G ".to_string(),
+            serial_number: "0x1234".to_string(),
+            ..Default::default()
+        };
+        let status = MemoryStatus { total_phys: 62 << 30, avail_phys: 50 << 30, total_page_file: 70 << 30, avail_page_file: 60 << 30 };
+        for setup in [
+            Setup::CpuType { cputype: "cores".to_string(), avoid_smt: false },
+            Setup::Selection(Box::new(selection())),
+            Setup::CacheCalibration(tmr::frontend::CacheCalibrationState::None),
+            Setup::LargePageStatus { usable: true, min_page: "large".to_string(), min_needs_large: true },
+            Setup::MemoryStatus(Some(status)),
+            Setup::SystemInfo { report: Box::new(system_info()), memory_modules: vec![module] },
+        ] {
+            m.apply(setup.into());
+        }
+        for run in [
+            Run::MemoryPlan(Box::new(tmr::test_support::consolidated_memory_report())),
+            Run::Channels { channels: 2, cache_line: 64 },
+            Run::Allocated(Box::new(tmr::test_support::allocation_report_one_node())),
+        ] {
+            m.apply(run.into());
+        }
+
+        let s = &m.sections;
+        assert_eq!(outline(&s.threads), [
+            "CPU type: cores", "Using 6/6 cores for testing", "CPUs: 0, 2, 4, 6, 8, 10", "Error mode: log and continue",
+            "Limits: 2 cycles, no time limit", "SIMD: SSE, AVX2"
+        ]);
+        assert_eq!(outline(&s.system), [
+            "Cache calibration: none (tmr.exe --calibrate-cache measures it)",
+            "System Information",
+            "table CPU Information",
+            "table Cache Architecture (raw_cpuid leaf 4)",
+            "table TSC Calibration",
+            "table Memory modules (SMBIOS)"
+        ]);
+        let Some(crate::report::Block::Table(modules)) = s.system.last() else { panic!("the modules' table") };
+        assert_eq!(modules.rows, [["DIMM_A2", "32 GiB", "DDR5", "6000 MT/s", "G.Skill", "F5-6000J3040G32G"]], "no serial number");
+        let memory = outline(&s.memory);
+        assert_eq!(memory[..3], ["Large pages: on, tested", "table Windows' memory", "table Memory Status & Allocation Plan"]);
+        assert!(memory.contains(&"Memory channels: 2, cache line 64 B".to_string()), "{memory:?}");
+        assert!(
+            memory.iter().any(|line| line.starts_with("Allocation · ")) && memory.iter().any(|line| line == "table Threads"),
+            "{memory:?}"
+        );
     }
 
     /// The ticker's golden (crates/tmr-cli's `testdata/console/ticker.txt`), each `## case` and its lines. Read when the test runs, not

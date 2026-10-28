@@ -1,7 +1,8 @@
-//! The window's logger (TODO 29 S6): every record into the log file through `tmr::logfile`, the same lines as the CLI's, and the warnings
-//! and errors into the window's errors list as well, the kernels' bad-word lines among them (`Rescan::bad`'s cold path), with no kernel
-//! change. A record is handed over with `try_send` on a bounded channel, so a worker that logs never waits for the window: in an error
-//! storm the channel fills, the lines it can't take are counted, and the window says how many it dropped. The file has every line.
+//! The window's logger (TODO 29 S6, TODO 109): every record into the log file through `tmr::logfile`, the same lines as the CLI's, and into
+//! the window as well, for its Log tab, the warnings and errors for its errors list too, the kernels' bad-word lines among them
+//! (`Rescan::bad`'s cold path), with no kernel change. A record is handed over with `try_send` on a bounded channel, so a worker that logs
+//! never waits for the window: in an error storm the channel fills, the lines it can't take are counted, and the window says how many it
+//! dropped. The file has every line.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,24 +13,33 @@ use log::{Level, LevelFilter, Log, Metadata, Record};
 /// The lines the channel holds: the window drains it every 500 ms
 const QUEUED: usize = 4096;
 
+/// A line logged, as the log file has it: `[12:00:00 WARN tmr::tests] bad word at 0x1000`
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LogLine {
+    pub text: String,
+    /// A warning or an error, which the errors list takes too. Not one for the file only: the window has that text another way (WHEA's
+    /// lines from the progress, a session's error from its end), as the CLI's console does.
+    pub alarm: bool,
+}
+
 /// The window's logger.
 struct GuiLogger {
     /// The records the log file gets, from `RUST_LOG` as the CLI reads it
     level: LevelFilter,
-    lines: SyncSender<String>,
+    lines: SyncSender<LogLine>,
     /// The lines the channel was full for
     dropped: Arc<AtomicU64>,
 }
 
-/// The window's side of the logger: the warnings and errors logged, and how many the channel couldn't take.
+/// The window's side of the logger: the lines logged, and how many the channel couldn't take.
 pub(crate) struct LogLines {
-    lines: Receiver<String>,
+    lines: Receiver<LogLine>,
     dropped: Arc<AtomicU64>,
 }
 
 impl LogLines {
     /// The lines queued since the last call, and how many have been dropped so far
-    pub(crate) fn take(&self) -> (Vec<String>, u64) {
+    pub(crate) fn take(&self) -> (Vec<LogLine>, u64) {
         (self.lines.try_iter().collect(), self.dropped.load(Ordering::Relaxed))
     }
 }
@@ -51,20 +61,17 @@ impl Log for GuiLogger {
             return;
         }
         tmr::logfile::write(record);
-        // As on the CLI's console, a record for the file only isn't shown: the window has its text another way (WHEA's lines from the
-        // progress, a session's error from its end)
-        if record.level() <= Level::Warn && record.target() != tmr::logfile::FILE_ONLY_TARGET {
-            let line = format!(
-                "[{} {} {}] {}",
-                chrono::Local::now().format("%H:%M:%S"),
-                record.level(),
-                record.module_path().unwrap_or("unknown"),
-                record.args()
-            );
-            // Disconnected only once the window has gone, and then there is nothing to show
-            if let Err(TrySendError::Full(_)) = self.lines.try_send(line) {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-            }
+        let text = format!(
+            "[{} {} {}] {}",
+            chrono::Local::now().format("%H:%M:%S"),
+            record.level(),
+            record.module_path().unwrap_or("unknown"),
+            record.args()
+        );
+        let alarm = record.level() <= Level::Warn && record.target() != tmr::logfile::FILE_ONLY_TARGET;
+        // Disconnected only once the window has gone, and then there is nothing to show
+        if let Err(TrySendError::Full(_)) = self.lines.try_send(LogLine { text, alarm }) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -83,7 +90,7 @@ pub(crate) fn install() -> LogLines {
     if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(level);
     }
-    log::info!("TMR v{} started - warnings and errors also shown in the window", tmr::BUILD.version);
+    log::info!("TMR v{} started - the log also in the window's Log tab, its warnings and errors in the errors list", tmr::BUILD.version);
     // In the errors list, where the CLI prints them on the console
     match (made, opened) {
         (Err(e), _) => log::warn!("Failed to create logs directory: {}", e),
@@ -97,11 +104,11 @@ pub(crate) fn install() -> LogLines {
 mod tests {
     use super::*;
 
-    /// Warnings and errors reach the window, the file's records alone don't, and a full channel counts what it drops instead of waiting
-    /// (TODO 29 S6)
+    /// Every record the level lets through reaches the window, the warnings and errors as alarms but for the file's own, and a full channel
+    /// counts what it drops instead of waiting (TODO 29 S6, TODO 109)
     #[test]
-    fn warnings_reach_the_window_and_a_full_channel_counts_what_it_drops() {
-        let (logger, window) = logger(LevelFilter::Info, 2);
+    fn the_log_reaches_the_window_and_a_full_channel_counts_what_it_drops() {
+        let (logger, window) = logger(LevelFilter::Info, 4);
         let log = |level: Level, target: &str, text: &str| {
             logger.log(
                 &Record::builder().level(level).target(target).module_path_static(Some("tmr::tests")).args(format_args!("{text}")).build(),
@@ -116,17 +123,26 @@ mod tests {
         // Each line without its stamp, `[hh:mm:ss `
         let take = || {
             let (lines, dropped) = window.take();
-            assert!(lines.iter().all(|line| line.starts_with('[') && line.as_bytes()[9] == b' '), "{lines:?}");
-            (lines.iter().map(|line| line[10..].to_string()).collect::<Vec<_>>(), dropped)
+            assert!(lines.iter().all(|line| line.text.starts_with('[') && line.text.as_bytes()[9] == b' '), "{lines:?}");
+            (lines.iter().map(|line| (line.text[10..].to_string(), line.alarm)).collect::<Vec<_>>(), dropped)
         };
+        let line = |text: &str, alarm| (text.to_string(), alarm);
         assert_eq!(
             take(),
-            (vec!["WARN tmr::tests] bad word at 0x1000".to_string(), "ERROR tmr::tests] second bad word".to_string()], 1),
-            "the third dropped, with the channel full"
+            (
+                vec![
+                    line("INFO tmr::tests] a step began", false),
+                    line("WARN tmr::tests] bad word at 0x1000", true),
+                    line("ERROR tmr::tests] WHEA [corrected] id=47", false),
+                    line("ERROR tmr::tests] second bad word", true)
+                ],
+                1
+            ),
+            "the third dropped, with the channel full; the file's own line no alarm"
         );
 
         // Drained, it takes lines again, and the count stays the run's
         log(Level::Warn, "tmr::tests", "fourth");
-        assert_eq!(take(), (vec!["WARN tmr::tests] fourth".to_string()], 1));
+        assert_eq!(take(), (vec![line("WARN tmr::tests] fourth", true)], 1));
     }
 }

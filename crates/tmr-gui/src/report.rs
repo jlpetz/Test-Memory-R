@@ -137,7 +137,7 @@ fn count(n: f64) -> String {
 
 /// The engine's reports, rendered as blocks
 #[derive(Default)]
-struct Blocks(Vec<Block>);
+pub(crate) struct Blocks(Vec<Block>);
 
 type Rendered = Result<(), Box<dyn Error>>;
 
@@ -184,7 +184,7 @@ impl Renderer for Blocks {
 }
 
 /// What `report` renders, as blocks
-fn blocks(report: impl FnOnce(&mut Reporter<Blocks>) -> Rendered) -> Vec<Block> {
+pub(crate) fn blocks(report: impl FnOnce(&mut Reporter<Blocks>) -> Rendered) -> Vec<Block> {
     let mut reporter = Reporter::new(Blocks::default());
     // Rendering into blocks can't fail: a report's own error leaves what it rendered before it
     let _ = report(&mut reporter);
