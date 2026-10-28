@@ -66,6 +66,9 @@ const KEY_MARK_LINE: u64 = 1 << 40;
 const KEY_MARK_DOT: u64 = 1 << 41;
 const KEY_STAGE_LINE: u64 = 1 << 42;
 const KEY_STAGE_LABEL: u64 = 1 << 43;
+const KEY_LONE: u64 = 1 << 44;
+/// A reading with a gap on each side has no segment, so it is drawn as a dash this wide
+const LONE: f64 = 6.0;
 
 /// The chart, `width` wide: one Line per segment, kept by position key, so an update only changes coordinates. Nothing renders between
 /// updates.
@@ -142,12 +145,28 @@ pub fn shapes_chart(series: &Series, width: f64, p: &Palette) -> View {
     // has none
     let n = series.samples.len();
     let samples: Vec<(f64, Sample)> = series.samples.iter().enumerate().map(|(i, &s)| (plot.x_samples_ago(n - 1 - i), s)).collect();
+    let colour = |s: Sample| if matches!(s, Sample::Seal(_)) { p.chart_seal } else { p.accent };
     for (j, pair) in samples.windows(2).enumerate() {
         let ((x1, from), (x2, to)) = (pair[0], pair[1]);
         let (Some(v1), Some(v2)) = (from.value(), to.value()) else { continue };
-        let colour = if matches!(to, Sample::Seal(_)) { p.chart_seal } else { p.accent };
-        children
-            .push((j as u64, Line::new().x1(x1).y1(plot.y(v1)).x2(x2).y2(plot.y(v2)).stroke(brush(colour)).stroke_thickness(2.0).into()));
+        children.push((
+            j as u64,
+            Line::new().x1(x1).y1(plot.y(v1)).x2(x2).y2(plot.y(v2)).stroke(brush(colour(to))).stroke_thickness(2.0).into(),
+        ));
+    }
+    // A reading alone between gaps (a test that published once, TODO 109), as a dash: it has no segment to show it
+    for (j, &(x, sample)) in samples.iter().enumerate() {
+        let alone = |k: Option<usize>| k.and_then(|k| samples.get(k)).is_none_or(|(_, s)| s.value().is_none());
+        if let Some(v) = sample.value()
+            && alone(j.checked_sub(1))
+            && alone(Some(j + 1))
+        {
+            let y = plot.y(v);
+            children.push((
+                KEY_LONE + j as u64,
+                Line::new().x1(x - LONE / 2.0).y1(y).x2(x + LONE / 2.0).y2(y).stroke(brush(colour(sample))).stroke_thickness(2.0).into(),
+            ));
+        }
     }
 
     // The temperature series' segments would go here, keyed in their own range, coloured by a palette key of their own, scaled to a
