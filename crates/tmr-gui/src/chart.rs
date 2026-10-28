@@ -1,11 +1,12 @@
 //! The throughput chart (TODO 7), in retained XAML shapes: Reactor's Canvas with a Line per segment and an Ellipse per error mark. One
-//! series (a 2 px line), hairline gridlines at the axis's quarters, the y axis rounded up from the samples' largest (`Series::axis_top`), a
-//! "60 s ago .. now" x axis (120 samples at 500 ms), and at each sample where the run's errors rose a mark: a thin vertical line in the
-//! palette's error red, with a dot on the series.
+//! series (a 2 px line, the seal's work in its own colour, and a gap where there are no figures, TODO 109), hairline gridlines at the
+//! axis's quarters, the y axis rounded up from the samples' largest (`Series::axis_top`), a "60 s ago .. now" x axis (120 samples at
+//! 500 ms), a thin labelled line where each stage began (`C1 T5 Mem-MovingInv256`), and at each sample where the run's errors rose a mark:
+//! a thin vertical line in the palette's error red, with a dot on the series.
 
 use windows_reactor::*;
 
-use crate::model::{SAMPLES, Series, axis_label};
+use crate::model::{SAMPLES, Sample, Series, axis_label};
 use crate::palette::{Palette, brush};
 
 pub const HEIGHT: f64 = 200.0;
@@ -18,6 +19,8 @@ const BOTTOM: f64 = 22.0;
 const SECONDS_PER_SAMPLE: f64 = 0.5;
 const SECONDS_SHOWN: f64 = (SAMPLES - 1) as f64 * SECONDS_PER_SAMPLE;
 const DOT: f64 = 7.0;
+/// A stage's label goes in the room up to the next stage's line, and only when this much fits
+const LABEL_MIN: f64 = 40.0;
 
 struct Plot {
     left: f64,
@@ -61,6 +64,8 @@ const KEY_Y_LABEL: u64 = 2000;
 const KEY_X_LABEL: u64 = 3000;
 const KEY_MARK_LINE: u64 = 1 << 40;
 const KEY_MARK_DOT: u64 = 1 << 41;
+const KEY_STAGE_LINE: u64 = 1 << 42;
+const KEY_STAGE_LABEL: u64 = 1 << 43;
 
 /// The chart, `width` wide: one Line per segment, kept by position key, so an update only changes coordinates. Nothing renders between
 /// updates.
@@ -104,6 +109,26 @@ pub fn shapes_chart(series: &Series, width: f64, p: &Palette) -> View {
         ));
     }
 
+    // Where each stage began: a thin line, and its label at the top, in the room to the next line, under everything else
+    let stages: Vec<(u64, f64, &str)> = series.stages().map(|(sample, ago, label)| (sample, plot.x_samples_ago(ago), label)).collect();
+    for (k, &(sample, x, label)) in stages.iter().enumerate() {
+        children.push((
+            KEY_STAGE_LINE + sample,
+            Line::new().x1(x).y1(plot.top).x2(x).y2(plot.bottom()).stroke(brush(p.text_secondary)).stroke_thickness(1.0).into(),
+        ));
+        let room = stages.get(k + 1).map_or(plot.right(), |&(_, next, _)| next) - x - 6.0;
+        if room >= LABEL_MIN {
+            children.push((
+                KEY_STAGE_LABEL + sample,
+                Grid::new().width(room).canvas_left(x + 3.0).canvas_top(plot.top).children((TextBlock::new()
+                    .text(label)
+                    .font_size(11.0)
+                    .foreground(brush(p.text_secondary))
+                    .text_trimming(TextTrimming::CharacterEllipsis),)),
+            ));
+        }
+    }
+
     // Error marks, under the series line so the line stays readable across them.
     for (sample, ago, _) in series.marks() {
         let x = plot.x_samples_ago(ago);
@@ -113,19 +138,24 @@ pub fn shapes_chart(series: &Series, width: f64, p: &Palette) -> View {
         ));
     }
 
-    // The samples, newest at the right edge
+    // The samples, newest at the right edge: a segment between two that have figures, the colour of the later one's, and a gap where one
+    // has none
     let n = series.samples.len();
-    let points: Vec<(f64, f64)> = series.samples.iter().enumerate().map(|(i, &v)| (plot.x_samples_ago(n - 1 - i), plot.y(v))).collect();
-    for (j, pair) in points.windows(2).enumerate() {
-        let ((x1, y1), (x2, y2)) = (pair[0], pair[1]);
-        children.push((j as u64, Line::new().x1(x1).y1(y1).x2(x2).y2(y2).stroke(brush(p.accent)).stroke_thickness(2.0).into()));
+    let samples: Vec<(f64, Sample)> = series.samples.iter().enumerate().map(|(i, &s)| (plot.x_samples_ago(n - 1 - i), s)).collect();
+    for (j, pair) in samples.windows(2).enumerate() {
+        let ((x1, from), (x2, to)) = (pair[0], pair[1]);
+        let (Some(v1), Some(v2)) = (from.value(), to.value()) else { continue };
+        let colour = if matches!(to, Sample::Seal(_)) { p.chart_seal } else { p.accent };
+        children
+            .push((j as u64, Line::new().x1(x1).y1(plot.y(v1)).x2(x2).y2(plot.y(v2)).stroke(brush(colour)).stroke_thickness(2.0).into()));
     }
 
     // The temperature series' segments would go here, keyed in their own range, coloured by a palette key of their own, scaled to a
     // right-hand axis.
 
-    // A dot on the series at each mark, over the line.
+    // A dot on the series at each mark, over the line; none in a gap
     for (sample, ago, value) in series.marks() {
+        let Some(value) = value else { continue };
         let (x, y) = (plot.x_samples_ago(ago), plot.y(value));
         children.push((
             KEY_MARK_DOT + sample,

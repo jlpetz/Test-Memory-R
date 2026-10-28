@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use tmr::frontend::{
     AllocationReport, Event, NotRun, ProgressSnapshot, ProgressTracker, RestartChoice, Run, RunOutcome, RunStatus, SealOp, Setup,
-    StepReport, TestConfigurationReport, WheaCounts,
+    StepReport, TestConfigurationReport, TestSnapshot, WheaCounts,
 };
 use tmr::session::{SessionEnd, Stopped};
 
@@ -124,14 +124,36 @@ impl StepRow {
     }
 }
 
-/// What the chart plots: the last `SAMPLES` speeds, one per 500 ms, and the samples at which the run's errors rose.
+/// One of the chart's samples (TODO 109): a test's speed in MiB/s; the seal's, a run-wide seal stage's or the seal's work before a step's
+/// test; or none, a gap, where there are no figures: between tests, and before a test's first, through the seal's checks inside its chunks
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sample {
+    None,
+    Test(f64),
+    Seal(f64),
+}
+
+impl Sample {
+    /// Its speed, or `None` for a gap
+    pub fn value(self) -> Option<f64> {
+        match self {
+            Sample::None => None,
+            Sample::Test(mib_s) | Sample::Seal(mib_s) => Some(mib_s),
+        }
+    }
+}
+
+/// What the chart plots: the last `SAMPLES` speeds, one per 500 ms, the samples at which the run's errors rose, and those at which a stage
+/// began (TODO 109).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Series {
-    pub samples: VecDeque<f64>,
+    pub samples: VecDeque<Sample>,
     /// Samples received since the run started; the newest is number `received - 1`
     pub received: u64,
     /// The numbers of the samples at which the errors rose, oldest first. Marks that scroll off the left edge are dropped.
     pub error_marks: VecDeque<u64>,
+    /// The numbers of the samples at which a stage began, with its label (`stage_label`), oldest first; dropped as the error marks are
+    pub stage_marks: VecDeque<(u64, String)>,
     // A temperature series would go here: one DIMM temperature per sample (SPD hub sensor, or HWiNFO's shared memory; see doc/todo/7-gui.md
     // note 3), drawn on a second y axis on the right so temperature, errors and throughput share this one box.
 }
@@ -140,7 +162,7 @@ pub struct Series {
 pub const SAMPLES: usize = 120;
 
 impl Series {
-    pub fn push(&mut self, sample: f64) {
+    pub fn push(&mut self, sample: Sample) {
         if self.samples.len() == SAMPLES {
             self.samples.pop_front();
         }
@@ -149,6 +171,9 @@ impl Series {
         let oldest = self.received - self.samples.len() as u64;
         while self.error_marks.front().is_some_and(|&m| m < oldest) {
             self.error_marks.pop_front();
+        }
+        while self.stage_marks.front().is_some_and(|(m, _)| *m < oldest) {
+            self.stage_marks.pop_front();
         }
     }
 
@@ -161,24 +186,38 @@ impl Series {
         }
     }
 
-    pub fn latest(&self) -> Option<f64> {
+    /// A stage began by the newest sample, `label` it
+    pub fn mark_stage(&mut self, label: String) {
+        if let Some(newest) = self.received.checked_sub(1) {
+            self.stage_marks.push_back((newest, label));
+        }
+    }
+
+    pub fn latest(&self) -> Option<Sample> {
         self.samples.back().copied()
     }
 
-    /// Each visible mark: its sample's number, how many samples before the newest it is, and its value
-    pub fn marks(&self) -> impl Iterator<Item = (u64, usize, f64)> + '_ {
+    /// How many samples before the newest one sample number `m` is, if it is still shown, and its index
+    fn shown(&self, m: u64) -> Option<(usize, usize)> {
         let n = self.samples.len();
-        let oldest = self.received - n as u64;
-        self.error_marks.iter().filter_map(move |&m| {
-            let index = (m - oldest) as usize;
-            self.samples.get(index).map(|&v| (m, n - 1 - index, v))
-        })
+        let index = usize::try_from(m.checked_sub(self.received - n as u64)?).ok().filter(|&i| i < n)?;
+        Some((n - 1 - index, index))
+    }
+
+    /// Each visible error mark: its sample's number, how many samples before the newest it is, and its value (`None` in a gap)
+    pub fn marks(&self) -> impl Iterator<Item = (u64, usize, Option<f64>)> + '_ {
+        self.error_marks.iter().filter_map(|&m| self.shown(m).map(|(ago, index)| (m, ago, self.samples[index].value())))
+    }
+
+    /// Each visible stage mark: its sample's number, how many samples before the newest it is, and its label
+    pub fn stages(&self) -> impl Iterator<Item = (u64, usize, &str)> + '_ {
+        self.stage_marks.iter().filter_map(|(m, label)| self.shown(*m).map(|(ago, _)| (*m, ago, label.as_str())))
     }
 
     /// The top of the y axis: the samples' largest, rounded up to 1, 2, 4, 6 or 8 times a power of ten, so its four divisions take round
     /// labels
     pub fn axis_top(&self) -> f64 {
-        axis_top(self.samples.iter().copied().fold(0.0, f64::max))
+        axis_top(self.samples.iter().filter_map(|s| s.value()).fold(0.0, f64::max))
     }
 }
 
@@ -330,6 +369,8 @@ pub struct Model {
     /// first
     pub errors: Errors,
     pub series: Series,
+    /// The stage the chart last marked: its cycle, its number and its name (TODO 109)
+    stage: Option<(u32, u64, String)>,
     /// The parameters Start runs, as the parameters box has them: the CLI's `key=value` syntax (`args_of`)
     pub args: String,
     /// The exe's name, which Start puts before them
@@ -367,6 +408,7 @@ impl Model {
             rows: Vec::new(),
             errors: Errors::default(),
             series: Series::default(),
+            stage: None,
             args: args_text(args.get(1..).unwrap_or_default()),
             program: args.first().cloned().unwrap_or_else(|| "tmr".to_string()),
             facts: Facts::default(),
@@ -606,7 +648,14 @@ impl Model {
         self.position = position(&s);
         self.live = live(&s);
         self.bar = bar(&s);
-        self.series.push(speed_mib_s(&s));
+        self.series.push(sample(&s));
+        if let Some(test) = s.test.as_ref().filter(|test| !test.finished) {
+            let stage = (s.cycle, test.number, test.name.clone());
+            if self.stage.as_ref() != Some(&stage) {
+                self.series.mark_stage(stage_label(&s, test));
+                self.stage = Some(stage);
+            }
+        }
         let errors = s.finished_errors + s.live_errors + s.whea.total;
         if errors > self.errors_seen {
             self.errors_seen = errors;
@@ -826,9 +875,22 @@ fn bar(s: &ProgressSnapshot) -> Bar {
         .unwrap_or_else(|| of(u128::from(s.tests_done), tests, Bar::CYCLE))
 }
 
-/// The running test's speed in MiB/s, as the ticker gives it: 0 between tests, and before its workers have published
-fn speed_mib_s(s: &ProgressSnapshot) -> f64 {
-    s.test.as_ref().filter(|test| !test.finished && test.live.published).map_or(0.0, |test| test.live.bytes_per_sec / MIB)
+/// The chart's sample for `s` (TODO 109): the running test's speed in MiB/s as the ticker gives it, marked the seal's when its figures
+/// are the seal's work; none between tests, and before its workers have published
+fn sample(s: &ProgressSnapshot) -> Sample {
+    match s.test.as_ref().filter(|test| !test.finished && test.live.published) {
+        Some(test) if test.sealing => Sample::Seal(test.live.bytes_per_sec / MIB),
+        Some(test) => Sample::Test(test.live.bytes_per_sec / MIB),
+        None => Sample::None,
+    }
+}
+
+/// A stage's label on the chart: `C1 T5 Mem-MovingInv256`, and a run-wide seal stage's, which has no number, `C1 Sealing memory`
+fn stage_label(s: &ProgressSnapshot, test: &TestSnapshot) -> String {
+    match test.number {
+        0 => format!("C{} {}", s.cycle, test.name),
+        number => format!("C{} T{number} {}", s.cycle, test.name),
+    }
 }
 
 /// `{:.0}`, the console's rounding, with thousands separated: `19,109`
@@ -968,6 +1030,7 @@ mod tests {
                 time_limit: None,
                 finished: false,
                 publishes: true,
+                sealing: false,
                 live: LiveFigures { published: true, bytes: 100 << 30, errors: live_errors, bytes_per_sec: 19108.7 * MIB, stage: None },
             }),
         }
@@ -1352,7 +1415,7 @@ mod tests {
         assert_eq!((m.runtime, m.runtime_line().as_str()), (Duration::from_secs(95), "00:01:35"));
         assert_eq!(m.position, "Cycle 2/4 (00:00:30, 33%) · Test 3/6 Mem-Refresh128 (00:00:05)");
         assert_eq!((m.bar.fraction, m.bar.percent), (8.0 / 24.0, 33), "a cycle and 2 tests of 4 cycles of 6");
-        assert_eq!(m.series.latest().map(|v| (v * 10.0).round() / 10.0), Some(19108.7));
+        assert_eq!(m.series.latest().and_then(Sample::value).map(|v| (v * 10.0).round() / 10.0), Some(19108.7));
         assert_eq!(m.series.marks().count(), 1, "the finished test's error");
 
         m.tick(Some(snapshot(0)), vec!["WHEA [corrected] id=47 Warning: memory".to_string()]);
@@ -1361,11 +1424,11 @@ mod tests {
         assert_eq!(marks, [0, 2], "the errors rose at the first and the third");
         assert_eq!(m.errors, ["WHEA [corrected] id=47 Warning: memory"]);
 
-        // Between tests the speed is 0, and at the suite's end the clock holds
+        // Between tests there is no speed, a gap, and at the suite's end the clock holds
         let mut between = snapshot(0);
         between.test.as_mut().unwrap().finished = true;
         m.tick(Some(between), Vec::new());
-        assert_eq!(m.series.latest(), Some(0.0));
+        assert_eq!(m.series.latest(), Some(Sample::None));
         m.apply(
             Run::SuiteEnded { outcome: RunOutcome::Completed, status: RunStatus::Failed, memory_errors: 3, whea: WheaCounts::default() }
                 .into(),
@@ -1376,6 +1439,39 @@ mod tests {
         let later = ProgressSnapshot { runtime: Duration::from_secs(500), time_limit: Some(Duration::from_secs(600)), ..snapshot(0) };
         m.tick(Some(later), Vec::new());
         assert_eq!((m.runtime, m.series.received, m.time_left.as_ref()), (Duration::from_secs(95), 4, None));
+    }
+
+    /// TODO 109: the chart's samples are the test's speed, the seal's when its figures are the seal's work, and a gap where there are
+    /// none; where a stage begins, one labelled mark, a run-wide seal stage's without a number
+    #[test]
+    fn the_chart_has_gaps_the_seals_figures_and_a_mark_for_each_stage() {
+        let mut m = model();
+        let with = |number: u64, name: &str, sealing: bool, published: bool| {
+            let mut s = snapshot(0);
+            let test = s.test.as_mut().unwrap();
+            (test.number, test.name, test.sealing, test.live.published) = (number, name.to_string(), sealing, published);
+            s
+        };
+        m.tick(Some(with(0, "Sealing memory", true, true)), Vec::new());
+        assert!(matches!(m.series.latest(), Some(Sample::Seal(_))), "a run-wide seal stage's figures are the seal's");
+        m.tick(Some(with(3, "Mem-Refresh128", true, true)), Vec::new());
+        assert!(matches!(m.series.latest(), Some(Sample::Seal(_))), "and the seal's before a step's test");
+        m.tick(Some(with(3, "Mem-Refresh128", false, false)), Vec::new());
+        assert_eq!(m.series.latest(), Some(Sample::None), "the test, before its first figures: a gap");
+        m.tick(Some(with(3, "Mem-Refresh128", false, true)), Vec::new());
+        assert!(matches!(m.series.latest(), Some(Sample::Test(_))));
+        m.tick(Some(with(4, "Mem-MovingInv256", false, true)), Vec::new());
+
+        let stages: Vec<(u64, &str)> = m.series.stages().map(|(sample, _, label)| (sample, label)).collect();
+        assert_eq!(stages, [(0, "C2 Sealing memory"), (1, "C2 T3 Mem-Refresh128"), (4, "C2 T4 Mem-MovingInv256")], "one mark a stage");
+
+        // An error mark in a gap has no value, so no dot; a gap doesn't lift the axis
+        let mut series = Series::default();
+        series.push(Sample::Test(150.0));
+        series.push(Sample::None);
+        series.mark_newest();
+        assert_eq!(series.marks().collect::<Vec<_>>(), [(1, 0, None)]);
+        assert_eq!(series.axis_top(), 200.0);
     }
 
     /// The ticker's golden (crates/tmr-cli's `testdata/console/ticker.txt`), each `## case` and its lines. Read when the test runs, not
@@ -1446,6 +1542,7 @@ mod tests {
                 time_limit: Some(Duration::from_secs(600)),
                 finished: false,
                 publishes: true,
+                sealing: false,
                 live: LiveFigures { published: true, bytes: 285 << 30, bytes_per_sec: 19108.7 * MIB, ..Default::default() },
             }),
         }
@@ -1586,14 +1683,14 @@ mod tests {
         series.mark_newest();
         assert_eq!(series.marks().count(), 0, "no sample to mark");
         for i in 0..SAMPLES + 10 {
-            series.push(i as f64);
+            series.push(Sample::Test(i as f64));
             if i == 5 || i == 50 {
                 series.mark_newest();
                 series.mark_newest();
             }
         }
         assert_eq!(series.samples.len(), SAMPLES);
-        assert_eq!(series.marks().collect::<Vec<_>>(), [(50, SAMPLES + 9 - 50, 50.0)], "one mark a sample; sample 5 scrolled off");
+        assert_eq!(series.marks().collect::<Vec<_>>(), [(50, SAMPLES + 9 - 50, Some(50.0))], "one mark a sample; sample 5 scrolled off");
         assert_eq!(series.axis_top(), 200.0);
 
         assert_eq!([0.0, 100.0, 101.0, 450.0, 19_108.7, 80_000.0, 2_100_000.0].map(axis_top), [

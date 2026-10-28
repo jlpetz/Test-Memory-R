@@ -185,6 +185,7 @@ fn snapshot() -> ProgressSnapshot {
             time_limit: Some(Duration::from_secs(600)),
             finished: false,
             publishes: true,
+            sealing: false,
             live: LiveFigures { published: true, bytes: 285 * GIB, bytes_per_sec: 19108.7 * 1024.0 * 1024.0, ..Default::default() },
         }),
     }

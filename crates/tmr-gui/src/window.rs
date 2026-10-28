@@ -484,16 +484,27 @@ impl Window {
     fn chart_card(&self, row: i32) -> View {
         let p = self.palette();
         let series = &self.model.series;
-        let latest = series.latest().map_or_else(|| "–".to_owned(), crate::model::thousands);
+        let latest = match series.latest() {
+            Some(crate::model::Sample::Test(mib_s)) => crate::model::thousands(mib_s),
+            Some(crate::model::Sample::Seal(mib_s)) => format!("{} (seal)", crate::model::thousands(mib_s)),
+            _ => "–".to_owned(),
+        };
         let marks = series.marks().count();
         let title = format!("Throughput (MiB/s) · last 60 s · now {latest}");
-        // Title on the left, a two-item legend on the right (line = MiB/s, red mark = errors rose). A temperature series would add a third
-        // legend item here.
+        // Title on the left, a legend on the right (line = MiB/s, the seal's line, red mark = errors rose). A temperature series would add
+        // an item here.
         let header = Grid::new().columns([GridLength::STAR, GridLength::Auto]).children((
             card_title(title, p).grid_column(0),
             StackPanel::new().grid_column(1).orientation(Orientation::Horizontal).spacing(6.0).children((
                 Border::new().width(16.0).height(2.0).vertical_alignment(VerticalAlignment::Center).background(brush(p.accent)),
                 legend_text("MiB/s", p),
+                Border::new()
+                    .width(16.0)
+                    .height(2.0)
+                    .margin(Thickness::new(8.0, 0.0, 0.0, 0.0))
+                    .vertical_alignment(VerticalAlignment::Center)
+                    .background(brush(p.chart_seal)),
+                legend_text("seal", p),
                 Border::new()
                     .width(2.0)
                     .height(12.0)

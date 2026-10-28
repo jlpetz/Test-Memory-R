@@ -316,6 +316,12 @@ pub(crate) fn seal_before_step(
     // In 64 MiB pieces, so Ctrl+C is seen within one
     const PIECE: usize = 64 << 20;
     let stop = || crate::runner::SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::Relaxed);
+    // Its figures after each piece, for the ticker and the window's chart (TODO 109), as a run-wide seal stage publishes its own: the
+    // runner marks them the seal's, and zeroes them before the step's test starts
+    let publish = |bytes: usize| {
+        progress.bytes_processed.store(bytes as u64, std::sync::atomic::Ordering::Relaxed);
+        progress.last_update_ms.store(start.elapsed().as_millis().max(1) as u64, std::sync::atomic::Ordering::Relaxed);
+    };
     if seal.expects {
         if *unsealed > 0 {
             progress.set_stage(Stage::Resealing);
@@ -325,6 +331,7 @@ pub(crate) fn seal_before_step(
                 // SAFETY: the prefix of this worker's own span
                 unsafe { seal.kernel.fill(base, at / 8, end / 8) };
                 at = end;
+                publish(at);
             }
             ops.add(crate::ops::Op::SealFill, start.elapsed(), at as u64);
             // A reseal cut short leaves the prefix counted unsealed; resealing it again is harmless
@@ -342,6 +349,7 @@ pub(crate) fn seal_before_step(
                 // SAFETY: as above
                 errors += unsafe { seal.kernel.check(base, at / 8, end / 8, "seal check before") };
                 at = end;
+                publish(at - *unsealed);
             }
             ops.add(crate::ops::Op::SealCheck, start.elapsed(), (at - *unsealed) as u64);
             *unsealed = extent.test_size;

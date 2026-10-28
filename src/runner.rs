@@ -1301,6 +1301,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         let (mut between_ops, mut test_ops) = (crate::ops::OpTally::default(), crate::ops::OpTally::default());
         if seal.is_some() {
             let between = Instant::now();
+            // Its figures are the seal's until the step's test starts (TODO 109)
+            progress.set_sealing(true);
             thread_pool.execute_seal_before_step(test_name, test_config, &step_context);
             for _ in 0..thread_count {
                 match result_receiver.recv() {
@@ -1326,6 +1328,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
                 }
             }
             seal_stages.between_steps_ms += between.elapsed().as_millis();
+            // The step's test from here: its figures from zero, not the seal's
+            progress.set_sealing(false);
             // Under errors=halt, a failed check stops here: the step would overwrite the bad words
             if seal_errors_for_test > 0 && matches!(error_mode, ErrorMode::Halt) {
                 log::error!(
@@ -1742,6 +1746,7 @@ fn run_seal_stage(
     };
     let start = Instant::now();
     ctx.progress.start_test(0, name, start, None, true);
+    ctx.progress.set_sealing(true);
     ctx.thread_pool.execute_seal(op, kernel, &format!("cycle {cycle}"));
     let (mut bytes, mut errors) = (0u64, 0u64);
     let mut bits = crate::failing_bits::FailingBits::default();

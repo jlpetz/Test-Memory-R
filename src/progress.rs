@@ -50,6 +50,8 @@ struct RunningTest {
     publishes: bool,
     /// Results are in and its errors are in `Position::errors`, so its workers' live errors must not be added again.
     finished: bool,
+    /// Its workers' figures are the seal's work, not a test's (`set_sealing`)
+    sealing: bool,
 }
 
 /// How the suite ended. Drives the run verdict.
@@ -180,6 +182,9 @@ pub struct TestSnapshot {
     pub finished: bool,
     /// Whether it publishes live figures (`RunningTest::publishes`)
     pub publishes: bool,
+    /// Its figures are the seal's work (TODO 109): a run-wide seal stage, or the seal's work before a step's test, resealing or checking
+    /// that step's memory. Then the test's own figures start again from zero.
+    pub sealing: bool,
     /// Its workers' last published figures
     pub live: LiveFigures,
 }
@@ -231,7 +236,30 @@ impl ProgressTracker {
                 slot.reset();
             }
         }
-        position.test = Some(RunningTest { number: number as u64, name: name.to_string(), start, time_limit, publishes, finished: false });
+        position.test = Some(RunningTest {
+            number: number as u64,
+            name: name.to_string(),
+            start,
+            time_limit,
+            publishes,
+            finished: false,
+            sealing: false,
+        });
+    }
+
+    /// Whether the running test's figures are the seal's work from now (TODO 109): `true` for a run-wide seal stage, and for the seal's
+    /// work before a step's test; `false` once that test starts, when its workers' figures start again from zero, so the seal's bytes and
+    /// time aren't the test's. Only while the workers are idle between work items, as `start_test`.
+    pub(crate) fn set_sealing(&self, sealing: bool) {
+        let mut position = self.position();
+        if !sealing && let Some(plan) = self.suite.get() {
+            for slot in plan.workers.iter() {
+                slot.reset();
+            }
+        }
+        if let Some(test) = position.test.as_mut() {
+            test.sealing = sealing;
+        }
     }
 
     /// Record a finished test's errors, reported by its workers' results.
@@ -286,6 +314,7 @@ impl ProgressTracker {
             time_limit: test.time_limit,
             finished: test.finished,
             publishes: test.publishes,
+            sealing: test.sealing,
             live: live_figures(&plan.workers),
         });
         let live_errors = test.as_ref().filter(|test| !test.finished).map_or(0, |test| test.live.errors);
@@ -409,5 +438,26 @@ mod tests {
         assert_eq!((finished.tests_done, finished.finished_errors, finished.live_errors), (1, 3, 0));
         let test = finished.test.as_ref().expect("the test that finished");
         assert_eq!((test.finished, test.live.errors), (true, 3));
+    }
+
+    /// TODO 109: the seal's work before a step's test publishes as the test's figures, marked the seal's; once the test starts, the
+    /// figures start again from zero and are the test's
+    #[test]
+    fn the_seal_before_a_steps_test_has_figures_of_its_own() {
+        let progress = ProgressTracker::new();
+        let workers: Arc<[TestProgress]> = Arc::from([TestProgress::new()]);
+        progress.begin_suite(Instant::now(), None, None, 4, Arc::clone(&workers));
+        progress.start_new_cycle(1);
+        progress.start_test(2, "Mem-MovingInv256", Instant::now(), None, true);
+        progress.set_sealing(true);
+        workers[0].set_stage(Stage::Resealing);
+        workers[0].bytes_processed.store(64 << 20, Ordering::Relaxed);
+        workers[0].last_update_ms.store(10, Ordering::Relaxed);
+        let test = progress.snapshot().and_then(|s| s.test).expect("a test is running");
+        assert_eq!((test.sealing, test.live.published, test.live.bytes, test.live.stage), (true, true, 64 << 20, Some(Stage::Resealing)));
+
+        progress.set_sealing(false);
+        let test = progress.snapshot().and_then(|s| s.test).expect("a test is running");
+        assert_eq!((test.sealing, test.live.published, test.live.bytes, test.live.stage), (false, false, 0, None), "the test's, from zero");
     }
 }

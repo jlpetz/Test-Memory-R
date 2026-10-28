@@ -10,13 +10,15 @@
 //! | key               | used for                                                             |
 //! |-------------------|----------------------------------------------------------------------|
 //! | `text_primary`    | most text (the title, table cells, error lines, card titles, CPU)    |
-//! | `text_secondary`  | the info line, table headings, empty-state lines, chart axis labels  |
+//! | `text_secondary`  | the info line, table headings, empty-state lines, chart axis labels, |
+//! |                   | the chart's stage lines and their labels                             |
 //! | `error`           | error bullets, a non-zero error count, the chart's error marks       |
 //! | `critical`        | the "Failed" badge fill                                              |
 //! | `success`         | the "Running" and "Passed" badge fill                                |
 //! | `neutral`         | the other badges' fill: Ready, Stopping, Interrupted, Not run        |
 //! | `on_status`       | badge text                                                           |
 //! | `accent`          | the chart's throughput line                                          |
+//! | `chart_seal`      | the chart's line where the figures are the seal's work               |
 //! | `chart_grid`      | the chart's gridlines, the header divider                            |
 //! | `card_background` | card fill                                                            |
 //! | `card_stroke`     | card hairline border, the progress track's border                    |
@@ -42,6 +44,7 @@ pub struct Palette {
     pub neutral: Color,
     pub on_status: Color,
     pub accent: Color,
+    pub chart_seal: Color,
     pub chart_grid: Color,
     pub card_background: Color,
     pub card_stroke: Color,
@@ -55,7 +58,7 @@ pub struct Palette {
 type Field = fn(&mut Palette) -> &mut Color;
 
 /// Every key, in file order, with the field it sets.
-const KEYS: [(&str, Field); 15] = [
+const KEYS: [(&str, Field); 16] = [
     ("text_primary", |p| &mut p.text_primary),
     ("text_secondary", |p| &mut p.text_secondary),
     ("error", |p| &mut p.error),
@@ -64,6 +67,7 @@ const KEYS: [(&str, Field); 15] = [
     ("neutral", |p| &mut p.neutral),
     ("on_status", |p| &mut p.on_status),
     ("accent", |p| &mut p.accent),
+    ("chart_seal", |p| &mut p.chart_seal),
     ("chart_grid", |p| &mut p.chart_grid),
     ("card_background", |p| &mut p.card_background),
     ("card_stroke", |p| &mut p.card_stroke),
@@ -91,6 +95,8 @@ impl Palette {
         neutral: rgb(0x9D, 0x9D, 0x9D),
         on_status: rgb(0x00, 0x00, 0x00), // TextOnAccentFillColorPrimary
         accent: rgb(0x39, 0x87, 0xE5),
+        // A violet, apart from the throughput's blue and the errors' red
+        chart_seal: rgb(0xB1, 0x96, 0xE6),
         chart_grid: rgb(0x3D, 0x3D, 0x3D),
         card_background: argb(0x0D, 0xFF, 0xFF, 0xFF), // CardBackgroundFillColorDefault
         card_stroke: argb(0x19, 0x00, 0x00, 0x00),     // CardStrokeColorDefault
@@ -109,6 +115,7 @@ impl Palette {
         neutral: rgb(0x6E, 0x6E, 0x6E),
         on_status: rgb(0xFF, 0xFF, 0xFF),
         accent: rgb(0x2A, 0x78, 0xD6),
+        chart_seal: rgb(0x6B, 0x4F, 0xBB),
         chart_grid: rgb(0xE3, 0xE3, 0xE3),
         card_background: argb(0xB3, 0xFF, 0xFF, 0xFF),
         card_stroke: argb(0x0F, 0x00, 0x00, 0x00),
@@ -222,15 +229,16 @@ mod tests {
     }
 
     /// What each key colours, for the example file (same order as `KEYS`).
-    const ABOUT: [&str; 15] = [
+    const ABOUT: [&str; 16] = [
         "most text: title, table cells, error lines, card titles, CPU name",
-        "info line, table headings, empty-state lines, chart axis labels",
+        "info line, table headings, empty-state lines, chart axis labels, the chart's stage lines and labels",
         "error bullets, a non-zero error count, the chart's error marks",
         "the 'Failed' badge fill",
         "the 'Running' and 'Passed' badge fill",
         "the other badges' fill: 'Ready', 'Stopping', 'Interrupted', 'Not run'",
         "badge text",
         "the chart's throughput line",
+        "the chart's line where the figures are the seal's work",
         "the chart's gridlines, the header divider",
         "card fill",
         "card border, progress track border",
