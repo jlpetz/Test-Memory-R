@@ -53,8 +53,10 @@ slower.
 
 ## Running a test
 
-- **Double-click TMR** (or its Start menu entry) for its window. Type any settings in its box, and
-  press Start.
+- **Double-click TMR** (or its Start menu entry) for its window. Type any settings in its box, or
+  pick a config with Load config, and press Start. A finished step's row opens its report, and
+  the final summary opens itself as the run ends; the Log, System, Threads and Memory tabs have
+  what the console prints as it starts, and Compare compares two runs' results files.
 - **From a console**, type `tmr`. On its own it runs the stability plan, 3 cycles of it; press
   Ctrl+C to stop it sooner, and it stops at its next checkpoint and writes its report. Some
   settings:

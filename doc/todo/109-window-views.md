@@ -62,3 +62,31 @@ crates, so the window stays on a crates.io release. In 0.100.0:
 
 The chart first, then each step's report, the tabs, the command bar, About: each a commit the owner
 checks in the window (Claude doesn't run tmr.exe).
+
+## Built (2026-10-29, for the owner's check in the window)
+
+All five, with tests and clippy clean; none seen running yet.
+- 08b76c6, 881400c: the chart's gaps, the seal's figures and colour, the stage lines, and a dash for
+  a reading alone between gaps.
+- 4c9f999: the 8 tests that published only at a cycle's end (stuck-bit, refresh, cache-bust,
+  stride, block-move, moving inversions, modulo-X, sequence) publish between chunks, as random
+  torture did; a quick run's cycle can be the whole test. Asm: only those families changed, no
+  new stack access; speed: every test within its runs' spread (the commit has the table).
+- 76d5016: a row opens its step's report beside the list; the final summary's row opens itself.
+  The tables are the engine's (`report.rs` renders `Reporter` into blocks), the console's own.
+- f223b8b: the tabs. System, Threads and Memory come from setup's and the run's events
+  (`sections.rs`); the Log tab takes every record the log file gets.
+- 3943981: Load config, Compare, the `…` menu and About (`dialogs.rs`: IFileOpenDialog and
+  ShellExecute, each on a thread and in an apartment of its own).
+
+Where it departs from the plan, for the owner to accept or change:
+- Start and Stop stay beside the parameters box, with Load config, which writes into it; Compare
+  and `…` sit at the right of the tabs.
+- While a report is open the list shows only the cycle, step and label (the label red for a step
+  with errors): beside a report at 860 px the eight columns don't fit.
+- A row opens on the press (Border's pointer event, no Button: its padding insets the stripes), so
+  it has no hover or keyboard focus.
+- The log tab draws the newest 500 lines and keeps 10,000; the step reports kept are the newest
+  200, as many as the rows drawn.
+- The memory modules' table has no serial number (a window is shared as a screenshot).
+- Compare takes both files in one dialog (Ctrl for the second), the older the baseline.
