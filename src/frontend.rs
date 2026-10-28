@@ -34,12 +34,11 @@ pub use crate::progress::{LiveFigures, ProgressSnapshot, ProgressTracker, RunOut
 // The reports as tables, for a frontend to render: the default formatting's, through its renderer
 pub use crate::reporting::Reporter;
 pub use crate::reporting::models::{
-    AllocationReport, AllocationThread, CacheInfo, ColumnAlignment, CpuInfo, CpuPerformance, CpuTopologyEntry, CpuTopologyReport,
-    LatencyLevelSummary, LatencyPercentiles, LatencyTestSummaryReport, LatencyThreadResult, PerformanceByCpuReport,
-    PerformanceByPhysicalCoreReport, PerformanceByThreadReport, PhysicalCorePerformance, SystemInfoReport, TableData,
-    TestConfigurationReport, ThreadPerformance, ThreadTiming, ThreadTimingReport, TopologySummary, TscCalibrationInfo,
+    AllocationReport, AllocationThread, CacheInfo, ColumnAlignment, ConsolidatedMemoryReport, CpuInfo, CpuPerformance, CpuTopologyEntry,
+    CpuTopologyReport, FinalTestSummaryReport, LatencyLevelSummary, LatencyPercentiles, LatencyTestSummaryReport, LatencyThreadResult,
+    PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport, PhysicalCorePerformance, SystemInfoReport,
+    TableData, TestConfigurationReport, ThreadPerformance, ThreadTiming, ThreadTimingReport, TopologySummary, TscCalibrationInfo,
 };
-use crate::reporting::models::{ConsolidatedMemoryReport, FinalTestSummaryReport};
 pub use crate::reporting::renderers::Renderer;
 pub use crate::runner::RunStatus;
 pub use crate::smbios::MemoryModule;

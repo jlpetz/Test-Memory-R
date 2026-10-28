@@ -23,6 +23,7 @@ mod chart;
 mod logger;
 mod model;
 mod palette;
+mod report;
 mod sysinfo;
 mod window;
 

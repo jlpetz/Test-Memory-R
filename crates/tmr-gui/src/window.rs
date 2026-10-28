@@ -11,12 +11,13 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use tmr::frontend::{Event, ProgressSnapshot, ProgressTracker, RestartChoice, Run};
+use tmr::frontend::{ColumnAlignment, Event, ProgressSnapshot, ProgressTracker, RestartChoice, Run, TableData};
 use windows_reactor::*;
 
 use crate::logger::{self, LogLines};
-use crate::model::{Bar, Model, Status, StepRow};
+use crate::model::{Bar, Model, Opened, Status, StepRow};
 use crate::palette::{Palette, Palettes, brush};
+use crate::report::{Block, Report};
 use crate::{Feed, GuiFrontend, chart};
 
 const PAGE_MARGIN_X: f64 = 20.0;
@@ -25,8 +26,9 @@ const CARD_PADDING_X: f64 = 16.0;
 const PROGRESS_HEIGHT: f64 = 22.0;
 /// The window's clock: the waiter returns at least this often while the session runs
 const TICK: Duration = Duration::from_millis(500);
-/// The rows and error lines drawn, the newest: a night's run has thousands, and every redraw builds the ones drawn
-const SHOWN: usize = 200;
+/// The rows and error lines drawn, the newest: a night's run has thousands, and every redraw builds the ones drawn. Every row drawn opens its
+/// report: the model keeps as many.
+const SHOWN: usize = crate::model::REPORTS_KEPT;
 
 /// The title bar's icon (TODO 7), the exe's own (`main`'s, crates/tmr-app/tmr.ico for tmr.exe). WinUI's AppWindow takes an icon only as an
 /// .ico file's path, so it is written once to the temp directory; `None` when it can't be, and the window keeps Windows' default.
@@ -50,6 +52,10 @@ pub(crate) enum Message {
     Restart(ContentDialogResult),
     /// A DIMM chosen in the system panel's selector: its menu item
     Dimm(String),
+    /// A results row clicked: its report opens beside the list, or closes when it is open (TODO 109)
+    Open(Opened),
+    /// The report's close button
+    Close,
     Scheme(ColorScheme),
     Size(WindowSize),
 }
@@ -203,6 +209,8 @@ impl Component for Window {
                 _ => RestartChoice::Continue4K,
             }),
             Message::Dimm(choice) => self.model.choose_dimm(&choice),
+            Message::Open(which) => self.model.open(which),
+            Message::Close => self.model.opened = None,
             Message::Scheme(scheme) => self.dark = scheme == ColorScheme::Dark,
             Message::Size(size) => self.width = size.width,
         }
@@ -237,7 +245,7 @@ impl Component for Window {
                 self.header(0, context),
                 self.position(1),
                 self.chart_card(2),
-                self.results(3),
+                self.results(3, context),
                 self.error_list(4),
                 self.controls(5, context),
                 self.restart_dialog(context),
@@ -454,31 +462,59 @@ impl Window {
         ))
     }
 
-    fn results(&self, row: i32) -> View {
+    /// The finished steps, newest first, the final summary's row above them once the run has one. A row opens its report beside the list
+    /// (TODO 109), which then shows only each row's cycle, step and label, the label in the error colour for a step that found errors.
+    fn results(&self, row: i32, context: &ViewContext<Self>) -> View {
         let p = self.palette();
-        let header = table_row(&StepRow::HEADINGS.map(str::to_string), p, None, true, [false; StepRow::COLUMNS]);
+        let report = self.model.opened_report();
+        let compact = report.is_some();
+        let header = table_row(&StepRow::HEADINGS.map(str::to_string), p, None, true, [false; StepRow::COLUMNS], compact, false);
         let stripe = brush(p.stripe);
+        let opened = self.model.opened.filter(|_| compact);
+        // Clickable rows are Borders: a Button's padding would inset the stripes. Transparent, not unfilled, so the whole row takes the
+        // click: XAML doesn't hit-test an element with no background. A click opens on the press, as Explorer selects.
+        let clickable = |line: View, which: Opened| -> View {
+            Border::new()
+                .background(brush(Color::transparent()))
+                .on_pointer_pressed(context.callback(move |_: PointerEventInfo| Message::Open(which)))
+                .content(line)
+        };
+        let mut rows: Vec<(u64, View)> = Vec::new();
+        if let Some(summary) = &self.model.summary {
+            let line = table_row(&summary.cells, p, None, false, summary.flagged, compact, opened == Some(Opened::Summary));
+            rows.push((u64::MAX, clickable(line, Opened::Summary)));
+        }
         // Newest first: reactor 0.100.0 exposes no ScrollIntoView / scroll offset, so a list in step order could not follow the latest row.
         // Rows are keyed by their place in the run, so a new step inserts one native row and leaves the others alone.
-        let newest = self.model.rows.iter().enumerate().rev().take(SHOWN);
-        let rows = newest
-            .map(|(i, r): (usize, &StepRow)| (i as u64, table_row(&r.cells(), p, (i % 2 == 1).then_some(stripe), false, r.flagged())));
-        let body: View = if self.model.rows.is_empty() {
+        for (i, r) in self.model.rows.iter().enumerate().rev().take(SHOWN) {
+            let selected = opened == Some(Opened::Step(i));
+            let line = table_row(&r.cells(), p, (i % 2 == 1).then_some(stripe), false, r.flagged(), compact, selected);
+            rows.push((i as u64, if self.model.opens(i) { clickable(line, Opened::Step(i)) } else { line }));
+        }
+        let body: View = if rows.is_empty() {
             TextBlock::new().text("No steps finished yet").foreground(brush(p.text_secondary)).margin(Thickness::xy(8.0, 6.0)).into()
         } else {
             ScrollViewer::new().vertical_scroll_bar_visibility(ScrollBarVisibility::Auto).content(StackPanel::new().keyed_children(rows))
         };
+        let list = Grid::new()
+            .rows([GridLength::Auto, GridLength::STAR])
+            .row_spacing(2.0)
+            .children((Border::new().grid_row(0).content(header), Border::new().grid_row(1).content(body)));
         let steps = self.model.rows.len();
         let shown = if steps > SHOWN { format!(", the newest {SHOWN} shown") } else { String::new() };
-        card(
-            row,
-            p,
-            card_title(format!("Results · {steps} step{}, newest first{shown}", if steps == 1 { "" } else { "s" }), p),
-            Grid::new()
-                .rows([GridLength::Auto, GridLength::STAR])
-                .row_spacing(2.0)
-                .children((Border::new().grid_row(0).content(header), Border::new().grid_row(1).content(body))),
-        )
+        let hint = if steps > 0 && !compact { " · a row opens its report" } else { "" };
+        let title = card_title(format!("Results · {steps} step{}, newest first{shown}{hint}", if steps == 1 { "" } else { "s" }), p);
+        let content: View = match report {
+            Some(report) => {
+                Grid::new().columns([GridLength::Star(1.0), GridLength::Auto, GridLength::Star(1.8)]).column_spacing(12.0).children((
+                    Border::new().grid_column(0).content(list),
+                    Border::new().grid_column(1).width(1.0).background(brush(p.chart_grid)),
+                    Border::new().grid_column(2).content(report_panel(report, p, context)),
+                ))
+            }
+            None => list,
+        };
+        card(row, p, title, content)
     }
 
     fn chart_card(&self, row: i32) -> View {
@@ -599,6 +635,84 @@ const RESTART_QUESTION: &str = "The large-page privilege is set up, but takes ef
     checked, but slower memory traffic is less stress, so marginal errors that only appear at full bandwidth may \
     go undetected.";
 
+/// A report beside the results (TODO 109): its title and the close button, then, scrolling both ways, its verdict, its lines and its
+/// tables. A wide table scrolls rather than squeezing its columns, and a line doesn't wrap: the console's report is as wide.
+fn report_panel(report: &Report, p: &Palette, context: &ViewContext<Window>) -> View {
+    let close = Button::new().style(ButtonStyle::Subtle).grid_column(1).on_click(context.callback(|()| Message::Close)).content("✕");
+    let title =
+        card_title(report.title.clone(), p).text_trimming(TextTrimming::CharacterEllipsis).vertical_alignment(VerticalAlignment::Center);
+    let head = Grid::new().columns([GridLength::STAR, GridLength::Auto]).column_spacing(8.0).children((title.grid_column(0), close));
+    let verdict = TextBlock::new()
+        .text(report.verdict.clone())
+        .font_weight(FontWeight::SEMI_BOLD)
+        .foreground(brush(if report.failed { p.error } else { p.success }))
+        .is_text_selection_enabled(true);
+    let mut parts: Vec<(u64, View)> = vec![(0, verdict.into())];
+    let line = |text: &str| TextBlock::new().text(text.to_string()).foreground(brush(p.text_secondary)).is_text_selection_enabled(true);
+    parts.extend(report.lines.iter().enumerate().map(|(i, text)| (1 + i as u64, line(text).into())));
+    let first_block = 1 + report.lines.len() as u64;
+    parts.extend(report.blocks.iter().enumerate().map(|(i, block)| {
+        let view: View = match block {
+            Block::Heading(text) => card_title(text.clone(), p).margin(Thickness::new(0.0, 6.0, 0.0, 0.0)).into(),
+            Block::Text(text) => line(text).into(),
+            Block::Warning(text) => TextBlock::new().text(text.clone()).foreground(brush(p.error)).into(),
+            Block::Separator => Border::new().height(1.0).margin(Thickness::xy(0.0, 4.0)).background(brush(p.chart_grid)).into(),
+            Block::Table(table) => report_table(table, p),
+        };
+        (first_block + i as u64, view)
+    }));
+    let body = ScrollViewer::new()
+        .grid_row(1)
+        .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
+        .horizontal_scroll_bar_visibility(ScrollBarVisibility::Auto)
+        .content(Border::new().padding(Thickness::new(0.0, 0.0, 12.0, 12.0)).content(StackPanel::new().spacing(6.0).keyed_children(parts)));
+    Grid::new().rows([GridLength::Auto, GridLength::STAR]).row_spacing(6.0).children((Border::new().grid_row(0).content(head), body))
+}
+
+/// One of the engine's tables (`TableData`), as the console draws it in text: its title, its headings, its rows, each column aligned as its
+/// heading says, then its footer
+fn report_table(table: &TableData, p: &Palette) -> View {
+    let columns = table.headers.len().max(table.rows.iter().map(Vec::len).max().unwrap_or(0));
+    let align = |column: usize| match table.headers.get(column).map(|heading| heading.alignment) {
+        Some(ColumnAlignment::Right) => HorizontalAlignment::Right,
+        Some(ColumnAlignment::Center) => HorizontalAlignment::Center,
+        _ => HorizontalAlignment::Left,
+    };
+    let cell = |text: &str, row: usize, column: usize, heading: bool| -> (u64, View) {
+        let colour = if heading { p.text_secondary } else { p.text_primary };
+        let weight = if heading { FontWeight::SEMI_BOLD } else { FontWeight::NORMAL };
+        let block = TextBlock::new()
+            .text(text.to_string())
+            .font_size(12.0)
+            .font_weight(weight)
+            .foreground(brush(colour))
+            .horizontal_alignment(align(column))
+            .grid_row(row as i32)
+            .grid_column(column as i32);
+        (((row as u64) << 16) | column as u64, block.into())
+    };
+    let mut cells: Vec<(u64, View)> =
+        table.headers.iter().enumerate().map(|(column, heading)| cell(&heading.text, 0, column, true)).collect();
+    for (row, values) in table.rows.iter().enumerate() {
+        cells.extend(values.iter().enumerate().map(|(column, text)| cell(text, row + 1, column, false)));
+    }
+    let grid = Grid::new()
+        .column_spacing(14.0)
+        .row_spacing(1.0)
+        .columns(vec![GridLength::Auto; columns])
+        .rows(vec![GridLength::Auto; table.rows.len() + 1])
+        .keyed_children(cells);
+    let mut parts: Vec<(u64, View)> = Vec::new();
+    if let Some(title) = &table.title {
+        parts.push((0, card_title(title.clone(), p).margin(Thickness::new(0.0, 6.0, 0.0, 0.0)).into()));
+    }
+    parts.push((1, grid));
+    if let Some(footer) = &table.footer {
+        parts.push((2, TextBlock::new().text(footer.clone()).font_size(12.0).foreground(brush(p.text_secondary)).into()));
+    }
+    StackPanel::new().spacing(4.0).keyed_children(parts)
+}
+
 /// egui's progress bar, from reactor primitives: a fully rounded track, `width` wide, a rounded fill sized to the fraction by two star
 /// columns, and the percentage centred over both, the model's, rounded down as the ticker's are. Its tooltip says what it follows.
 /// Determinate, no animation; a stopped run dims the fill. A fill begun is never narrower than it is high (egui's `min_width`), so its
@@ -673,27 +787,40 @@ const TABLE_COLUMNS: [GridLength; StepRow::COLUMNS] = [
     GridLength::Pixel(56.0),
 ];
 
+/// The columns a row shows beside a report: the cycle, the step and its label
+const COMPACT: [usize; 3] = [0, 1, 2];
+
 /// One table line; the header uses the same columns and padding so the columns line up. `flagged` marks a non-zero count: palette error
-/// red, semi-bold (egui's `.strong()`).
+/// red, semi-bold (egui's `.strong()`). `compact`, beside a report: the cycle, the step and the label alone, the label flagged when any
+/// count is. `selected`: its report is the one open, an accent outline.
 fn table_row(
-    cells: &[String; StepRow::COLUMNS], p: &Palette, stripe: Option<Brush>, header: bool, flagged: [bool; StepRow::COLUMNS],
+    cells: &[String; StepRow::COLUMNS], p: &Palette, stripe: Option<Brush>, header: bool, flagged: [bool; StepRow::COLUMNS], compact: bool,
+    selected: bool,
 ) -> View {
     let weight = if header { FontWeight::SEMI_BOLD } else { FontWeight::NORMAL };
     let text = if header { p.text_secondary } else { p.text_primary };
-    let cell = |column: usize| {
-        let flag = flagged[column];
-        TextBlock::new()
+    let all: [usize; StepRow::COLUMNS] = std::array::from_fn(|column| column);
+    let shown: &[usize] = if compact { &COMPACT } else { &all };
+    let any_flagged = flagged.contains(&true);
+    let cell = |(at, &column): (usize, &usize)| -> (u64, View) {
+        let flag = if compact && column == 2 { any_flagged } else { flagged[column] };
+        let block = TextBlock::new()
             .text(cells[column].clone())
             .font_weight(if flag { FontWeight::SEMI_BOLD } else { weight })
             .foreground(brush(if flag { p.error } else { text }))
             .text_trimming(TextTrimming::CharacterEllipsis)
             .horizontal_alignment(if column == 2 { HorizontalAlignment::Left } else { HorizontalAlignment::Right })
-            .grid_column(column as i32)
+            .grid_column(at as i32);
+        (column as u64, block.into())
     };
-    let row: [TextBlock; StepRow::COLUMNS] = std::array::from_fn(cell);
+    let columns: Vec<GridLength> = shown.iter().map(|&column| TABLE_COLUMNS[column]).collect();
+    // The outline's 1 px comes out of the padding, so the columns stay where the header's are
+    let (outline, padding) = if selected { (1.0, Thickness::new(7.0, 3.0, 11.0, 3.0)) } else { (0.0, Thickness::new(8.0, 4.0, 12.0, 4.0)) };
     Border::new()
         .background_optional(stripe)
+        .border_brush(brush(p.accent))
+        .border_thickness(outline)
         .corner_radius(4.0)
-        .padding(Thickness::new(8.0, 4.0, 12.0, 4.0))
-        .content(Grid::new().columns(TABLE_COLUMNS).column_spacing(12.0).children(row))
+        .padding(padding)
+        .content(Grid::new().columns(columns).column_spacing(12.0).keyed_children(shown.iter().enumerate().map(cell)))
 }

@@ -18,6 +18,7 @@ use tmr::frontend::{
 };
 use tmr::session::{SessionEnd, Stopped};
 
+use crate::report::Report;
 use crate::sysinfo::{Machine, MemoryLine, SystemPanel};
 
 const MIB: f64 = 1024.0 * 1024.0;
@@ -26,6 +27,10 @@ const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 /// The entries the errors list keeps, the newest (the window shows the newest 200 of them): an error storm over a night would hold
 /// gigabytes of log lines. The log file has every line.
 pub const ERRORS_KEPT: usize = 10_000;
+
+/// The step reports kept, the newest steps': as many as the window draws rows (TODO 109), so every row drawn opens one. A report holds a
+/// line for each thread.
+pub const REPORTS_KEPT: usize = 200;
 
 /// The status badge: where the session is, then how its run ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +126,43 @@ impl StepRow {
     /// The cells a non-zero count flags, which take the error colour: the errors, the seal's and WHEA's
     pub fn flagged(&self) -> [bool; Self::COLUMNS] {
         [false, false, false, false, false, self.errors > 0, self.seal_errors.is_some_and(|errors| errors > 0), self.whea > 0]
+    }
+}
+
+/// The report open beside the results (TODO 109): a step's, by its row, or the run's final summary
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Opened {
+    Step(usize),
+    Summary,
+}
+
+/// The run's final summary (TODO 109): its row, above the steps', in their columns, and its report
+#[derive(Clone, Debug)]
+pub struct Summary {
+    pub cells: [String; StepRow::COLUMNS],
+    pub flagged: [bool; StepRow::COLUMNS],
+    pub report: Report,
+}
+
+impl Summary {
+    fn of(report: &tmr::frontend::FinalTestSummaryReport) -> Self {
+        // The run's errors are the tests' and the seal's, which the rows count apart: the seal's are what its checks before the steps'
+        // chunks found and its final checks
+        let seal =
+            report.seal.as_ref().map(|seal| report.per_test_summaries.iter().map(|t| t.seal_errors).sum::<u64>() + seal.final_check_errors);
+        let errors = report.total_errors - seal.unwrap_or(0);
+        let cells = [
+            String::new(),
+            String::new(),
+            "Final summary".to_string(),
+            report.total_runtime.clone(),
+            thousands(report.overall_throughput_mib_s),
+            errors.to_string(),
+            seal.map_or("–".to_string(), |errors| errors.to_string()),
+            report.whea_total.to_string(),
+        ];
+        let flagged = [false, false, false, false, false, errors > 0, seal.is_some_and(|errors| errors > 0), report.whea_total > 0];
+        Summary { cells, flagged, report: Report::of_summary(report) }
     }
 }
 
@@ -365,6 +407,12 @@ pub struct Model {
     /// The system panel, once setup has detected the machine
     pub system: Option<SystemPanel>,
     pub rows: Vec<StepRow>,
+    /// The newest steps' reports, `REPORTS_KEPT` of them, the last row's last
+    reports: VecDeque<Report>,
+    /// The run's final summary, once it has one
+    pub summary: Option<Summary>,
+    /// The report open beside the results
+    pub opened: Option<Opened>,
     /// Steps with errors, final seal checks that found some, WHEA reports, the warnings and errors logged, and why a run stopped, oldest
     /// first
     pub errors: Errors,
@@ -406,6 +454,9 @@ impl Model {
             ram_bytes: None,
             system: None,
             rows: Vec::new(),
+            reports: VecDeque::new(),
+            summary: None,
+            opened: None,
             errors: Errors::default(),
             series: Series::default(),
             stage: None,
@@ -461,6 +512,30 @@ impl Model {
         if let Some(system) = &mut self.system {
             system.choose(choice);
         }
+    }
+
+    /// Row `row`'s report, while it is kept
+    fn step_report(&self, row: usize) -> Option<&Report> {
+        let first = self.rows.len() - self.reports.len();
+        row.checked_sub(first).and_then(|i| self.reports.get(i))
+    }
+
+    /// Row `row` opens a report: its report is kept
+    pub fn opens(&self, row: usize) -> bool {
+        self.step_report(row).is_some()
+    }
+
+    /// The report open beside the results, if it is still kept
+    pub fn opened_report(&self) -> Option<&Report> {
+        match self.opened? {
+            Opened::Step(row) => self.step_report(row),
+            Opened::Summary => self.summary.as_ref().map(|summary| &summary.report),
+        }
+    }
+
+    /// A row was clicked: its report opens, or closes when it is the one open
+    pub fn open(&mut self, which: Opened) {
+        self.opened = if self.opened == Some(which) { None } else { Some(which) };
     }
 
     /// The info line: the session's facts, or until there are any, the command Start runs (ran)
@@ -617,6 +692,10 @@ impl Model {
                     self.errors.push(error);
                 }
                 self.rows.push(StepRow::of(&report));
+                if self.reports.len() == REPORTS_KEPT {
+                    self.reports.pop_front();
+                }
+                self.reports.push_back(Report::of_step(&report));
             }
             Run::LateWhea(lines) => self.errors.extend(lines),
             Run::CpuPerformance(_) => {}
@@ -631,7 +710,11 @@ impl Model {
                 }
                 self.over = true;
             }
-            Run::FinalSummary(_) => {}
+            // Its row opens itself: the run's verdict, the first thing to read when it ends
+            Run::FinalSummary(report) => {
+                self.summary = Some(Summary::of(&report));
+                self.opened = Some(Opened::Summary);
+            }
             Run::ResultsSaved { path } => self.facts.results = Some(path),
         }
     }
@@ -1472,6 +1555,48 @@ mod tests {
         series.mark_newest();
         assert_eq!(series.marks().collect::<Vec<_>>(), [(1, 0, None)]);
         assert_eq!(series.axis_top(), 200.0);
+    }
+
+    /// TODO 109: a row opens its step's report, and a second click closes it; the newest `REPORTS_KEPT` steps' are kept. The final
+    /// summary's row opens itself, its errors the tests' and the seal's apart, as the steps' rows count them.
+    #[test]
+    fn a_row_opens_its_report_and_the_summary_opens_itself() {
+        let mut m = model();
+        let clean = WheaCounts::default();
+        m.apply(step(1, 1, 0, Some(0), clean).into());
+        m.apply(step(1, 2, 3, Some(4), clean).into());
+        assert!(m.opens(0) && m.opens(1) && !m.opens(2));
+        assert!(m.opened_report().is_none());
+        m.open(Opened::Step(1));
+        let report = m.opened_report().expect("step 2's report");
+        assert_eq!(report.title, "Cycle 1 · step 2 · Mem-StuckBit256 (Test 2)");
+        assert_eq!((report.verdict.as_str(), report.failed), ("❌ Failed · 10.5 s · 3 errors + 4 seal + 0 WHEA", true));
+        assert_eq!(report.lines[0], "Test: 10.0 s, 200.00 GiB @ 20,480 MiB/s, 1.00M ops @ 100.00K ops/s");
+        assert!(report.lines[1].starts_with("Intermediate: "), "{}", report.lines[1]);
+        assert_eq!(report.lines[2..], [
+            "Config: parameter=-, mode=TMR-10, extent=FullAllocation, chunk=Absolute (4.00 MiB)",
+            "Cycles: 2/2, ended by its cycle limit"
+        ]);
+        assert!(matches!(report.blocks.as_slice(), [crate::report::Block::Table(_)]), "the threads' table: {:?}", report.blocks);
+        m.open(Opened::Step(1));
+        assert!(m.opened_report().is_none(), "the second click closes it");
+        m.open(Opened::Step(0));
+        assert!(m.opened_report().is_some_and(|report| !report.failed && report.verdict.starts_with("✅ Passed")));
+
+        for i in 0..REPORTS_KEPT {
+            m.apply(step(2, i + 1, 0, None, clean).into());
+        }
+        assert!(!m.opens(1) && m.opens(2), "the oldest reports go");
+        assert!(m.opened_report().is_none(), "the open one with them");
+
+        let summary = tmr::test_support::final_summary_report();
+        let throughput = thousands(summary.overall_throughput_mib_s);
+        m.apply(Run::FinalSummary(Box::new(summary)).into());
+        assert_eq!(m.opened, Some(Opened::Summary));
+        let summary = m.summary.as_ref().expect("the summary row");
+        assert_eq!(summary.cells, ["", "", "Final summary", "01:02:05", &throughput, "3", "2", "1"].map(str::to_string));
+        assert_eq!(summary.flagged, [false, false, false, false, false, true, true, true]);
+        assert_eq!(m.opened_report().map(|report| report.title.as_str()), Some("Final summary"));
     }
 
     /// The ticker's golden (crates/tmr-cli's `testdata/console/ticker.txt`), each `## case` and its lines. Read when the test runs, not
