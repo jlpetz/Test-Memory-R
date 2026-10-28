@@ -84,9 +84,11 @@ to it, no reviewers; created 2026-10-28), the reviewed manifest in `dist/winget/
    memory test that runs until stopped, so its executable check should run `tmr.exe --version`
    (exits 0, writes no file); the installer is unsigned; an uninstall leaves the user's configs,
    results and logs. The owner posts the CLA agreement on it. Four weeks or more.
-6. Once it's merged: a bot GitHub account (the owner's choice, 2026-10-28) forks winget-pkgs; its
-   classic PAT with `public_repo` and `workflow`, an expiry and a renewal reminder, is the
-   `release` environment's secret `WINGET_TOKEN`. Its first pull request asks it to sign the CLA
+6. Once it's merged: the bot account `petz-io` (made 2026-10-28, two-factor on; never a
+   collaborator anywhere) has forked winget-pkgs (`petz-io/winget-pkgs`, master only); its classic
+   PAT, `workflow` (which GitHub makes take all of `repo`: it reaches only the bot's own fork),
+   with an expiry and a renewal reminder, becomes the `release` environment's secret `WINGET_TOKEN`
+   (`gh secret set WINGET_TOKEN --env release --repo jlpetz/Test-Memory-R`). Its first pull request asks it to sign the CLA
    too. From then on each tag's winget job syncs the fork and opens the version's PR (Komac
    2.17.1: a newer Inno Setup in release.yml needs a newer Komac, checked with `komac update
    --dry-run` first).
