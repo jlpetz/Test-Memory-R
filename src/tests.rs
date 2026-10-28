@@ -1269,6 +1269,8 @@ macro_rules! stuck_bit_impl {
                         let total_operations = (runner.bytes_processed() / lanes) as u64;
                         return runner.finish_aborted(cycle_errors, total_operations);
                     }
+                    // The live display, throttled inside: a cycle can be the whole test (TODO 109)
+                    runner.update_progress_in_cycle();
                 }
 
                 runner.commit_cycle_errors(cycle_errors);
@@ -1544,6 +1546,8 @@ macro_rules! refresh_impl {
                         let total_operations = (runner.bytes_processed() / lanes) as u64;
                         return runner.finish_aborted(cycle_errors, total_operations);
                     }
+                    // The live display, throttled inside: a cycle can be the whole test (TODO 109)
+                    runner.update_progress_in_cycle();
                 }
 
                 runner.commit_cycle_errors(cycle_errors);
@@ -1787,6 +1791,8 @@ pub unsafe fn cache_busting_multi(
                 let total_operations = (runner.bytes_processed() / std::mem::size_of::<u64>()) as u64;
                 return runner.finish_aborted(cycle_errors, total_operations);
             }
+            // The live display, throttled inside: a cycle can be the whole test (TODO 109)
+            runner.update_progress_in_cycle();
         }
 
         runner.commit_cycle_errors(cycle_errors);
@@ -2281,6 +2287,8 @@ pub unsafe fn stride_access_multi(
                     let total_operations = (runner.bytes_processed() / (2 * std::mem::size_of::<u64>())) as u64;
                     return runner.finish_aborted(cycle_errors, total_operations);
                 }
+                // The live display, throttled inside: a cycle can be the whole test (TODO 109)
+                runner.update_progress_in_cycle();
             }
         }
 
@@ -2718,6 +2726,8 @@ pub unsafe fn block_move_multi(
                 let total_operations = (runner.bytes_processed() / (3 * std::mem::size_of::<u64>())) as u64;
                 return runner.finish_aborted(cycle_errors, total_operations);
             }
+            // The live display, throttled inside: a cycle can be the whole test (TODO 109)
+            runner.update_progress_in_cycle();
         }
 
         runner.commit_cycle_errors(cycle_errors);
@@ -3034,6 +3044,8 @@ pub unsafe fn moving_inversions_multi(
             if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
                 return runner.finish_aborted(cycle_errors, ops(&runner));
             }
+            // The live display, throttled inside: a cycle can be the whole test (TODO 109)
+            runner.update_progress_in_cycle();
         }
 
         runner.commit_cycle_errors(cycle_errors);
@@ -3253,6 +3265,8 @@ pub unsafe fn modulo_x_multi(
             if runner.should_halt(cycle_errors) || runner.shutdown_requested() {
                 return runner.finish_aborted(cycle_errors, ops(&runner));
             }
+            // The live display, throttled inside: a cycle can be the whole test (TODO 109)
+            runner.update_progress_in_cycle();
         }
 
         runner.commit_cycle_errors(cycle_errors);
@@ -7229,6 +7243,8 @@ macro_rules! sequence_impl {
                     if runner.shutdown_requested() {
                         return runner.finish_aborted(cycle_errors, ops(&runner));
                     }
+                    // The live display, throttled inside: a cycle can be the whole test (TODO 109)
+                    runner.update_progress_in_cycle();
                 }
 
                 runner.commit_cycle_errors(cycle_errors);
