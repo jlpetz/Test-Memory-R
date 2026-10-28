@@ -20,6 +20,7 @@
 #![cfg_attr(not(test), warn(clippy::undocumented_unsafe_blocks, clippy::unwrap_used))]
 
 mod chart;
+mod dialogs;
 mod logger;
 mod model;
 mod palette;

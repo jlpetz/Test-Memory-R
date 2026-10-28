@@ -25,6 +25,16 @@ serde_json = "1.0"
 # the CLI's env_logger takes log's std, and the engine takes chrono.
 log = { version = "0.4", features = ["std"] }
 chrono = "0.4"
+# The Open dialog, for a config and for Compare's two results files, and the shell's open, for the
+# log, the results and their folders (TODO 109): Reactor has neither
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 # The engine's report fixtures (`tmr::test_support`), for the reports the window opens (TODO 109)

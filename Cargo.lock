@@ -900,6 +900,7 @@ dependencies = [
  "log",
  "serde_json",
  "test-memory-r-engine",
+ "windows",
  "windows-reactor",
 ]
 

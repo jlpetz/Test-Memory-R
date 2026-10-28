@@ -9,6 +9,7 @@
 //! among them (`report.rs`, TODO 109).
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
@@ -438,6 +439,8 @@ pub struct Model {
     pub args: String,
     /// The exe's name, which Start puts before them
     program: String,
+    /// The run's log file, from Start on (`tmr::logfile::path`, whose name is fixed as Start asks for it)
+    pub log_path: Option<PathBuf>,
     facts: Facts,
     /// The large-page restart question, while it waits for the dialog's answer: the session's thread waits on the reply
     restart: Option<SyncSender<RestartChoice>>,
@@ -479,6 +482,7 @@ impl Model {
             stage: None,
             args: args_text(args.get(1..).unwrap_or_default()),
             program: args.first().cloned().unwrap_or_else(|| "tmr".to_string()),
+            log_path: None,
             facts: Facts::default(),
             restart: None,
             log_lines_dropped: 0,
@@ -494,6 +498,18 @@ impl Model {
     /// The command line Start runs: the exe's name, then the parameters box's
     pub fn command(&self) -> Vec<String> {
         std::iter::once(self.program.clone()).chain(args_of(&self.args)).collect()
+    }
+
+    /// A config chosen in the Open dialog (TODO 109): `config=<path>` in the parameters box, in place of the one there
+    pub fn set_config(&mut self, path: &Path) {
+        let mut args: Vec<String> = args_of(&self.args).into_iter().filter(|arg| !arg.starts_with("config=")).collect();
+        args.push(format!("config={}", path.display()));
+        self.args = args_text(&args);
+    }
+
+    /// The results file, once the run has saved it
+    pub fn results_path(&self) -> Option<&str> {
+        self.facts.results.as_deref()
     }
 
     /// The session was started
@@ -829,6 +845,36 @@ impl Model {
             whea.split_suffix()
         )
     }
+}
+
+/// Two results files compared, as `tmr.exe --compare-results` shows them (TODO 109): the baseline's and the current's names, and the
+/// comparison's text
+#[derive(Clone, Debug, PartialEq)]
+pub struct Comparison {
+    pub title: String,
+    pub text: String,
+}
+
+/// Compares the results `files` the Open dialog gave, which are to be two, the older the baseline, as `--compare-results` does; `None` for
+/// none, the dialog cancelled. A file that isn't a results file is the comparison's to say.
+pub fn compare(mut files: Vec<PathBuf>) -> Result<Option<Comparison>, String> {
+    match files.len() {
+        0 => return Ok(None),
+        2 => {}
+        n => return Err(format!("Compare takes two results files, not {n}: choose both in the dialog, the second with Ctrl")),
+    }
+    // The older first: a run's file is written as it goes, and last as it ends
+    files.sort_by_key(|file| std::fs::metadata(file).and_then(|m| m.modified()).ok());
+    let args: Vec<String> =
+        ["tmr.exe".to_string(), "--compare-results".to_string()].into_iter().chain(files.iter().map(|f| f.display().to_string())).collect();
+    let mut out = Vec::new();
+    // Its status is in its text: a comparison that failed says why
+    tmr::commands::run(&tmr::commands::Command::Compare(args), &mut out, &mut |_| false).map_err(|e| e.to_string())?;
+    let name = |file: &Path| file.file_name().map_or_else(|| file.display().to_string(), |name| name.to_string_lossy().into_owned());
+    Ok(Some(Comparison {
+        title: format!("{} → {}", name(&files[0]), name(&files[1])),
+        text: String::from_utf8_lossy(&out).trim_end().to_string(),
+    }))
 }
 
 /// Why setup stopped the session, as the console words it
@@ -1501,6 +1547,31 @@ mod tests {
             assert_eq!(args_of(&args_text(&strings(args))), strings(args), "{args:?} round-trips");
         }
         assert_eq!(Model::new(&[]).command(), strings(&["tmr"]));
+    }
+
+    /// TODO 109: a config chosen takes the place of the one in the parameters box, quoted when its path has a space; Compare takes two
+    /// files, the older the baseline, and a comparison that fails says why in its text
+    #[test]
+    fn a_config_chosen_and_two_files_compared() {
+        let mut m = model();
+        m.set_config(Path::new(r"C:\TMR\configs\anta777.cfg"));
+        assert_eq!(m.args, r"memory=50% cycles=2 config=C:\TMR\configs\anta777.cfg");
+        m.set_config(Path::new(r"C:\My configs\x.cfg"));
+        assert_eq!(m.args, r#"memory=50% cycles=2 "config=C:\My configs\x.cfg""#, "the one chosen last, in place of the first");
+
+        assert_eq!(compare(Vec::new()), Ok(None), "the dialog cancelled");
+        let three = compare(vec![PathBuf::from("a.json"); 3]).expect_err("three files");
+        assert!(three.starts_with("Compare takes two results files, not 3"), "{three}");
+        let dir = std::env::temp_dir().join(format!("tmr-gui-compare-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp folder");
+        let (older, newer) = (dir.join("older.json"), dir.join("newer.json"));
+        std::fs::write(&older, "not a results file").expect("a file");
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&newer, "nor this").expect("a file");
+        let comparison = compare(vec![newer, older]).expect("a comparison").expect("two files");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(comparison.title, "older.json → newer.json", "the older the baseline");
+        assert!(comparison.text.starts_with("❌ Comparison failed"), "{}", comparison.text);
     }
 
     /// Stop moves a running session to Stopping, and nothing else

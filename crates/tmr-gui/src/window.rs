@@ -9,6 +9,7 @@
 //! It draws `Model`, and re-renders only when a message arrives: a batch from the feed (at least every 500 ms while the session runs), a
 //! button, the dialog's answer, a keystroke in the box, a theme change or a resize. Nothing animates.
 
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -16,8 +17,9 @@ use std::time::Duration;
 use tmr::frontend::{ColumnAlignment, Event, ProgressSnapshot, ProgressTracker, RestartChoice, Run, TableData};
 use windows_reactor::*;
 
+use crate::dialogs::{self, Open};
 use crate::logger::{self, LogLine, LogLines};
-use crate::model::{Bar, Model, Opened, Status, StepRow};
+use crate::model::{Bar, Comparison, Model, Opened, Status, StepRow};
 use crate::palette::{Palette, Palettes, brush};
 use crate::report::{Block, Report};
 use crate::{Feed, GuiFrontend, chart};
@@ -62,6 +64,20 @@ pub(crate) enum Message {
     Close,
     /// A tab chosen: its label
     Tab(Option<String>),
+    /// Load config: the Open dialog, for a config to go into the parameters box (TODO 109)
+    LoadConfig,
+    /// The config the Open dialog gave, none when it was cancelled
+    ConfigChosen(Result<Vec<PathBuf>, String>),
+    /// Compare: the Open dialog, for two results files
+    Compare,
+    /// The comparison of the two it gave, none when it was cancelled
+    Compared(Result<Option<Comparison>, String>),
+    ComparisonClosed,
+    /// An item of the `…` menu: its label
+    Menu(String),
+    /// A file or a folder opened, or why the shell couldn't
+    Opened(Result<(), String>),
+    AboutClosed,
     Scheme(ColorScheme),
     Size(WindowSize),
 }
@@ -98,6 +114,10 @@ impl Feed {
 pub(crate) struct Window {
     model: Model,
     tab: Tab,
+    /// The About dialog is open
+    about: bool,
+    /// The comparison Compare made, while its dialog is open
+    comparison: Option<Comparison>,
     dark: bool,
     width: f64,
     palettes: Palettes,
@@ -160,6 +180,7 @@ impl Window {
     /// the window's logger, so its name pairs with the run's results.
     fn start(&mut self, context: &ComponentContext<Self>) {
         let log = logger::install();
+        self.model.log_path = Some(tmr::logfile::path());
         let (tx, rx) = mpsc::channel();
         let fe = Arc::new(GuiFrontend { feed: tx.clone() });
         let args = self.model.command();
@@ -207,7 +228,32 @@ impl Window {
             listen(feeds, self.model.progress().cloned(), context);
         }
     }
+
+    /// An item of the `…` menu: a file or a folder to open, on a thread of its own, or About
+    fn menu(&mut self, label: &str, context: &ComponentContext<Self>) {
+        let path = match label {
+            MENU_LOG => self.model.log_path.clone(),
+            MENU_LOGS => Some(tmr::home::logs()),
+            MENU_RESULTS => self.model.results_path().map(PathBuf::from),
+            MENU_RESULTS_FOLDER => Some(tmr::home::results()),
+            MENU_ABOUT => {
+                self.about = true;
+                None
+            }
+            _ => None,
+        };
+        if let Some(path) = path {
+            context.spawn_background(move |_| Message::Opened(dialogs::shell_open(path)));
+        }
+    }
 }
+
+/// The `…` menu's items, by their labels, which the menu gives back
+const MENU_LOG: &str = "Open the log";
+const MENU_LOGS: &str = "Open the logs folder";
+const MENU_RESULTS: &str = "Open the results file";
+const MENU_RESULTS_FOLDER: &str = "Open the results folder";
+const MENU_ABOUT: &str = "About TMR";
 
 impl Component for Window {
     type Input = Vec<String>;
@@ -219,7 +265,7 @@ impl Component for Window {
         let mut model = Model::new(args);
         // Before Start there is no log file to take them, and maybe no console
         model.errors.extend(problems.into_iter().map(|problem| format!("colours.json: {problem}")));
-        Self { model, tab: Tab::Run, dark: false, width: 860.0, palettes }
+        Self { model, tab: Tab::Run, about: false, comparison: None, dark: false, width: 860.0, palettes }
     }
 
     fn update(&mut self, message: Message, context: &ComponentContext<Self>) {
@@ -242,6 +288,43 @@ impl Component for Window {
             Message::Dimm(choice) => self.model.choose_dimm(&choice),
             Message::Open(which) => self.model.open(which),
             Message::Close => self.model.opened = None,
+            // Only while the parameters box takes one: one session a process
+            Message::LoadConfig if self.model.status == Status::Ready => {
+                let ask = Open {
+                    title: "Load a config: TMR's (.json) or TM5's (.cfg)",
+                    filter: ("TMR and TM5 configs", "*.cfg;*.json"),
+                    folder: tmr::home::configs(),
+                    multiple: false,
+                };
+                let owner = dialogs::owner();
+                context.spawn_background(move |_| Message::ConfigChosen(dialogs::open(owner, ask)));
+            }
+            Message::LoadConfig => {}
+            Message::ConfigChosen(Ok(paths)) => {
+                if let Some(path) = paths.first()
+                    && self.model.status == Status::Ready
+                {
+                    self.model.set_config(path);
+                }
+            }
+            Message::ConfigChosen(Err(e)) => self.model.errors.push(format!("Load config: the Open dialog failed: {e}")),
+            Message::Compare => {
+                let ask = Open {
+                    title: "Compare two results files: choose both, the second with Ctrl",
+                    filter: ("TMR results", "*.json"),
+                    folder: tmr::home::results(),
+                    multiple: true,
+                };
+                let owner = dialogs::owner();
+                context.spawn_background(move |_| Message::Compared(dialogs::open(owner, ask).and_then(crate::model::compare)));
+            }
+            Message::Compared(Ok(comparison)) => self.comparison = comparison.or(self.comparison.take()),
+            Message::Compared(Err(e)) => self.model.errors.push(format!("Compare: {e}")),
+            Message::ComparisonClosed => self.comparison = None,
+            Message::Menu(label) => self.menu(&label, context),
+            Message::Opened(Ok(())) => {}
+            Message::Opened(Err(e)) => self.model.errors.push(e),
+            Message::AboutClosed => self.about = false,
             Message::Tab(label) => {
                 if let Some(tab) = Tab::ALL.into_iter().find(|tab| label.as_deref() == Some(tab.label())) {
                     self.tab = tab;
@@ -281,6 +364,8 @@ impl Component for Window {
                 self.tab_view(2, context),
                 self.controls(3, context),
                 self.restart_dialog(context),
+                self.about_dialog(context),
+                self.comparison_dialog(context),
             ))
     }
 }
@@ -496,15 +581,44 @@ impl Window {
 
     /// The tabs (TODO 109): Run, the window's own view, then the log, then the console's startup sections. A SelectorBar: 0.100.0's
     /// NavigationView can clear its selection on a stale event (#5210), and a Pivot would build every tab's view each redraw.
+    ///
+    /// Beside them on the right, Compare and the `…` menu: the log, the results, their folders, About. The log is there from Start, the
+    /// results file once the run has saved it.
     fn tab_bar(&self, row: i32, context: &ViewContext<Self>) -> View {
         let items = Tab::ALL
             .iter()
             .enumerate()
             .map(|(i, &tab)| (i as u64, View::from(SelectorBarItem::new().text(tab.label()).is_selected(tab == self.tab))));
-        SelectorBar::new()
-            .grid_row(row)
+        let tabs = SelectorBar::new()
+            .grid_column(0)
             .on_selected_text_changed(context.callback(Message::Tab))
-            .collection_slot(SelectorBarSlot::Items, items)
+            .collection_slot(SelectorBarSlot::Items, items);
+        let compare = Button::new()
+            .grid_column(1)
+            .vertical_alignment(VerticalAlignment::Center)
+            .on_click(context.callback(|()| Message::Compare))
+            .content("Compare…");
+        let item = |on: bool, key: usize, label: &str| if on { MenuItem::item(key, label) } else { MenuItem::disabled(key, label) };
+        let menu = [
+            item(self.model.log_path.is_some(), 0, MENU_LOG),
+            MenuItem::item(1usize, MENU_LOGS),
+            MenuItem::separator(2usize),
+            item(self.model.results_path().is_some(), 3, MENU_RESULTS),
+            MenuItem::item(4usize, MENU_RESULTS_FOLDER),
+            MenuItem::separator(5usize),
+            MenuItem::item(6usize, MENU_ABOUT),
+        ];
+        let more = Button::new()
+            .grid_column(2)
+            .style(ButtonStyle::Subtle)
+            .vertical_alignment(VerticalAlignment::Center)
+            .content("•••")
+            .menu(Menu::new(menu, context.callback(Message::Menu)));
+        Grid::new()
+            .grid_row(row)
+            .column_spacing(8.0)
+            .columns([GridLength::STAR, GridLength::Auto, GridLength::Auto])
+            .children((tabs, compare, more))
     }
 
     /// The tab chosen, below the tabs
@@ -693,7 +807,8 @@ impl Window {
     /// takes the CLI's parameters, as tmr.exe does; Start runs it once, one session a process, and from then on it holds what ran.
     fn controls(&self, row: i32, context: &ViewContext<Self>) -> View {
         let ready = self.model.status == Status::Ready;
-        Grid::new().grid_row(row).column_spacing(8.0).columns([GridLength::STAR, GridLength::Auto, GridLength::Auto]).children((
+        let columns = [GridLength::STAR, GridLength::Auto, GridLength::Auto, GridLength::Auto];
+        Grid::new().grid_row(row).column_spacing(8.0).columns(columns).children((
             TextBox::new()
                 .text(self.model.args.clone())
                 .placeholder_text("Parameters, as on the command line: memory=50% cycles=3 (none: the defaults)")
@@ -704,17 +819,19 @@ impl Window {
                     "What Start runs, in tmr.exe's key=value syntax (tmr.exe --help lists them). \
                               Quote one with a space in it: \"config=C:\\My configs\\x.cfg\"",
                 ),
+            // A config's path into the box, as `config=`, from the home's configs\ (TODO 109)
+            Button::new().is_enabled(ready).grid_column(1).on_click(context.callback(|()| Message::LoadConfig)).content("Load config…"),
             Button::new()
                 .style(ButtonStyle::Accent)
                 .is_enabled(ready)
                 .width(96.0)
-                .grid_column(1)
+                .grid_column(2)
                 .on_click(context.callback(|()| Message::Start))
                 .content("Start"),
             Button::new()
                 .is_enabled(self.model.status == Status::Running)
                 .width(96.0)
-                .grid_column(2)
+                .grid_column(3)
                 .on_click(context.callback(|()| Message::Stop))
                 .content("Stop"),
         ))
@@ -732,6 +849,79 @@ impl Window {
             .on_closed(context.callback(Message::Restart))
             .content(TextBlock::new().text(RESTART_QUESTION).text_wrapping(TextWrapping::Wrap))
     }
+}
+
+impl Window {
+    /// About (TODO 109): the logo, what TMR is, its version and build, its licence and its GitHub page. Its content is built only while it
+    /// is open, so the logo isn't decoded at each redraw; and it isn't open while the restart question is, as WinUI opens one dialog at a
+    /// time. In the dialog's own colours, as the restart dialog's.
+    fn about_dialog(&self, context: &ViewContext<Self>) -> View {
+        let open = self.about && !self.model.restart_asked();
+        let dialog = ContentDialog::new()
+            .title("About TMR")
+            .close_button_text("Close")
+            .is_open(open)
+            .on_closed(context.callback(|_: ContentDialogResult| Message::AboutClosed));
+        if !open {
+            return dialog.content(TextBlock::new());
+        }
+        let build = tmr::BUILD;
+        let commit = build.commit.get(..12).unwrap_or(build.commit);
+        let changes = if build.dirty { ", with changes" } else { "" };
+        let line = |text: String| View::from(TextBlock::new().text(text).text_wrapping(TextWrapping::Wrap).is_text_selection_enabled(true));
+        let mut parts: Vec<(u64, View)> = Vec::new();
+        if let Some(png) = crate::ICON.get().and_then(|ico| largest_png(ico)) {
+            let logo = Image::new().source_data(EncodedImage::new(png)).width(128.0).height(128.0);
+            parts.push((0, logo.horizontal_alignment(HorizontalAlignment::Center).into()));
+        }
+        parts.push((1, TextBlock::new().text("Test Memory R (TMR)").font_size(20.0).font_weight(FontWeight::SEMI_BOLD).into()));
+        parts.push((2, line("A memory tester for Windows: is this overclock stable?".to_string())));
+        parts.push((3, line(format!("Version {} ({} build) · commit {commit}{changes}", build.version, build.profile))));
+        parts.push((4, line(build.rustc.to_string())));
+        parts.push((5, line(format!("Licence: {}, at your choice", env!("CARGO_PKG_LICENSE").replace(" OR ", " or ")))));
+        let repository = env!("CARGO_PKG_REPOSITORY");
+        if let Ok(link) = HyperlinkButton::new().navigate_uri(repository) {
+            parts.push((6, link.content(repository.trim_start_matches("https://"))));
+        }
+        dialog.content(StackPanel::new().spacing(6.0).keyed_children(parts))
+    }
+
+    /// Compare's comparison, as `--compare-results` shows it, scrolling both ways: its lines are as wide as the console's. Not open while
+    /// About or the restart question is.
+    fn comparison_dialog(&self, context: &ViewContext<Self>) -> View {
+        let open = self.comparison.is_some() && !self.about && !self.model.restart_asked();
+        let (title, text) = self.comparison.as_ref().map_or(("", ""), |c| (c.title.as_str(), c.text.as_str()));
+        ContentDialog::new()
+            .title(format!("Compare · {title}"))
+            .close_button_text("Close")
+            .is_open(open)
+            .on_closed(context.callback(|_: ContentDialogResult| Message::ComparisonClosed))
+            .content(
+                ScrollViewer::new()
+                    .max_height(520.0)
+                    .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
+                    .horizontal_scroll_bar_visibility(ScrollBarVisibility::Auto)
+                    .content(TextBlock::new().text(text.to_string()).is_text_selection_enabled(true)),
+            )
+    }
+}
+
+/// The largest PNG frame of an .ico, for About's logo (tmr.ico's is 256 px): an .ico's 6-byte header gives its frames' count, then its
+/// directory, 16 bytes a frame, each one's width (0 for 256), its bytes' length and their offset. Only a PNG frame: WinUI decodes it.
+fn largest_png(ico: &[u8]) -> Option<&[u8]> {
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+    let le32 = |bytes: &[u8]| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let count = usize::from(u16::from_le_bytes([*ico.get(4)?, *ico.get(5)?]));
+    (0..count)
+        .filter_map(|i| {
+            let entry = ico.get(6 + 16 * i..22 + 16 * i)?;
+            let width = if entry[0] == 0 { 256 } else { usize::from(entry[0]) };
+            let at = le32(&entry[12..16]);
+            let frame = ico.get(at..at.checked_add(le32(&entry[8..12]))?)?;
+            frame.starts_with(PNG).then_some((width, frame))
+        })
+        .max_by_key(|&(width, _)| width)
+        .map(|(_, frame)| frame)
 }
 
 /// The restart dialog's text, the console's question (`tmr_cli`'s prompts) in a window's words
@@ -956,4 +1146,32 @@ fn table_row(
         .corner_radius(4.0)
         .padding(padding)
         .content(Grid::new().columns(columns).column_spacing(12.0).keyed_children(shown.iter().enumerate().map(cell)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::largest_png;
+
+    /// About's logo is the icon's largest PNG frame (a width of 0 is 256), a larger BMP frame passed over; nothing from a directory that
+    /// points past the file's end, or from bytes that aren't an icon
+    #[test]
+    fn the_logo_is_the_icons_largest_png_frame() {
+        let png = |name: &str| [&b"\x89PNG\r\n\x1a\n"[..], name.as_bytes()].concat();
+        let (small, large, bmp) = (png("small"), png("large"), b"a BMP frame".to_vec());
+        let frames = [(48u8, &small), (0, &large), (255, &bmp)];
+        let mut ico = vec![0, 0, 1, 0, frames.len() as u8, 0];
+        let mut at = 6 + 16 * frames.len();
+        for (width, bytes) in frames {
+            ico.extend([width, width, 0, 0, 1, 0, 32, 0]);
+            ico.extend((bytes.len() as u32).to_le_bytes());
+            ico.extend((at as u32).to_le_bytes());
+            at += bytes.len();
+        }
+        for (_, bytes) in frames {
+            ico.extend(bytes);
+        }
+        assert_eq!(largest_png(&ico), Some(&large[..]));
+        assert_eq!(largest_png(&ico[..60]), None, "the frames cut off");
+        assert_eq!(largest_png(b"not an icon"), None);
+    }
 }
