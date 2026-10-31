@@ -132,9 +132,51 @@ The owner's notes on that, 2026-10-31, and what they changed:
   stamp, the stop flag), and each run opens its own log file (`logfile::close` as it ends). The
   logger is the process's (the `log` crate takes one), kept between runs. A run given `seed=`
   keeps it; one without gets a new seed. The model's Compare tab files are kept.
-- Open: the seal's first cycle runs warm. Its check leaves a small chunk in cache for the test's
-  first touch, so a sealed first cycle reads faster (Mem-Stride 38.6K sealed against 28.5K
-  unsealed). The proposal is flushing each chunk after its check; the owner's to decide.
+- Open: the seal's first cycle runs warm (below, "The flat start, measured"). The proposal is
+  flushing each chunk after its check; the owner's to decide.
+- The owner checked the round in the window, 2026-10-31 (runs stopped and interrupted too): fine.
+  The report beside the list at 1080p is dropped (the owner: not now). The Reactor request is
+  TODO 111.
+
+## The flat start, measured (2026-10-31)
+
+The owner, on the window after ab89d94: the chart still starts flat while the ticker says Checking
+seal or Resealing, so the seal's time must be in the test's speed. A probe build (not committed: a
+log line per thread per cycle with its wall time, the seal's time inside it and its bytes; one per
+publish; one per monitor tick, the chart's own figure; `TMR_PROBE_FLUSH=1` flushing each chunk
+from cache after its check) ran `--quick-test test=Mem-SimpleV2-512_A,Mem-SimpleNT-512_A,
+Mem-MovingInv,Mem-ModuloX memory=50% cputype=cores cpus=100% skip-cores=0 seed=1` on the dev box
+(Xeon 6975P-C, 4 cores, L2 2 MiB a core, L3 480 MB), seven times: sealed and flushed alternated
+three times each, and once with `seal=off`. Each step ran 30 s, its cycle 1 sealed around its
+chunks and the rest plain.
+
+- The seal's time is not in the figure. In cycle 1 the seal's work is 26-60% of each thread's
+  wall time; counted in, SimpleV2's cycle 1 would read 36-38K MiB/s (the flat 38.5K the owner's
+  capture showed before ab89d94), SimpleNT's 29K. The chart's points read 83-95K and 55-56K: cycle
+  1's bytes over its test-own time.
+- The flat start is the chart's average: each point is the step's bytes over its test time so
+  far, so cycle 1's speed holds until the plain cycles average in, then the line bends to theirs.
+- Cycle 1's own speed differs only where a chunk fits in cache. The check reads the chunk just
+  before the test does, and a 4 MiB chunk stays in L3. Cycle 1 over the plain cycles' median:
+
+  | test (chunk) | sealed ×3 | flushed after check ×3 | seal=off |
+  |---|---|---|---|
+  | SimpleV2 (4 MiB) | 1.48, 1.49, 1.35 | 1.10, 1.07, 1.12 | 1.05 |
+  | SimpleNT (4 MiB) | 0.83, 0.85, 0.84 | 1.05, 1.07, 1.04 | 0.97 |
+  | MovingInv (960 MiB) | 1.00, 0.99, 0.99 | 1.02, 1.00, 1.01 | 1.02 |
+  | ModuloX (960 MiB) | 1.01, 0.98, 1.00 | 0.99, 1.02, 1.01 | 0.98 |
+
+  SimpleV2's plain stores hit the cached chunk: faster. SimpleNT's non-temporal stores must evict
+  each cached line first: slower. The reseal's stores are non-temporal, so it leaves nothing in
+  cache. Flushing after the check removes the effect to within the run's drift (SimpleV2's plain
+  cycles slow over a step, its unsealed line 64K to 61K, which puts its cycle 1 a few percent above their median
+  even unsealed).
+- The ticker names what the first worker not testing is doing (`progress::live_figures`). With
+  four threads each spending about half of cycle 1 on the seal, one of them nearly always is, so
+  the ticker says Checking seal or Resealing through the flat start, whatever the figure counts.
+- The flush's cost: 0.3-0.45 s of seal time a sealed step a thread (a 7 GiB extent), outside the
+  figure. A one-cycle step with small chunks (Stride, 2 MiB) reports the cached speed for the whole
+  step: 38.6K sealed against 28.5K unsealed, measured earlier on 2026-10-31.
 
 Not seen in the window yet: the dev box's session wasn't drawing when the final build ran (a
 locked or minimised session draws nothing, so the captures were black). The run itself worked:
