@@ -36,10 +36,12 @@ impl CliFrontend {
 impl Frontend for CliFrontend {
     fn event(&self, event: Event) {
         // No wildcard arm: an event the CLI doesn't show fails to compile
-        match event {
+        let shown = match &event {
             Event::Setup(setup) => setup::show(setup, crate::take_ctrl_c),
             Event::Run(run) => run::show(run),
-        }
+        };
+        // The log file has what the console showed, between its records (TODO 29's transcript, TODO 109)
+        tmr::logfile::write_text(&shown);
     }
 
     /// Asks on the console. A console that can't be written to is no answer, as the input's end is.
@@ -70,6 +72,15 @@ impl Frontend for CliFrontend {
         // saying it twice is noise. The runner flushes anything later still, once monitoring stops.
         let text: String = progress.take_whea_descriptions().iter().map(|event| format!("{event}\n")).collect();
         print!("{text}");
+    }
+}
+
+/// What the console shows for `event` (TODO 29's transcript, TODO 109), for the log file and the window's Log tab: its text, the ticker's
+/// lines left out (they are live), its colours in it, as the console has them
+pub fn transcript(event: &Event) -> String {
+    match event {
+        Event::Setup(setup) => setup::shown(setup),
+        Event::Run(run) => run::text(run).0,
     }
 }
 

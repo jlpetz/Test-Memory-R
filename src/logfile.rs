@@ -75,6 +75,45 @@ pub fn open(path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Adds `text`, what a frontend showed between the records (TODO 29's transcript, TODO 109), to the log file as it is, without its colours,
+/// when there is one: so the file has the run as the console had it, the window's runs too
+pub fn write_text(text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(file) = FILE.get()
+        && let Ok(mut file) = file.lock()
+    {
+        let text = without_colours(text);
+        let _ = file.write_all(text.as_bytes());
+        if !text.ends_with('\n') {
+            let _ = file.write_all(b"\n");
+        }
+        let _ = file.flush();
+    }
+}
+
+/// `text` without its ANSI colour sequences (`ESC [` … a letter), which the console's renderer puts in its headings
+pub fn without_colours(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // ESC [, then parameters, then the final byte, @ to ~
+            if chars.next() == Some('[') {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Adds `record`'s line to the log file, without colours, when there is one.
 pub fn write(record: &log::Record) {
     if let Some(file) = FILE.get()
@@ -89,5 +128,16 @@ pub fn write(record: &log::Record) {
             record.args()
         );
         let _ = file.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The transcript leaves the console's colours out, and keeps the rest as it was, a line's emoji and its breaks
+    #[test]
+    fn the_transcript_has_no_colours() {
+        let shown = "\u{1b}[1;36m📊 Final Test Summary\u{1b}[0m\n  plain, 50% [x]\n";
+        assert_eq!(super::without_colours(shown), "📊 Final Test Summary\n  plain, 50% [x]\n");
+        assert_eq!(super::without_colours("no colours"), "no colours");
     }
 }

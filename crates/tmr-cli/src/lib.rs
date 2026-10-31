@@ -14,6 +14,7 @@ mod console; // single writer path while the progress ticker is on screen
 mod golden;
 mod prompts; // the CLI's questions, over any reader and writer (TODO 29)
 mod render; // the CLI's frontend: a session's events as the console shows them (TODO 29)
+pub use render::transcript; // the console's text of an event, for the window's Log tab too (TODO 109)
 mod renderer; // the engine's reports as the console shows them
 mod table; // the console's output against goldens, for the engine/presentation split (TODO 29)
 

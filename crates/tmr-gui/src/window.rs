@@ -212,7 +212,7 @@ impl Window {
         let log = logger::install();
         self.model.log_path = Some(tmr::logfile::path());
         let (tx, rx) = mpsc::channel();
-        let fe = Arc::new(GuiFrontend { feed: tx.clone() });
+        let fe = Arc::new(GuiFrontend { feed: tx.clone(), transcript: Some(log.transcript()) });
         let args = self.model.command();
         let session = std::thread::Builder::new().name("tmr-engine".to_string()).spawn(move || {
             let result = tmr::session::run(args, fe).map_err(|e| {
@@ -826,8 +826,10 @@ impl Window {
         }
     }
 
-    /// The log's lines, the newest first, a warning's and an error's in the error colour: the log file's, at its level (`RUST_LOG`). Not in
-    /// Cascadia Mono, as Windows Terminal has them: 0.100.0's TextBlock takes no font family.
+    /// The log's lines, the newest first, a warning's and an error's in the error colour: the log file's, the records at its level
+    /// (`RUST_LOG`) and the console's text of each event between them (TODO 109), so the run as the console shows it. Not in Cascadia
+    /// Mono, as Windows Terminal has them: 0.100.0's TextBlock takes no font family, so the console's tables don't line up until the next
+    /// Reactor, whose TextBlock does (its master has it).
     fn log_card(&self, row: i32) -> View {
         let p = self.palette();
         let log = &self.model.log;

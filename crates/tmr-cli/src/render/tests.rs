@@ -421,7 +421,7 @@ fn setup_events_print_as_their_golden() {
         text += &format!("## {case}\n{printed}");
     }
     let mut ctrl_c_taken = 0;
-    let ((), printed) = capture(|| setup::show(Setup::Starting, || ctrl_c_taken += 1));
+    let (_, printed) = capture(|| setup::show(&Setup::Starting, || ctrl_c_taken += 1));
     assert_eq!(ctrl_c_taken, 1, "the tests' start takes Ctrl+C, once");
     text += &format!("## the tests start\n{printed}");
     check("setup", &text);

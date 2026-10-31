@@ -899,6 +899,7 @@ dependencies = [
  "chrono",
  "log",
  "serde_json",
+ "test-memory-r-cli",
  "test-memory-r-engine",
  "windows",
  "windows-reactor",

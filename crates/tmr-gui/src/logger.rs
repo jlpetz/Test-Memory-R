@@ -1,6 +1,7 @@
 //! The window's logger (TODO 29 S6, TODO 109): every record into the log file through `tmr::logfile`, the same lines as the CLI's, and into
 //! the window as well, for its Log tab, the warnings and errors for its errors list too, the kernels' bad-word lines among them
-//! (`Rescan::bad`'s cold path), with no kernel change. A record is handed over with `try_send` on a bounded channel, so a worker that logs
+//! (`Rescan::bad`'s cold path), with no kernel change. The Log tab takes the console's text of each event too (`Transcript`), so it has the
+//! run as the console shows it. A record is handed over with `try_send` on a bounded channel, so a worker that logs
 //! never waits for the window: in an error storm the channel fills, the lines it can't take are counted, and the window says how many it
 //! dropped. The file has every line.
 
@@ -35,6 +36,7 @@ struct GuiLogger {
 pub(crate) struct LogLines {
     lines: Receiver<LogLine>,
     dropped: Arc<AtomicU64>,
+    transcript: Transcript,
 }
 
 impl LogLines {
@@ -42,13 +44,38 @@ impl LogLines {
     pub(crate) fn take(&self) -> (Vec<LogLine>, u64) {
         (self.lines.try_iter().collect(), self.dropped.load(Ordering::Relaxed))
     }
+
+    /// Where the console's text of each event goes, into the same channel as the records
+    pub(crate) fn transcript(&self) -> Transcript {
+        self.transcript.clone()
+    }
+}
+
+/// The console's text of each event, for the Log tab (TODO 109): a line each, without its colours, into the log's channel, from the
+/// engine's thread as the event comes, so it comes in the console's order with the records. A full channel counts what it drops, as the
+/// logger does.
+#[derive(Clone)]
+pub(crate) struct Transcript {
+    lines: SyncSender<LogLine>,
+    dropped: Arc<AtomicU64>,
+}
+
+impl Transcript {
+    pub(crate) fn send(&self, shown: &str) {
+        for line in tmr::logfile::without_colours(shown).lines() {
+            if let Err(TrySendError::Full(_)) = self.lines.try_send(LogLine { text: line.to_string(), alarm: false }) {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 /// A logger letting `level` through, and its window's side, with room for `queued` lines
 fn logger(level: LevelFilter, queued: usize) -> (GuiLogger, LogLines) {
     let (tx, rx) = mpsc::sync_channel(queued);
     let dropped = Arc::new(AtomicU64::new(0));
-    (GuiLogger { level, lines: tx, dropped: Arc::clone(&dropped) }, LogLines { lines: rx, dropped })
+    let transcript = Transcript { lines: tx.clone(), dropped: Arc::clone(&dropped) };
+    (GuiLogger { level, lines: tx, dropped: Arc::clone(&dropped) }, LogLines { lines: rx, dropped, transcript })
 }
 
 impl Log for GuiLogger {
@@ -144,5 +171,13 @@ mod tests {
         // Drained, it takes lines again, and the count stays the run's
         log(Level::Warn, "tmr::tests", "fourth");
         assert_eq!(take(), (vec![line("WARN tmr::tests] fourth", true)], 1));
+
+        // The console's text of an event, a line each, without its colours, in the records' order
+        window.transcript().send("\u{1b}[1m📊 Test Configuration\u{1b}[0m\n  1  Mem-StuckBit512_A\n\n");
+        log(Level::Info, "tmr::tests", "after it");
+        let (lines, _) = window.take();
+        let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(texts[..3], ["📊 Test Configuration", "  1  Mem-StuckBit512_A", ""]);
+        assert!(texts[3].ends_with("INFO tmr::tests] after it") && lines.iter().all(|line| !line.alarm), "{lines:?}");
     }
 }

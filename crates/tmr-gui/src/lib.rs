@@ -49,10 +49,12 @@ enum Feed {
     Ended(Result<SessionEnd, String>),
 }
 
-/// The window's frontend: each event onto the window's feed, as it comes. No ticks: they draw the CLI's ticker, and the window reads the
-/// progress on its own clock. WHEA is still polled by the engine's monitor.
+/// The window's frontend: each event onto the window's feed, as it comes, and its console text into the log (`transcript`). No ticks:
+/// they draw the CLI's ticker, and the window reads the progress on its own clock. WHEA is still polled by the engine's monitor.
 struct GuiFrontend {
     feed: Sender<Feed>,
+    /// The Log tab's side of the console's text, from Start
+    transcript: Option<logger::Transcript>,
 }
 
 /// How often the session's thread, waiting for the restart's answer, looks whether the window has closed
@@ -60,6 +62,13 @@ const ANSWER_WAIT: Duration = Duration::from_millis(500);
 
 impl Frontend for GuiFrontend {
     fn event(&self, event: Event) {
+        // What the console would show for it, the log file's and the Log tab's (TODO 109): here, on the engine's thread, as the console
+        // shows it, so its lines come in the console's order with the log records
+        if let Some(transcript) = &self.transcript {
+            let shown = tmr_cli::transcript(&event);
+            tmr::logfile::write_text(&shown);
+            transcript.send(&shown);
+        }
         // Fails only when the window has closed, and then nothing shows the run
         let _ = self.feed.send(Feed::Event(event));
     }
@@ -212,7 +221,7 @@ mod tests {
     fn the_restart_question_waits_for_the_window_and_gives_up_once_it_has_gone() {
         let ask = || {
             let (feed, window) = mpsc::channel();
-            let asked = std::thread::spawn(move || GuiFrontend { feed }.large_page_restart());
+            let asked = std::thread::spawn(move || GuiFrontend { feed, transcript: None }.large_page_restart());
             let Ok(Feed::Ask(reply)) = window.recv() else {
                 panic!("the question wasn't asked");
             };
@@ -234,7 +243,11 @@ mod tests {
         assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Exit, true), "dropped unanswered");
         let (feed, window) = mpsc::channel();
         drop(window);
-        assert_eq!((GuiFrontend { feed }.large_page_restart(), unanswered()), (RestartChoice::Exit, true), "no window to ask");
+        assert_eq!(
+            (GuiFrontend { feed, transcript: None }.large_page_restart(), unanswered()),
+            (RestartChoice::Exit, true),
+            "no window to ask"
+        );
 
         // The window closes with the question open, the reply still held: the window's state may hold it after Reactor's loop has ended
         let (asked, _reply, _window) = ask();

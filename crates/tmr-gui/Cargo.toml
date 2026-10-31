@@ -18,6 +18,8 @@ targets = []
 
 [dependencies]
 tmr.workspace = true
+# The console's text of each event, for the Log tab and the log file (TODO 109): the console's own words, one copy of them
+tmr-cli.workspace = true
 # A preview API (TODO 7): pinned, and migrations expected. No windows-canvas: the chart is XAML shapes.
 windows-reactor = "=0.100.0"
 serde_json = "1.0"

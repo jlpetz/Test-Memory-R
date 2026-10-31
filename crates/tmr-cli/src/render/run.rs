@@ -8,82 +8,100 @@ use tmr::frontend::{CpuPerformanceSummary, NotRun, PageSizeLevel, Run, RunOutcom
 use super::{report_text, ticker};
 use crate::console;
 
-/// Shows `run`, with the write primitive its prints had.
-pub(super) fn show(run: Run) {
+/// How the console writes an event's text: before the suite and after it with plain `print!`, a line while the ticker can be up above it
+/// (`console::print_above`), a step's report as one block under it (`console::print_block`)
+pub(super) enum Written {
+    Plain,
+    Above,
+    Block,
+}
+
+/// Shows `run`, with the write primitive its prints had, and returns what it showed (the transcript's, TODO 109)
+pub(super) fn show(run: &Run) -> String {
+    let (text, written) = text(run);
+    match written {
+        Written::Plain => print!("{text}"),
+        Written::Above => console::print_above(&text),
+        Written::Block => console::print_block(&text),
+    }
+    text
+}
+
+/// What the console shows for `run`, and how it writes it
+pub(super) fn text(run: &Run) -> (String, Written) {
+    let line = |text: String| text + "\n";
     match run {
         Run::MemoryPlan(report) => {
-            println!("{}", report_text("consolidated memory report", |r| r.report_consolidated_memory(&report)));
+            (line(report_text("consolidated memory report", |r| r.report_consolidated_memory(report))), Written::Plain)
         }
-        Run::NotRun(why) => print!("{}", not_run(&why)),
-        Run::Matchable { tests } => {
-            for test in tests {
-                println!("  - {}", test);
-            }
-        }
-        Run::LeftOut { tests } => print!("{}", left_out(&tests)),
-        Run::Channels { channels, cache_line } => {
-            println!("⚙  Memory Channels: {} (affects SimpleTest stride: [channels × param - 1] × {}B cache line)", channels, cache_line);
-        }
-        Run::TestPlan(report) => {
-            print!("{}", report_text("test configuration report", |r| r.report_test_configuration(&report)));
-        }
-        Run::WheaMonitoring(Ok(())) => println!("🔎 WHEA hardware-error monitoring: active"),
-        Run::WheaMonitoring(Err(reason)) => println!("🔎 WHEA hardware-error monitoring: unavailable ({})", reason),
-        Run::AllocationStarting { min, max } => print!("{}", allocation_starting(min, max)),
-        Run::Allocated(report) => print!("{}", report_text("the allocation report", |r| r.report_allocation(&report))),
+        Run::NotRun(why) => (not_run(why), Written::Plain),
+        Run::Matchable { tests } => (tests.iter().map(|test| format!("  - {}\n", test)).collect(), Written::Plain),
+        Run::LeftOut { tests } => (left_out(tests), Written::Plain),
+        Run::Channels { channels, cache_line } => (
+            format!("⚙  Memory Channels: {} (affects SimpleTest stride: [channels × param - 1] × {}B cache line)\n", channels, cache_line),
+            Written::Plain,
+        ),
+        Run::TestPlan(report) => (report_text("test configuration report", |r| r.report_test_configuration(report)), Written::Plain),
+        Run::WheaMonitoring(Ok(())) => (line("🔎 WHEA hardware-error monitoring: active".to_string()), Written::Plain),
+        Run::WheaMonitoring(Err(reason)) => (line(format!("🔎 WHEA hardware-error monitoring: unavailable ({})", reason)), Written::Plain),
+        Run::AllocationStarting { min, max } => (allocation_starting(*min, *max), Written::Plain),
+        Run::Allocated(report) => (report_text("the allocation report", |r| r.report_allocation(report)), Written::Plain),
         // The CLI reads the suite's progress on the monitor's ticks
-        Run::SuiteStarted { progress: _, seed, transfer_bits, transfer_source } => {
-            console::print_above(&format!(
+        Run::SuiteStarted { progress: _, seed, transfer_bits, transfer_source } => (
+            line(format!(
                 "🎲 Pattern seed {seed:#018x} (seed= replays it), transfer width {}",
                 transfer_bits
                     .map_or("unknown: switch alternates 64 and 32 bits".to_string(), |bits| format!("{bits} bits ({transfer_source})"))
-            ));
-        }
-        Run::CycleStarted { cycle, limit } => console::print_above(&match limit {
-            Some(limit) => format!("\n🔄 Starting test cycle {} of {}", cycle, limit),
-            None => format!("\n🔄 Starting test cycle {}", cycle),
-        }),
+            )),
+            Written::Above,
+        ),
+        Run::CycleStarted { cycle, limit } => (
+            line(match limit {
+                Some(limit) => format!("\n🔄 Starting test cycle {} of {}", cycle, limit),
+                None => format!("\n🔄 Starting test cycle {}", cycle),
+            }),
+            Written::Above,
+        ),
         // No line of its own: the next cycle's start or the verdict follows
-        Run::CycleFinished { .. } => {}
+        Run::CycleFinished { .. } => (String::new(), Written::Plain),
         Run::SealStage { op, kernel, bytes, errors, bits, duration } => {
             let lead = match op {
                 SealOp::SealAll => "🔒 Sealing memory",
                 SealOp::FinalCheck => "🔒 Final seal check",
             };
-            let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-            let errors_info = if op == SealOp::FinalCheck { format!("{errors} errors{}, ", bits.brief()) } else { String::new() };
+            let gib = *bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+            let errors_info = if *op == SealOp::FinalCheck { format!("{errors} errors{}, ", bits.brief()) } else { String::new() };
             // The step report's form for an operation (TODO 90): time, data @ speed
-            console::print_above(&format!(
+            let text = format!(
                 "{lead} ({}): {errors_info}{:.1}s, {gib:.2} GiB @ {:.0} MiB/s",
                 kernel,
                 duration.as_secs_f64(),
                 gib * 1024.0 / duration.as_secs_f64().max(1e-9)
-            ));
+            );
+            (line(text), Written::Above)
         }
-        Run::StepFinished(report) => console::print_block(&step_report(&report)),
-        Run::LateWhea(events) => {
-            for event in events {
-                println!("{}", event);
-            }
-        }
-        Run::CpuPerformance(summary) => print!("{}", cpu_performance(&summary)),
+        Run::StepFinished(report) => (step_report(report), Written::Block),
+        Run::LateWhea(events) => (events.iter().map(|event| format!("{}\n", event)).collect(), Written::Plain),
+        Run::CpuPerformance(summary) => (cpu_performance(summary), Written::Plain),
         Run::SuiteEnded { outcome, status, errors, whea } => {
+            let mut text = String::new();
             // Display completion status
-            if outcome == RunOutcome::Interrupted {
-                println!("\n⚠️  Test suite interrupted by user (CTRL+C)");
-            } else if status == RunStatus::NotRun {
-                println!("\n⚠️  No test ran: the cycle or time limit is 0");
-            } else if status == RunStatus::Passed {
-                println!("\n✅ All test cycles completed successfully!");
+            if *outcome == RunOutcome::Interrupted {
+                text += "\n⚠️  Test suite interrupted by user (CTRL+C)\n";
+            } else if *status == RunStatus::NotRun {
+                text += "\n⚠️  No test ran: the cycle or time limit is 0\n";
+            } else if *status == RunStatus::Passed {
+                text += "\n✅ All test cycles completed successfully!\n";
             }
-            if status == RunStatus::Failed {
+            if *status == RunStatus::Failed {
                 // Same form as the per-test topline. Either count alone fails the run: a WHEA event with `0 errors` is a fault that ECC
                 // corrected, or one raised during a test phase that does not verify — still not a stable configuration.
-                println!("\n❌ Test suite failed: {} + {} WHEA{}", errors, whea.total, whea.split_suffix());
+                text += &format!("\n❌ Test suite failed: {} + {} WHEA{}\n", errors, whea.total, whea.split_suffix());
             }
+            (text, Written::Plain)
         }
-        Run::FinalSummary(report) => print!("{}", report_text("final summary", |r| r.report_final_summary(&report))),
-        Run::ResultsSaved { path } => println!("💾 Results saved: {}", path),
+        Run::FinalSummary(report) => (report_text("final summary", |r| r.report_final_summary(report)), Written::Plain),
+        Run::ResultsSaved { path } => (line(format!("💾 Results saved: {}", path)), Written::Plain),
     }
 }
 

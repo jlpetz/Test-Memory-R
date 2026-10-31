@@ -9,16 +9,26 @@ use tmr::session::{SessionEnd, Stopped};
 
 use super::{rendered, report_text};
 
-/// Shows `setup`. From `Starting` on, Ctrl+C stops the run gracefully: `take_ctrl_c` installs that (`crate::take_ctrl_c`; a test passes its
-/// own, as a test process keeps Ctrl+C for itself).
-pub(super) fn show(setup: Setup, take_ctrl_c: impl FnOnce()) {
+/// Shows `setup`, and returns what it showed (the transcript's, TODO 109). From `Starting` on, Ctrl+C stops the run gracefully:
+/// `take_ctrl_c` installs that (`crate::take_ctrl_c`; a test passes its own, as a test process keeps Ctrl+C for itself).
+pub(super) fn show(setup: &Setup, take_ctrl_c: impl FnOnce()) -> String {
+    let shown = shown(setup);
     match setup {
-        Setup::MemoryStatus(None) => eprintln!("⚠️ Failed to retrieve system memory status"),
+        Setup::MemoryStatus(None) => eprint!("{shown}"),
         Setup::Starting => {
-            print!("{}", text(&Setup::Starting));
+            print!("{shown}");
             take_ctrl_c();
         }
-        setup => print!("{}", text(&setup)),
+        _ => print!("{shown}"),
+    }
+    shown
+}
+
+/// What the console shows for `setup`, on stdout or, for a memory status it couldn't read, on stderr
+pub(super) fn shown(setup: &Setup) -> String {
+    match setup {
+        Setup::MemoryStatus(None) => "⚠️ Failed to retrieve system memory status\n".to_string(),
+        setup => text(setup),
     }
 }
 
