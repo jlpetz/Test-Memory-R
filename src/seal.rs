@@ -70,13 +70,22 @@ impl SealWidthSource {
     }
 }
 
-/// This machine's calibrated seal width, set once at startup from a seal calibration measured on this machine
-/// (`AppConfig::valid_seal_calibration`); unset, `auto` takes the rule.
-static CALIBRATED_WIDTH: std::sync::OnceLock<SealWidth> = std::sync::OnceLock::new();
+/// This machine's calibrated seal width, set at a run's setup from a seal calibration measured on this machine
+/// (`AppConfig::valid_seal_calibration`); unset, `auto` takes the rule. Each run's own (`reset_calibrated_width`, TODO 109).
+static CALIBRATED_WIDTH: std::sync::Mutex<Option<SealWidth>> = std::sync::Mutex::new(None);
 
-/// Sets the width `auto` resolves to for the rest of the process (the first call wins).
+fn held_width() -> std::sync::MutexGuard<'static, Option<SealWidth>> {
+    CALIBRATED_WIDTH.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Sets the width `auto` resolves to for the rest of the run (the first call wins).
 pub fn set_calibrated_width(width: SealWidth) {
-    let _ = CALIBRATED_WIDTH.set(width);
+    held_width().get_or_insert(width);
+}
+
+/// No calibrated width, for a session after another (`session::reset_run`, TODO 109): one with `--no-calibration` takes the rule
+pub(crate) fn reset_calibrated_width() {
+    *held_width() = None;
 }
 
 /// The calibrated width `auto` resolves to: this machine's (`set_calibrated_width`), or in a unit test a test's on its own thread
@@ -86,7 +95,7 @@ fn calibrated_width() -> Option<SealWidth> {
     if let Some(width) = TEST_CALIBRATED_WIDTH.with(|w| w.get()) {
         return width;
     }
-    CALIBRATED_WIDTH.get().copied()
+    *held_width()
 }
 
 #[cfg(test)]

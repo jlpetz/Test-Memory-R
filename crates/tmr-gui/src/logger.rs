@@ -106,17 +106,25 @@ impl Log for GuiLogger {
     fn flush(&self) {}
 }
 
-/// Sets up the window's logging at Start, once a process (one session a process): the log file, opened now so its name pairs with the run's
-/// results (`tmr::logfile::path`), then this logger, and the two records the CLI's logging starts with. Returns the window's side.
+/// The window's logger, at the first Start: once a process, as the `log` crate takes one logger. Returns the window's side, which the
+/// window keeps from run to run.
 pub(crate) fn install() -> LogLines {
-    let made = tmr::logfile::create_dir();
-    let (rust_log, level) = tmr::logfile::level();
-    let path = tmr::logfile::path();
-    let opened = tmr::logfile::open(&path);
+    let (_, level) = tmr::logfile::level();
     let (logger, lines) = logger(level, QUEUED);
     if log::set_boxed_logger(Box::new(logger)).is_ok() {
         log::set_max_level(level);
     }
+    lines
+}
+
+/// A run's log file, as the run starts (TODO 109: a file a run, so a run after another has its own, its name pairing with its results;
+/// `tmr::session::reset_run` first gives the run its stamp), and the two records the CLI's logging starts with. The window closes it as
+/// the session ends (`tmr::logfile::close`).
+pub(crate) fn open_log_file() {
+    let made = tmr::logfile::create_dir();
+    let (rust_log, _) = tmr::logfile::level();
+    let path = tmr::logfile::path();
+    let opened = tmr::logfile::open(&path);
     log::info!("TMR v{} started - the log also in the window's Log tab, its warnings and errors in the errors list", tmr::BUILD.version);
     // In the errors list, where the CLI prints them on the console
     match (made, opened) {
@@ -124,7 +132,6 @@ pub(crate) fn install() -> LogLines {
         (Ok(()), Err(e)) => log::warn!("No log file, {}: {e}", path.display()),
         (Ok(()), Ok(())) => log::info!("Log level: {} - detailed logs also saved to {}", rust_log, path.display()),
     }
-    lines
 }
 
 #[cfg(test)]

@@ -101,21 +101,40 @@ window on the dev box showed: Mem-SimpleV2-512_A flat at 38.5K for about 3 s, th
   fills and reseals every chunk (`check_seal`, `reseal`: the first cycle only), so it ran flat and
   low, and the rest climbed as that cost averaged away; CPU boost and branch predictors warm in
   milliseconds. Fixed in ab89d94: a worker publishes its test's own time, as the report divides.
-- ab89d94, the errors in one form everywhere (`ErrorCounts`): `4 errors (2 test + 2 seal) + 2
-  WHEA (1C/1UC)`, WHEA never in the total; a step's failing bits on a line of their own.
+- ab89d94, the errors in one form everywhere (`ErrorCounts`); a step's failing bits on a line of
+  their own. Its WHEA was outside the total; bd90673 put it in (below).
 - 3ed7a95: the command bar at the top (the box at most 640 px wide); one run button (Start, Stop
-  in red, Stopping…, Finishing…, Run again); Run again closes the window and starts tmr.exe with
-  `--gui --start` and the box's parameters (the engine's run settings are once a process); the
-  Plan tab; the run's work by thread at the end of the summary's report, the setup tabs fixed
-  once the suite starts; the Compare tab in place of the dialog, its steps a table.
+  in red, Stopping…, Finishing…, Run again); the Plan tab; the run's work by thread at the end of
+  the summary's report, the setup tabs fixed once the suite starts; the Compare tab in place of
+  the dialog, its steps a table. Its Run again relaunched tmr.exe; the next commit runs it in the
+  window (below).
 - 3a8f4b8: `window.json` (chart, theme, start_on_open, parameters, size, colours, which were
   `colours.json`); the chart's ▾. The installer ships an empty one, writable by users.
 - ea672a7: the console's output in the log file and the Log tab (TODO 29's transcript).
 - Not done: point 4, the Log tab following its last line. Reactor has no scroll offset, scroll-to
-  or anchoring (0.100.0, nor its master, 2026-10-31), so the lists stay newest first; a feature
-  request for the ScrollViewer's anchor ratio is the owner's to raise. Point 10, the report
-  beside the list at 1080p: the owner is thinking on it (the options: beside when the window is
-  wide, in the list's place otherwise; always in its place; below it).
+  or anchoring (0.100.0, nor its master, 2026-10-31); a feature request for the ScrollViewer's
+  anchor ratio is drafted, the owner's to raise. Point 10, the report beside the list at 1080p:
+  the owner is thinking on it (the options: beside when the window is wide, in the list's place
+  otherwise; always in its place; below it).
+
+The owner's notes on that, 2026-10-31, and what they changed:
+- 97c4bc9: the Log tab reads as a log again, oldest at the top (the last 1,000 lines; the file has
+  them all); the Results pane stays newest first. A sealed run's errors show their parts, zeros too.
+- bd90673: one count, WHEA in it: `3 errors (1 test + 1 seal + 1 WHEA 1C/0UC)`, clean `0 errors (0
+  test + 0 seal + 0 WHEA)`, unsealed `0 errors (0 test + 0 WHEA)`. Every WHEA hardware event fails
+  the run, so it was already in the verdict. The window's count moves down beside the cycle line,
+  the test's line under it with its figures, as the console's ticker has them; the Running badge
+  stays at the top. The ended line no longer repeats the errors.
+- d3cf23d: the final summary's overview has Total Errors, then a row each for Test, Seal (with its
+  final checks') and WHEA (or "not monitored"), in place of one long row.
+- Run again in the same window, no relaunch: `tmr::session::reset_run` clears what a run set once a
+  process (the pattern seed and bus beat, the width, the core typing, the calibration, the start
+  stamp, the stop flag), and each run opens its own log file (`logfile::close` as it ends). The
+  logger is the process's (the `log` crate takes one), kept between runs. A run given `seed=`
+  keeps it; one without gets a new seed. The model's Compare tab files are kept.
+- Open: the seal's first cycle runs warm. Its check leaves a small chunk in cache for the test's
+  first touch, so a sealed first cycle reads faster (Mem-Stride 38.6K sealed against 28.5K
+  unsealed). The proposal is flushing each chunk after its check; the owner's to decide.
 
 Not seen in the window yet: the dev box's session wasn't drawing when the final build ran (a
 locked or minimised session draws nothing, so the captures were black). The run itself worked:

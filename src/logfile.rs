@@ -4,14 +4,24 @@
 //! through the records `level` says, so every frontend writes the same file.
 
 use std::io::Write;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// Log target for a record that goes to the log file only. The CLI's logger prints every other record on the console as well. Use it where
 /// the console gets the same text another way, as WHEA events do through the ticker's queue.
 pub const FILE_ONLY_TARGET: &str = "tmr::file_only";
 
-/// The log file, once `open` has created it
-static FILE: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
+/// The run's log file, once `open` has created it, until `close` (TODO 109: a file a run, so a session after another has its own)
+static FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
+
+fn file() -> MutexGuard<'static, Option<std::fs::File>> {
+    FILE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The run's log file is done with: the records from here on go to no file, until the next run's opens. The window's, as a session ends
+/// (TODO 109); the console's lasts as long as its process.
+pub fn close() {
+    *file() = None;
+}
 
 /// `RUST_LOG` as TMR reads it, the same for every frontend: its value (`info` without it), and the records a logger lets through, that
 /// level and the ones above it. A value that isn't a level (a module's filter, as other programs take) is info.
@@ -71,7 +81,7 @@ pub fn open(path: &std::path::Path) -> std::io::Result<()> {
         crate::BUILD.describe(),
         crate::run_context::run_file_stem(),
     );
-    let _ = FILE.set(Mutex::new(log_file));
+    *file() = Some(log_file);
     Ok(())
 }
 
@@ -81,9 +91,7 @@ pub fn write_text(text: &str) {
     if text.is_empty() {
         return;
     }
-    if let Some(file) = FILE.get()
-        && let Ok(mut file) = file.lock()
-    {
+    if let Some(file) = file().as_mut() {
         let text = without_colours(text);
         let _ = file.write_all(text.as_bytes());
         if !text.ends_with('\n') {
@@ -116,9 +124,7 @@ pub fn without_colours(text: &str) -> String {
 
 /// Adds `record`'s line to the log file, without colours, when there is one.
 pub fn write(record: &log::Record) {
-    if let Some(file) = FILE.get()
-        && let Ok(mut file) = file.lock()
-    {
+    if let Some(file) = file().as_mut() {
         let _ = writeln!(
             file,
             "[{} {} {}] {}",

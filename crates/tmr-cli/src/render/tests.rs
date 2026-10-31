@@ -31,11 +31,11 @@ fn events_print_as_their_golden() {
     // A sealed run's: its errors the test's, and in the last case, one of them the seal's
     let verdict =
         |outcome, status, test, seal, whea| Run::SuiteEnded { outcome, status, errors: ErrorCounts { test, seal, whea, sealed: true } };
-    let suite = |seed, transfer_bits, transfer_source| Run::SuiteStarted {
+    let suite = |seed, transfer_bits, transfer_source: &str| Run::SuiteStarted {
         progress: Arc::new(ProgressTracker::new()),
         seed,
         transfer_bits,
-        transfer_source,
+        transfer_source: transfer_source.to_string(),
     };
     let no_whea = WheaCounts::default();
     let cases = vec![

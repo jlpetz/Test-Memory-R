@@ -530,6 +530,13 @@ impl Model {
         self.facts.results.as_deref()
     }
 
+    /// The next run's, Run again's (TODO 109): a new run's state, for the command the parameters box has, the Compare tab's files kept
+    pub fn again(&mut self) -> Model {
+        let mut next = Model::new(&self.command());
+        next.compare = std::mem::take(&mut self.compare);
+        next
+    }
+
     /// The session was started
     pub fn start(&mut self) {
         self.status = Status::Running;
@@ -1378,7 +1385,12 @@ mod tests {
         for run in [
             Run::Allocated(Box::new(allocated)),
             Run::TestPlan(Box::new(plan)),
-            Run::SuiteStarted { progress: Arc::new(ProgressTracker::new()), seed: 1, transfer_bits: None, transfer_source: "none" },
+            Run::SuiteStarted {
+                progress: Arc::new(ProgressTracker::new()),
+                seed: 1,
+                transfer_bits: None,
+                transfer_source: "none".to_string(),
+            },
             Run::CycleStarted { cycle: 1, limit: Some(2) },
             step(1, 1, 0, Some(0), clean),
             step(1, 2, 3, Some(4), clean),
@@ -1687,6 +1699,21 @@ mod tests {
         let failed = compare((older, newer)).expect_err("not results files");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(failed.starts_with("Failed to parse test result JSON"), "{failed}");
+    }
+
+    /// TODO 109: Run again's model is a new run's, for the command the parameters box has, keeping the Compare tab's files
+    #[test]
+    fn run_again_is_a_new_run_with_the_compare_tabs_files() {
+        let mut m = model();
+        m.start();
+        m.apply(step(1, 1, 3, Some(0), WheaCounts::default()).into());
+        m.compare.set(Slot::Baseline, PathBuf::from("a.json"));
+        m.args = "memory=25% cycles=1".to_string();
+        m.ended(Ok(ran(RunStatus::Failed)));
+        let next = m.again();
+        assert_eq!((next.status, next.session_over(), next.rows.len(), next.errors.total()), (Status::Ready, false, 0, 0));
+        assert_eq!(next.command(), ["tmr.exe", "memory=25%", "cycles=1"].map(str::to_string), "the box's parameters");
+        assert_eq!(next.compare.baseline.as_deref(), Some(Path::new("a.json")), "the Compare tab's files kept");
     }
 
     /// Stop moves a running session to Stopping, and nothing else
@@ -2067,8 +2094,12 @@ mod tests {
         let mid_suite = |steps: Vec<Run>, live_errors| {
             let mut m = model();
             m.start();
-            let started =
-                Run::SuiteStarted { progress: Arc::new(ProgressTracker::new()), seed: 1, transfer_bits: None, transfer_source: "none" };
+            let started = Run::SuiteStarted {
+                progress: Arc::new(ProgressTracker::new()),
+                seed: 1,
+                transfer_bits: None,
+                transfer_source: "none".to_string(),
+            };
             for run in std::iter::once(started).chain(steps) {
                 m.apply(run.into());
             }

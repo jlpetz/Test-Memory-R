@@ -125,6 +125,8 @@ impl Feed {
 
 pub(crate) struct Window {
     model: Model,
+    /// The logger's window side, between runs (TODO 109): the logger is the process's, and a run's waiter holds this while it runs
+    log: Option<LogLines>,
     tab: Tab,
     /// The About dialog is open
     about: bool,
@@ -209,7 +211,10 @@ impl Window {
     /// Runs the parameters box's command line on the session's own thread, its events to the window's feed. The log file opens now, with
     /// the window's logger, so its name pairs with the run's results.
     fn start(&mut self, context: &ComponentContext<Self>) {
-        let log = logger::install();
+        // A run as a new process's first (TODO 109): the last run's settings, stamp and stop cleared, then a log file of its own
+        tmr::session::reset_run();
+        let log = self.log.take().unwrap_or_else(logger::install);
+        logger::open_log_file();
         self.model.log_path = Some(tmr::logfile::path());
         let (tx, rx) = mpsc::channel();
         let fe = Arc::new(GuiFrontend { feed: tx.clone(), transcript: Some(log.transcript()) });
@@ -254,7 +259,11 @@ impl Window {
             self.model.ended(Err("the session's thread ended without a result: the log file has why".to_string()));
             ended = true;
         }
-        if !ended {
+        if ended {
+            // The run's log file is done with, and the logger's side waits for the next run (TODO 109)
+            tmr::logfile::close();
+            self.log = Some(feeds.log);
+        } else {
             listen(feeds, self.model.progress().cloned(), context);
         }
     }
@@ -331,7 +340,7 @@ impl Component for Window {
         // Before Start there is no log file to take them, and maybe no console
         model.errors.extend(problems.into_iter().map(|problem| format!("window.json: {problem}")));
         let (width, dark) = (settings.size.map_or(WIDTH, |(width, _)| width), settings.theme == Theme::Dark);
-        let mut window = Self { model, tab: Tab::Run, about: false, settings, dark, width, palettes };
+        let mut window = Self { model, log: None, tab: Tab::Run, about: false, settings, dark, width, palettes };
         if start {
             window.start(context);
         }
@@ -349,12 +358,12 @@ impl Component for Window {
                 self.start(context);
             }
             Message::Start => {}
+            // In this window (TODO 109): a new run's model, the Compare tab's files kept, and the engine readied as a new process's
             Message::RunAgain if self.model.session_over() => {
-                crate::run_again(Some(crate::model::args_of(&self.model.args)));
-                if !context.window().request_close() {
-                    crate::run_again(None);
-                    self.model.errors.push("Run again: the window couldn't close itself; close it, and start tmr.exe again".to_string());
-                }
+                self.model = self.model.again();
+                self.settings.parameters = Some(self.model.args.clone());
+                self.save_settings();
+                self.start(context);
             }
             Message::RunAgain => {}
             Message::Stop => {

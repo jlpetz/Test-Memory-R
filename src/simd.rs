@@ -174,14 +174,23 @@ impl Isa {
     }
 }
 
-/// The width given and where (`width=`, or a config's `system.width`); `None` is auto.
-type WidthSetting = std::sync::OnceLock<(Option<Width>, &'static str)>;
+/// The width given and where (`width=`, or a config's `system.width`), `Some(None)` being auto; `None` until a run sets it.
+type WidthSetting = std::sync::Mutex<Option<(Option<Width>, &'static str)>>;
 
-/// The run's width setting (`set_width`).
-static WIDTH: WidthSetting = std::sync::OnceLock::new();
+/// The run's width setting (`set_width`), each run's own (`reset_width`, TODO 109).
+static WIDTH: WidthSetting = std::sync::Mutex::new(None);
 
-/// Sets the run's width once, `source` saying where it came from: the command line's `width=` first, then a config's, which a `width=`
-/// given (`auto` too) keeps out. A width this CPU lacks is refused, before anything runs.
+fn held(setting: &WidthSetting) -> std::sync::MutexGuard<'_, Option<(Option<Width>, &'static str)>> {
+    setting.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The width setting back to a new process's, for a session after another (`session::reset_run`, TODO 109)
+pub(crate) fn reset_width() {
+    *held(&WIDTH) = None;
+}
+
+/// Sets the run's width once a run, `source` saying where it came from: the command line's `width=` first, then a config's, which a
+/// `width=` given (`auto` too) keeps out. A width this CPU lacks is refused, before anything runs.
 pub fn set_width(width: Option<Width>, source: &'static str) -> Result<(), String> {
     set_width_on(&WIDTH, Width::check, width, source)
 }
@@ -191,13 +200,14 @@ pub fn set_width(width: Option<Width>, source: &'static str) -> Result<(), Strin
 fn set_width_on(
     setting: &WidthSetting, check: impl Fn(Width) -> Result<Width, String>, width: Option<Width>, source: &'static str,
 ) -> Result<(), String> {
-    if setting.get().is_some() {
+    let mut setting = held(setting);
+    if setting.is_some() {
         return Ok(());
     }
     if let Some(w) = width {
         check(w).map_err(|e| format!("{source}: {e}"))?;
     }
-    let _ = setting.set((width, source));
+    *setting = Some((width, source));
     Ok(())
 }
 
@@ -207,7 +217,7 @@ pub fn width_given() -> Option<(Width, &'static str)> {
     if let Some(given) = TEST_WIDTH.with(|w| w.get()) {
         return given.map(|w| (w, "a test's width"));
     }
-    WIDTH.get().and_then(|&(width, source)| width.map(|w| (w, source)))
+    held(&WIDTH).and_then(|(width, source)| width.map(|w| (w, source)))
 }
 
 /// The width every test that picks its width at run time runs at: the one given, else the widest this CPU has. Read once a test function
@@ -359,18 +369,18 @@ mod tests {
     #[test]
     fn the_first_width_set_holds_and_one_the_cpu_lacks_is_refused() {
         let check = |w| Isa { avx2: true, avx512: false }.check(w);
-        let setting = WidthSetting::new();
+        let setting = WidthSetting::new(None);
         let refused = set_width_on(&setting, check, Some(Width::W512), "width=").unwrap_err();
         assert!(refused.starts_with("width=: ") && refused.contains("AVX-512"), "{refused}");
-        assert_eq!(setting.get(), None, "a refused width isn't the run's");
+        assert_eq!(*held(&setting), None, "a refused width isn't the run's");
         set_width_on(&setting, check, Some(Width::W128), "the config's width").unwrap();
-        assert_eq!(setting.get(), Some(&(Some(Width::W128), "the config's width")));
+        assert_eq!(*held(&setting), Some((Some(Width::W128), "the config's width")));
 
         for (given, config) in [(Some(Width::W256), Some(Width::W128)), (None, Some(Width::W256)), (Some(Width::W128), Some(Width::W512))] {
-            let setting = WidthSetting::new();
+            let setting = WidthSetting::new(None);
             set_width_on(&setting, check, given, "width=").unwrap();
             set_width_on(&setting, check, config, "the config's width").unwrap_or_else(|e| panic!("{config:?} after {given:?}: {e}"));
-            assert_eq!(setting.get(), Some(&(given, "width=")), "{given:?} then the config's {config:?}");
+            assert_eq!(*held(&setting), Some((given, "width=")), "{given:?} then the config's {config:?}");
         }
     }
 

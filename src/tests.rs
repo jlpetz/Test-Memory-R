@@ -187,7 +187,7 @@ impl CacheTarget {
     pub fn size_bytes(&self, cache_info: &CacheInfo, thread_count: usize) -> usize {
         // Try calibrated sizing first
         if let Some(cal) = get_calibration_data()
-            && let Some(size) = self.calculate_from_calibration(cal, cache_info, thread_count)
+            && let Some(size) = self.calculate_from_calibration(&cal, cache_info, thread_count)
         {
             return size;
         }
@@ -261,12 +261,8 @@ impl CacheTarget {
     /// Get a human-readable name that reflects actual calculation with thread count and VM status. Shows `[cal]` suffix when calibration
     /// data is active for this tier.
     pub fn name_with_context(&self, thread_count: usize, is_vm: bool) -> String {
-        let has_cal = get_calibration_data()
-            .and_then(|cal| {
-                let tier = self.to_calibration_tier()?;
-                cal.tiers.get(&tier)
-            })
-            .is_some();
+        let has_cal =
+            get_calibration_data().is_some_and(|cal| self.to_calibration_tier().is_some_and(|tier| cal.tiers.contains_key(&tier)));
         let suffix = if has_cal { " [cal]" } else { "" };
 
         match self {
@@ -443,33 +439,39 @@ impl ErrorCheckInterval {
 // Global system info that gets detected once at runtime
 static SYSTEM_INFO: OnceLock<SystemInfo> = OnceLock::new();
 
-// Global calibration data — set from tmr-cfg.json on startup, used by CacheTarget sizing
-static CALIBRATION_DATA: OnceLock<Option<crate::calibration::CalibrationResults>> = OnceLock::new();
+// The run's calibration data — from tmr-cfg.json as the session starts, used by CacheTarget sizing. Each run's own (TODO 109).
+static CALIBRATION_DATA: std::sync::Mutex<Option<std::sync::Arc<crate::calibration::CalibrationResults>>> = std::sync::Mutex::new(None);
 
-// Active SMT threads per physical core (1 if cputype=cores or no HT, 2 if cputype=threads with HT) Set by main.rs after topology + cputype
-// are resolved. Defaults to 1 if not set.
-static ACTIVE_THREADS_PER_CORE: OnceLock<usize> = OnceLock::new();
+// Active SMT threads per physical core (1 if cputype=cores or no HT, 2 if cputype=threads with HT), set by the session after topology +
+// cputype are resolved; 0 until then, which reads as 1. Each run's own (TODO 109).
+static ACTIVE_THREADS_PER_CORE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Set the global calibration data (called once at startup from tmr-cfg.json)
+/// Set the run's calibration data (as the session starts, from tmr-cfg.json)
 pub fn set_calibration_data(data: Option<crate::calibration::CalibrationResults>) {
-    let _ = CALIBRATION_DATA.set(data);
+    *CALIBRATION_DATA.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = data.map(std::sync::Arc::new);
 }
 
-/// Get the global calibration data if available
-pub fn get_calibration_data() -> Option<&'static crate::calibration::CalibrationResults> {
-    CALIBRATION_DATA.get().and_then(|opt| opt.as_ref())
+/// The run's calibration data, if it has any
+pub fn get_calibration_data() -> Option<std::sync::Arc<crate::calibration::CalibrationResults>> {
+    CALIBRATION_DATA.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
-/// Set the active SMT threads per core (called once by main.rs after topology detection)
+/// Set the active SMT threads per core (by the session, after topology detection)
 /// - 2 if hyperthreading enabled AND cputype=threads (both siblings active)
 /// - 1 if cputype=cores (only one thread per physical core) or no SMT
 pub fn set_active_threads_per_core(count: usize) {
-    let _ = ACTIVE_THREADS_PER_CORE.set(count);
+    ACTIVE_THREADS_PER_CORE.store(count, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Get the active SMT threads per core (defaults to 1 if not set)
+/// Get the active SMT threads per core (1 if not set)
 pub fn get_active_threads_per_core() -> usize {
-    ACTIVE_THREADS_PER_CORE.get().copied().unwrap_or(1)
+    ACTIVE_THREADS_PER_CORE.load(std::sync::atomic::Ordering::Relaxed).max(1)
+}
+
+/// The run's calibration and threads a core back to a new process's, for a session after another (`session::reset_run`, TODO 109)
+pub(crate) fn reset_run_settings() {
+    set_calibration_data(None);
+    ACTIVE_THREADS_PER_CORE.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn get_system_info() -> &'static SystemInfo {
@@ -3383,13 +3385,8 @@ impl Mode20 {
 /// The bus beat mode 30 flips at: the transfer width (`beat=`, else the DIMMs' SMBIOS memory type, `crate::pattern::transfer_beat`), or
 /// DDR5's 32 bits when neither gives one, as mode 30 always has (the native `switch` alternates 64 and 32 there instead).
 fn bus_beat() -> pattern_gen::BusBeat {
-    static BEAT: std::sync::OnceLock<pattern_gen::BusBeat> = std::sync::OnceLock::new();
-    *BEAT.get_or_init(|| {
-        crate::pattern::transfer_beat().0.unwrap_or_else(|| {
-            log::info!("Mode 30: no known transfer width; assuming DDR5's 32-bit beats");
-            pattern_gen::BusBeat::Bits32
-        })
-    })
+    // The run's, resolved once a run, whose warning says what mode 30 assumes without one
+    crate::pattern::transfer_beat().unwrap_or(pattern_gen::BusBeat::Bits32)
 }
 
 /// Mode 30 for one thread and cycle: the bus-flip lines (`pattern_gen::mode30_line`).
@@ -6499,7 +6496,7 @@ macro_rules! native_simple_impl {
             let test_name = $test_name;
             let program = run.program;
             let (epoch, wrc) = (config.epoch, config.write_read_cycles);
-            let beat = crate::pattern::transfer_beat().0;
+            let beat = crate::pattern::transfer_beat();
             // Line ids count from the thread's span: the extent starts there (TODO 76)
             let lid_base = crate::pattern::line_base(thread_id);
             let stride = config.parameter_context.as_ref().and_then(|c| c.stride_elements).unwrap_or(0);
@@ -7155,7 +7152,7 @@ macro_rules! sequence_impl {
             // Program rounds a chunk writes a cycle: the phases go by them, as SimpleTest's
             let writes = seq.rounds(reps);
             let (reads, written) = seq.visits(reps);
-            let (epoch, beat) = (config.epoch, crate::pattern::transfer_beat().0);
+            let (epoch, beat) = (config.epoch, crate::pattern::transfer_beat());
             let schedule = crate::pattern::Schedule::Rounds;
             // Line ids count from the thread's span: the extent starts there (TODO 76)
             let lid_base = crate::pattern::line_base(thread_id);

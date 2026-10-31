@@ -163,9 +163,15 @@ impl RunStatus {
 pub static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Stops the run gracefully, as a first Ctrl+C does: the step running ends at its next check, and the run reports and saves what it has
-/// (TODO 29: the GUI's Stop). The flag is never cleared, so it stops this process's run for good.
+/// (TODO 29: the GUI's Stop). `session::reset_run` clears it for a session after another (TODO 109).
 pub fn request_stop() {
     SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+/// The stop flag cleared, for a session after another (`session::reset_run`, TODO 109). A plain flag is enough: the next session starts
+/// only once the last one's thread has ended, so a stop for that one can't reach it, and the kernels' check stays one relaxed load.
+pub(crate) fn clear_stop() {
+    SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
 }
 
 // OS memory allocation per thread (renamed from AllocationBlock for clarity)
@@ -1097,7 +1103,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     progress.begin_suite(suite_start, cycle_limit, time_limit, tests_per_cycle, seal_settings.on, thread_pool.live_progress());
 
     // The native patterns' seed and transfer width, once: with the seed (and the same layout) a run writes the same bytes again
-    let (seed, (beat, beat_source)) = (crate::pattern::run_seed(), crate::pattern::transfer_beat());
+    let (seed, beat, beat_source) = (crate::pattern::run_seed(), crate::pattern::transfer_beat(), crate::pattern::transfer_source());
     log::info!(
         "Pattern seed {seed:#018x} ({}); transfer width {} ({beat_source}); rescan {}",
         if crate::pattern::seed_given() { "seed=" } else { "from the clock" },
@@ -5880,7 +5886,7 @@ mod tests {
         program: crate::pattern::Program, epoch: crate::pattern::StepEpoch, wrc: u32, g: u64, schedule: crate::pattern::Schedule,
         words: usize,
     ) -> Vec<u64> {
-        let phase = program.phase(&epoch, wrc, g, schedule, crate::pattern::transfer_beat().0);
+        let phase = program.phase(&epoch, wrc, g, schedule, crate::pattern::transfer_beat());
         (0..words).map(|i| phase.line((i / 8) as u64)[i % 8]).collect()
     }
 
@@ -6289,7 +6295,7 @@ mod tests {
         let reps = def.config.write_read_cycles.max(1);
         let rounds = seq.rounds(reps);
         let program = def.config.native_program().unwrap();
-        let beat = crate::pattern::transfer_beat().0;
+        let beat = crate::pattern::transfer_beat();
         let first = u64::from(cycle - 1) * u64::from(rounds);
         let (mut current, mut next) = (first, first);
         if seq.reads_first() {

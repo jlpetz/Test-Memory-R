@@ -7,8 +7,13 @@ use windows::Win32::System::SystemInformation::{
     GROUP_AFFINITY, GetLogicalProcessorInformationEx, RelationNumaNode, RelationNumaNodeEx, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
 };
 
-// Global cached topology - computed only once
-static CPU_TOPOLOGY: OnceLock<Vec<CpuTopologyInfo>> = OnceLock::new();
+/// The detected topology, typed as the run's `topology=` and `core-priority=` say, with what typed it: detected at the first call, and
+/// again when a later run types it otherwise (TODO 109). Each typing is leaked, as callers hold it for the run; a window's few runs each
+/// have a typing at most.
+static CPU_TOPOLOGY: std::sync::Mutex<Option<(Typing, &'static Vec<CpuTopologyInfo>)>> = std::sync::Mutex::new(None);
+
+/// What types the cores: `topology=` and `core-priority=`
+type Typing = (TopologyDetectionMethod, CorePriority);
 
 #[derive(Debug, Clone)]
 pub struct CpuTopologyInfo {
@@ -99,12 +104,28 @@ impl TopologyDetectionMethod {
     }
 }
 
-// Global configuration for detection method
-static TOPOLOGY_METHOD: OnceLock<TopologyDetectionMethod> = OnceLock::new();
+/// `topology=`, the run's: the first set in a run holds (TODO 109)
+static TOPOLOGY_METHOD: std::sync::Mutex<Option<TopologyDetectionMethod>> = std::sync::Mutex::new(None);
 
-// Set the detection method (call this early in main.rs)
+/// Set the detection method, before the topology is first wanted in the run
 pub fn set_topology_detection_method(method: TopologyDetectionMethod) {
-    TOPOLOGY_METHOD.set(method).ok();
+    lock(&TOPOLOGY_METHOD).get_or_insert(method);
+}
+
+fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The typing back to a new process's, for a session after another (`session::reset_run`, TODO 109); the topology is typed again only
+/// if the next run types it otherwise
+pub(crate) fn reset_typing() {
+    *lock(&TOPOLOGY_METHOD) = None;
+    *lock(&CORE_PRIORITY) = None;
+}
+
+/// The run's typing, the defaults for what it didn't set
+fn typing() -> Typing {
+    (lock(&TOPOLOGY_METHOD).unwrap_or(TopologyDetectionMethod::Auto), lock(&CORE_PRIORITY).unwrap_or_default())
 }
 
 /// `core-priority=`: what Auto makes of Windows' core priority (the scheduling class) when
@@ -130,17 +151,25 @@ impl CorePriority {
     }
 }
 
-static CORE_PRIORITY: OnceLock<CorePriority> = OnceLock::new();
+/// `core-priority=`, the run's: the first set in a run holds (TODO 109)
+static CORE_PRIORITY: std::sync::Mutex<Option<CorePriority>> = std::sync::Mutex::new(None);
 
-/// Set before the topology is first detected; later calls change nothing.
+/// Set before the topology is first wanted in the run; later calls in it change nothing.
 pub fn set_core_priority(priority: CorePriority) {
-    CORE_PRIORITY.set(priority).ok();
+    lock(&CORE_PRIORITY).get_or_insert(priority);
 }
 
 // Main wrapper function - all other functions should call this
 pub fn get_cpu_topology() -> &'static Vec<CpuTopologyInfo> {
-    CPU_TOPOLOGY.get_or_init(|| {
-        let method = TOPOLOGY_METHOD.get().copied().unwrap_or(TopologyDetectionMethod::Auto);
+    let typing = typing();
+    let mut cached = lock(&CPU_TOPOLOGY);
+    if let Some((typed, topology)) = *cached
+        && typed == typing
+    {
+        return topology;
+    }
+    let topology: &'static Vec<CpuTopologyInfo> = Box::leak(Box::new({
+        let method = typing.0;
 
         log::info!("Detecting CPU topology using method: {:?}", method);
         let start = std::time::Instant::now();
@@ -174,7 +203,9 @@ pub fn get_cpu_topology() -> &'static Vec<CpuTopologyInfo> {
         );
 
         topology
-    })
+    }));
+    *cached = Some((typing, topology));
+    topology
 }
 
 /// Physical cores across every processor group. `num_cpus::get_physical()` sees only the calling thread's group on Windows (64 CPUs), so on
@@ -281,7 +312,7 @@ pub fn detect_cpu_topology_auto() -> Vec<CpuTopologyInfo> {
     let efficiency = efficiency_classes(&topology);
     let amd = if classes_vary(&efficiency) { None } else { amd_cpuid_core_types(&topology) };
     let priority = core_priorities(&topology);
-    let hybrid = CORE_PRIORITY.get().copied().unwrap_or_default() == CorePriority::Hybrid;
+    let hybrid = lock(&CORE_PRIORITY).unwrap_or_default() == CorePriority::Hybrid;
     let types = classify_core_types(&efficiency, amd.as_ref(), hybrid.then_some(&priority));
     let ranked_only = ranked_only(&efficiency, amd.as_ref(), &priority);
     let source = if classes_vary(&efficiency) {

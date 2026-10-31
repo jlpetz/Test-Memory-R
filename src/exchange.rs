@@ -842,7 +842,7 @@ unsafe fn run(
         pool: Pool::new(step, me, share),
         key: config.epoch.key(),
         program,
-        beat: crate::pattern::transfer_beat().0,
+        beat: crate::pattern::transfer_beat(),
         kernels: Kernels::at(crate::simd::test_width()),
         sealed: config.seal.wrap,
         pass: (0, 0, 0),

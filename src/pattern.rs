@@ -18,8 +18,8 @@
 //! a function of its id (the thread and its offset in the thread's span), the family, the key and the polarity only, so chunks may overlap,
 //! any walk order works, every thread's words differ, and `seed=` replays a run's bytes on the same layout.
 
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::pattern_gen::BusBeat;
 
@@ -616,19 +616,51 @@ impl Phase {
 
 // ─── Run-wide settings ───────────────────────────────────────────────────────────────────────────
 
-static RUN_SEED: OnceLock<u64> = OnceLock::new();
-static SEED_GIVEN: AtomicBool = AtomicBool::new(false);
+/// The run's seed and whether `seed=` gave it: `seed=`'s, else one from the clock at the run's first use. Each run's own: a session after
+/// another takes a new one unless its `seed=` gives the same (`reset_run_settings`, TODO 109).
+struct RunSeed {
+    seed: Mutex<Option<u64>>,
+    given: AtomicBool,
+}
 
-/// `seed=`: the run's seed, so a run's bytes can be replayed. Call before the run starts.
-pub fn set_run_seed(seed: u64) {
-    if RUN_SEED.set(seed).is_ok() {
-        SEED_GIVEN.store(true, Ordering::Relaxed);
+impl RunSeed {
+    const fn new() -> Self {
+        RunSeed { seed: Mutex::new(None), given: AtomicBool::new(false) }
+    }
+
+    fn seed(&self) -> MutexGuard<'_, Option<u64>> {
+        self.seed.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The first set in a run holds
+    fn set(&self, seed: u64) {
+        let mut held = self.seed();
+        if held.is_none() {
+            *held = Some(seed);
+            self.given.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn get(&self, from_the_clock: impl FnOnce() -> u64) -> u64 {
+        *self.seed().get_or_insert_with(from_the_clock)
+    }
+
+    fn reset(&self) {
+        *self.seed() = None;
+        self.given.store(false, Ordering::Relaxed);
     }
 }
 
-/// The run's seed: `seed=`'s, or one from the clock, fixed at the first call.
+static RUN_SEED: RunSeed = RunSeed::new();
+
+/// `seed=`: the run's seed, so a run's bytes can be replayed. Call before the run starts.
+pub fn set_run_seed(seed: u64) {
+    RUN_SEED.set(seed);
+}
+
+/// The run's seed: `seed=`'s, or one from the clock, fixed at the run's first call.
 pub fn run_seed() -> u64 {
-    *RUN_SEED.get_or_init(|| {
+    RUN_SEED.get(|| {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
         fmix(nanos ^ (u64::from(std::process::id()) << 32))
     })
@@ -636,7 +668,23 @@ pub fn run_seed() -> u64 {
 
 /// Whether `seed=` gave the seed.
 pub fn seed_given() -> bool {
-    SEED_GIVEN.load(Ordering::Relaxed)
+    RUN_SEED.given.load(Ordering::Relaxed)
+}
+
+/// The run settings back to a new process's, for a session after another (`session::reset_run`, TODO 109): the seed, rescan,
+/// `patterns=`, `beat=` and the transfer width resolved from them
+pub(crate) fn reset_run_settings() {
+    RUN_SEED.reset();
+    RESCAN.store(true, Ordering::Relaxed);
+    LEGACY_IMPORT.store(false, Ordering::Relaxed);
+    *lock(&BEAT_OVERRIDE) = None;
+    let mut source = lock(&TRANSFER_SOURCE);
+    TRANSFER.store(0, Ordering::Release);
+    source.clear();
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Parses `seed=`: decimal, or hex with `0x`.
@@ -673,11 +721,11 @@ pub fn legacy_import() -> bool {
     LEGACY_IMPORT.load(Ordering::Relaxed)
 }
 
-static BEAT_OVERRIDE: OnceLock<BusBeat> = OnceLock::new();
+static BEAT_OVERRIDE: Mutex<Option<BusBeat>> = Mutex::new(None);
 
-/// `beat=`: the transfer width `switch` (and mode 30) flips at, instead of SMBIOS's.
+/// `beat=`: the transfer width `switch` (and mode 30) flips at, instead of SMBIOS's. The first set in a run holds.
 pub fn set_beat_override(beat: BusBeat) {
-    let _ = BEAT_OVERRIDE.set(beat);
+    lock(&BEAT_OVERRIDE).get_or_insert(beat);
 }
 
 /// Parses `beat=`: `auto`, a width (12, 16, 24, 32, 64) or a memory type. `Ok(None)` is auto.
@@ -702,8 +750,7 @@ thread_local! {
     static TEST_BEAT: std::cell::Cell<Option<Option<BusBeat>>> = const { std::cell::Cell::new(None) };
 }
 
-/// While it lives, `transfer_beat` on this thread gives `beat` (a test's): the run's is resolved once a process, so tests can't set it. Not
-/// for mode 30, whose width `bus_beat` keeps for the process at its first call.
+/// While it lives, `transfer_beat` on this thread gives `beat` (a test's): the run's is resolved once a run, so tests can't set it.
 #[cfg(test)]
 pub(crate) struct TestBeat {
     before: Option<Option<BusBeat>>,
@@ -737,16 +784,70 @@ fn model_note(beat: BusBeat) -> &'static str {
     }
 }
 
-/// The transfer width and where it came from, resolved and logged once: `beat=`, else the DIMMs' SMBIOS memory type, else unknown (`None`),
-/// when `switch` alternates its 64- and 32-bit profiles.
-pub fn transfer_beat() -> (Option<BusBeat>, &'static str) {
+/// The run's transfer width, resolved at its first use (`transfer_beat`): 0 until then, then its code (`beat_code`), or `UNKNOWN`. An
+/// atomic, as a mode-30 test reads it at each chunk; `reset_run_settings` clears it with the rest (TODO 109).
+static TRANSFER: AtomicU8 = AtomicU8::new(0);
+const UNKNOWN: u8 = 0xFF;
+/// Where the run's transfer width came from, for its reports; its lock is the resolution's, so it is resolved once a run
+static TRANSFER_SOURCE: Mutex<String> = Mutex::new(String::new());
+
+fn beat_code(beat: Option<BusBeat>) -> u8 {
+    match beat {
+        None => UNKNOWN,
+        Some(BusBeat::Bits12) => 1,
+        Some(BusBeat::Bits16) => 2,
+        Some(BusBeat::Bits24) => 3,
+        Some(BusBeat::Bits32) => 4,
+        Some(BusBeat::Bits64) => 5,
+    }
+}
+
+fn beat_of(code: u8) -> Option<BusBeat> {
+    match code {
+        1 => Some(BusBeat::Bits12),
+        2 => Some(BusBeat::Bits16),
+        3 => Some(BusBeat::Bits24),
+        4 => Some(BusBeat::Bits32),
+        5 => Some(BusBeat::Bits64),
+        _ => None,
+    }
+}
+
+/// The transfer width, resolved and logged once a run: `beat=`, else the DIMMs' SMBIOS memory type, else unknown (`None`), when `switch`
+/// alternates its 64- and 32-bit profiles and mode 30 takes 32.
+pub fn transfer_beat() -> Option<BusBeat> {
     #[cfg(test)]
     if let Some(beat) = TEST_BEAT.with(|b| b.get()) {
-        return (beat, "a test's");
+        return beat;
     }
-    static RESOLVED: OnceLock<(Option<BusBeat>, String)> = OnceLock::new();
-    let (beat, source) = RESOLVED.get_or_init(|| {
-        if let Some(&beat) = BEAT_OVERRIDE.get() {
+    match TRANSFER.load(Ordering::Acquire) {
+        0 => resolve_transfer(),
+        code => beat_of(code),
+    }
+}
+
+/// Where the transfer width came from: `beat=`, the SMBIOS memory type, or unknown
+pub fn transfer_source() -> String {
+    #[cfg(test)]
+    if TEST_BEAT.with(|b| b.get()).is_some() {
+        return "a test's".to_string();
+    }
+    if TRANSFER.load(Ordering::Acquire) == 0 {
+        resolve_transfer();
+    }
+    lock(&TRANSFER_SOURCE).clone()
+}
+
+/// Resolves the run's transfer width, under its source's lock, so threads that first want it at once resolve it once
+fn resolve_transfer() -> Option<BusBeat> {
+    let mut held = lock(&TRANSFER_SOURCE);
+    let code = TRANSFER.load(Ordering::Acquire);
+    if code != 0 {
+        return beat_of(code);
+    }
+    // The resolution, which returns as soon as it knows
+    let (beat, source) = (|| -> (Option<BusBeat>, String) {
+        if let Some(beat) = *lock(&BEAT_OVERRIDE) {
             if beat.modelled() {
                 log::info!("Transfer width: {} bits (beat=), {}", beat.bits(), model_note(beat));
                 return (Some(beat), format!("beat=, {}", model_note(beat)));
@@ -763,20 +864,39 @@ pub fn transfer_beat() -> (Option<BusBeat>, &'static str) {
             None => {
                 log::warn!(
                     "Transfer width unknown: SMBIOS gives no known memory type ({types:#04x?}); the switch \
-                            pattern alternates its 64- and 32-bit profiles, so on a 64- or 32-bit bus it flips every \
-                            beat only half the time, and on other widths less (set beat= to the memory type: ddr4, \
-                            ddr5, ddr6, lpddr4, lpddr5 or lpddr6)"
+                        pattern alternates its 64- and 32-bit profiles, so on a 64- or 32-bit bus it flips every \
+                        beat only half the time, and on other widths less (set beat= to the memory type: ddr4, \
+                        ddr5, ddr6, lpddr4, lpddr5 or lpddr6)"
                 );
                 (None, "unknown: switch alternates 64 and 32".to_string())
             }
         }
-    });
-    (*beat, source.as_str())
+    })();
+    *held = source;
+    TRANSFER.store(beat_code(beat), Ordering::Release);
+    beat
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TODO 109: a run's seed is the first set in it, `seed=`'s, or the clock's at its first use, and given only when `seed=` gave it; a
+    /// reset readies it for the next run, which takes a new one unless its `seed=` gives the same. On a seed of the test's own: the run's
+    /// is every test's.
+    #[test]
+    fn a_runs_seed_is_its_own() {
+        let seed = RunSeed::new();
+        seed.set(7);
+        seed.set(8);
+        assert_eq!((seed.get(|| 1), seed.given.load(Ordering::Relaxed)), (7, true), "the first set in the run holds");
+        seed.reset();
+        assert_eq!((seed.get(|| 1), seed.given.load(Ordering::Relaxed)), (1, false), "the next run's from the clock");
+        assert_eq!(seed.get(|| 2), 1, "fixed at its first use");
+        seed.reset();
+        seed.set(7);
+        assert_eq!(seed.get(|| 3), 7, "seed= again gives the same");
+    }
 
     /// The spec's formulas written out a word at a time, separately from the line functions.
     fn reference(phase: &Phase, id: u64) -> u64 {

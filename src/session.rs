@@ -3,7 +3,8 @@
 //! the window take the same parameters and the console shows what it did. The question it asks, the large-page restart, is the frontend's
 //! to answer (`Frontend::large_page_restart`).
 //!
-//! One session a process: the run settings it sets (the seed, the width, the topology's typing) are first-set-wins.
+//! Sessions one after another in a process (TODO 109: the window's Run again), `reset_run` readying it for the next. Within a session the
+//! run settings it sets (the seed, the width, the topology's typing) are first-set-wins, so the command line's hold over a config's.
 
 use std::collections::HashMap;
 use std::env;
@@ -47,6 +48,20 @@ pub enum Stopped {
     MemoryOverride { spec: String, error: String },
     /// The CPUs asked for can't be selected (`cpu_selection::calculate_thread_allocation`)
     CpuSelection(String),
+}
+
+/// Readies the process for another session (TODO 109): the run settings the last one set (the seed, the width, the bus beat, the topology's
+/// typing, rescan, `patterns=`, the calibrations, the threads a core), its start stamp, which names its log and results files, and the stop
+/// flag, back to a new process's. A frontend running sessions one after another calls it before each, and before the run's log file opens,
+/// which takes the stamp; the console runs one a process. Only between sessions: the last one's thread has ended.
+pub fn reset_run() {
+    crate::pattern::reset_run_settings();
+    crate::simd::reset_width();
+    crate::seal::reset_calibrated_width();
+    crate::cpu_topology::reset_typing();
+    crate::tests::reset_run_settings();
+    crate::run_context::reset_run_start();
+    crate::runner::clear_stop();
 }
 
 /// A session: `command_line` (the exe's name first) set up, then run, its events to `fe`. Returns how it ended.

@@ -16,8 +16,6 @@
 //! The distinction runs through this whole module and is the point of it. A *request* (`memory=60%`) and the *outcome* (`8 × 3.000 GiB on 2
 //! MB pages`) are different facts, and only the outcome explains a throughput number. Where they can diverge, both are stored.
 
-use std::sync::OnceLock;
-
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
@@ -42,8 +40,15 @@ use crate::smbios::MemoryModule;
 /// Local, not UTC, because it is the stem of a filename a human browses. Result *files* carry both zones as fields (see
 /// [`crate::results::TestRunMetadata`]); a filename can only pick one.
 pub fn run_start() -> DateTime<Local> {
-    static RUN_START: OnceLock<DateTime<Local>> = OnceLock::new();
-    *RUN_START.get_or_init(Local::now)
+    *RUN_START.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(Local::now)
+}
+
+/// The run's start, at its first use; each run's own, so a session after another names new files (`reset_run_start`, TODO 109)
+static RUN_START: std::sync::Mutex<Option<DateTime<Local>>> = std::sync::Mutex::new(None);
+
+/// A new run's start, for a session after another (`session::reset_run`, TODO 109): its log and results files are named from it
+pub(crate) fn reset_run_start() {
+    *RUN_START.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
 /// Filename stem shared by this run's log and result files, e.g. `TMR_2026-09-08_14-18-23`.
@@ -652,8 +657,8 @@ impl ExecutionSnapshot {
             channels,
             pattern_version: crate::pattern::VERSION,
             pattern_seed: Some(format!("{:#018x}", crate::pattern::run_seed())),
-            transfer_bits: crate::pattern::transfer_beat().0.map(|b| b.bits()),
-            transfer_source: Some(crate::pattern::transfer_beat().1.to_string()),
+            transfer_bits: crate::pattern::transfer_beat().map(|b| b.bits()),
+            transfer_source: Some(crate::pattern::transfer_source()),
             rescan: Some(crate::pattern::rescan_enabled()),
             simd_width_bits: Some(crate::simd::test_width().bits()),
             simd_width_source: Some(crate::simd::width_source().to_string()),

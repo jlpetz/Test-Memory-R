@@ -94,9 +94,9 @@ impl Frontend for GuiFrontend {
     }
 }
 
-/// The session's thread, from Start, and its exit status once it ended
+/// The session's thread, from Start (Run again's the next's), and the exit status the last one ended with
 static SESSION: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
-static EXIT_CODE: OnceLock<i32> = OnceLock::new();
+static EXIT_CODE: Mutex<Option<i32>> = Mutex::new(None);
 
 /// Set when the window has opened, for the wording of its error, and when it has closed, for the restart's question
 static WINDOW_OPENED: AtomicBool = AtomicBool::new(false);
@@ -108,15 +108,6 @@ static ICON: OnceLock<&'static [u8]> = OnceLock::new();
 /// Set when the restart's question went unanswered, the window having gone: the session ended as for a restart, but nobody chose it
 static UNANSWERED: AtomicBool = AtomicBool::new(false);
 
-/// Run again's parameters (TODO 109): set as the window closes for it, and `main` starts tmr.exe again with them, once the session has
-/// ended, so the new run is a first run of a new process (the engine's run settings are set once a process)
-static RUN_AGAIN: Mutex<Option<Vec<String>>> = Mutex::new(None);
-
-/// Run again, with `args`, the parameters box's, once the window has closed; `None` when it couldn't close
-fn run_again(args: Option<Vec<String>>) {
-    *RUN_AGAIN.lock().unwrap_or_else(PoisonError::into_inner) = args;
-}
-
 /// How long a session still running when the window closes has to finish its step and save its results, before it ends with the process
 const CLOSE_GRACE: Duration = Duration::from_secs(30);
 
@@ -124,12 +115,16 @@ fn window_opened() {
     WINDOW_OPENED.store(true, Ordering::Relaxed);
 }
 
+/// A session's thread started: the window's first, or Run again's after the last had ended (TODO 109), whose handle it replaces
 fn session_started(session: JoinHandle<()>) {
     *SESSION.lock().unwrap_or_else(PoisonError::into_inner) = Some(session);
+    *EXIT_CODE.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    UNANSWERED.store(false, Ordering::Relaxed);
 }
 
 fn session_ended(result: &Result<SessionEnd, String>) {
-    let _ = EXIT_CODE.set(exit_status(result, UNANSWERED.load(Ordering::Relaxed)).exit_code());
+    let code = exit_status(result, UNANSWERED.load(Ordering::Relaxed)).exit_code();
+    *EXIT_CODE.lock().unwrap_or_else(PoisonError::into_inner) = Some(code);
 }
 
 /// The exit status of how the session ended, as the CLI gives it (`RunStatus::exit_code`): its run's; passed (0) when the restart was
@@ -180,15 +175,8 @@ pub fn main(args: Vec<String>, icon: &'static [u8]) -> Closed {
         end_session(session);
     }
     let opened = WINDOW_OPENED.load(Ordering::Relaxed);
-    let mut closed = closed(shown.err().map(|e| e.to_string()), opened, started, EXIT_CODE.get().copied());
-    // The window's own tmr.exe again, with `--gui` and `--start`, as elevated as this one is
-    if let Some(args) = RUN_AGAIN.lock().unwrap_or_else(PoisonError::into_inner).take() {
-        let again =
-            std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg("--gui").arg(window::START).args(args).spawn());
-        if let Err(e) = again {
-            closed.error.get_or_insert(format!("Run again couldn't start tmr.exe: {e}"));
-        }
-    }
+    let exit_code = *EXIT_CODE.lock().unwrap_or_else(PoisonError::into_inner);
+    let closed = closed(shown.err().map(|e| e.to_string()), opened, started, exit_code);
     if let Some(error) = &closed.error {
         // In the run's log too, when Start opened one
         log::error!("{error}");
