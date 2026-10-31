@@ -575,8 +575,8 @@ pub struct TestProgress {
     pub recent_bytes_per_sec: std::sync::atomic::AtomicU64,
     /// The worker's pass wraps each chunk in the seal, in a step planned for more than one (TODO 109): the chart draws it apart
     pub sealed_pass: std::sync::atomic::AtomicBool,
-    /// The test's last publishes, which `recent_bytes_per_sec` is taken from: its worker's alone, locked once a publish
-    pub(crate) recent: std::sync::Mutex<crate::test_scaffolding::Recent>,
+    /// The test's last publishes, which `recent_bytes_per_sec` is taken from: its worker's alone, at a publish
+    pub(crate) recent: crate::test_scaffolding::Recent,
 }
 
 /// What a worker is doing, as the progress ticker names it (TODO 74).
@@ -638,7 +638,7 @@ impl TestProgress {
             stage: std::sync::atomic::AtomicU8::new(Stage::Testing as u8),
             recent_bytes_per_sec: AtomicU64::new(0),
             sealed_pass: std::sync::atomic::AtomicBool::new(false),
-            recent: std::sync::Mutex::new(crate::test_scaffolding::Recent::new(0)),
+            recent: crate::test_scaffolding::Recent::new(0),
         }
     }
 
@@ -658,7 +658,7 @@ impl TestProgress {
         self.stage.store(Stage::Testing as u8, Relaxed);
         self.recent_bytes_per_sec.store(0, Relaxed);
         self.sealed_pass.store(false, Relaxed);
-        *self.recent.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = crate::test_scaffolding::Recent::new(0);
+        self.recent.reset(0);
     }
 }
 

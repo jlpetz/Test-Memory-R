@@ -11,7 +11,7 @@
 //!
 //! See TODO #19 Part A for the design and the three-tier execution model.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::ErrorMode;
@@ -27,40 +27,57 @@ const RECENT_LEN: usize = 16;
 
 /// A test's last publishes, (its own ms, bytes), for its speed over the last `RECENT_MS` (TODO 109). In the worker's progress slot
 /// (`TestProgress::recent`), not the runner: the runner sits in every kernel's frame, and its 280 bytes there cost two kernels' hot loops
-/// a reload (Mem-Sequence 512's, SimpleV2 512's strided).
-#[derive(Clone, Copy, Debug)]
+/// a reload (Mem-Sequence 512's, SimpleV2 512's strided). Its worker alone pushes, so it needs no lock: relaxed atomics, plain loads and
+/// stores on x86, which keep the slot `Sync` without `unsafe`; `reset` comes between tests, when the worker is idle.
+#[derive(Debug)]
 pub(crate) struct Recent {
     /// A ring, the newest at `next - 1`
-    at: [(u64, u64); RECENT_LEN],
-    next: usize,
-    len: usize,
+    at: [(AtomicU64, AtomicU64); RECENT_LEN],
+    next: AtomicUsize,
+    len: AtomicUsize,
     /// The bytes done when the clock started, the window's start while the publishes don't reach back `RECENT_MS`
-    start_bytes: u64,
+    start_bytes: AtomicU64,
 }
 
 impl Recent {
     pub(crate) const fn new(start_bytes: u64) -> Self {
-        Recent { at: [(0, 0); RECENT_LEN], next: 0, len: 0, start_bytes }
+        Recent {
+            at: [const { (AtomicU64::new(0), AtomicU64::new(0)) }; RECENT_LEN],
+            next: AtomicUsize::new(0),
+            len: AtomicUsize::new(0),
+            start_bytes: AtomicU64::new(start_bytes),
+        }
+    }
+
+    /// Empty, the window starting again from `start_bytes`
+    pub(crate) fn reset(&self, start_bytes: u64) {
+        self.next.store(0, Ordering::Relaxed);
+        self.len.store(0, Ordering::Relaxed);
+        self.start_bytes.store(start_bytes, Ordering::Relaxed);
     }
 
     /// A publish at `ms` of the test's own time with `bytes` done: the speed in bytes/s since the newest publish at least `RECENT_MS`
     /// before it, or since the clock started while there is none (the ring's oldest once it is full). 0 when no time has passed. A time
     /// before the last publish's is the clock restarted (`restart_clock`, before any bytes are counted), which starts the window again.
-    pub(crate) fn push(&mut self, ms: u64, bytes: u64) -> f64 {
-        if self.len > 0 && ms < self.at[(self.next + RECENT_LEN - 1) % RECENT_LEN].0 {
-            *self = Recent::new(0);
+    pub(crate) fn push(&self, ms: u64, bytes: u64) -> f64 {
+        let entry = |k: usize| (self.at[k].0.load(Ordering::Relaxed), self.at[k].1.load(Ordering::Relaxed));
+        let (mut next, mut len) = (self.next.load(Ordering::Relaxed), self.len.load(Ordering::Relaxed));
+        if len > 0 && ms < entry((next + RECENT_LEN - 1) % RECENT_LEN).0 {
+            self.reset(0);
+            (next, len) = (0, 0);
         }
-        let mut from = (0, self.start_bytes);
-        for k in 1..=self.len {
-            let (at_ms, at_bytes) = self.at[(self.next + RECENT_LEN - k) % RECENT_LEN];
+        let mut from = (0, self.start_bytes.load(Ordering::Relaxed));
+        for k in 1..=len {
+            let (at_ms, at_bytes) = entry((next + RECENT_LEN - k) % RECENT_LEN);
             if ms.saturating_sub(at_ms) >= RECENT_MS || k == RECENT_LEN {
                 from = (at_ms, at_bytes);
                 break;
             }
         }
-        self.at[self.next] = (ms, bytes);
-        self.next = (self.next + 1) % RECENT_LEN;
-        self.len = (self.len + 1).min(RECENT_LEN);
+        self.at[next].0.store(ms, Ordering::Relaxed);
+        self.at[next].1.store(bytes, Ordering::Relaxed);
+        self.next.store((next + 1) % RECENT_LEN, Ordering::Relaxed);
+        self.len.store((len + 1).min(RECENT_LEN), Ordering::Relaxed);
         match ms.checked_sub(from.0) {
             Some(span) if span > 0 => bytes.saturating_sub(from.1) as f64 * 1000.0 / span as f64,
             _ => 0.0,
@@ -403,11 +420,7 @@ impl<'a> TestRunner<'a> {
                 let timed_ms = (timed.as_millis() as u64).max(1);
                 progress.last_update_ms.store(timed_ms, Ordering::Relaxed);
                 // The chart's line, the speed over its last seconds, and whether this pass is the sealed one of a step that makes more
-                let recent = progress
-                    .recent
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(timed_ms, self.total_bytes_processed as u64);
+                let recent = progress.recent.push(timed_ms, self.total_bytes_processed as u64);
                 progress.recent_bytes_per_sec.store(recent.to_bits(), Ordering::Relaxed);
                 let sealed_pass = self.seal.wrap && self.cycle <= 1 && self.timing.cycles != Some(1);
                 progress.sealed_pass.store(sealed_pass, Ordering::Relaxed);
@@ -517,7 +530,7 @@ mod tests {
     /// it for the whole step
     #[test]
     fn the_recent_speed_is_the_last_seconds_of_the_tests_own_time() {
-        let mut recent = Recent::new(0);
+        let recent = Recent::new(0);
         // 2 bytes a ms for 2 s, then 1 byte a ms; a publish every 250 ms
         let bytes_at = |ms: u64| if ms <= 2000 { 2 * ms } else { 4000 + (ms - 2000) };
         let mut speeds = Vec::new();
@@ -537,7 +550,7 @@ mod tests {
     /// back) starts it again
     #[test]
     fn a_window_starts_at_the_clock_and_needs_time() {
-        let mut recent = Recent::new(500);
+        let recent = Recent::new(500);
         assert_eq!(recent.push(1000, 1500), 1000.0);
         assert_eq!(Recent::new(0).push(0, 10), 0.0);
         recent.push(5000, 9000);
