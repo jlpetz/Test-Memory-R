@@ -120,3 +120,18 @@ window on the dev box showed: Mem-SimpleV2-512_A flat at 38.5K for about 3 s, th
 Not seen in the window yet: the dev box's session wasn't drawing when the final build ran (a
 locked or minimised session draws nothing, so the captures were black). The run itself worked:
 its log has the console's text between the records, and window.json its parameters and size.
+
+Speed of the second round (tools/bench_ab.py, 3943981's tmr.exe against ea672a7's, alternated
+3 times, cycles=2 memory=50% cputype=cores cpus=100% skip-cores=0, against Mem-SimpleV2-512_A; the
+final build's kernels are instruction for instruction ab89d94's): every test within its runs' spread.
+
+| test | before MiB/s | after MiB/s | vs ref |
+|---|---|---|---|
+| Mem-BlockMove | 69838 | 69928 | 0.999 |
+| Mem-CacheBust | 15769 | 15702 | 0.993 |
+| Mem-ModuloX | 35740 | 35866 | 1.001 |
+| Mem-MovingInv | 74698 | 74972 | 1.001 |
+| Mem-Refresh512_A | 36546 | 36586 | 0.998 |
+| Mem-Sequence | 31543 | 31486 | 0.995 |
+| Mem-Stride | 39515 | 39681 | 1.001 |
+| Mem-StuckBit512_A | 49791 | 49844 | 0.998 |
