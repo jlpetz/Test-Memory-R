@@ -1056,9 +1056,10 @@ impl ReportFormatter for DefaultFormatter {
     }
 
     fn prepare_final_summary_overview_table(&self, report: &FinalTestSummaryReport) -> TableData {
-        // Both error sources fail the run: a WHEA event means the hardware reported a fault whether or not a verify read could see it.
-        // First row, because it is the answer the whole table exists to give — everything below it is the supporting detail.
-        let passed = report.total_errors == 0 && report.whea_total == 0;
+        // Every error fails the run, WHEA's among them: a WHEA event means the hardware reported a fault whether or not a verify read could
+        // see it. First row, because it is the answer the whole table exists to give — everything below it is the supporting detail.
+        let errors = report.errors();
+        let passed = errors.total() == 0;
 
         TableData::new()
             .with_title("Final Test Summary - Overview")
@@ -1072,18 +1073,20 @@ impl ReportFormatter for DefaultFormatter {
                 "Overall Throughput".to_string(),
                 format!("{:.1} MiB/s ({:.2} GiB/s)", report.overall_throughput_mib_s, report.overall_throughput_gib_s),
             ])
-            // The tests' and the seal's, in the one form (TODO 109)
-            .add_row(vec!["Errors".to_string(), report.errors().to_string()])
+            // The run's errors, then the three parts they add up from (the owner, 2026-10-31: TODO 109's one count, each part once)
+            .add_row(vec!["Total Errors".to_string(), errors.total().to_string()])
+            .add_row(vec!["  - Test".to_string(), errors.test.to_string()])
             .add_row(vec![
-                // Its time and data are the Intermediate Operations table's
-                "Seal".to_string(),
+                // What its checks before the steps and their chunks found, and its final checks. Its time and data are the Intermediate
+                // Operations table's.
+                "  - Seal".to_string(),
                 match &report.seal {
-                    Some(seal) => format!("{} errors in the final checks", seal.final_check_errors),
+                    Some(seal) => format!("{} ({} in the final checks)", errors.seal, seal.final_check_errors),
                     None => "off".to_string(),
                 },
             ])
             .add_row(vec![
-                "Total WHEA".to_string(),
+                "  - WHEA".to_string(),
                 if !report.whea_monitored {
                     // Say so explicitly: a bare "0" here would claim a clean bill of health that was never actually checked.
                     "not monitored".to_string()
