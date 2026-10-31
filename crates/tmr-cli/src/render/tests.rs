@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 
 use chrono::TimeZone;
 use tmr::frontend::{
-    CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorMode, Frontend, LiveFigures, MemoryModule, MemoryStatus, NotRun,
-    PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport, PhysicalCorePerformance,
-    ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealCalibrationState, SealOp, Selection, Setup, Stage, StepConfigLine,
-    StepReport, TestSnapshot, TestSummary, ThreadPerformance, WheaCounts,
+    CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorCounts, ErrorMode, Frontend, LiveFigures, MemoryModule,
+    MemoryStatus, NotRun, PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
+    PhysicalCorePerformance, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealCalibrationState, SealOp, Selection, Setup,
+    Stage, StepConfigLine, StepReport, TestSnapshot, TestSummary, ThreadPerformance, WheaCounts,
 };
 use tmr::session::{SessionEnd, Stopped};
 use tmr::test_support::failing_bits;
@@ -28,7 +28,9 @@ fn events_print_as_their_golden() {
     let fe = CliFrontend::new();
     let left_out =
         |names: &[&str]| Run::LeftOut { tests: names.iter().map(|name| (name.to_string(), "no AVX-512F".to_string())).collect() };
-    let verdict = |outcome, status, memory_errors, whea| Run::SuiteEnded { outcome, status, memory_errors, whea };
+    // A sealed run's: its errors the test's, and in the last case, one of them the seal's
+    let verdict =
+        |outcome, status, test, seal, whea| Run::SuiteEnded { outcome, status, errors: ErrorCounts { test, seal, sealed: true }, whea };
     let suite = |seed, transfer_bits, transfer_source| Run::SuiteStarted {
         progress: Arc::new(ProgressTracker::new()),
         seed,
@@ -90,14 +92,14 @@ fn events_print_as_their_golden() {
                 by_core: PerformanceByPhysicalCoreReport { cores: Vec::new(), whea: no_whea },
             })),
         ),
-        ("passed", verdict(RunOutcome::Completed, RunStatus::Passed, 0, no_whea)),
-        ("passed on the time limit", verdict(RunOutcome::TimeLimit, RunStatus::Passed, 0, no_whea)),
-        ("errors", verdict(RunOutcome::Completed, RunStatus::Failed, 3, no_whea)),
-        ("halted on a WHEA event", verdict(RunOutcome::Halted, RunStatus::Failed, 0, WheaCounts { total: 1, corrected: 0 })),
-        ("interrupted", verdict(RunOutcome::Interrupted, RunStatus::Interrupted, 0, no_whea)),
-        ("interrupted with errors", verdict(RunOutcome::Interrupted, RunStatus::Failed, 1, WheaCounts { total: 2, corrected: 2 })),
-        ("interrupted before any test", verdict(RunOutcome::Interrupted, RunStatus::NotRun, 0, no_whea)),
-        ("no test ran", verdict(RunOutcome::Completed, RunStatus::NotRun, 0, no_whea)),
+        ("passed", verdict(RunOutcome::Completed, RunStatus::Passed, 0, 0, no_whea)),
+        ("passed on the time limit", verdict(RunOutcome::TimeLimit, RunStatus::Passed, 0, 0, no_whea)),
+        ("errors", verdict(RunOutcome::Completed, RunStatus::Failed, 3, 0, no_whea)),
+        ("halted on a WHEA event", verdict(RunOutcome::Halted, RunStatus::Failed, 0, 0, WheaCounts { total: 1, corrected: 0 })),
+        ("interrupted", verdict(RunOutcome::Interrupted, RunStatus::Interrupted, 0, 0, no_whea)),
+        ("interrupted with errors", verdict(RunOutcome::Interrupted, RunStatus::Failed, 1, 1, WheaCounts { total: 2, corrected: 2 })),
+        ("interrupted before any test", verdict(RunOutcome::Interrupted, RunStatus::NotRun, 0, 0, no_whea)),
+        ("no test ran", verdict(RunOutcome::Completed, RunStatus::NotRun, 0, 0, no_whea)),
         ("the results saved", Run::ResultsSaved { path: "results/tmr_2026-10-22_19-30-01.json".to_string() }),
     ];
     let mut text = String::new();
@@ -130,6 +132,8 @@ fn the_ticker_draws_as_its_golden() {
     let mut pending = snapshot();
     (pending.time_limit, pending.cycle_limit, pending.cycle) = (None, None, 12);
     (pending.finished_errors, pending.live_errors, pending.whea) = (2, 1, WheaCounts { total: 3, corrected: 1 });
+    // A finished test's seal error and the running test's, so the parts differ between the ticker and the stamp
+    (pending.finished_seal_errors, pending.live_seal_errors) = (1, 1);
     let test = pending.test.as_mut().unwrap();
     test.time_limit = None;
     test.live = LiveFigures { stage: Some(Stage::CheckingSeal), ..Default::default() };
@@ -177,6 +181,9 @@ fn snapshot() -> ProgressSnapshot {
         tests_per_cycle: 6,
         finished_errors: 0,
         live_errors: 0,
+        finished_seal_errors: 0,
+        live_seal_errors: 0,
+        sealed: true,
         whea: WheaCounts::default(),
         test: Some(TestSnapshot {
             number: 2,

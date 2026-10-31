@@ -95,7 +95,7 @@ Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 0 er
 ✅ All test cycles completed successfully!
 ## errors
 
-❌ Test suite failed: 3 errors + 0 WHEA
+❌ Test suite failed: 3 errors (3 test + 0 seal) + 0 WHEA
 ## halted on a WHEA event
 
 ❌ Test suite failed: 0 errors + 1 WHEA (0C/1UC)
@@ -106,7 +106,7 @@ Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 0 er
 
 ⚠️  Test suite interrupted by user (CTRL+C)
 
-❌ Test suite failed: 1 errors + 2 WHEA (2C/0UC)
+❌ Test suite failed: 2 errors (1 test + 1 seal) + 2 WHEA (2C/0UC)
 ## interrupted before any test
 
 ⚠️  Test suite interrupted by user (CTRL+C)

@@ -1072,7 +1072,8 @@ impl ReportFormatter for DefaultFormatter {
                 "Overall Throughput".to_string(),
                 format!("{:.1} MiB/s ({:.2} GiB/s)", report.overall_throughput_mib_s, report.overall_throughput_gib_s),
             ])
-            .add_row(vec!["Total Errors".to_string(), report.total_errors.to_string()])
+            // The tests' and the seal's, in the one form (TODO 109)
+            .add_row(vec!["Errors".to_string(), report.errors().to_string()])
             .add_row(vec![
                 // Its time and data are the Intermediate Operations table's
                 "Seal".to_string(),

@@ -15,8 +15,8 @@ use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 use tmr::frontend::{
-    AllocationReport, Event, NotRun, ProgressSnapshot, ProgressTracker, RestartChoice, Run, RunOutcome, RunStatus, SealOp, Setup,
-    StepReport, TestConfigurationReport, TestSnapshot, WheaCounts,
+    AllocationReport, ErrorCounts, Event, NotRun, ProgressSnapshot, ProgressTracker, RestartChoice, Run, RunOutcome, RunStatus, SealOp,
+    Setup, StepReport, TestConfigurationReport, TestSnapshot, WheaCounts,
 };
 use tmr::session::{SessionEnd, Stopped};
 
@@ -113,10 +113,11 @@ impl StepRow {
     /// The table's columns
     pub const COLUMNS: usize = 8;
 
-    /// The table's headings: the cycle, the step's number in it (the ticker's `Test 2/6`), then the rest of `cells`
-    pub const HEADINGS: [&str; Self::COLUMNS] = ["C#", "T#", "Test", "Time", "MiB/s", "Errors", "Seal errors", "WHEA"];
+    /// The table's headings: the cycle, the step's number in it (the ticker's `Test 2/6`), then the rest of `cells`, its errors in their
+    /// parts (TODO 109): the test's, the seal's, WHEA's
+    pub const HEADINGS: [&str; Self::COLUMNS] = ["C#", "T#", "Step", "Time", "MiB/s", "Test", "Seal", "WHEA"];
 
-    /// Its cells: the cycle, the step, the step's label, its time, MiB/s, errors, seal errors (`–` unsealed), WHEA
+    /// Its cells: the cycle, the step, the step's label, its time, MiB/s, its test's errors, the seal's (`–` unsealed), WHEA's
     pub fn cells(&self) -> [String; Self::COLUMNS] {
         [
             self.cycle.to_string(),
@@ -153,11 +154,9 @@ pub struct Summary {
 
 impl Summary {
     fn of(report: &tmr::frontend::FinalTestSummaryReport) -> Self {
-        // The run's errors are the tests' and the seal's, which the rows count apart: the seal's are what its checks before the steps'
-        // chunks found and its final checks
-        let seal =
-            report.seal.as_ref().map(|seal| report.per_test_summaries.iter().map(|t| t.seal_errors).sum::<u64>() + seal.final_check_errors);
-        let errors = report.total_errors - seal.unwrap_or(0);
+        // The run's errors in the parts the rows count (TODO 109)
+        let counts = report.errors();
+        let (errors, seal) = (counts.test, counts.sealed.then_some(counts.seal));
         let cells = [
             String::new(),
             String::new(),
@@ -344,8 +343,8 @@ impl<const N: usize> PartialEq<[&str; N]> for Lines {
     }
 }
 
-/// The run's error count, as the ticker gives it: `0 errors + 0 WHEA`, `⚠️ 3 errors + 3 WHEA (1C/2UC)`. The memory errors count the
-/// running test's so far; the WHEA split is corrected and uncorrected.
+/// The run's error count, as the ticker gives it: `0 errors + 0 WHEA`, `⚠️ 4 errors (2 test + 2 seal) + 3 WHEA (1C/2UC)`
+/// (`ErrorCounts`, TODO 109). The memory errors count the running test's so far; the WHEA split is corrected and uncorrected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ErrorCount {
     pub text: String,
@@ -354,10 +353,10 @@ pub struct ErrorCount {
 }
 
 impl ErrorCount {
-    fn of(errors: u64, whea: WheaCounts) -> Self {
-        let alarm = errors > 0 || whea.total > 0;
+    fn of(errors: ErrorCounts, whea: WheaCounts) -> Self {
+        let alarm = errors.total() > 0 || whea.total > 0;
         let flag = if alarm { "⚠️ " } else { "" };
-        ErrorCount { text: format!("{flag}{errors} errors + {} WHEA{}", whea.total, whea.split_suffix()), alarm }
+        ErrorCount { text: format!("{flag}{errors} + {} WHEA{}", whea.total, whea.split_suffix()), alarm }
     }
 }
 
@@ -739,11 +738,11 @@ impl Model {
             }
             Run::LateWhea(lines) => self.errors.extend(lines),
             Run::CpuPerformance(_) => {}
-            Run::SuiteEnded { outcome, status, memory_errors, whea } => {
+            Run::SuiteEnded { outcome, status, errors, whea } => {
                 self.status = Status::of(status);
-                self.position = self.ended_line(outcome, memory_errors, whea);
+                self.position = self.ended_line(outcome, errors, whea);
                 // The run's count holds, its last; no test runs and no time is left
-                self.error_count = Some(ErrorCount::of(memory_errors, whea));
+                self.error_count = Some(ErrorCount::of(errors, whea));
                 (self.time_left, self.live) = (None, None);
                 if matches!(outcome, RunOutcome::Completed | RunOutcome::TimeLimit) {
                     (self.bar.fraction, self.bar.percent) = (1.0, 100);
@@ -767,7 +766,7 @@ impl Model {
         };
         self.runtime = s.runtime;
         self.time_left = time_left(&s);
-        self.error_count = Some(ErrorCount::of(s.finished_errors + s.live_errors, s.whea));
+        self.error_count = Some(ErrorCount::of(s.errors(), s.whea));
         self.position = position(&s);
         self.live = live(&s);
         self.bar = bar(&s);
@@ -779,7 +778,7 @@ impl Model {
                 self.stage = Some(stage);
             }
         }
-        let errors = s.finished_errors + s.live_errors + s.whea.total;
+        let errors = s.errors().total() + s.whea.total;
         if errors > self.errors_seen {
             self.errors_seen = errors;
             self.series.mark_newest();
@@ -828,7 +827,7 @@ impl Model {
     }
 
     /// The position line when the suite has ended: how, its cycles and steps, and its errors
-    fn ended_line(&self, outcome: RunOutcome, memory_errors: u64, whea: WheaCounts) -> String {
+    fn ended_line(&self, outcome: RunOutcome, errors: ErrorCounts, whea: WheaCounts) -> String {
         let how = match outcome {
             RunOutcome::Completed => "Completed",
             RunOutcome::TimeLimit => "Time limit reached",
@@ -838,7 +837,7 @@ impl Model {
         let cycles = self.cycles_finished as usize;
         let last = if self.last_partial { ", the last stopped early" } else { "" };
         format!(
-            "{how} · {cycles} cycle{}{last}, {} steps · {memory_errors} errors + {} WHEA{}",
+            "{how} · {cycles} cycle{}{last}, {} steps · {errors} + {} WHEA{}",
             plural(cycles),
             self.rows.len(),
             whea.total,
@@ -900,24 +899,16 @@ fn not_run(why: &NotRun) -> String {
     }
 }
 
-/// A step that found errors, or saw a WHEA event, as the console's step headline counts them; `None` for one that passed
+/// A step that found errors, or saw a WHEA event, as the console's step headline counts them, and its failing bits; `None` for one that
+/// passed
 fn step_errors(report: &StepReport) -> Option<String> {
-    let s = &report.summary;
-    if s.errors == 0 && s.seal_errors == 0 && s.whea_total == 0 {
+    let (s, errors) = (&report.summary, report.errors());
+    if errors.total() == 0 && s.whea_total == 0 {
         return None;
     }
-    let seal = if report.sealed { format!(" + {} seal{}", s.seal_errors, s.seal_failing_bits.brief()) } else { String::new() };
     let whea = WheaCounts { total: s.whea_total, corrected: s.whea_corrected };
-    Some(format!(
-        "Cycle {} · step {} · {}: {} errors{}{seal} + {} WHEA{}",
-        report.cycle,
-        s.step,
-        s.label,
-        s.errors,
-        s.failing_bits.brief(),
-        whea.total,
-        whea.split_suffix()
-    ))
+    let bits = report.failing_bits_line().map_or(String::new(), |bits| format!(" · {bits}"));
+    Some(format!("Cycle {} · step {} · {}: {errors} + {} WHEA{}{bits}", report.cycle, s.step, s.label, whea.total, whea.split_suffix()))
 }
 
 /// What allocation got: `8 threads · 28.0 GiB · 1 GiB pages`, the page sizes by their share when it got more than one
@@ -1175,6 +1166,9 @@ mod tests {
             tests_per_cycle: 6,
             finished_errors: 1,
             live_errors,
+            finished_seal_errors: 0,
+            live_seal_errors: 0,
+            sealed: true,
             whea: WheaCounts::default(),
             test: Some(TestSnapshot {
                 number: 3,
@@ -1184,7 +1178,13 @@ mod tests {
                 finished: false,
                 publishes: true,
                 sealing: false,
-                live: LiveFigures { published: true, bytes: 100 << 30, errors: live_errors, bytes_per_sec: 19108.7 * MIB, stage: None },
+                live: LiveFigures {
+                    published: true,
+                    bytes: 100 << 30,
+                    errors: live_errors,
+                    bytes_per_sec: 19108.7 * MIB,
+                    ..Default::default()
+                },
             }),
         }
     }
@@ -1303,7 +1303,12 @@ mod tests {
             Run::CycleStarted { cycle: 2, limit: Some(2) },
             step(2, 1, 0, Some(0), whea),
             Run::CycleFinished { cycle: 2, partial: true },
-            Run::SuiteEnded { outcome: RunOutcome::Interrupted, status: RunStatus::Failed, memory_errors: 7, whea },
+            Run::SuiteEnded {
+                outcome: RunOutcome::Interrupted,
+                status: RunStatus::Failed,
+                errors: ErrorCounts { test: 3, seal: 4, sealed: true },
+                whea,
+            },
             Run::ResultsSaved { path: "results/run.json".to_string() },
         ] {
             m.apply(run.into());
@@ -1320,11 +1325,11 @@ mod tests {
         let count = |errors, seal, whea| [false, false, false, false, false, errors, seal, whea];
         assert_eq!(flagged, [count(false, false, false), count(true, true, false), count(false, false, true)], "each count flags its cell");
         assert_eq!(m.errors, [
-            "Cycle 1 · step 2 · Mem-StuckBit256 (Test 2): 3 errors + 4 seal + 0 WHEA",
-            "Cycle 2 · step 1 · Mem-StuckBit256 (Test 1): 0 errors + 0 seal + 2 WHEA (1C/1UC)"
+            "Cycle 1 · step 2 · Mem-StuckBit256 (Test 2): 7 errors (3 test + 4 seal) + 0 WHEA",
+            "Cycle 2 · step 1 · Mem-StuckBit256 (Test 1): 0 errors + 2 WHEA (1C/1UC)"
         ]);
         assert_eq!(m.status, Status::Failed);
-        assert_eq!(m.position, "Stopped · 2 cycles, the last stopped early, 3 steps · 7 errors + 2 WHEA (1C/1UC)");
+        assert_eq!(m.position, "Stopped · 2 cycles, the last stopped early, 3 steps · 7 errors (3 test + 4 seal) + 2 WHEA (1C/1UC)");
 
         // The thread's end agrees, and changes nothing
         m.ended(Ok(ran(RunStatus::Failed)));
@@ -1612,11 +1617,16 @@ mod tests {
         m.tick(Some(between), Vec::new());
         assert_eq!(m.series.latest(), Some(Sample::None));
         m.apply(
-            Run::SuiteEnded { outcome: RunOutcome::Completed, status: RunStatus::Failed, memory_errors: 3, whea: WheaCounts::default() }
-                .into(),
+            Run::SuiteEnded {
+                outcome: RunOutcome::Completed,
+                status: RunStatus::Failed,
+                errors: ErrorCounts { test: 3, seal: 0, sealed: true },
+                whea: WheaCounts::default(),
+            }
+            .into(),
         );
         assert_eq!((m.bar.fraction, m.bar.percent), (1.0, 100));
-        let ended = ErrorCount { text: "⚠️ 3 errors + 0 WHEA".to_string(), alarm: true };
+        let ended = ErrorCount { text: "⚠️ 3 errors (3 test + 0 seal) + 0 WHEA".to_string(), alarm: true };
         assert_eq!((m.error_count.as_ref(), m.live.as_ref()), (Some(&ended), None), "the run's count holds, and no test runs");
         let later = ProgressSnapshot { runtime: Duration::from_secs(500), time_limit: Some(Duration::from_secs(600)), ..snapshot(0) };
         m.tick(Some(later), Vec::new());
@@ -1669,7 +1679,7 @@ mod tests {
         m.open(Opened::Step(1));
         let report = m.opened_report().expect("step 2's report");
         assert_eq!(report.title, "Cycle 1 · step 2 · Mem-StuckBit256 (Test 2)");
-        assert_eq!((report.verdict.as_str(), report.failed), ("❌ Failed · 10.5 s · 3 errors + 4 seal + 0 WHEA", true));
+        assert_eq!((report.verdict.as_str(), report.failed), ("❌ Failed · 10.5 s · 7 errors (3 test + 4 seal) + 0 WHEA", true));
         assert_eq!(report.lines[0], "Test: 10.0 s, 200.00 GiB @ 20,480 MiB/s, 1.00M ops @ 100.00K ops/s");
         assert!(report.lines[1].starts_with("Intermediate: "), "{}", report.lines[1]);
         assert_eq!(report.lines[2..], [
@@ -1829,6 +1839,9 @@ mod tests {
             tests_per_cycle: 6,
             finished_errors: 0,
             live_errors: 0,
+            finished_seal_errors: 0,
+            live_seal_errors: 0,
+            sealed: true,
             whea: WheaCounts::default(),
             test: Some(TestSnapshot {
                 number: 2,
@@ -1884,13 +1897,14 @@ mod tests {
         let mut unlimited = ticker_snapshot();
         (unlimited.time_limit, unlimited.cycle_limit, unlimited.cycle) = (None, None, 12);
         (unlimited.finished_errors, unlimited.live_errors, unlimited.whea) = (2, 1, WheaCounts { total: 3, corrected: 1 });
+        (unlimited.finished_seal_errors, unlimited.live_seal_errors) = (1, 1);
         let test = unlimited.test.as_mut().unwrap();
         test.time_limit = None;
         test.live = LiveFigures { stage: Some(Stage::CheckingSeal), ..Default::default() };
         assert_eq!(shown(unlimited, Some("no limits, errors and WHEA, a stage, no figures yet")), Shown {
             runtime: "00:41:10".to_string(),
             time_left: None,
-            errors: count("⚠️ 3 errors + 3 WHEA (1C/2UC)", true),
+            errors: count("⚠️ 3 errors (1 test + 2 seal) + 3 WHEA (1C/2UC)", true),
             position: "Cycle 12 (00:12:34) · Test 2/6 Mem-Refresh128 (00:05:12)".to_string(),
             live: some("Checking seal · pending"),
         });
@@ -1944,7 +1958,7 @@ mod tests {
             (m.status, m.error_count.map(|count| count.text).unwrap_or_default())
         };
         let clean = || vec![step(1, 1, 0, None, WheaCounts::default())];
-        assert_eq!(mid_suite(clean(), 2), (Status::Failed, "⚠️ 2 errors + 0 WHEA".to_string()));
+        assert_eq!(mid_suite(clean(), 2), (Status::Failed, "⚠️ 2 errors (2 test + 0 seal) + 0 WHEA".to_string()));
         assert_eq!(mid_suite(clean(), 0), (Status::Interrupted, "0 errors + 0 WHEA".to_string()));
         assert_eq!(mid_suite(Vec::new(), 0), (Status::NotRun, "0 errors + 0 WHEA".to_string()), "no step finished");
     }

@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use tmr::frontend::ProgressSnapshot;
+use tmr::frontend::{ErrorCounts, ProgressSnapshot};
 
 /// Bytes in a MiB and a GiB, for the ticker's figures (the engine's `constants` has the GiB's too)
 const BYTES_PER_MIB_F64: f64 = 1024.0 * 1024.0;
@@ -21,7 +21,7 @@ const BYTES_PER_GIB_F64: f64 = 1024.0 * 1024.0 * 1024.0;
 /// Each bracketed part appears only when the matching limit exists. Errors are always shown, the running test's live ones included; the
 /// WHEA C/UC split only when there is one.
 pub(super) fn render(snapshot: &ProgressSnapshot) -> String {
-    let mut line = format!("\n{}", suite_line(snapshot, snapshot.live_errors));
+    let mut line = format!("\n{}", suite_line(snapshot, snapshot.errors()));
 
     if let Some(test) = &snapshot.test {
         let live = &test.live;
@@ -61,14 +61,14 @@ pub(super) fn render(snapshot: &ProgressSnapshot) -> String {
 /// time, the one its report shows. `None` before the first test.
 pub(super) fn test_stamp(snapshot: &ProgressSnapshot, duration: Duration) -> Option<String> {
     let test = snapshot.test.as_ref()?;
-    let mut line = suite_line(snapshot, 0);
+    let mut line = suite_line(snapshot, snapshot.errors_of_finished_tests());
     let _ = write!(line, " | Test {}/{} {} ({})", test.number, snapshot.tests_per_cycle, test.name, hms(duration));
     Some(line)
 }
 
-/// `Runtime | Cycle | errors`: the ticker's first line, and the start of each test's stamp. `live_errors` is what the running test has
-/// found so far, not yet in the finished tests' errors.
-fn suite_line(snapshot: &ProgressSnapshot, live_errors: u64) -> String {
+/// `Runtime | Cycle | errors`: the ticker's first line, and the start of each test's stamp: `errors`, the ticker's the running test's too,
+/// a stamp's the finished tests' alone.
+fn suite_line(snapshot: &ProgressSnapshot, errors: ErrorCounts) -> String {
     let tests = snapshot.tests_per_cycle;
     let cycle = u64::from(snapshot.cycle);
 
@@ -95,11 +95,10 @@ fn suite_line(snapshot: &ProgressSnapshot, live_errors: u64) -> String {
         }
     }
 
-    // Same form as the per-test topline: always shown, the C/UC split only when non-zero.
-    let errors = snapshot.finished_errors + live_errors;
+    // The one form, the per-test topline's too (TODO 109): always shown, the test and seal parts and the C/UC split only when non-zero
     let whea = snapshot.whea;
-    let flag = if errors > 0 || whea.total > 0 { "⚠️ " } else { "" };
-    let _ = write!(line, " | {}{} errors + {} WHEA{}", flag, errors, whea.total, whea.split_suffix());
+    let flag = if errors.total() > 0 || whea.total > 0 { "⚠️ " } else { "" };
+    let _ = write!(line, " | {}{} + {} WHEA{}", flag, errors, whea.total, whea.split_suffix());
     line
 }
 

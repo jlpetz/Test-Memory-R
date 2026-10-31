@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{fmt, thread};
 
 use crate::frontend::Frontend;
 use crate::tests::TestProgress;
@@ -26,6 +26,8 @@ struct SuitePlan {
     cycle_limit: Option<u32>,
     time_limit: Option<Duration>,
     tests_per_cycle: u64,
+    /// The run is sealed (TODO 74): its error counts have the seal's part
+    sealed: bool,
     /// The workers' live-progress slots (thread_pool.rs), which carry the running test's figures.
     workers: Arc<[TestProgress]>,
 }
@@ -38,6 +40,8 @@ struct Position {
     tests_done: u64, // tests finished in this cycle
     test: Option<RunningTest>,
     errors: u64, // from finished tests, whole run
+    /// The seal's part of `errors` (TODO 109): its checks before the steps' chunks, before the steps, and at the cycles' ends
+    seal_errors: u64,
 }
 
 /// The test the workers are running now, or the one that just finished.
@@ -76,6 +80,51 @@ impl RunOutcome {
             RunOutcome::Interrupted => "interrupted",
             RunOutcome::Halted => "halted",
         }
+    }
+}
+
+/// A run's or a step's memory errors (TODO 109), as every frontend and report words them: `4 errors (2 test + 2 seal)`, the total, then in
+/// a sealed run with errors the test's and the seal's parts; `0 errors`, and unsealed `3 errors`. WHEA's are never in the total: a WHEA
+/// event is the hardware's own report (a corrected one can be a fault TMR never read), not a bad word TMR read back, so a sum would mean
+/// neither. Each frontend puts them after it: `+ 2 WHEA (1C/1UC)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ErrorCounts {
+    pub test: u64,
+    pub seal: u64,
+    /// The run is sealed, so the seal's part is shown, 0 or not
+    pub sealed: bool,
+}
+
+impl ErrorCounts {
+    pub fn total(self) -> u64 {
+        self.test + self.seal
+    }
+}
+
+impl fmt::Display for ErrorCounts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let total = self.total();
+        write!(f, "{total} error{}", if total == 1 { "" } else { "s" })?;
+        if self.sealed && total > 0 {
+            write!(f, " ({} test + {} seal)", self.test, self.seal)?;
+        }
+        Ok(())
+    }
+}
+
+impl ProgressSnapshot {
+    /// The run's memory errors so far, the running test's included
+    pub fn errors(&self) -> ErrorCounts {
+        self.counts(self.finished_errors + self.live_errors, self.finished_seal_errors + self.live_seal_errors)
+    }
+
+    /// The finished tests' memory errors, without the running test's
+    pub fn errors_of_finished_tests(&self) -> ErrorCounts {
+        self.counts(self.finished_errors, self.finished_seal_errors)
+    }
+
+    fn counts(&self, total: u64, seal: u64) -> ErrorCounts {
+        ErrorCounts { test: total.saturating_sub(seal), seal, sealed: self.sealed }
     }
 }
 
@@ -139,8 +188,11 @@ pub struct TestSummary {
 pub struct LiveFigures {
     pub published: bool,
     pub bytes: u64,
-    /// The running test's errors so far, also `ProgressSnapshot::live_errors` until it finishes
+    /// The running test's errors so far, the seal's checks before its chunks included, also `ProgressSnapshot::live_errors` until it
+    /// finishes
     pub errors: u64,
+    /// The seal's part of `errors` (TODO 109)
+    pub seal_errors: u64,
     pub bytes_per_sec: f64,
     /// What the first worker not just testing is doing (TODO 74), e.g. "Checking seal"
     pub stage: Option<crate::tests::Stage>,
@@ -161,9 +213,14 @@ pub struct ProgressSnapshot {
     pub tests_done: u64,
     pub tests_per_cycle: u64,
     /// The errors of the tests finished, the whole run's, and what the running test has found so far, not yet in them (0 once it has
-    /// finished)
+    /// finished): each the tests' and the seal's
     pub finished_errors: u64,
     pub live_errors: u64,
+    /// The seal's part of each (TODO 109)
+    pub finished_seal_errors: u64,
+    pub live_seal_errors: u64,
+    /// The run is sealed: its error counts have the seal's part
+    pub sealed: bool,
     pub whea: crate::whea::WheaCounts,
     /// The test running, or the one that just finished
     pub test: Option<TestSnapshot>,
@@ -199,7 +256,7 @@ impl ProgressTracker {
     pub fn new() -> Self {
         Self {
             suite: OnceLock::new(),
-            position: Mutex::new(Position { cycle: 0, cycle_start: Instant::now(), tests_done: 0, test: None, errors: 0 }),
+            position: Mutex::new(Position { cycle: 0, cycle_start: Instant::now(), tests_done: 0, test: None, errors: 0, seal_errors: 0 }),
             finished: AtomicBool::new(false),
             // Inert until `whea.start()` is called by the runner — constructing a tracker must not have the side effect of opening an
             // event-log subscription.
@@ -214,9 +271,10 @@ impl ProgressTracker {
     /// Start the suite clock. The progress line draws nothing until this is called, so Runtime is measured from the first test cycle — the
     /// same span the final summary reports — rather than from before allocation.
     pub(crate) fn begin_suite(
-        &self, start: Instant, cycle_limit: Option<u32>, time_limit: Option<Duration>, tests_per_cycle: u64, workers: Arc<[TestProgress]>,
+        &self, start: Instant, cycle_limit: Option<u32>, time_limit: Option<Duration>, tests_per_cycle: u64, sealed: bool,
+        workers: Arc<[TestProgress]>,
     ) {
-        let _ = self.suite.set(SuitePlan { start, cycle_limit, time_limit, tests_per_cycle, workers });
+        let _ = self.suite.set(SuitePlan { start, cycle_limit, time_limit, tests_per_cycle, sealed, workers });
     }
 
     pub(crate) fn start_new_cycle(&self, cycle_number: u32) {
@@ -262,25 +320,24 @@ impl ProgressTracker {
         }
     }
 
-    /// Record a finished test's errors, reported by its workers' results.
-    pub(crate) fn complete_test(&self, errors: u64) {
+    /// Record a finished step's errors, its test's and the seal's (the checks before its chunks and before it), reported by its workers'
+    /// results.
+    pub(crate) fn complete_test(&self, errors: u64, seal_errors: u64) {
         let mut position = self.position();
         position.tests_done += 1;
-        position.errors += errors;
+        position.errors += errors + seal_errors;
+        position.seal_errors += seal_errors;
         if let Some(test) = position.test.as_mut() {
             test.finished = true;
         }
     }
 
-    /// Errors a final seal check found (TODO 74): counted for the run, no test finished.
+    /// Errors the seal found outside a finished step (TODO 74): a final seal check's, or the check before a step that halted the run.
+    /// Counted for the run, no test finished; where they were is the final summary's to say (its Errors by Step table).
     pub(crate) fn add_seal_errors(&self, errors: u64) {
-        self.add_errors(errors);
-    }
-
-    /// Errors found outside a finished test: counted for the run, no test finished. Where they were is the final summary's to say (its
-    /// Errors by Step table).
-    pub(crate) fn add_errors(&self, errors: u64) {
-        self.position().errors += errors;
+        let mut position = self.position();
+        position.errors += errors;
+        position.seal_errors += errors;
     }
 
     /// Tests finished in the current cycle (reset at each cycle's start).
@@ -288,9 +345,11 @@ impl ProgressTracker {
         self.position().tests_done
     }
 
-    /// Thread-reported errors from every finished test.
-    pub(crate) fn total_errors(&self) -> u64 {
-        self.position().errors
+    /// The memory errors of every finished step, the tests' and the seal's (TODO 109)
+    pub(crate) fn errors(&self) -> ErrorCounts {
+        let position = self.position();
+        let sealed = self.suite.get().is_some_and(|plan| plan.sealed);
+        ErrorCounts { test: position.errors.saturating_sub(position.seal_errors), seal: position.seal_errors, sealed }
     }
 
     /// The suite is over: the monitor thread makes its frontend's last call (`ticks_done`) and exits. There is no final ticker line,
@@ -317,7 +376,8 @@ impl ProgressTracker {
             sealing: test.sealing,
             live: live_figures(&plan.workers),
         });
-        let live_errors = test.as_ref().filter(|test| !test.finished).map_or(0, |test| test.live.errors);
+        let live = test.as_ref().filter(|test| !test.finished);
+        let (live_errors, live_seal_errors) = live.map_or((0, 0), |test| (test.live.errors, test.live.seal_errors));
         Some(ProgressSnapshot {
             runtime: plan.start.elapsed(),
             time_limit: plan.time_limit,
@@ -328,6 +388,9 @@ impl ProgressTracker {
             tests_per_cycle: plan.tests_per_cycle,
             finished_errors: position.errors,
             live_errors,
+            finished_seal_errors: position.seal_errors,
+            live_seal_errors,
+            sealed: plan.sealed,
             whea: self.whea.counts(),
             test,
         })
@@ -359,6 +422,7 @@ fn live_figures(workers: &[TestProgress]) -> LiveFigures {
         live.published = true;
         live.bytes += bytes;
         live.errors += slot.errors_found.load(Ordering::Relaxed);
+        live.seal_errors += slot.seal_errors_found.load(Ordering::Relaxed);
         // Each worker's own average since the test began, as of its publish. Summing these rather than dividing the summed bytes by the
         // wall clock keeps the rate from sagging between publishes.
         live.bytes_per_sec += bytes as f64 * 1000.0 / ms as f64;
@@ -399,13 +463,14 @@ mod tests {
         let progress = ProgressTracker::new();
         assert!(progress.snapshot().is_none(), "before the suite begins");
         let workers: Arc<[TestProgress]> = Arc::from([TestProgress::new(), TestProgress::new()]);
-        progress.begin_suite(ago(60), Some(2), Some(Duration::from_secs(600)), 4, Arc::clone(&workers));
+        progress.begin_suite(ago(60), Some(2), Some(Duration::from_secs(600)), 4, true, Arc::clone(&workers));
         progress.start_new_cycle(1);
         progress.start_test(3, "Mem-StuckBit256", ago(5), Some(Duration::from_secs(60)), true);
         // The first worker has published 3 errors in 1 MiB half a second in; the second, checking the seal, nothing yet, so its errors
         // aren't read
         workers[0].bytes_processed.store(1 << 20, Ordering::Relaxed);
         workers[0].errors_found.store(3, Ordering::Relaxed);
+        workers[0].seal_errors_found.store(1, Ordering::Relaxed);
         workers[0].last_update_ms.store(500, Ordering::Relaxed);
         workers[1].errors_found.store(5, Ordering::Relaxed);
         workers[1].set_stage(Stage::CheckingSeal);
@@ -416,6 +481,8 @@ mod tests {
             (1, Some(2), Some(Duration::from_secs(600)), 0, 4)
         );
         assert_eq!((running.finished_errors, running.live_errors, running.whea.total), (0, 3, 0));
+        assert_eq!(running.errors(), ErrorCounts { test: 2, seal: 1, sealed: true }, "the seal's part apart");
+        assert_eq!(running.errors().to_string(), "3 errors (2 test + 1 seal)");
         let test = running.test.as_ref().expect("a test is running");
         assert_eq!(
             (test.number, test.name.as_str(), test.time_limit, test.finished, test.publishes),
@@ -433,11 +500,22 @@ mod tests {
         );
         assert_eq!(test.live.bytes_per_sec, 2.0 * (1 << 20) as f64, "1 MiB in half a second");
 
-        progress.complete_test(3);
+        progress.complete_test(2, 1);
         let finished = progress.snapshot().expect("the suite has begun");
-        assert_eq!((finished.tests_done, finished.finished_errors, finished.live_errors), (1, 3, 0));
+        assert_eq!((finished.tests_done, finished.finished_errors, finished.live_errors, finished.finished_seal_errors), (1, 3, 0, 1));
+        progress.add_seal_errors(4);
+        assert_eq!(progress.snapshot().map(|s| s.errors().to_string()).as_deref(), Some("7 errors (2 test + 5 seal)"), "a final check's");
         let test = finished.test.as_ref().expect("the test that finished");
         assert_eq!((test.finished, test.live.errors), (true, 3));
+    }
+
+    /// TODO 109: the errors' one form: the total, its parts in a sealed run with errors, one error singular, WHEA never in it
+    #[test]
+    fn errors_are_the_total_then_its_parts() {
+        let count = |test, seal, sealed| ErrorCounts { test, seal, sealed }.to_string();
+        assert_eq!([count(0, 0, true), count(1, 0, true), count(2, 2, true), count(3, 0, false), count(1, 0, false)], [
+            "0 errors", "1 error (1 test + 0 seal)", "4 errors (2 test + 2 seal)", "3 errors", "1 error"
+        ]);
     }
 
     /// TODO 109: the seal's work before a step's test publishes as the test's figures, marked the seal's; once the test starts, the
@@ -446,7 +524,7 @@ mod tests {
     fn the_seal_before_a_steps_test_has_figures_of_its_own() {
         let progress = ProgressTracker::new();
         let workers: Arc<[TestProgress]> = Arc::from([TestProgress::new()]);
-        progress.begin_suite(Instant::now(), None, None, 4, Arc::clone(&workers));
+        progress.begin_suite(Instant::now(), None, None, 4, true, Arc::clone(&workers));
         progress.start_new_cycle(1);
         progress.start_test(2, "Mem-MovingInv256", Instant::now(), None, true);
         progress.set_sealing(true);

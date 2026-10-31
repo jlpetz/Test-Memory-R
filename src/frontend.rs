@@ -30,7 +30,7 @@ use chrono::{DateTime, Utc};
 pub use crate::ErrorMode;
 use crate::failing_bits::FailingBits;
 pub use crate::memory::allocator::PageSizeLevel;
-pub use crate::progress::{LiveFigures, ProgressSnapshot, ProgressTracker, RunOutcome, TestSnapshot, TestSummary};
+pub use crate::progress::{ErrorCounts, LiveFigures, ProgressSnapshot, ProgressTracker, RunOutcome, TestSnapshot, TestSummary};
 // The reports as tables, for a frontend to render: the default formatting's, through its renderer
 pub use crate::reporting::Reporter;
 pub use crate::reporting::models::{
@@ -249,7 +249,7 @@ pub enum Run {
     /// What each thread, CPU and physical core did over the whole run
     CpuPerformance(Box<CpuPerformanceSummary>),
     /// The suite ended: how, the verdict, and the run's errors (`status` is `Failed` exactly when the run failed)
-    SuiteEnded { outcome: RunOutcome, status: RunStatus, memory_errors: u64, whea: WheaCounts },
+    SuiteEnded { outcome: RunOutcome, status: RunStatus, errors: ErrorCounts, whea: WheaCounts },
     /// The final summary of the run
     FinalSummary(Box<FinalTestSummaryReport>),
     /// The results file was saved, at the end of the run: once, after the final save. The saves between cycles are silent.
@@ -293,6 +293,25 @@ pub struct StepReport {
     pub latency: Option<LatencyTestSummaryReport>,
     /// Where the suite stood as the step ended, its results in
     pub stamp: Option<ProgressSnapshot>,
+}
+
+impl StepReport {
+    /// Its memory errors, its test's and, in a sealed run, the seal's: what the checks before it and its chunks found (TODO 109)
+    pub fn errors(&self) -> ErrorCounts {
+        ErrorCounts { test: self.summary.errors, seal: self.summary.seal_errors, sealed: self.sealed }
+    }
+
+    /// `Failing bits: test (bits 12, 31), seal (bit 5)`, each part that has any, a line of its own under the step's headline (TODO 109:
+    /// after each count they cluttered it); `None` when no bit failed
+    pub fn failing_bits_line(&self) -> Option<String> {
+        let s = &self.summary;
+        let parts: Vec<String> = [("test", &s.failing_bits), ("seal", &s.seal_failing_bits)]
+            .into_iter()
+            .filter(|(_, bits)| !bits.is_empty())
+            .map(|(part, bits)| format!("{part}{}", bits.brief()))
+            .collect();
+        (!parts.is_empty()).then(|| format!("Failing bits: {}", parts.join(", ")))
+    }
 }
 
 /// A step's settings, as its report's Config line gives them: the parameter, the pattern mode, the extent and the chunk with their sizes

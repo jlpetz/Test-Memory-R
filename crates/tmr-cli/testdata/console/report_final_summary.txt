@@ -9,7 +9,7 @@ Runtime (HH:MM:SS)                        01:02:05
 Cycles Completed                                 2  
 Total Data Processed                     48.00 GiB  
 Overall Throughput         13.2 MiB/s (0.01 GiB/s)  
-Total Errors                                     5  
+Errors                  5 errors (3 test + 2 seal)  
 Seal                  1 errors in the final checks  
 Total WHEA                              1 (1C/0UC)  
 ----------------------------------------------------

@@ -1094,7 +1094,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     let cycle_limit = suite_timing.global_cycles;
     let time_limit = suite_timing.global_duration_secs.map(|secs| Duration::from_secs(secs.into()));
     let suite_start = Instant::now();
-    progress.begin_suite(suite_start, cycle_limit, time_limit, tests_per_cycle, thread_pool.live_progress());
+    progress.begin_suite(suite_start, cycle_limit, time_limit, tests_per_cycle, seal_settings.on, thread_pool.live_progress());
 
     // The native patterns' seed and transfer width, once: with the seed (and the same layout) a run writes the same bytes again
     let (seed, (beat, beat_source)) = (crate::pattern::run_seed(), crate::pattern::transfer_beat());
@@ -1188,10 +1188,11 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         fe.event(Run::CpuPerformance(Box::new(summary)).into());
     }
 
-    // `progress.total_errors()` is the accurate aggregate (summed from every thread's result in `complete_test`), so the verdict is derived
-    // from it directly. A halt fails the run even at zero counts: the one halt trigger that carries no count is a lost worker result.
-    let memory_errors = progress.total_errors();
-    let failed = outcome == RunOutcome::Halted || memory_errors > 0 || whea_totals.total > 0;
+    // `progress.errors()` is the accurate aggregate (summed from every thread's result in `complete_test`, and the seal's), so the verdict
+    // is derived from it directly. A halt fails the run even at zero counts: the one halt trigger that carries no count is a lost worker
+    // result.
+    let errors = progress.errors();
+    let failed = outcome == RunOutcome::Halted || errors.total() > 0 || whea_totals.total > 0;
     // `tests_done` counts the current cycle only; a finished cycle means tests ran.
     let any_test_ran = cycles_done > 0 || progress.tests_done() > 0;
     let status = if failed {
@@ -1205,7 +1206,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     };
 
     // The verdict
-    fe.event(Run::SuiteEnded { outcome, status, memory_errors, whea: whea_totals }.into());
+    fe.event(Run::SuiteEnded { outcome, status, errors, whea: whea_totals }.into());
 
     // Always display and save results (even for partial/interrupted runs)
     display_and_save_results(&test_run_result, suite_duration, whea_totals, whea_monitored, outcome, status, fe.as_ref());
@@ -1338,7 +1339,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
                     test_name,
                     seal_errors_for_test
                 );
-                progress.add_errors(seal_errors_for_test);
+                progress.add_seal_errors(seal_errors_for_test);
                 // The step didn't run; its entry carries the seal check's errors
                 cycle_test_summaries.push(TestSummary {
                     step: test_idx + 1,
@@ -1592,7 +1593,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         };
 
         // Update progress tracker with test completion
-        progress.complete_test(total_errors_for_test + seal_errors_for_test);
+        progress.complete_test(total_errors_for_test, seal_errors_for_test);
 
         // The step's report (TODO 29): its thread timing deviations, a latency step's latencies, and where the suite stood as it ended, its
         // results in
@@ -5057,7 +5058,7 @@ pub mod test_support {
             let test_run_result = Arc::new(Mutex::new(TestRunResult::new(Default::default())));
             let thread_totals = Arc::new(Mutex::new(HashMap::new()));
             let (thread_pool, result_receiver) = ThreadPool::new(blocks, false, ThreadPriority::Normal, 2, Some(&[0, 0][..]));
-            progress.begin_suite(Instant::now(), Some(1), None, steps.len() as u64, thread_pool.live_progress());
+            progress.begin_suite(Instant::now(), Some(1), None, steps.len() as u64, true, thread_pool.live_progress());
             progress.start_new_cycle(1);
             let ctx = CycleContext {
                 test_definitions: &steps,

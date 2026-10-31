@@ -328,13 +328,16 @@ impl<'a> TestRunner<'a> {
     }
 
     /// Throttled (250 ms) progress publish at the end of a cycle. No-op if no progress sink.
-    #[inline]
+    ///
+    /// Out of line, it and `update_progress_in_cycle`, as LLVM had them until the publish grew (TODO 109): inlined at each chunk's end,
+    /// their bookkeeping took registers from the kernels' loops (stuck-bit 512, stride and sequence each gained a reload). A call a chunk.
+    #[inline(never)]
     pub fn update_progress(&mut self) {
         self.publish_progress(self.cycle);
     }
 
     /// The same from inside a cycle, between chunks: the current cycle isn't complete yet.
-    #[inline]
+    #[inline(never)]
     pub fn update_progress_in_cycle(&mut self) {
         self.publish_progress(self.cycle.saturating_sub(1));
     }
@@ -347,7 +350,12 @@ impl<'a> TestRunner<'a> {
                 progress.cycles_completed.store(cycles_completed, Ordering::Relaxed);
                 progress.bytes_processed.store(self.total_bytes_processed as u64, Ordering::Relaxed);
                 progress.errors_found.store(self.total_error_count + self.seal_errors, Ordering::Relaxed);
-                progress.last_update_ms.store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
+                progress.seal_errors_found.store(self.seal_errors, Ordering::Relaxed);
+                // The test's own time, as its report's speed takes it (TODO 109): without the seal's work around its chunks and its setup,
+                // whose bytes aren't the test's. Over the wall clock, a sealed test's first cycle, where every chunk is checked and resealed,
+                // drew a flat line low and the rest climbing toward the speed. At least 1: 0 is "nothing published yet".
+                let timed = self.start.elapsed().saturating_sub(self.inside);
+                progress.last_update_ms.store((timed.as_millis() as u64).max(1), Ordering::Relaxed);
                 self.last_progress_update = now;
             }
         }

@@ -67,7 +67,7 @@ pub(super) fn show(run: Run) {
             }
         }
         Run::CpuPerformance(summary) => print!("{}", cpu_performance(&summary)),
-        Run::SuiteEnded { outcome, status, memory_errors, whea } => {
+        Run::SuiteEnded { outcome, status, errors, whea } => {
             // Display completion status
             if outcome == RunOutcome::Interrupted {
                 println!("\n⚠️  Test suite interrupted by user (CTRL+C)");
@@ -79,7 +79,7 @@ pub(super) fn show(run: Run) {
             if status == RunStatus::Failed {
                 // Same form as the per-test topline. Either count alone fails the run: a WHEA event with `0 errors` is a fault that ECC
                 // corrected, or one raised during a test phase that does not verify — still not a stable configuration.
-                println!("\n❌ Test suite failed: {} errors + {} WHEA{}", memory_errors, whea.total, whea.split_suffix());
+                println!("\n❌ Test suite failed: {} + {} WHEA{}", errors, whea.total, whea.split_suffix());
             }
         }
         Run::FinalSummary(report) => print!("{}", report_text("final summary", |r| r.report_final_summary(&report))),
@@ -161,7 +161,8 @@ fn allocation_starting(min: PageSizeLevel, max: PageSizeLevel) -> String {
 /// A step's report: its verdict and figures, its config, its threads' table (and a latency step's latencies), and where the suite stood as
 /// it ended, then a blank line before the next.
 fn step_report(report: &StepReport) -> String {
-    let StepReport { cycle, summary: s, wall, timed_secs, cycle_limit, stopped_by_time, sealed, config, threads, latency, stamp } = report;
+    let StepReport { cycle, summary: s, wall, timed_secs, cycle_limit, stopped_by_time, sealed: _, config, threads, latency, stamp } =
+        report;
     let cycles_completed = s.cycles_completed.1;
 
     // Format cycle info for logging
@@ -212,32 +213,32 @@ fn step_report(report: &StepReport) -> String {
     // deliberately different.
     let test_passed = s.errors == 0 && s.seal_errors == 0 && s.whea_total == 0;
     let pass_indicator = if test_passed { "✅" } else { "❌" };
-    // The seal's errors, in a sealed run: what the checks before this step's chunks found
-    let seal_info = if *sealed { format!(" + {} seal{}", s.seal_errors, s.seal_failing_bits.brief()) } else { String::new() };
+    // The test's and, in a sealed run, the seal's (what the checks before this step and its chunks found), in the one form (TODO 109)
+    let errors = report.errors();
     let whea = WheaCounts { total: s.whea_total, corrected: s.whea_corrected };
 
     // WHEA is always shown, even at zero, so a clean line still states that we were watching; the C/UC split only appears when there is
     // something to split. "errors" is the word every table uses for these (the `Errors` column) — "data" would collide with the `Data`
     // column, which is bytes processed.
-    // The bits that failed follow each count: ` (bit 31)`
-    // The step's verdict and wall time, then its test's own figures, the work around it by operation (TODO 90, `n/a` where it did none),
-    // and its config
+    // The step's verdict and wall time, the bits that failed on a line of their own (TODO 109: after each count they cluttered it), then
+    // its test's own figures, the work around it by operation (TODO 90, `n/a` where it did none), and its config
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "📊 Test report - Cycle {} - Step {} {}: {} {:.1}s, {} errors{}{} + {} WHEA{}{}",
+        "📊 Test report - Cycle {} - Step {} {}: {} {:.1}s, {} + {} WHEA{}{}",
         cycle,
         s.step,
         s.label,
         pass_indicator,
         wall.as_secs_f64(),
-        s.errors,
-        s.failing_bits.brief(),
-        seal_info,
+        errors,
         whea.total,
         whea.split_suffix(),
         cycles_info
     );
+    if let Some(bits) = report.failing_bits_line() {
+        let _ = writeln!(text, "   {bits}");
+    }
     let _ = writeln!(
         text,
         "   Test: {:.1}s, {:.2} GiB @ {:.0} MiB/s, {} ops @ {} ops/s{}",

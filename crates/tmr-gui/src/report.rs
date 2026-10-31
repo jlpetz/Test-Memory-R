@@ -34,16 +34,14 @@ impl Report {
     /// A step's: the console's step report (crates/tmr-cli's `render/run.rs`, `step_report`), its first line the verdict, and its threads'
     /// table and a latency step's latencies the engine's
     pub fn of_step(report: &StepReport) -> Self {
-        let StepReport { cycle, summary: s, wall, timed_secs, cycle_limit, stopped_by_time, sealed, config, threads, latency, .. } = report;
-        let failed = s.errors > 0 || s.seal_errors > 0 || s.whea_total > 0;
-        let seal = if *sealed { format!(" + {} seal{}", s.seal_errors, s.seal_failing_bits.brief()) } else { String::new() };
+        let StepReport { cycle, summary: s, wall, timed_secs, cycle_limit, stopped_by_time, config, threads, latency, .. } = report;
+        let errors = report.errors();
+        let failed = errors.total() > 0 || s.whea_total > 0;
         let whea = WheaCounts { total: s.whea_total, corrected: s.whea_corrected };
         let verdict = format!(
-            "{} · {:.1} s · {} errors{}{seal} + {} WHEA{}",
+            "{} · {:.1} s · {errors} + {} WHEA{}",
             if failed { "❌ Failed" } else { "✅ Passed" },
             wall.as_secs_f64(),
-            s.errors,
-            s.failing_bits.brief(),
             whea.total,
             whea.split_suffix()
         );
@@ -53,7 +51,9 @@ impl Report {
             (Some(p50), Some(spread)) => format!(", P50 {p50:.1} ns, spread {spread:.2}x"),
             _ => String::new(),
         };
-        let mut lines = vec![
+        // The bits that failed first, as the console's report has them (TODO 109)
+        let mut lines: Vec<String> = report.failing_bits_line().into_iter().collect();
+        lines.extend([
             format!(
                 "Test: {timed_secs:.1} s, {:.2} GiB @ {} MiB/s, {} ops @ {} ops/s{latency_line}",
                 s.bytes_processed as f64 / GIB,
@@ -62,7 +62,7 @@ impl Report {
                 count(ops_per_sec)
             ),
             format!("Intermediate: {}", s.ops.line()),
-        ];
+        ]);
         let reps = if config.test_reps != 1 || config.verify_reps != 1 || config.write_read_cycles != 1 {
             format!(", test_reps={}, verify_reps={}, wrc={}", config.test_reps, config.verify_reps, config.write_read_cycles)
         } else {
@@ -98,7 +98,8 @@ impl Report {
     /// The run's final summary: the engine's tables, the overview's verdict first
     pub fn of_summary(report: &FinalTestSummaryReport) -> Self {
         // The overview's: both error sources fail the run
-        let failed = report.total_errors > 0 || report.whea_total > 0;
+        let errors = report.errors();
+        let failed = errors.total() > 0 || report.whea_total > 0;
         let whea = if report.whea_monitored {
             format!(
                 "{} WHEA{}",
@@ -110,11 +111,10 @@ impl Report {
         };
         let cycles = report.cycles_completed;
         let verdict = format!(
-            "{} · {cycles} cycle{} in {} · {} errors + {whea}",
+            "{} · {cycles} cycle{} in {} · {errors} + {whea}",
             if failed { "❌ Failed" } else { "✅ Passed" },
             if cycles == 1 { "" } else { "s" },
-            report.total_runtime,
-            report.total_errors
+            report.total_runtime
         );
         let mut blocks = blocks(|r| r.report_final_summary(report));
         // Its rules go between tables: none above the first
@@ -228,7 +228,8 @@ mod tests {
         assert!(report.failed);
         assert!(report.verdict.starts_with("❌ Failed · 2 cycles in "), "{}", report.verdict);
 
-        let clean = FinalTestSummaryReport { total_errors: 0, whea_total: 0, whea_corrected: 0, whea_monitored: false, ..summary };
+        let clean =
+            FinalTestSummaryReport { total_errors: 0, seal: None, whea_total: 0, whea_corrected: 0, whea_monitored: false, ..summary };
         let report = Report::of_summary(&clean);
         assert!(!report.failed);
         assert!(

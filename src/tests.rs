@@ -560,8 +560,12 @@ impl TestStats {
 pub struct TestProgress {
     pub cycles_completed: std::sync::atomic::AtomicU32,
     pub bytes_processed: std::sync::atomic::AtomicU64,
+    /// The test's errors so far and the seal's, the checks before its chunks
     pub errors_found: std::sync::atomic::AtomicU64,
-    pub last_update_ms: std::sync::atomic::AtomicU64, // ms since the test started; 0 = nothing published yet
+    /// The seal's part of `errors_found` (TODO 109)
+    pub seal_errors_found: std::sync::atomic::AtomicU64,
+    /// The test's own ms so far, the seal's work and setup inside it left out, or a seal stage's since it began; 0 = nothing published yet
+    pub last_update_ms: std::sync::atomic::AtomicU64,
     /// What the worker is doing (`Stage as u8`), for the ticker (TODO 74). Set between chunks.
     pub stage: std::sync::atomic::AtomicU8,
 }
@@ -620,6 +624,7 @@ impl TestProgress {
             cycles_completed: AtomicU32::new(0),
             bytes_processed: AtomicU64::new(0),
             errors_found: AtomicU64::new(0),
+            seal_errors_found: AtomicU64::new(0),
             last_update_ms: AtomicU64::new(0),
             stage: std::sync::atomic::AtomicU8::new(Stage::Testing as u8),
         }
@@ -636,6 +641,7 @@ impl TestProgress {
         self.cycles_completed.store(0, Relaxed);
         self.bytes_processed.store(0, Relaxed);
         self.errors_found.store(0, Relaxed);
+        self.seal_errors_found.store(0, Relaxed);
         self.last_update_ms.store(0, Relaxed);
         self.stage.store(Stage::Testing as u8, Relaxed);
     }
