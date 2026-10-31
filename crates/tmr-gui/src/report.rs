@@ -4,7 +4,7 @@
 
 use std::error::Error;
 
-use tmr::frontend::{FinalTestSummaryReport, Renderer, Reporter, StepReport, TableData, WheaCounts};
+use tmr::frontend::{CpuPerformanceSummary, FinalTestSummaryReport, Renderer, Reporter, StepReport, TableData, WheaCounts};
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
@@ -95,8 +95,9 @@ impl Report {
         Report { title: format!("Cycle {cycle} · step {} · {}", s.step, s.label), verdict, failed, lines, blocks }
     }
 
-    /// The run's final summary: the engine's tables, the overview's verdict first
-    pub fn of_summary(report: &FinalTestSummaryReport) -> Self {
+    /// The run's final summary: the engine's tables, the overview's verdict first, then the run's work by thread, CPU and core, `work`
+    /// (`cpu_performance`; the console prints it just before the summary)
+    pub fn of_summary(report: &FinalTestSummaryReport, work: Vec<Block>) -> Self {
         // The overview's: both error sources fail the run
         let errors = report.errors();
         let failed = errors.total() > 0 || report.whea_total > 0;
@@ -121,8 +122,29 @@ impl Report {
         if matches!(blocks.first(), Some(Block::Separator)) {
             blocks.remove(0);
         }
+        if !work.is_empty() {
+            blocks.push(Block::Separator);
+            blocks.push(Block::Heading("The run's work, by thread, CPU and core".to_string()));
+            blocks.extend(work);
+        }
         Report { title: "Final summary".to_string(), verdict, failed, lines: Vec::new(), blocks }
     }
+}
+
+/// The run's work by thread, by CPU and by physical core: the engine's tables, each that has rows (TODO 109)
+pub fn cpu_performance(summary: &CpuPerformanceSummary) -> Vec<Block> {
+    blocks(|r| {
+        if !summary.by_thread.threads.is_empty() {
+            r.report_performance_by_thread(&summary.by_thread)?;
+        }
+        if !summary.by_cpu.cpus.is_empty() {
+            r.report_performance_by_cpu(&summary.by_cpu)?;
+        }
+        if !summary.by_core.cores.is_empty() {
+            r.report_performance_by_physical_core(&summary.by_core)?;
+        }
+        Ok(())
+    })
 }
 
 /// `{:.2}` with B, M or K, as the console's step report counts operations: `1.00M`
@@ -213,7 +235,7 @@ mod tests {
     #[test]
     fn the_final_summary_is_the_consoles_tables() {
         let summary = tmr::test_support::final_summary_report();
-        let report = Report::of_summary(&summary);
+        let report = Report::of_summary(&summary, Vec::new());
         assert_eq!(outline(&report), [
             "table Final Test Summary - Overview",
             "—",
@@ -230,8 +252,10 @@ mod tests {
 
         let clean =
             FinalTestSummaryReport { total_errors: 0, seal: None, whea_total: 0, whea_corrected: 0, whea_monitored: false, ..summary };
-        let report = Report::of_summary(&clean);
+        let report = Report::of_summary(&clean, vec![Block::Text("the work".to_string())]);
         assert!(!report.failed);
+        let outline = outline(&report);
+        assert_eq!(outline[outline.len() - 3..], ["—", "The run's work, by thread, CPU and core", "the work"], "the run's work last");
         assert!(
             report.verdict.starts_with("✅ Passed · ") && report.verdict.ends_with("0 errors + WHEA not monitored"),
             "{}",

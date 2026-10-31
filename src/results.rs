@@ -893,7 +893,48 @@ pub fn compare_test_results(baseline_path: &str, current_path: &str) -> Result<T
 }
 
 impl TestComparison {
+    /// `--compare-results`' text: its head (`head_text`), then a line a step
     pub fn to_text_report(&self) -> String {
+        let mut report = self.head_text();
+        if !self.per_test_comparisons.is_empty() {
+            report.push_str("Per-Test Performance Changes:\n");
+            for test in &self.per_test_comparisons {
+                let duration_symbol = if test.duration_diff_ms < 0 {
+                    "⬇"
+                } else if test.duration_diff_ms > 0 {
+                    "⬆"
+                } else {
+                    "="
+                };
+                let throughput_symbol = if test.throughput_diff_mib_s > 0.0 {
+                    "⬆"
+                } else if test.throughput_diff_mib_s < 0.0 {
+                    "⬇"
+                } else {
+                    "="
+                };
+
+                report.push_str(&format!(
+                    "  Step {}. {} - Duration: {}{:.1}ms ({:+.1}%) {}, Throughput: {:+.1} MiB/s ({:+.1}%) {}{}\n",
+                    test.step,
+                    test.label,
+                    if test.duration_diff_ms >= 0 { "+" } else { "" },
+                    test.duration_diff_ms as f64,
+                    test.duration_diff_percent,
+                    duration_symbol,
+                    test.throughput_diff_mib_s,
+                    test.throughput_diff_percent,
+                    throughput_symbol,
+                    if test.errors_diff != 0 { format!(", Errors: {:+}", test.errors_diff) } else { String::new() }
+                ));
+            }
+        }
+
+        report
+    }
+
+    /// The comparison's text before its steps' lines: the two runs, what differs between them, and the overall changes
+    pub fn head_text(&self) -> String {
         let mut report = String::new();
 
         report.push_str("=== TMR Test Result Comparison ===\n");
@@ -934,41 +975,32 @@ impl TestComparison {
         }
         report.push('\n');
 
-        if !self.per_test_comparisons.is_empty() {
-            report.push_str("Per-Test Performance Changes:\n");
-            for test in &self.per_test_comparisons {
-                let duration_symbol = if test.duration_diff_ms < 0 {
-                    "⬇"
-                } else if test.duration_diff_ms > 0 {
-                    "⬆"
-                } else {
-                    "="
-                };
-                let throughput_symbol = if test.throughput_diff_mib_s > 0.0 {
-                    "⬆"
-                } else if test.throughput_diff_mib_s < 0.0 {
-                    "⬇"
-                } else {
-                    "="
-                };
-
-                report.push_str(&format!(
-                    "  Step {}. {} - Duration: {}{:.1}ms ({:+.1}%) {}, Throughput: {:+.1} MiB/s ({:+.1}%) {}{}\n",
-                    test.step,
-                    test.label,
-                    if test.duration_diff_ms >= 0 { "+" } else { "" },
-                    test.duration_diff_ms as f64,
-                    test.duration_diff_percent,
-                    duration_symbol,
-                    test.throughput_diff_mib_s,
-                    test.throughput_diff_percent,
-                    throughput_symbol,
-                    if test.errors_diff != 0 { format!(", Errors: {:+}", test.errors_diff) } else { String::new() }
-                ));
-            }
-        }
-
         report
+    }
+
+    /// The steps' changes as a table (TODO 109), the window's form of the text's lines: each step's time and speed, and its errors'
+    pub fn per_test_table(&self) -> crate::reporting::models::TableData {
+        use crate::reporting::models::{ColumnAlignment, TableData};
+        let table = TableData::new()
+            .with_title("Per-test changes")
+            .add_header("#", ColumnAlignment::Right)
+            .add_header("Step", ColumnAlignment::Left)
+            .add_header("Time", ColumnAlignment::Right)
+            .add_header("", ColumnAlignment::Right)
+            .add_header("MiB/s", ColumnAlignment::Right)
+            .add_header("", ColumnAlignment::Right)
+            .add_header("Errors", ColumnAlignment::Right);
+        self.per_test_comparisons.iter().fold(table, |table, test| {
+            table.add_row(vec![
+                test.step.to_string(),
+                test.label.clone(),
+                format!("{:+.1} s", test.duration_diff_ms as f64 / 1000.0),
+                format!("{:+.1}%", test.duration_diff_percent),
+                format!("{:+.0}", test.throughput_diff_mib_s),
+                format!("{:+.1}%", test.throughput_diff_percent),
+                format!("{:+}", test.errors_diff),
+            ])
+        })
     }
 
     pub fn save_to_file(&self, path: &str) -> Result<(), String> {

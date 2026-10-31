@@ -1,10 +1,10 @@
 //! The window (TODO 7), the owner's layout from the demos, top to bottom: the header (the title, the status badge and the runtime, the
-//! run's errors and the time left under them, the info line, and the system panel on the right), the tabs, the tab chosen, then the
-//! parameters box with Start and Stop. The Run tab, the one it opens on, has the position with the test's figures beside it and the progress
-//! bar, the throughput chart with its error marks, the results, a row opening its report beside them, and the errors; the chart is never
-//! between the results and the errors. The Log tab has the log's lines, and System, Threads and Memory the console's startup sections (TODO
-//! 109). The large-page restart question is a dialog over it (TODO 29 S6). The figures are the console's ticker's, word for word
-//! (`model.rs`).
+//! run's errors and the time left under them, the info line, and the system panel on the right), the command bar (the parameters box, Load
+//! config, the run button, which is Start, Stop and Run again, and the `…` menu), the tabs, and the tab chosen (TODO 109). The Run tab, the
+//! one it opens on, has the position with the test's figures beside it and the progress bar, the throughput chart with its error marks,
+//! the results, a row opening its report beside them, and the errors; the chart is never between the results and the errors. The Log tab
+//! has the log's lines; Plan, System, Threads and Memory the console's startup sections; Compare two runs' results files. The large-page
+//! restart question is a dialog over it (TODO 29 S6). The figures are the console's ticker's, word for word (`model.rs`).
 //!
 //! It draws `Model`, and re-renders only when a message arrives: a batch from the feed (at least every 500 ms while the session runs), a
 //! button, the dialog's answer, a keystroke in the box, a theme change or a resize. Nothing animates.
@@ -14,12 +14,13 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use tmr::commands::ResultsComparison;
 use tmr::frontend::{ColumnAlignment, Event, ProgressSnapshot, ProgressTracker, RestartChoice, Run, TableData};
 use windows_reactor::*;
 
 use crate::dialogs::{self, Open};
 use crate::logger::{self, LogLine, LogLines};
-use crate::model::{Bar, Comparison, Model, Opened, Status, StepRow};
+use crate::model::{Bar, Model, Opened, Slot, Status, StepRow};
 use crate::palette::{Palette, Palettes, brush};
 use crate::report::{Block, Report};
 use crate::{Feed, GuiFrontend, chart};
@@ -68,11 +69,19 @@ pub(crate) enum Message {
     LoadConfig,
     /// The config the Open dialog gave, none when it was cancelled
     ConfigChosen(Result<Vec<PathBuf>, String>),
-    /// Compare: the Open dialog, for two results files
-    Compare,
-    /// The comparison of the two it gave, none when it was cancelled
-    Compared(Result<Option<Comparison>, String>),
-    ComparisonClosed,
+    /// Run again, once the session is over: the window closes, and tmr.exe starts again with the box's parameters (TODO 109)
+    RunAgain,
+    /// The Compare tab's Choose…: the Open dialog, for one of its files
+    Choose(Slot),
+    Chosen(Slot, Result<Vec<PathBuf>, String>),
+    /// Its Choose both…: the Open dialog, for the two at once
+    ChooseBoth,
+    ChosenBoth(Result<Vec<PathBuf>, String>),
+    /// Its This run: the run's own results file, once saved
+    ThisRun(Slot),
+    Swap,
+    /// Two files compared, and what came of it
+    Compared((PathBuf, PathBuf), Result<ResultsComparison, String>),
     /// An item of the `…` menu: its label
     Menu(String),
     /// A file or a folder opened, or why the shell couldn't
@@ -116,36 +125,48 @@ pub(crate) struct Window {
     tab: Tab,
     /// The About dialog is open
     about: bool,
-    /// The comparison Compare made, while its dialog is open
-    comparison: Option<Comparison>,
     dark: bool,
     width: f64,
     palettes: Palettes,
 }
 
-/// The window's tabs (TODO 109): Run, the one it opens on, then the log, then the console's startup sections
+/// The window's tabs (TODO 109): Run, the one it opens on, then the log, the console's startup sections, and Compare
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tab {
     Run,
     Log,
+    Plan,
     System,
     Threads,
     Memory,
+    Compare,
 }
 
 impl Tab {
-    const ALL: [Tab; 5] = [Tab::Run, Tab::Log, Tab::System, Tab::Threads, Tab::Memory];
+    const ALL: [Tab; 7] = [Tab::Run, Tab::Log, Tab::Plan, Tab::System, Tab::Threads, Tab::Memory, Tab::Compare];
 
     fn label(self) -> &'static str {
         match self {
             Tab::Run => "Run",
             Tab::Log => "Log",
+            Tab::Plan => "Plan",
             Tab::System => "System",
             Tab::Threads => "Threads",
             Tab::Memory => "Memory",
+            Tab::Compare => "Compare",
         }
     }
 }
+
+/// The run button's width: it says Start, Stop, Stopping…, Finishing… or Run again, and keeps its place
+const RUN_BUTTON: f64 = 112.0;
+/// The command bar's buttons beside the parameters box, Load config and the run button, with their spacing, and the menu's at the right
+const COMMANDS_WIDTH: f64 = 128.0 + RUN_BUTTON + 48.0 + 3.0 * 8.0;
+/// The parameters box's widest: the parameters a run takes fit, and the buttons stay beside it
+const PARAMETERS_MAX: f64 = 640.0;
+
+/// `--start`, which the window takes out of its parameters: it starts the run as it opens (TODO 109), as Run again asks
+pub(crate) const START: &str = "--start";
 
 /// Waits on a thread-pool thread for the feed, up to `TICK`, then returns everything queued as one message, with where the suite stands
 /// then and the lines logged. A wait that brought nothing returns as well: that is the window's clock, as Reactor 0.100.0 has no timer.
@@ -229,6 +250,16 @@ impl Window {
         }
     }
 
+    /// The Compare tab's two files, compared on a pool thread once both are chosen, each pair once
+    fn compare(&mut self, context: &ComponentContext<Self>) {
+        if let Some(pair) = self.model.compare.next() {
+            context.spawn_background(move |_| {
+                let result = crate::model::compare(pair.clone());
+                Message::Compared(pair, result)
+            });
+        }
+    }
+
     /// An item of the `…` menu: a file or a folder to open, on a thread of its own, or About
     fn menu(&mut self, label: &str, context: &ComponentContext<Self>) {
         let path = match label {
@@ -248,6 +279,9 @@ impl Window {
     }
 }
 
+/// The Open dialog's filter for results files
+const RESULTS_FILES: (&str, &str) = ("TMR results", "*.json");
+
 /// The `…` menu's items, by their labels, which the menu gives back
 const MENU_LOG: &str = "Open the log";
 const MENU_LOGS: &str = "Open the logs folder";
@@ -259,21 +293,35 @@ impl Component for Window {
     type Input = Vec<String>;
     type Message = Message;
 
-    fn create(args: &Vec<String>, _context: &ComponentContext<Self>) -> Self {
+    fn create(args: &Vec<String>, context: &ComponentContext<Self>) -> Self {
         crate::window_opened();
         let (palettes, problems) = Palettes::load();
-        let mut model = Model::new(args);
+        let start = args.iter().any(|arg| arg == START);
+        let args: Vec<String> = args.iter().filter(|arg| *arg != START).cloned().collect();
+        let mut model = Model::new(&args);
         // Before Start there is no log file to take them, and maybe no console
         model.errors.extend(problems.into_iter().map(|problem| format!("colours.json: {problem}")));
-        Self { model, tab: Tab::Run, about: false, comparison: None, dark: false, width: 860.0, palettes }
+        let mut window = Self { model, tab: Tab::Run, about: false, dark: false, width: 860.0, palettes };
+        if start {
+            window.start(context);
+        }
+        window
     }
 
     fn update(&mut self, message: Message, context: &ComponentContext<Self>) {
         match message {
             Message::Feed(batch) => self.take(*batch, context),
-            // One session a process: the engine's run settings are set once (TODO 29)
+            // One session a process: the engine's run settings are set once (TODO 29), so another run is another process (Run again)
             Message::Start if self.model.status == Status::Ready => self.start(context),
             Message::Start => {}
+            Message::RunAgain if self.model.session_over() => {
+                crate::run_again(Some(crate::model::args_of(&self.model.args)));
+                if !context.window().request_close() {
+                    crate::run_again(None);
+                    self.model.errors.push("Run again: the window couldn't close itself; close it, and start tmr.exe again".to_string());
+                }
+            }
+            Message::RunAgain => {}
             Message::Stop => {
                 if self.model.status == Status::Running {
                     tmr::request_stop();
@@ -288,8 +336,8 @@ impl Component for Window {
             Message::Dimm(choice) => self.model.choose_dimm(&choice),
             Message::Open(which) => self.model.open(which),
             Message::Close => self.model.opened = None,
-            // Only while the parameters box takes one: one session a process
-            Message::LoadConfig if self.model.status == Status::Ready => {
+            // Only while the parameters box takes one
+            Message::LoadConfig if self.model.takes_parameters() => {
                 let ask = Open {
                     title: "Load a config: TMR's (.json) or TM5's (.cfg)",
                     filter: ("TMR and TM5 configs", "*.cfg;*.json"),
@@ -302,25 +350,55 @@ impl Component for Window {
             Message::LoadConfig => {}
             Message::ConfigChosen(Ok(paths)) => {
                 if let Some(path) = paths.first()
-                    && self.model.status == Status::Ready
+                    && self.model.takes_parameters()
                 {
                     self.model.set_config(path);
                 }
             }
             Message::ConfigChosen(Err(e)) => self.model.errors.push(format!("Load config: the Open dialog failed: {e}")),
-            Message::Compare => {
+            Message::Choose(slot) => {
+                let title = match slot {
+                    Slot::Baseline => "Compare: the baseline's results file",
+                    Slot::Compared => "Compare: the results file to compare with the baseline",
+                };
+                let ask = Open { title, filter: RESULTS_FILES, folder: tmr::home::results(), multiple: false };
+                let owner = dialogs::owner();
+                context.spawn_background(move |_| Message::Chosen(slot, dialogs::open(owner, ask)));
+            }
+            Message::Chosen(slot, Ok(paths)) => {
+                if let Some(path) = paths.into_iter().next() {
+                    self.model.compare.set(slot, path);
+                    self.compare(context);
+                }
+            }
+            Message::ChooseBoth => {
                 let ask = Open {
                     title: "Compare two results files: choose both, the second with Ctrl",
-                    filter: ("TMR results", "*.json"),
+                    filter: RESULTS_FILES,
                     folder: tmr::home::results(),
                     multiple: true,
                 };
                 let owner = dialogs::owner();
-                context.spawn_background(move |_| Message::Compared(dialogs::open(owner, ask).and_then(crate::model::compare)));
+                context.spawn_background(move |_| Message::ChosenBoth(dialogs::open(owner, ask)));
             }
-            Message::Compared(Ok(comparison)) => self.comparison = comparison.or(self.comparison.take()),
-            Message::Compared(Err(e)) => self.model.errors.push(format!("Compare: {e}")),
-            Message::ComparisonClosed => self.comparison = None,
+            Message::ChosenBoth(Ok(paths)) => match self.model.compare.set_both(paths) {
+                Ok(()) => self.compare(context),
+                Err(e) => self.model.errors.push(format!("Compare: {e}")),
+            },
+            Message::Chosen(_, Err(e)) | Message::ChosenBoth(Err(e)) => {
+                self.model.errors.push(format!("Compare: the Open dialog failed: {e}"))
+            }
+            Message::ThisRun(slot) => {
+                if let Some(path) = self.model.results_path().map(PathBuf::from) {
+                    self.model.compare.set(slot, path);
+                    self.compare(context);
+                }
+            }
+            Message::Swap => {
+                self.model.compare.swap();
+                self.compare(context);
+            }
+            Message::Compared(pair, result) => self.model.compare.finished(pair, result),
             Message::Menu(label) => self.menu(&label, context),
             Message::Opened(Ok(())) => {}
             Message::Opened(Err(e)) => self.model.errors.push(e),
@@ -354,18 +432,17 @@ impl Component for Window {
             .row_spacing(12.0)
             .rows([
                 GridLength::Auto, // header: title, badge, timer, system info; info line
+                GridLength::Auto, // the command bar: parameters, Load config, the run button, the menu
                 GridLength::Auto, // tabs
                 GridLength::STAR, // the tab chosen
-                GridLength::Auto, // parameters, buttons
             ])
             .children((
                 self.header(0, context),
-                self.tab_bar(1, context),
-                self.tab_view(2, context),
-                self.controls(3, context),
+                self.command_bar(1, context),
+                self.tab_bar(2, context),
+                self.tab_view(3, context),
                 self.restart_dialog(context),
                 self.about_dialog(context),
-                self.comparison_dialog(context),
             ))
     }
 }
@@ -579,25 +656,26 @@ impl Window {
         ))
     }
 
-    /// The tabs (TODO 109): Run, the window's own view, then the log, then the console's startup sections. A SelectorBar: 0.100.0's
-    /// NavigationView can clear its selection on a stale event (#5210), and a Pivot would build every tab's view each redraw.
-    ///
-    /// Beside them on the right, Compare and the `…` menu: the log, the results, their folders, About. The log is there from Start, the
-    /// results file once the run has saved it.
-    fn tab_bar(&self, row: i32, context: &ViewContext<Self>) -> View {
-        let items = Tab::ALL
-            .iter()
-            .enumerate()
-            .map(|(i, &tab)| (i as u64, View::from(SelectorBarItem::new().text(tab.label()).is_selected(tab == self.tab))));
-        let tabs = SelectorBar::new()
+    /// The command bar (TODO 109), every control in one place, at the top: the parameters box, as wide as a run's parameters want and no
+    /// wider, Load config and the run button beside it, and at the right the `…` menu (the log, the results, their folders, About). The
+    /// box and Load config take parameters before Start, and once the session is over, for Run again.
+    fn command_bar(&self, row: i32, context: &ViewContext<Self>) -> View {
+        let takes = self.model.takes_parameters();
+        let box_width = (self.width - 2.0 * PAGE_MARGIN_X - COMMANDS_WIDTH).clamp(200.0, PARAMETERS_MAX);
+        let parameters = TextBox::new()
+            .text(self.model.args.clone())
+            .placeholder_text("Parameters, as on the command line: memory=50% cycles=3 (none: the defaults)")
+            .is_enabled(takes)
+            .width(box_width)
+            .on_text_changed(context.callback(Message::Args))
             .grid_column(0)
-            .on_selected_text_changed(context.callback(Message::Tab))
-            .collection_slot(SelectorBarSlot::Items, items);
-        let compare = Button::new()
-            .grid_column(1)
-            .vertical_alignment(VerticalAlignment::Center)
-            .on_click(context.callback(|()| Message::Compare))
-            .content("Compare…");
+            .tooltip(
+                "What Start runs, in tmr.exe's key=value syntax (tmr.exe --help lists them). \
+                 Quote one with a space in it: \"config=C:\\My configs\\x.cfg\"",
+            );
+        // A config's path into the box, as `config=`, from the home's configs\ (TODO 109)
+        let load =
+            Button::new().is_enabled(takes).grid_column(1).on_click(context.callback(|()| Message::LoadConfig)).content("Load config…");
         let item = |on: bool, key: usize, label: &str| if on { MenuItem::item(key, label) } else { MenuItem::disabled(key, label) };
         let menu = [
             item(self.model.log_path.is_some(), 0, MENU_LOG),
@@ -609,7 +687,7 @@ impl Window {
             MenuItem::item(6usize, MENU_ABOUT),
         ];
         let more = Button::new()
-            .grid_column(2)
+            .grid_column(4)
             .style(ButtonStyle::Subtle)
             .vertical_alignment(VerticalAlignment::Center)
             .content("•••")
@@ -617,8 +695,37 @@ impl Window {
         Grid::new()
             .grid_row(row)
             .column_spacing(8.0)
-            .columns([GridLength::STAR, GridLength::Auto, GridLength::Auto])
-            .children((tabs, compare, more))
+            .columns([GridLength::Auto, GridLength::Auto, GridLength::Auto, GridLength::STAR, GridLength::Auto])
+            .children((parameters, load, self.run_button(2, context), more))
+    }
+
+    /// The run button (TODO 109): Start, then Stop in the error colour, Stopping… while the step ends, Finishing… while the session saves
+    /// its results, then Run again. One button, its width fixed, so the bar doesn't move as it changes.
+    fn run_button(&self, column: i32, context: &ViewContext<Self>) -> View {
+        let p = self.palette();
+        let button = Button::new().width(RUN_BUTTON).grid_column(column);
+        match self.model.status {
+            Status::Ready => button.style(ButtonStyle::Accent).on_click(context.callback(|()| Message::Start)).content("Start"),
+            Status::Running => button.resource_overrides(stop_colours(p)).on_click(context.callback(|()| Message::Stop)).content("Stop"),
+            Status::Stopping => button.is_enabled(false).content("Stopping…"),
+            _ if self.model.session_over() => {
+                button.style(ButtonStyle::Accent).on_click(context.callback(|()| Message::RunAgain)).content("Run again")
+            }
+            _ => button.is_enabled(false).content("Finishing…"),
+        }
+    }
+
+    /// The tabs (TODO 109): Run, the window's own view, then the log, the console's startup sections and Compare. A SelectorBar: 0.100.0's
+    /// NavigationView can clear its selection on a stale event (#5210), and a Pivot would build every tab's view each redraw.
+    fn tab_bar(&self, row: i32, context: &ViewContext<Self>) -> View {
+        let items = Tab::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, &tab)| (i as u64, View::from(SelectorBarItem::new().text(tab.label()).is_selected(tab == self.tab))));
+        SelectorBar::new()
+            .grid_row(row)
+            .on_selected_text_changed(context.callback(Message::Tab))
+            .collection_slot(SelectorBarSlot::Items, items)
     }
 
     /// The tab chosen, below the tabs
@@ -636,6 +743,13 @@ impl Window {
                 ])
                 .children((self.position(0), self.chart_card(1), self.results(2, context), self.error_list(3))),
             Tab::Log => self.log_card(row),
+            Tab::Plan => section_card(
+                row,
+                "Plan · the plan, its tests' configuration, the memory channels, the patterns' seed",
+                &self.model.sections.plan,
+                p,
+            ),
+            Tab::Compare => self.compare_card(row, context),
             Tab::System => section_card(
                 row,
                 "System · the CPU, its caches and calibration, the TSC, the memory modules",
@@ -803,40 +917,6 @@ impl Window {
         card(row, p, card_title(format!("Errors · {total}{shown}{dropped}"), p), body)
     }
 
-    /// The parameters box, then Start and Stop, which keep WinUI's own button colours (their hover, pressed and disabled states). The box
-    /// takes the CLI's parameters, as tmr.exe does; Start runs it once, one session a process, and from then on it holds what ran.
-    fn controls(&self, row: i32, context: &ViewContext<Self>) -> View {
-        let ready = self.model.status == Status::Ready;
-        let columns = [GridLength::STAR, GridLength::Auto, GridLength::Auto, GridLength::Auto];
-        Grid::new().grid_row(row).column_spacing(8.0).columns(columns).children((
-            TextBox::new()
-                .text(self.model.args.clone())
-                .placeholder_text("Parameters, as on the command line: memory=50% cycles=3 (none: the defaults)")
-                .is_enabled(ready)
-                .on_text_changed(context.callback(Message::Args))
-                .grid_column(0)
-                .tooltip(
-                    "What Start runs, in tmr.exe's key=value syntax (tmr.exe --help lists them). \
-                              Quote one with a space in it: \"config=C:\\My configs\\x.cfg\"",
-                ),
-            // A config's path into the box, as `config=`, from the home's configs\ (TODO 109)
-            Button::new().is_enabled(ready).grid_column(1).on_click(context.callback(|()| Message::LoadConfig)).content("Load config…"),
-            Button::new()
-                .style(ButtonStyle::Accent)
-                .is_enabled(ready)
-                .width(96.0)
-                .grid_column(2)
-                .on_click(context.callback(|()| Message::Start))
-                .content("Start"),
-            Button::new()
-                .is_enabled(self.model.status == Status::Running)
-                .width(96.0)
-                .grid_column(3)
-                .on_click(context.callback(|()| Message::Stop))
-                .content("Stop"),
-        ))
-    }
-
     /// The large-page restart question, the console's A/B as a dialog, open while the session's thread waits for its answer. Esc is the
     /// close button's: 4 KiB pages, as an empty answer is on the console.
     fn restart_dialog(&self, context: &ViewContext<Self>) -> View {
@@ -886,24 +966,126 @@ impl Window {
         dialog.content(StackPanel::new().spacing(6.0).keyed_children(parts))
     }
 
-    /// Compare's comparison, as `--compare-results` shows it, scrolling both ways: its lines are as wide as the console's. Not open while
-    /// About or the restart question is.
-    fn comparison_dialog(&self, context: &ViewContext<Self>) -> View {
-        let open = self.comparison.is_some() && !self.about && !self.model.restart_asked();
-        let (title, text) = self.comparison.as_ref().map_or(("", ""), |c| (c.title.as_str(), c.text.as_str()));
-        ContentDialog::new()
-            .title(format!("Compare · {title}"))
-            .close_button_text("Close")
-            .is_open(open)
-            .on_closed(context.callback(|_: ContentDialogResult| Message::ComparisonClosed))
-            .content(
+    /// The Compare tab (TODO 109): the baseline and the run to compare with it, each chosen in the Open dialog or the run's own results
+    /// file, both at once, swapped; then their comparison, as `--compare-results` gives it, its steps as a table
+    fn compare_card(&self, row: i32, context: &ViewContext<Self>) -> View {
+        let p = self.palette();
+        let tab = &self.model.compare;
+        let this_run = self.model.results_path().is_some();
+        let slot = |r: i32, label: &str, slot: Slot, path: Option<&PathBuf>| -> [(u64, View); 4] {
+            let name = path.map_or("none chosen".to_string(), |path| path.display().to_string());
+            let colour = if path.is_some() { p.text_primary } else { p.text_secondary };
+            let key = |column: u64| (r as u64) * 10 + column;
+            [
+                (
+                    key(0),
+                    View::from(card_title(label.to_string(), p).vertical_alignment(VerticalAlignment::Center).grid_row(r).grid_column(0)),
+                ),
+                (
+                    key(1),
+                    TextBlock::new()
+                        .text(name.clone())
+                        .foreground(brush(colour))
+                        .text_trimming(TextTrimming::CharacterEllipsis)
+                        .vertical_alignment(VerticalAlignment::Center)
+                        .grid_row(r)
+                        .grid_column(1)
+                        .tooltip(name),
+                ),
+                (
+                    key(2),
+                    Button::new().grid_row(r).grid_column(2).on_click(context.callback(move |()| Message::Choose(slot))).content("Choose…"),
+                ),
+                (
+                    key(3),
+                    Button::new()
+                        .is_enabled(this_run)
+                        .grid_row(r)
+                        .grid_column(3)
+                        .on_click(context.callback(move |()| Message::ThisRun(slot)))
+                        .content("This run"),
+                ),
+            ]
+        };
+        let mut cells: Vec<(u64, View)> = Vec::new();
+        cells.extend(slot(0, "Baseline", Slot::Baseline, tab.baseline.as_ref()));
+        cells.extend(slot(1, "Compared", Slot::Compared, tab.compared.as_ref()));
+        let actions = StackPanel::new().orientation(Orientation::Horizontal).spacing(8.0).grid_row(2).grid_column(1).grid_column_span(3);
+        let actions = actions.children((
+            Button::new().on_click(context.callback(|()| Message::ChooseBoth)).content("Choose both…"),
+            Button::new()
+                .is_enabled(tab.baseline.is_some() && tab.compared.is_some())
+                .on_click(context.callback(|()| Message::Swap))
+                .content("Swap"),
+        ));
+        cells.push((20, actions));
+        let files = Grid::new()
+            .grid_row(0)
+            .column_spacing(12.0)
+            .row_spacing(6.0)
+            .columns([GridLength::Auto, GridLength::STAR, GridLength::Auto, GridLength::Auto])
+            .rows([GridLength::Auto; 3])
+            .keyed_children(cells);
+        let note = |text: &str, colour: Color| {
+            View::from(TextBlock::new().text(text.to_string()).foreground(brush(colour)).text_wrapping(TextWrapping::Wrap))
+        };
+        let body: View = match tab.result() {
+            Some(Ok(comparison)) => {
+                let parts: Vec<(u64, View)> = vec![
+                    (
+                        0,
+                        TextBlock::new()
+                            .text(comparison.text.trim_end().to_string())
+                            .is_text_selection_enabled(true)
+                            .foreground(brush(p.text_primary))
+                            .into(),
+                    ),
+                    (1, report_table(&comparison.per_test, p)),
+                ];
                 ScrollViewer::new()
-                    .max_height(520.0)
                     .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
                     .horizontal_scroll_bar_visibility(ScrollBarVisibility::Auto)
-                    .content(TextBlock::new().text(text.to_string()).is_text_selection_enabled(true)),
-            )
+                    .content(
+                        Border::new()
+                            .padding(Thickness::new(0.0, 0.0, 12.0, 12.0))
+                            .content(StackPanel::new().spacing(8.0).keyed_children(parts)),
+                    )
+            }
+            Some(Err(e)) => note(&format!("They couldn't be compared: {e}"), p.error),
+            None if tab.is_comparing() => note("Comparing…", p.text_secondary),
+            None => note(
+                "Choose a baseline and a run to compare with it: two results files, from the results folder. This run is the run's own \
+                 file, once it has saved one.",
+                p.text_secondary,
+            ),
+        };
+        card(
+            row,
+            p,
+            card_title("Compare · two runs' results files, the baseline first".to_string(), p),
+            Grid::new()
+                .rows([GridLength::Auto, GridLength::STAR])
+                .row_spacing(12.0)
+                .children((files, Border::new().grid_row(1).content(body))),
+        )
     }
+}
+
+/// The Stop button's colours, the palette's error fill and the badge's text on it, a little darker under the pointer and pressed: WinUI has
+/// no red button style, so the button's own resources take them (lightweight styling)
+fn stop_colours(p: &Palette) -> ResourceOverrides {
+    let shade = |c: Color, f: f64| Color::argb(c.a, (f64::from(c.r) * f) as u8, (f64::from(c.g) * f) as u8, (f64::from(c.b) * f) as u8);
+    let (fill, hover, pressed, text) = (p.critical, shade(p.critical, 0.9), shade(p.critical, 0.8), p.on_status);
+    ResourceOverrides::new()
+        .set("ButtonBackground", fill)
+        .set("ButtonBackgroundPointerOver", hover)
+        .set("ButtonBackgroundPressed", pressed)
+        .set("ButtonForeground", text)
+        .set("ButtonForegroundPointerOver", text)
+        .set("ButtonForegroundPressed", text)
+        .set("ButtonBorderBrush", fill)
+        .set("ButtonBorderBrushPointerOver", hover)
+        .set("ButtonBorderBrushPressed", pressed)
 }
 
 /// The largest PNG frame of an .ico, for About's logo (tmr.ico's is 256 px): an .ico's 6-byte header gives its frames' count, then its

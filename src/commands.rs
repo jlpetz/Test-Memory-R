@@ -315,6 +315,26 @@ fn save_demo_configs() -> Result<(), String> {
     tm5_config.save_to_file(&in_configs("demo_tm5_compatible.json"))
 }
 
+/// Two results files compared, for the window's Compare tab (TODO 109): `--compare-results`' text but for its steps' lines, which come as a
+/// table, each step's changes in its time, speed and errors.
+#[derive(Clone, Debug)]
+pub struct ResultsComparison {
+    pub text: String,
+    pub per_test: crate::reporting::models::TableData,
+}
+
+/// Compares the results files `baseline` and `current`, each found as `--compare-results` finds it: as given, or by its name in TMR's
+/// home's `results\` (`home::find`). Why it couldn't, otherwise.
+pub fn compare_results(baseline: &str, current: &str) -> Result<ResultsComparison, String> {
+    let find = |path: &str| {
+        crate::home::find(path, &crate::home::results())
+            .map(|found| found.display().to_string())
+            .map_err(|looked| format!("Test result file does not exist: {path} ({looked})"))
+    };
+    let comparison = crate::results::compare_test_results(&find(baseline)?, &find(current)?)?;
+    Ok(ResultsComparison { text: comparison.head_text(), per_test: comparison.per_test_table() })
+}
+
 /// `--compare-results <baseline.json> <current.json> [output.json]`, `args` the command line: the comparison of two results files, saved to
 /// the third file when one is given.
 fn compare(args: &[String], out: &mut dyn Write) -> io::Result<RunStatus> {
@@ -722,6 +742,21 @@ mod tests {
 
     fn args(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| a.to_string()).collect()
+    }
+
+    /// TODO 109: the window's comparison is the command's text but for its steps' lines, which are a table, a row a step; a file that isn't
+    /// there says so
+    #[test]
+    fn a_comparison_for_the_window_has_its_steps_as_a_table() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("result_files").join("before_todo_72.json");
+        let fixture = fixture.to_str().unwrap();
+        let comparison = compare_results(fixture, fixture).expect("a run with itself");
+        assert!(comparison.text.starts_with("=== TMR Test Result Comparison ==="), "{}", comparison.text);
+        assert!(!comparison.text.contains("Per-Test Performance Changes"), "the steps are the table's: {}", comparison.text);
+        assert!(!comparison.per_test.rows.is_empty(), "a row a step");
+        assert!(comparison.per_test.rows.iter().all(|row| row[2] == "+0.0 s" && row[6] == "+0"), "{:?}", comparison.per_test.rows);
+        let missing = compare_results("nowhere.json", fixture).expect_err("no such file");
+        assert!(missing.starts_with("Test result file does not exist: nowhere.json"), "{missing}");
     }
 
     /// The commands that read and change nothing on this machine, as they write, each after a `## case` line with how it ended (TODO 29):

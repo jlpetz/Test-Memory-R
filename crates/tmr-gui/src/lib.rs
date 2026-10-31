@@ -98,6 +98,15 @@ static ICON: OnceLock<&'static [u8]> = OnceLock::new();
 /// Set when the restart's question went unanswered, the window having gone: the session ended as for a restart, but nobody chose it
 static UNANSWERED: AtomicBool = AtomicBool::new(false);
 
+/// Run again's parameters (TODO 109): set as the window closes for it, and `main` starts tmr.exe again with them, once the session has
+/// ended, so the new run is a first run of a new process (the engine's run settings are set once a process)
+static RUN_AGAIN: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Run again, with `args`, the parameters box's, once the window has closed; `None` when it couldn't close
+fn run_again(args: Option<Vec<String>>) {
+    *RUN_AGAIN.lock().unwrap_or_else(PoisonError::into_inner) = args;
+}
+
 /// How long a session still running when the window closes has to finish its step and save its results, before it ends with the process
 const CLOSE_GRACE: Duration = Duration::from_secs(30);
 
@@ -161,7 +170,15 @@ pub fn main(args: Vec<String>, icon: &'static [u8]) -> Closed {
         end_session(session);
     }
     let opened = WINDOW_OPENED.load(Ordering::Relaxed);
-    let closed = closed(shown.err().map(|e| e.to_string()), opened, started, EXIT_CODE.get().copied());
+    let mut closed = closed(shown.err().map(|e| e.to_string()), opened, started, EXIT_CODE.get().copied());
+    // The window's own tmr.exe again, with `--gui` and `--start`, as elevated as this one is
+    if let Some(args) = RUN_AGAIN.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        let again =
+            std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg("--gui").arg(window::START).args(args).spawn());
+        if let Err(e) = again {
+            closed.error.get_or_insert(format!("Run again couldn't start tmr.exe: {e}"));
+        }
+    }
     if let Some(error) = &closed.error {
         // In the run's log too, when Start opened one
         log::error!("{error}");

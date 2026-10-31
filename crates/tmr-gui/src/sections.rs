@@ -1,7 +1,9 @@
-//! The console's startup sections, as the window's tabs show them (TODO 109): System (the CPU, its caches and their calibration, the TSC,
-//! the memory modules), Threads (the CPUs chosen, the cores with each thread's CPU, and at the run's end its work by thread, CPU and core)
-//! and Memory (Windows' memory, the large pages, the memory plan, each thread's allocation). Each section is the console's: its reports the
-//! engine's tables (`report::blocks`), its lines in the window's words, in the order the session sent them. Plain Rust, as `model.rs`.
+//! The console's startup sections, as the window's tabs show them (TODO 109): Plan (the plan, its tests' configuration, the memory channels,
+//! the patterns' seed), System (the CPU, its caches and their calibration, the TSC, the memory modules), Threads (the CPUs chosen, the cores
+//! with each thread's CPU) and Memory (Windows' memory, the large pages, the memory plan, each thread's allocation). All of it is setup: a
+//! section doesn't change once the suite has started, and the run's work by thread goes in the final summary's report. Each section is the
+//! console's: its reports the engine's tables (`report::blocks`), its lines in the window's words, in the order the session sent them. Plain
+//! Rust, as `model.rs`.
 
 use tmr::frontend::{
     CacheCalibrationState, ColumnAlignment, ErrorMode, MemoryModule, MemoryStatus, Run, SealCalibrationState, Selection, Setup, TableData,
@@ -14,6 +16,7 @@ const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 /// The tabs' sections, empty until the session's setup sends them
 #[derive(Debug, Default)]
 pub struct Sections {
+    pub plan: Vec<Block>,
     pub system: Vec<Block>,
     pub threads: Vec<Block>,
     pub memory: Vec<Block>,
@@ -74,16 +77,19 @@ impl Sections {
             } else {
                 Block::Warning("Large pages: not available, so the run takes 4 KiB pages: less stress, about 5-10% slower".to_string())
             }),
-            Setup::TestFilter { .. }
-            | Setup::QuickTest
+            Setup::Plan { name, about, is_default } => {
+                let default = if *is_default { " (the default)" } else { "" };
+                self.plan.push(text(format!("Plan: {name}{default}: {about}")));
+            }
+            Setup::TestFilter { pattern } => self.plan.push(text(format!("Test filter: {pattern}"))),
+            Setup::QuickTest
             | Setup::ParamNotes(_)
             | Setup::StartupHeader { .. }
             | Setup::StartupParams { .. }
             | Setup::LargePageCheck
             | Setup::MemoryStatus(None)
             | Setup::Starting
-            | Setup::RealtimeOnEveryCpu
-            | Setup::Plan { .. } => {}
+            | Setup::RealtimeOnEveryCpu => {}
         }
     }
 
@@ -91,28 +97,17 @@ impl Sections {
     pub fn run(&mut self, run: &Run) {
         match run {
             Run::MemoryPlan(plan) => self.memory.extend(blocks(|r| r.report_consolidated_memory(plan))),
-            Run::Channels { channels, cache_line } => {
-                self.memory.push(Block::Text(format!("Memory channels: {channels}, cache line {cache_line} B")));
+            Run::Channels { channels, cache_line } => self.plan.push(Block::Text(format!(
+                "Memory channels: {channels}, which set SimpleTest's stride: (channels × parameter − 1) × the {cache_line} B cache line"
+            ))),
+            Run::TestPlan(plan) => self.plan.extend(blocks(|r| r.report_test_configuration(plan))),
+            Run::SuiteStarted { seed, transfer_bits, transfer_source, .. } => {
+                let width = transfer_bits
+                    .map_or("unknown, so switch alternates 64 and 32 bits".to_string(), |bits| format!("{bits} bits ({transfer_source})"));
+                self.plan.push(Block::Text(format!("Pattern seed {seed:#018x} (seed= replays it), transfer width {width}")));
             }
-            Run::Allocated(report) => {
-                self.memory.push(Block::Heading(format!("Allocation · {} · {:.1} s", report.allocator, report.elapsed.as_secs_f64())));
-                self.memory.extend(blocks(|r| r.report_allocation(report)));
-            }
-            Run::CpuPerformance(summary) => {
-                self.threads.push(Block::Heading("The run's work, by thread, CPU and core".to_string()));
-                self.threads.extend(blocks(|r| {
-                    if !summary.by_thread.threads.is_empty() {
-                        r.report_performance_by_thread(&summary.by_thread)?;
-                    }
-                    if !summary.by_cpu.cpus.is_empty() {
-                        r.report_performance_by_cpu(&summary.by_cpu)?;
-                    }
-                    if !summary.by_core.cores.is_empty() {
-                        r.report_performance_by_physical_core(&summary.by_core)?;
-                    }
-                    Ok(())
-                }));
-            }
+            // Its first table's title names the allocator and its time
+            Run::Allocated(report) => self.memory.extend(blocks(|r| r.report_allocation(report))),
             _ => {}
         }
     }

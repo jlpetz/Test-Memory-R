@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
+use tmr::commands::ResultsComparison;
 use tmr::frontend::{
     AllocationReport, ErrorCounts, Event, NotRun, ProgressSnapshot, ProgressTracker, RestartChoice, Run, RunOutcome, RunStatus, SealOp,
     Setup, StepReport, TestConfigurationReport, TestSnapshot, WheaCounts,
@@ -153,7 +154,7 @@ pub struct Summary {
 }
 
 impl Summary {
-    fn of(report: &tmr::frontend::FinalTestSummaryReport) -> Self {
+    fn of(report: &tmr::frontend::FinalTestSummaryReport, work: Vec<crate::report::Block>) -> Self {
         // The run's errors in the parts the rows count (TODO 109)
         let counts = report.errors();
         let (errors, seal) = (counts.test, counts.sealed.then_some(counts.seal));
@@ -168,7 +169,7 @@ impl Summary {
             report.whea_total.to_string(),
         ];
         let flagged = [false, false, false, false, false, errors > 0, seal.is_some_and(|errors| errors > 0), report.whea_total > 0];
-        Summary { cells, flagged, report: Report::of_summary(report) }
+        Summary { cells, flagged, report: Report::of_summary(report, work) }
     }
 }
 
@@ -424,6 +425,10 @@ pub struct Model {
     pub summary: Option<Summary>,
     /// The report open beside the results
     pub opened: Option<Opened>,
+    /// The run's work by thread, CPU and core, which comes just before the final summary, whose report takes it (TODO 109)
+    work: Vec<crate::report::Block>,
+    /// The Compare tab's files and comparison
+    pub compare: CompareTab,
     /// Steps with errors, final seal checks that found some, WHEA reports, the warnings and errors logged, and why a run stopped, oldest
     /// first, the newest `ERRORS_KEPT`
     pub errors: Lines,
@@ -455,6 +460,8 @@ pub struct Model {
     errors_seen: u64,
     /// The suite has ended, or the session did with no suite run: the snapshots are ignored
     over: bool,
+    /// The session's thread has ended: Run again can start another (TODO 109)
+    session_over: bool,
 }
 
 impl Model {
@@ -474,6 +481,8 @@ impl Model {
             reports: VecDeque::new(),
             summary: None,
             opened: None,
+            work: Vec::new(),
+            compare: CompareTab::default(),
             errors: Lines::new(ERRORS_KEPT),
             log: Lines::new(LOG_KEPT),
             sections: Sections::default(),
@@ -491,6 +500,7 @@ impl Model {
             last_partial: false,
             errors_seen: 0,
             over: false,
+            session_over: false,
         }
     }
 
@@ -737,7 +747,7 @@ impl Model {
                 self.reports.push_back(Report::of_step(&report));
             }
             Run::LateWhea(lines) => self.errors.extend(lines),
-            Run::CpuPerformance(_) => {}
+            Run::CpuPerformance(summary) => self.work = crate::report::cpu_performance(&summary),
             Run::SuiteEnded { outcome, status, errors, whea } => {
                 self.status = Status::of(status);
                 self.position = self.ended_line(outcome, errors, whea);
@@ -751,7 +761,7 @@ impl Model {
             }
             // Its row opens itself: the run's verdict, the first thing to read when it ends
             Run::FinalSummary(report) => {
-                self.summary = Some(Summary::of(&report));
+                self.summary = Some(Summary::of(&report, std::mem::take(&mut self.work)));
                 self.opened = Some(Opened::Summary);
             }
             Run::ResultsSaved { path } => self.facts.results = Some(path),
@@ -785,8 +795,19 @@ impl Model {
         }
     }
 
+    /// The session's thread has ended, so another run can start: Run again's (TODO 109)
+    pub fn session_over(&self) -> bool {
+        self.session_over
+    }
+
+    /// The parameters box takes parameters: before Start, and once the session is over, for Run again
+    pub fn takes_parameters(&self) -> bool {
+        self.status == Status::Ready || self.session_over
+    }
+
     /// The session's thread ended: how the session did, or the error that stopped it
     pub fn ended(&mut self, result: Result<SessionEnd, String>) {
+        self.session_over = true;
         let mut position = "Stopped before testing";
         match &result {
             Err(e) => self.errors.push(format!("Error: {e}")),
@@ -846,34 +867,91 @@ impl Model {
     }
 }
 
-/// Two results files compared, as `tmr.exe --compare-results` shows them (TODO 109): the baseline's and the current's names, and the
-/// comparison's text
-#[derive(Clone, Debug, PartialEq)]
-pub struct Comparison {
-    pub title: String,
-    pub text: String,
+/// One of the Compare tab's two results files (TODO 109)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slot {
+    Baseline,
+    Compared,
 }
 
-/// Compares the results `files` the Open dialog gave, which are to be two, the older the baseline, as `--compare-results` does; `None` for
-/// none, the dialog cancelled. A file that isn't a results file is the comparison's to say.
-pub fn compare(mut files: Vec<PathBuf>) -> Result<Option<Comparison>, String> {
-    match files.len() {
-        0 => return Ok(None),
-        2 => {}
-        n => return Err(format!("Compare takes two results files, not {n}: choose both in the dialog, the second with Ctrl")),
+/// Two results files and what comparing them gave: the engine's comparison (`--compare-results`' text, its steps as a table), or why not
+type Compared = ((PathBuf, PathBuf), Result<ResultsComparison, String>);
+
+/// The Compare tab (TODO 109): its two results files, the baseline first, and their comparison once both are chosen, run on a pool thread
+/// so a slow disk doesn't hold the window
+#[derive(Debug, Default)]
+pub struct CompareTab {
+    pub baseline: Option<PathBuf>,
+    pub compared: Option<PathBuf>,
+    /// The two being compared
+    comparing: Option<(PathBuf, PathBuf)>,
+    /// The last two compared, and what came of it
+    done: Option<Compared>,
+}
+
+impl CompareTab {
+    pub fn set(&mut self, slot: Slot, path: PathBuf) {
+        match slot {
+            Slot::Baseline => self.baseline = Some(path),
+            Slot::Compared => self.compared = Some(path),
+        }
     }
-    // The older first: a run's file is written as it goes, and last as it ends
-    files.sort_by_key(|file| std::fs::metadata(file).and_then(|m| m.modified()).ok());
-    let args: Vec<String> =
-        ["tmr.exe".to_string(), "--compare-results".to_string()].into_iter().chain(files.iter().map(|f| f.display().to_string())).collect();
-    let mut out = Vec::new();
-    // Its status is in its text: a comparison that failed says why
-    tmr::commands::run(&tmr::commands::Command::Compare(args), &mut out, &mut |_| false).map_err(|e| e.to_string())?;
-    let name = |file: &Path| file.file_name().map_or_else(|| file.display().to_string(), |name| name.to_string_lossy().into_owned());
-    Ok(Some(Comparison {
-        title: format!("{} → {}", name(&files[0]), name(&files[1])),
-        text: String::from_utf8_lossy(&out).trim_end().to_string(),
-    }))
+
+    pub fn swap(&mut self) {
+        std::mem::swap(&mut self.baseline, &mut self.compared);
+    }
+
+    /// Both at once, from the Open dialog: the older is the baseline, as a run's file is written as it goes, and last as it ends. None, the
+    /// dialog cancelled, changes nothing; one, or three, says it takes two.
+    pub fn set_both(&mut self, mut files: Vec<PathBuf>) -> Result<(), String> {
+        match files.len() {
+            0 => return Ok(()),
+            2 => {}
+            n => return Err(format!("Compare takes two results files, not {n}: choose both in the dialog, the second with Ctrl")),
+        }
+        files.sort_by_key(|file| std::fs::metadata(file).and_then(|m| m.modified()).ok());
+        let mut files = files.into_iter();
+        (self.baseline, self.compared) = (files.next(), files.next());
+        Ok(())
+    }
+
+    /// The two chosen
+    fn pair(&self) -> Option<(PathBuf, PathBuf)> {
+        Some((self.baseline.clone()?, self.compared.clone()?))
+    }
+
+    /// The two to compare now: both chosen, and neither compared nor being compared; they are from now (`finished` takes the result)
+    pub fn next(&mut self) -> Option<(PathBuf, PathBuf)> {
+        let pair = self.pair()?;
+        if self.comparing.as_ref() == Some(&pair) || self.done.as_ref().is_some_and(|(done, _)| *done == pair) {
+            return None;
+        }
+        self.comparing = Some(pair.clone());
+        Some(pair)
+    }
+
+    pub fn finished(&mut self, pair: (PathBuf, PathBuf), result: Result<ResultsComparison, String>) {
+        if self.comparing.as_ref() == Some(&pair) {
+            self.comparing = None;
+        }
+        self.done = Some((pair, result));
+    }
+
+    /// The two chosen are being compared
+    pub fn is_comparing(&self) -> bool {
+        self.comparing.is_some() && self.comparing == self.pair()
+    }
+
+    /// The comparison of the two chosen, once it has come
+    pub fn result(&self) -> Option<&Result<ResultsComparison, String>> {
+        let pair = self.pair()?;
+        self.done.as_ref().filter(|(done, _)| *done == pair).map(|(_, result)| result)
+    }
+}
+
+/// Compares `baseline` with `current`, as `--compare-results` does (`tmr::commands::compare_results`)
+pub fn compare((baseline, current): (PathBuf, PathBuf)) -> Result<ResultsComparison, String> {
+    tmr::commands::compare_results(&baseline.display().to_string(), &current.display().to_string())
 }
 
 /// Why setup stopped the session, as the console words it
@@ -1554,18 +1632,42 @@ mod tests {
         assert_eq!(Model::new(&[]).command(), strings(&["tmr"]));
     }
 
-    /// TODO 109: a config chosen takes the place of the one in the parameters box, quoted when its path has a space; Compare takes two
-    /// files, the older the baseline, and a comparison that fails says why in its text
+    /// TODO 109: a config chosen takes the place of the one in the parameters box, quoted when its path has a space
     #[test]
-    fn a_config_chosen_and_two_files_compared() {
+    fn a_config_chosen_takes_the_place_of_the_one_there() {
         let mut m = model();
         m.set_config(Path::new(r"C:\TMR\configs\anta777.cfg"));
         assert_eq!(m.args, r"memory=50% cycles=2 config=C:\TMR\configs\anta777.cfg");
         m.set_config(Path::new(r"C:\My configs\x.cfg"));
         assert_eq!(m.args, r#"memory=50% cycles=2 "config=C:\My configs\x.cfg""#, "the one chosen last, in place of the first");
+        assert!(m.takes_parameters(), "before Start");
+        m.start();
+        assert!(!m.takes_parameters(), "while the session runs");
+        m.ended(Ok(ran(RunStatus::Passed)));
+        assert!(m.takes_parameters() && m.session_over(), "once it is over, for Run again");
+    }
 
-        assert_eq!(compare(Vec::new()), Ok(None), "the dialog cancelled");
-        let three = compare(vec![PathBuf::from("a.json"); 3]).expect_err("three files");
+    /// TODO 109: the Compare tab compares its two files once both are chosen, once each pair, and swapped they are another pair; both at
+    /// once take the older as the baseline, and one or three say it takes two
+    #[test]
+    fn the_compare_tab_compares_each_pair_once() {
+        let mut tab = CompareTab::default();
+        tab.set(Slot::Baseline, PathBuf::from("a.json"));
+        assert_eq!(tab.next(), None, "one file");
+        tab.set(Slot::Compared, PathBuf::from("b.json"));
+        let pair = (PathBuf::from("a.json"), PathBuf::from("b.json"));
+        assert_eq!(tab.next(), Some(pair.clone()));
+        assert!(tab.is_comparing() && tab.result().is_none());
+        assert_eq!(tab.next(), None, "being compared");
+        tab.finished(pair.clone(), Err("not a results file".to_string()));
+        assert_eq!((tab.is_comparing(), tab.result().map(|r| r.is_err())), (false, Some(true)));
+        assert_eq!(tab.next(), None, "compared");
+        tab.swap();
+        assert!(tab.result().is_none(), "swapped, another pair");
+        assert_eq!(tab.next(), Some((PathBuf::from("b.json"), PathBuf::from("a.json"))));
+
+        assert_eq!(tab.set_both(Vec::new()), Ok(()), "the dialog cancelled");
+        let three = tab.set_both(vec![PathBuf::from("a.json"); 3]).expect_err("three files");
         assert!(three.starts_with("Compare takes two results files, not 3"), "{three}");
         let dir = std::env::temp_dir().join(format!("tmr-gui-compare-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp folder");
@@ -1573,10 +1675,11 @@ mod tests {
         std::fs::write(&older, "not a results file").expect("a file");
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&newer, "nor this").expect("a file");
-        let comparison = compare(vec![newer, older]).expect("a comparison").expect("two files");
+        tab.set_both(vec![newer.clone(), older.clone()]).expect("two files");
+        assert_eq!((tab.baseline.as_ref(), tab.compared.as_ref()), (Some(&older), Some(&newer)), "the older the baseline");
+        let failed = compare((older, newer)).expect_err("not results files");
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(comparison.title, "older.json → newer.json", "the older the baseline");
-        assert!(comparison.text.starts_with("❌ Comparison failed"), "{}", comparison.text);
+        assert!(failed.starts_with("Failed to parse test result JSON"), "{failed}");
     }
 
     /// Stop moves a running session to Stopping, and nothing else
@@ -1750,6 +1853,7 @@ mod tests {
         for run in [
             Run::MemoryPlan(Box::new(tmr::test_support::consolidated_memory_report())),
             Run::Channels { channels: 2, cache_line: 64 },
+            Run::TestPlan(Box::new(tmr::test_support::test_configuration_report())),
             Run::Allocated(Box::new(tmr::test_support::allocation_report_one_node())),
         ] {
             m.apply(run.into());
@@ -1772,11 +1876,14 @@ mod tests {
         assert_eq!(modules.rows, [["DIMM_A2", "32 GiB", "DDR5", "6000 MT/s", "G.Skill", "F5-6000J3040G32G"]], "no serial number");
         let memory = outline(&s.memory);
         assert_eq!(memory[..3], ["Large pages: on, tested", "table Windows' memory", "table Memory Status & Allocation Plan"]);
-        assert!(memory.contains(&"Memory channels: 2, cache line 64 B".to_string()), "{memory:?}");
         assert!(
-            memory.iter().any(|line| line.starts_with("Allocation · ")) && memory.iter().any(|line| line == "table Threads"),
+            memory.iter().any(|line| line.starts_with("table Memory Allocation (")) && memory.contains(&"table Threads".to_string()),
             "{memory:?}"
         );
+        assert_eq!(outline(&s.plan)[..2], [
+            "Memory channels: 2, which set SimpleTest's stride: (channels × parameter − 1) × the 64 B cache line",
+            "table Test Configuration"
+        ]);
     }
 
     /// The ticker's golden (crates/tmr-cli's `testdata/console/ticker.txt`), each `## case` and its lines. Read when the test runs, not
