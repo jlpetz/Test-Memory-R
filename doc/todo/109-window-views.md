@@ -90,3 +90,33 @@ Where it departs from the plan, for the owner to accept or change:
   200, as many as the rows drawn.
 - The memory modules' table has no serial number (a window is shared as a screenshot).
 - Compare takes both files in one dialog (Ctrl for the second), the older the baseline.
+
+## The second round (the owner, 2026-10-31)
+
+The owner's ten points on the first round, and the chart's flat start, which a capture of the
+window on the dev box showed: Mem-SimpleV2-512_A flat at 38.5K for about 3 s, then climbing to
+60K, its row 62,626, all in the test's colour while the ticker said "Checking seal".
+- The flat and the climb were the live figure's clock: a test's bytes over its wall time, which
+  holds the seal's work around its chunks and its setup. A sealed test's first cycle checks,
+  fills and reseals every chunk (`check_seal`, `reseal`: the first cycle only), so it ran flat and
+  low, and the rest climbed as that cost averaged away; CPU boost and branch predictors warm in
+  milliseconds. Fixed in ab89d94: a worker publishes its test's own time, as the report divides.
+- ab89d94, the errors in one form everywhere (`ErrorCounts`): `4 errors (2 test + 2 seal) + 2
+  WHEA (1C/1UC)`, WHEA never in the total; a step's failing bits on a line of their own.
+- 3ed7a95: the command bar at the top (the box at most 640 px wide); one run button (Start, Stop
+  in red, Stopping…, Finishing…, Run again); Run again closes the window and starts tmr.exe with
+  `--gui --start` and the box's parameters (the engine's run settings are once a process); the
+  Plan tab; the run's work by thread at the end of the summary's report, the setup tabs fixed
+  once the suite starts; the Compare tab in place of the dialog, its steps a table.
+- 3a8f4b8: `window.json` (chart, theme, start_on_open, parameters, size, colours, which were
+  `colours.json`); the chart's ▾. The installer ships an empty one, writable by users.
+- ea672a7: the console's output in the log file and the Log tab (TODO 29's transcript).
+- Not done: point 4, the Log tab following its last line. Reactor has no scroll offset, scroll-to
+  or anchoring (0.100.0, nor its master, 2026-10-31), so the lists stay newest first; a feature
+  request for the ScrollViewer's anchor ratio is the owner's to raise. Point 10, the report
+  beside the list at 1080p: the owner is thinking on it (the options: beside when the window is
+  wide, in the list's place otherwise; always in its place; below it).
+
+Not seen in the window yet: the dev box's session wasn't drawing when the final build ran (a
+locked or minimised session draws nothing, so the captures were black). The run itself worked:
+its log has the console's text between the records, and window.json its parameters and size.

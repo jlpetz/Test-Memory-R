@@ -54,9 +54,12 @@ slower.
 ## Running a test
 
 - **Double-click TMR** (or its Start menu entry) for its window. Type any settings in its box, or
-  pick a config with Load config, and press Start. A finished step's row opens its report, and
-  the final summary opens itself as the run ends; the Log, System, Threads and Memory tabs have
-  what the console prints as it starts, and Compare compares two runs' results files.
+  pick a config with Load config, and press Start; once the run is over, Run again starts another.
+  A finished step's row opens its report, and the final summary opens itself as the run ends. The
+  Log tab has what the console would show; Plan, System, Threads and Memory what it prints as it
+  starts; Compare compares two runs' results files. The window keeps its settings in
+  `window.json` beside tmr.exe: the chart shown or hidden, the theme, whether a run starts as it
+  opens (`tmr --gui --start` does that once), the last run's parameters, its size and colours.
 - **From a console**, type `tmr`. On its own it runs the stability plan, 3 cycles of it; press
   Ctrl+C to stop it sooner, and it stops at its next checkpoint and writes its report. Some
   settings:
