@@ -48,7 +48,7 @@ Stage 1: Pre-allocating memory blocks...
          1           0           0      0            59.5s       -0.2s   60.00 GiB     +0.00 B  1032.6 MiB/s        +4.3           4           0                  ✅       
        Avg                                           59.8s               60.00 GiB              1028.3 MiB/s                     4.5           0  1 (1C/0UC)      ❌       
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 0 errors + 1 WHEA (1C/0UC) | Test 5/6 Mem-Refresh256 (Test 7) (00:01:01)
+Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 0 errors (0 test + 0 seal) + 1 WHEA (1C/0UC) | Test 5/6 Mem-Refresh256 (Test 7) (00:01:01)
 
 ## WHEA after the monitor's last tick
 ⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)
@@ -98,7 +98,7 @@ Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 0 er
 ❌ Test suite failed: 3 errors (3 test + 0 seal) + 0 WHEA
 ## halted on a WHEA event
 
-❌ Test suite failed: 0 errors + 1 WHEA (0C/1UC)
+❌ Test suite failed: 0 errors (0 test + 0 seal) + 1 WHEA (0C/1UC)
 ## interrupted
 
 ⚠️  Test suite interrupted by user (CTRL+C)

@@ -35,8 +35,8 @@ const TICK: Duration = Duration::from_millis(500);
 /// The rows and error lines drawn, the newest: a night's run has thousands, and every redraw builds the ones drawn. Every row drawn opens
 /// its report: the model keeps as many.
 const SHOWN: usize = crate::model::REPORTS_KEPT;
-/// The log lines the Log tab draws, the newest (TODO 109)
-const LOG_SHOWN: usize = 500;
+/// The log lines the Log tab draws, the newest, in their order (TODO 109)
+const LOG_SHOWN: usize = 1_000;
 
 /// The title bar's icon (TODO 7), the exe's own (`main`'s, crates/tmr-app/tmr.ico for tmr.exe). WinUI's AppWindow takes an icon only as an
 /// .ico file's path, so it is written once to the temp directory; `None` when it can't be, and the window keeps Windows' default.
@@ -826,17 +826,18 @@ impl Window {
         }
     }
 
-    /// The log's lines, the newest first, a warning's and an error's in the error colour: the log file's, the records at its level
-    /// (`RUST_LOG`) and the console's text of each event between them (TODO 109), so the run as the console shows it. Not in Cascadia
-    /// Mono, as Windows Terminal has them: 0.100.0's TextBlock takes no font family, so the console's tables don't line up until the next
-    /// Reactor, whose TextBlock does (its master has it).
+    /// The log's lines in their order, oldest at the top, as a log reads (the owner, 2026-10-31), a warning's and an error's in the error
+    /// colour: the log file's, the records at its level (`RUST_LOG`) and the console's text of each event between them (TODO 109), so the
+    /// run as the console shows it. It doesn't follow its newest line: Reactor has no scroll offset, scroll-to or anchoring (0.100.0, nor
+    /// its master), so that waits for it. Not in Cascadia Mono, as Windows Terminal has them: 0.100.0's TextBlock takes no font family, so
+    /// the console's tables don't line up until the next Reactor, whose TextBlock does (its master has it).
     fn log_card(&self, row: i32) -> View {
         let p = self.palette();
         let log = &self.model.log;
         let body: View = if log.is_empty() {
             TextBlock::new().text("The log's lines: from Start").foreground(brush(p.text_secondary)).into()
         } else {
-            let lines = log.newest(LOG_SHOWN).map(|(number, text)| {
+            let lines = log.last(LOG_SHOWN).map(|(number, text)| {
                 // `[12:00:00 WARN tmr::tests] ...`: the level follows the 10-character stamp
                 let alarm = text.get(10..).is_some_and(|rest| rest.starts_with("WARN") || rest.starts_with("ERROR"));
                 let line = TextBlock::new().text(text.to_string()).foreground(brush(if alarm { p.error } else { p.text_primary }));
@@ -845,12 +846,13 @@ impl Window {
             ScrollViewer::new()
                 .vertical_scroll_bar_visibility(ScrollBarVisibility::Auto)
                 .horizontal_scroll_bar_visibility(ScrollBarVisibility::Auto)
-                .content(StackPanel::new().spacing(2.0).keyed_children(lines))
+                .content(StackPanel::new().keyed_children(lines))
         };
         let total = log.total();
-        let shown = if total > LOG_SHOWN as u64 { format!(", the newest {LOG_SHOWN} shown") } else { String::new() };
+        let shown =
+            if total > LOG_SHOWN as u64 { format!(" · the last {LOG_SHOWN} shown, the log file has them all") } else { String::new() };
         let dropped = self.model.dropped_line().map_or(String::new(), |line| format!(" · {line}"));
-        card(row, p, card_title(format!("Log · {total} line{}, newest first{shown}{dropped}", if total == 1 { "" } else { "s" }), p), body)
+        card(row, p, card_title(format!("Log · {total} line{}{shown}{dropped}", if total == 1 { "" } else { "s" }), p), body)
     }
 
     /// The finished steps, newest first, the final summary's row above them once the run has one. A row opens its report beside the list

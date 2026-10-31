@@ -326,6 +326,12 @@ impl Lines {
     pub fn newest(&self, n: usize) -> impl Iterator<Item = (u64, &str)> {
         self.kept.iter().enumerate().rev().take(n).map(|(i, entry)| (self.let_go + i as u64, entry.as_str()))
     }
+
+    /// The newest `n` entries in their order, oldest first, as a log reads (TODO 109), each with its number
+    pub fn last(&self, n: usize) -> impl Iterator<Item = (u64, &str)> {
+        let skip = self.kept.len().saturating_sub(n);
+        self.kept.iter().enumerate().skip(skip).map(|(i, entry)| (self.let_go + i as u64, entry.as_str()))
+    }
 }
 
 impl Extend<String> for Lines {
@@ -344,7 +350,7 @@ impl<const N: usize> PartialEq<[&str; N]> for Lines {
     }
 }
 
-/// The run's error count, as the ticker gives it: `0 errors + 0 WHEA`, `⚠️ 4 errors (2 test + 2 seal) + 3 WHEA (1C/2UC)`
+/// The run's error count, as the ticker gives it: `0 errors (0 test + 0 seal) + 0 WHEA`, `⚠️ 4 errors (2 test + 2 seal) + 3 WHEA (1C/2UC)`
 /// (`ErrorCounts`, TODO 109). The memory errors count the running test's so far; the WHEA split is corrected and uncorrected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ErrorCount {
@@ -1404,7 +1410,7 @@ mod tests {
         assert_eq!(flagged, [count(false, false, false), count(true, true, false), count(false, false, true)], "each count flags its cell");
         assert_eq!(m.errors, [
             "Cycle 1 · step 2 · Mem-StuckBit256 (Test 2): 7 errors (3 test + 4 seal) + 0 WHEA",
-            "Cycle 2 · step 1 · Mem-StuckBit256 (Test 1): 0 errors + 2 WHEA (1C/1UC)"
+            "Cycle 2 · step 1 · Mem-StuckBit256 (Test 1): 0 errors (0 test + 0 seal) + 2 WHEA (1C/1UC)"
         ]);
         assert_eq!(m.status, Status::Failed);
         assert_eq!(m.position, "Stopped · 2 cycles, the last stopped early, 3 steps · 7 errors (3 test + 4 seal) + 2 WHEA (1C/1UC)");
@@ -1595,6 +1601,8 @@ mod tests {
         m.logged(Vec::new(), 1);
         assert_eq!(m.errors, ["[12:00:00 ERROR tmr::tests] bad word"]);
         assert_eq!(m.log, ["[12:00:00 INFO tmr::tests] a step began", "[12:00:00 ERROR tmr::tests] bad word"]);
+        assert_eq!(m.log.last(1).collect::<Vec<_>>(), [(1, "[12:00:00 ERROR tmr::tests] bad word")], "the last, in order");
+        assert_eq!(m.log.last(5).map(|(number, _)| number).collect::<Vec<_>>(), [0, 1], "all there are, oldest first");
         assert_eq!(m.dropped_line().as_deref(), Some("1 log line dropped, all in the log file"));
 
         // A storm past the cap: the oldest go, and the newest, a step's errors last, are kept
@@ -1996,7 +2004,7 @@ mod tests {
         assert_eq!(shown(ticker_snapshot(), Some("limits, a test on its own time limit, its figures in")), Shown {
             runtime: "00:41:10".to_string(),
             time_left: some("remaining 00:18:50"),
-            errors: count("0 errors + 0 WHEA", false),
+            errors: count("0 errors (0 test + 0 seal) + 0 WHEA", false),
             position: "Cycle 4/8 (00:12:34, 39%) · Test 2/6 Mem-Refresh128 (00:05:12, 52%)".to_string(),
             live: some("285.00 GiB @ 19108.7 MiB/s (18.66 GiB/s)"),
         });
@@ -2025,13 +2033,13 @@ mod tests {
 
         let before = ProgressSnapshot { test: None, cycle: 1, tests_done: 0, cycle_elapsed: Duration::ZERO, ..ticker_snapshot() };
         let before = shown(before, Some("before the first test"));
-        let expected = (some("remaining 00:18:50"), count("0 errors + 0 WHEA", false), "Cycle 1/8 (00:00:00, 0%)", None);
+        let expected = (some("remaining 00:18:50"), count("0 errors (0 test + 0 seal) + 0 WHEA", false), "Cycle 1/8 (00:00:00, 0%)", None);
         assert_eq!((before.time_left, before.errors, before.position.as_str(), before.live), expected);
 
         // A cycle limit alone, and a WHEA report with no memory error: the count alarms, its split giving both parts
         let cycles_only = ProgressSnapshot { time_limit: None, whea: WheaCounts { total: 1, corrected: 1 }, ..ticker_snapshot() };
         let cycles_only = shown(cycles_only, None);
-        assert_eq!((cycles_only.time_left, cycles_only.errors), (None, count("⚠️ 0 errors + 1 WHEA (1C/0UC)", true)));
+        assert_eq!((cycles_only.time_left, cycles_only.errors), (None, count("⚠️ 0 errors (0 test + 0 seal) + 1 WHEA (1C/0UC)", true)));
         assert!(cycles_only.position.starts_with("Cycle 4/8 (00:12:34, 39%)"), "{}", cycles_only.position);
 
         // The last cycle's last test past its time: each percentage caps at 100
@@ -2066,8 +2074,8 @@ mod tests {
         };
         let clean = || vec![step(1, 1, 0, None, WheaCounts::default())];
         assert_eq!(mid_suite(clean(), 2), (Status::Failed, "⚠️ 2 errors (2 test + 0 seal) + 0 WHEA".to_string()));
-        assert_eq!(mid_suite(clean(), 0), (Status::Interrupted, "0 errors + 0 WHEA".to_string()));
-        assert_eq!(mid_suite(Vec::new(), 0), (Status::NotRun, "0 errors + 0 WHEA".to_string()), "no step finished");
+        assert_eq!(mid_suite(clean(), 0), (Status::Interrupted, "0 errors (0 test + 0 seal) + 0 WHEA".to_string()));
+        assert_eq!(mid_suite(Vec::new(), 0), (Status::NotRun, "0 errors (0 test + 0 seal) + 0 WHEA".to_string()), "no step finished");
     }
 
     /// The progress takes whichever limit is nearer, or with neither, the cycle's tests, its tooltip saying which; its percentage is

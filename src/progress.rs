@@ -84,9 +84,9 @@ impl RunOutcome {
 }
 
 /// A run's or a step's memory errors (TODO 109), as every frontend and report words them: `4 errors (2 test + 2 seal)`, the total, then in
-/// a sealed run with errors the test's and the seal's parts; `0 errors`, and unsealed `3 errors`. WHEA's are never in the total: a WHEA
-/// event is the hardware's own report (a corrected one can be a fault TMR never read), not a bad word TMR read back, so a sum would mean
-/// neither. Each frontend puts them after it: `+ 2 WHEA (1C/1UC)`.
+/// a sealed run the test's and the seal's parts, `0 errors (0 test + 0 seal)` too; unsealed, `3 errors`. WHEA's are never in the total: a
+/// WHEA event is the hardware's own report (a corrected one can be a fault TMR never read), not a bad word TMR read back, so a sum would
+/// mean neither. Each frontend puts them after it: `+ 2 WHEA (1C/1UC)`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ErrorCounts {
     pub test: u64,
@@ -105,7 +105,8 @@ impl fmt::Display for ErrorCounts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let total = self.total();
         write!(f, "{total} error{}", if total == 1 { "" } else { "s" })?;
-        if self.sealed && total > 0 {
+        // Always in a sealed run, zeros too (the owner, 2026-10-31): the parts say what was checked
+        if self.sealed {
             write!(f, " ({} test + {} seal)", self.test, self.seal)?;
         }
         Ok(())
@@ -514,7 +515,7 @@ mod tests {
     fn errors_are_the_total_then_its_parts() {
         let count = |test, seal, sealed| ErrorCounts { test, seal, sealed }.to_string();
         assert_eq!([count(0, 0, true), count(1, 0, true), count(2, 2, true), count(3, 0, false), count(1, 0, false)], [
-            "0 errors", "1 error (1 test + 0 seal)", "4 errors (2 test + 2 seal)", "3 errors", "1 error"
+            "0 errors (0 test + 0 seal)", "1 error (1 test + 0 seal)", "4 errors (2 test + 2 seal)", "3 errors", "1 error"
         ]);
     }
 
