@@ -321,6 +321,9 @@ pub(crate) fn seal_before_step(
     let publish = |bytes: usize| {
         progress.bytes_processed.store(bytes as u64, std::sync::atomic::Ordering::Relaxed);
         progress.last_update_ms.store(start.elapsed().as_millis().max(1) as u64, std::sync::atomic::Ordering::Relaxed);
+        // No recent speed of its own, so the chart takes its speed since it began, not the last test's (TODO 109)
+        progress.recent_bytes_per_sec.store(0, std::sync::atomic::Ordering::Relaxed);
+        progress.sealed_pass.store(false, std::sync::atomic::Ordering::Relaxed);
     };
     if seal.expects {
         if *unsealed > 0 {
@@ -387,6 +390,9 @@ fn run_seal_stage(
         at = end;
         progress.bytes_processed.store((at - from) as u64, std::sync::atomic::Ordering::Relaxed);
         progress.last_update_ms.store(start.elapsed().as_millis().max(1) as u64, std::sync::atomic::Ordering::Relaxed);
+        // As the seal's work before a step: its speed since it began stands in on the chart (TODO 109)
+        progress.recent_bytes_per_sec.store(0, std::sync::atomic::Ordering::Relaxed);
+        progress.sealed_pass.store(false, std::sync::atomic::Ordering::Relaxed);
     }
     if op == SealOp::SealAll {
         // Sealed up to where it got: a stage cut short leaves the rest unsealed

@@ -180,6 +180,9 @@ pub enum Sample {
     None,
     Test(f64),
     Seal(f64),
+    /// The test in the pass that wraps each chunk in the seal, of a step that makes more (TODO 109): its chunks start in cache, so it can
+    /// run apart from the rest, and the chart draws it in the seal's colour
+    SealedPass(f64),
 }
 
 impl Sample {
@@ -187,7 +190,7 @@ impl Sample {
     pub fn value(self) -> Option<f64> {
         match self {
             Sample::None => None,
-            Sample::Test(mib_s) | Sample::Seal(mib_s) => Some(mib_s),
+            Sample::Test(mib_s) | Sample::Seal(mib_s) | Sample::SealedPass(mib_s) => Some(mib_s),
         }
     }
 }
@@ -1109,12 +1112,14 @@ fn bar(s: &ProgressSnapshot) -> Bar {
         .unwrap_or_else(|| of(u128::from(s.tests_done), tests, Bar::CYCLE))
 }
 
-/// The chart's sample for `s` (TODO 109): the running test's speed in MiB/s as the ticker gives it, marked the seal's when its figures
-/// are the seal's work; none between tests, and before its workers have published
+/// The chart's sample for `s` (TODO 109): the running test's speed in MiB/s over the last seconds of its own time (the ticker's is since
+/// it began), marked the seal's when its figures are the seal's work, and the sealed pass's while a step that makes more than one pass
+/// wraps its chunks; none between tests, and before its workers have published
 fn sample(s: &ProgressSnapshot) -> Sample {
     match s.test.as_ref().filter(|test| !test.finished && test.live.published) {
-        Some(test) if test.sealing => Sample::Seal(test.live.bytes_per_sec / MIB),
-        Some(test) => Sample::Test(test.live.bytes_per_sec / MIB),
+        Some(test) if test.sealing => Sample::Seal(test.live.recent_bytes_per_sec / MIB),
+        Some(test) if test.live.sealed_pass => Sample::SealedPass(test.live.recent_bytes_per_sec / MIB),
+        Some(test) => Sample::Test(test.live.recent_bytes_per_sec / MIB),
         None => Sample::None,
     }
 }
@@ -1273,6 +1278,8 @@ mod tests {
                     bytes: 100 << 30,
                     errors: live_errors,
                     bytes_per_sec: 19108.7 * MIB,
+                    // A steady test: its last seconds' speed is its speed since it began (`progress::live_figures`)
+                    recent_bytes_per_sec: 19108.7 * MIB,
                     ..Default::default()
                 },
             }),
@@ -1770,6 +1777,30 @@ mod tests {
         let later = ProgressSnapshot { runtime: Duration::from_secs(500), time_limit: Some(Duration::from_secs(600)), ..snapshot(0) };
         m.tick(Some(later), Vec::new());
         assert_eq!((m.runtime, m.series.received, m.time_left.as_ref()), (Duration::from_secs(95), 4, None));
+    }
+
+    /// TODO 109: the chart plots the speed over the last seconds of the test's own time, the figures beside it its speed since it began,
+    /// and a step's sealed first pass in the seal's colour
+    #[test]
+    fn the_chart_plots_the_recent_speed_and_the_sealed_pass_apart() {
+        let mut m = model();
+        let mut s = snapshot(0);
+        let test = s.test.as_mut().unwrap();
+        test.sealing = false;
+        test.live = LiveFigures {
+            published: true,
+            bytes: 1 << 30,
+            bytes_per_sec: 900.0 * MIB,
+            recent_bytes_per_sec: 600.0 * MIB,
+            sealed_pass: true,
+            ..Default::default()
+        };
+        m.tick(Some(s.clone()), Vec::new());
+        assert_eq!(m.series.latest(), Some(Sample::SealedPass(600.0)));
+        assert!(m.live.as_deref().is_some_and(|live| live.contains("@ 900.0 MiB/s")), "the figures since it began: {:?}", m.live);
+        s.test.as_mut().unwrap().live.sealed_pass = false;
+        m.tick(Some(s), Vec::new());
+        assert_eq!(m.series.latest(), Some(Sample::Test(600.0)), "the plain passes");
     }
 
     /// TODO 109: the chart's samples are the test's speed, the seal's when its figures are the seal's work, and a gap where there are

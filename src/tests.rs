@@ -570,6 +570,13 @@ pub struct TestProgress {
     pub last_update_ms: std::sync::atomic::AtomicU64,
     /// What the worker is doing (`Stage as u8`), for the ticker (TODO 74). Set between chunks.
     pub stage: std::sync::atomic::AtomicU8,
+    /// The test's speed over the last seconds of its own time (TODO 109), bytes/s as `f64` bits, the window's chart's line; 0 when the
+    /// worker publishes none (a seal stage's figures), where the speed since the start stands in
+    pub recent_bytes_per_sec: std::sync::atomic::AtomicU64,
+    /// The worker's pass wraps each chunk in the seal, in a step planned for more than one (TODO 109): the chart draws it apart
+    pub sealed_pass: std::sync::atomic::AtomicBool,
+    /// The test's last publishes, which `recent_bytes_per_sec` is taken from: its worker's alone, locked once a publish
+    pub(crate) recent: std::sync::Mutex<crate::test_scaffolding::Recent>,
 }
 
 /// What a worker is doing, as the progress ticker names it (TODO 74).
@@ -629,6 +636,9 @@ impl TestProgress {
             seal_errors_found: AtomicU64::new(0),
             last_update_ms: AtomicU64::new(0),
             stage: std::sync::atomic::AtomicU8::new(Stage::Testing as u8),
+            recent_bytes_per_sec: AtomicU64::new(0),
+            sealed_pass: std::sync::atomic::AtomicBool::new(false),
+            recent: std::sync::Mutex::new(crate::test_scaffolding::Recent::new(0)),
         }
     }
 
@@ -646,6 +656,9 @@ impl TestProgress {
         self.seal_errors_found.store(0, Relaxed);
         self.last_update_ms.store(0, Relaxed);
         self.stage.store(Stage::Testing as u8, Relaxed);
+        self.recent_bytes_per_sec.store(0, Relaxed);
+        self.sealed_pass.store(false, Relaxed);
+        *self.recent.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = crate::test_scaffolding::Recent::new(0);
     }
 }
 

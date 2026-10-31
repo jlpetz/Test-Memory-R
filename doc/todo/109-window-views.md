@@ -132,8 +132,15 @@ The owner's notes on that, 2026-10-31, and what they changed:
   stamp, the stop flag), and each run opens its own log file (`logfile::close` as it ends). The
   logger is the process's (the `log` crate takes one), kept between runs. A run given `seed=`
   keeps it; one without gets a new seed. The model's Compare tab files are kept.
-- Open: the seal's first cycle runs warm (below, "The flat start, measured"). The proposal is
-  flushing each chunk after its check; the owner's to decide.
+- The seal's first pass runs warm (below, "The flat start, measured"). Decided with the owner,
+  2026-11-01: the reseal stays non-temporal and no flush follows the check (it would buy pass 1's
+  timing, not detection, and cost every sealed step); the ticker shows the test through a sealed
+  pass, its per-chunk check and reseal naming no stage; the chart plots each worker's speed over
+  the last 3 s of its own time (a ring of its last 16 publishes, in its progress slot), and a
+  sealed first pass of a step planned for more than one pass in the seal's colour. The figures
+  beside it stay the speed since the test began, which its report divides. Still open with the
+  owner: per-test seal settings (its store, plain or non-temporal; a flush after the check) and
+  the existing flush before verify as on/off/auto, decided per step at plan time and shown.
 - The owner checked the round in the window, 2026-10-31 (runs stopped and interrupted too): fine.
   The report beside the list at 1080p is dropped (the owner: not now). The Reactor request is
   TODO 111.
@@ -177,6 +184,27 @@ chunks and the rest plain.
 - The flush's cost: 0.3-0.45 s of seal time a sealed step a thread (a 7 GiB extent), outside the
   figure. A one-cycle step with small chunks (Stride, 2 MiB) reports the cached speed for the whole
   step: 38.6K sealed against 28.5K unsealed, measured earlier on 2026-10-31.
+
+What TM5 does (two independent reads of `TM5/MainThread.asm` 670-742 and `TM5/bin/mtests0.asm`,
+reconciled, 2026-11-01):
+- The same order around every block: test 0 checks it, the test runs on it, test 0 rewrites it
+  (the rewrite every time; a mirror test gets no check before, the check after is its verify). The
+  whole memory is filled at a cycle's start and checked at its end; nothing else.
+- Every block of every test in every cycle, alike: no first-pass-only rule. A TM5 test makes all
+  its passes over a block inside that one wrap (SimpleTest: 4 rounds of a write and L reads,
+  L = test Time% × main Time% / 2000, 5 at 100 × 100), then moves to the next block. A TM5 import
+  does the same: one sweep a step, TM5's repeats inside each chunk (`config.rs`,
+  `tm5_time_percent_is_per_chunk_dwell`), so every chunk gets the wrap. Only TMR's built-in timed
+  steps (the quick and stability plans' `30s`, `100cycles/30s`) also repeat over the whole extent,
+  and wrap only the first pass, which is what makes their first pass differ.
+- Plain loads and stores everywhere, with `prefetchnta`: no non-temporal stores, no flushes. TMR's
+  non-temporal seal fill is its own choice (TODO 74: 90 GiB/s against 38-40 for plain stores, and
+  the seal in DRAM rather than in cache).
+- Blocks of 4-64 MB, or a half, a third or all of the thread's memory, which the author meant to be
+  bigger than any cache ("if the block fits into the cache, the algorithm will fail"). On a 480 MB
+  L3, TM5's check would leave its small blocks warm for the test's first write too, uniformly.
+- It times each test call alone (rdtsc around the call, the test 0 work outside it), shown only as
+  thread 0's last block's ms/GB at Debug Level 7: no chart, no average.
 
 Not seen in the window yet: the dev box's session wasn't drawing when the final build ran (a
 locked or minimised session draws nothing, so the captures were black). The run itself worked:

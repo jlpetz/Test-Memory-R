@@ -928,10 +928,11 @@ impl Window {
         let latest = match series.latest() {
             Some(crate::model::Sample::Test(mib_s)) => crate::model::thousands(mib_s),
             Some(crate::model::Sample::Seal(mib_s)) => format!("{} (seal)", crate::model::thousands(mib_s)),
+            Some(crate::model::Sample::SealedPass(mib_s)) => format!("{} (sealed pass)", crate::model::thousands(mib_s)),
             _ => "–".to_owned(),
         };
         let marks = series.marks().count();
-        let title = format!("Throughput (MiB/s) · last 60 s · now {latest}");
+        let title = format!("Throughput (MiB/s, over 3 s) · last 60 s · now {latest}");
         // Its ▾ hides it, and its ▸ shows it (TODO 109): hidden, its title line stays, with the speed now, and its shapes aren't built
         let chevron = Button::new()
             .style(ButtonStyle::Subtle)
@@ -967,7 +968,10 @@ impl Window {
                     .margin(Thickness::new(8.0, 0.0, 0.0, 0.0))
                     .vertical_alignment(VerticalAlignment::Center)
                     .background(brush(p.chart_seal)),
-                legend_text("seal", p),
+                legend_text("seal", p).tooltip(
+                    "The seal's work, and a step's first pass while the seal wraps each chunk: the check before a chunk leaves it in cache \
+                     for the test's first touch, so that pass can run apart from the rest",
+                ),
                 Border::new()
                     .width(2.0)
                     .height(12.0)

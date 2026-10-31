@@ -18,6 +18,56 @@ use crate::ErrorMode;
 use crate::runner::{AllocationBlock, SHUTDOWN_REQUESTED};
 use crate::tests::{Stage, TestAction, TestBlock, TestMemoryConfig, TestProgress, TestStats, TestTiming};
 
+/// The window the chart's speed is taken over, of the test's own time (TODO 109): long enough that a publish's whole chunks average out,
+/// short enough that a pass that runs apart, a sealed first pass or a change of speed, shows as it happens rather than lingering in the
+/// average from the start
+const RECENT_MS: u64 = 3000;
+/// Publishes come at least 250 ms apart, so this many reach back past `RECENT_MS`
+const RECENT_LEN: usize = 16;
+
+/// A test's last publishes, (its own ms, bytes), for its speed over the last `RECENT_MS` (TODO 109). In the worker's progress slot
+/// (`TestProgress::recent`), not the runner: the runner sits in every kernel's frame, and its 280 bytes there cost two kernels' hot loops
+/// a reload (Mem-Sequence 512's, SimpleV2 512's strided).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Recent {
+    /// A ring, the newest at `next - 1`
+    at: [(u64, u64); RECENT_LEN],
+    next: usize,
+    len: usize,
+    /// The bytes done when the clock started, the window's start while the publishes don't reach back `RECENT_MS`
+    start_bytes: u64,
+}
+
+impl Recent {
+    pub(crate) const fn new(start_bytes: u64) -> Self {
+        Recent { at: [(0, 0); RECENT_LEN], next: 0, len: 0, start_bytes }
+    }
+
+    /// A publish at `ms` of the test's own time with `bytes` done: the speed in bytes/s since the newest publish at least `RECENT_MS`
+    /// before it, or since the clock started while there is none (the ring's oldest once it is full). 0 when no time has passed. A time
+    /// before the last publish's is the clock restarted (`restart_clock`, before any bytes are counted), which starts the window again.
+    pub(crate) fn push(&mut self, ms: u64, bytes: u64) -> f64 {
+        if self.len > 0 && ms < self.at[(self.next + RECENT_LEN - 1) % RECENT_LEN].0 {
+            *self = Recent::new(0);
+        }
+        let mut from = (0, self.start_bytes);
+        for k in 1..=self.len {
+            let (at_ms, at_bytes) = self.at[(self.next + RECENT_LEN - k) % RECENT_LEN];
+            if ms.saturating_sub(at_ms) >= RECENT_MS || k == RECENT_LEN {
+                from = (at_ms, at_bytes);
+                break;
+            }
+        }
+        self.at[self.next] = (ms, bytes);
+        self.next = (self.next + 1) % RECENT_LEN;
+        self.len = (self.len + 1).min(RECENT_LEN);
+        match ms.checked_sub(from.0) {
+            Some(span) if span > 0 => bytes.saturating_sub(from.1) as f64 * 1000.0 / span as f64,
+            _ => 0.0,
+        }
+    }
+}
+
 /// Per-test bookkeeping shared by the loop-owning v1 tests.
 ///
 /// Construct with [`TestRunner::new`], which also returns the test's extent as a [`TestBlock`] (kept as a local in the test, so the test
@@ -195,7 +245,8 @@ impl<'a> TestRunner<'a> {
     /// Only the first cycle: a later one finds the chunks as the test left them, so a test that runs many cycles of its own (a duration)
     /// pays for the wrap once, and its extent is resealed once, when it finishes.
     ///
-    /// The guard, every chunk, is inlined; the work, a chunk's worth of the seal kernel, is a call.
+    /// The guard, every chunk, is inlined; the work, a chunk's worth of the seal kernel, is a call. It names no stage, nor does
+    /// `reseal`: through a sealed pass the ticker shows the test, not one thread's moment around a chunk (the owner, TODO 109).
     #[inline(always)]
     pub fn check_seal(&mut self, start: usize, len: usize) {
         if self.seal.wrap && self.cycle <= 1 {
@@ -205,7 +256,6 @@ impl<'a> TestRunner<'a> {
 
     #[inline(never)]
     fn check_seal_chunk(&mut self, start: usize, len: usize) {
-        self.set_stage(Stage::CheckingSeal);
         let at = Instant::now();
         let (from, to) = (start / 8, (start + len) / 8);
         // SAFETY: the range is inside the extent, which the test is about to work
@@ -214,14 +264,13 @@ impl<'a> TestRunner<'a> {
         let time = at.elapsed();
         self.ops.add(crate::ops::Op::SealCheck, time, len as u64);
         self.inside += time;
-        self.set_stage(Stage::Testing);
     }
 
     /// Check the seal on `len` bytes at `ptr`, in another thread's span: a tile's first claim in the page exchange (TODO 28), which
     /// `check_seal` can't take, as it indexes from this thread's extent. In any cycle, as a tile's first claim of the step comes when it
     /// comes; a no-op unless the step wraps. Bad words count as seal errors, as `check_seal`'s.
     ///
-    /// Returns the bad words it found, for the caller to say whose memory they were in.
+    /// Returns the bad words it found, for the caller to say whose memory they were in. Like `check_seal`, it names no stage.
     ///
     /// # Safety
     /// `ptr..ptr + len` must be readable and held by this thread (the exchange's claim protocol), 64 B aligned and a whole number of 64 B.
@@ -230,7 +279,6 @@ impl<'a> TestRunner<'a> {
         if !self.seal.wrap {
             return 0;
         }
-        self.set_stage(Stage::CheckingSeal);
         let at = Instant::now();
         // SAFETY: the caller's
         let found = unsafe { self.seal.kernel.check(ptr, 0, len / 8, "seal check before") };
@@ -238,7 +286,6 @@ impl<'a> TestRunner<'a> {
         let time = at.elapsed();
         self.ops.add(crate::ops::Op::SealCheck, time, len as u64);
         self.inside += time;
-        self.set_stage(Stage::Testing);
         found
     }
 
@@ -259,14 +306,12 @@ impl<'a> TestRunner<'a> {
 
     #[inline(never)]
     fn reseal_chunk(&mut self, start: usize, len: usize) {
-        self.set_stage(Stage::Resealing);
         let at = Instant::now();
         // SAFETY: as `check_seal`
         unsafe { self.seal.kernel.fill(self.seal_base, start / 8, (start + len) / 8) };
         let time = at.elapsed();
         self.ops.add(crate::ops::Op::SealFill, time, len as u64);
         self.inside += time;
-        self.set_stage(Stage::Testing);
     }
 
     /// Name what the worker is doing, for the ticker.
@@ -355,7 +400,17 @@ impl<'a> TestRunner<'a> {
                 // whose bytes aren't the test's. Over the wall clock, a sealed test's first cycle, where every chunk is checked and resealed,
                 // drew a flat line low and the rest climbing toward the speed. At least 1: 0 is "nothing published yet".
                 let timed = self.start.elapsed().saturating_sub(self.inside);
-                progress.last_update_ms.store((timed.as_millis() as u64).max(1), Ordering::Relaxed);
+                let timed_ms = (timed.as_millis() as u64).max(1);
+                progress.last_update_ms.store(timed_ms, Ordering::Relaxed);
+                // The chart's line, the speed over its last seconds, and whether this pass is the sealed one of a step that makes more
+                let recent = progress
+                    .recent
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(timed_ms, self.total_bytes_processed as u64);
+                progress.recent_bytes_per_sec.store(recent.to_bits(), Ordering::Relaxed);
+                let sealed_pass = self.seal.wrap && self.cycle <= 1 && self.timing.cycles != Some(1);
+                progress.sealed_pass.store(sealed_pass, Ordering::Relaxed);
                 self.last_progress_update = now;
             }
         }
@@ -450,5 +505,42 @@ impl<'a> TestRunner<'a> {
             not_reproduced: rescans.not_reproduced,
             ops: self.ops,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TODO 109: the chart's speed is the last `RECENT_MS` of the test's own time: the average from the start until the publishes reach
+    /// that far back, then the newest window, so a fast first pass shows for its own time and goes, where the average from the start kept
+    /// it for the whole step
+    #[test]
+    fn the_recent_speed_is_the_last_seconds_of_the_tests_own_time() {
+        let mut recent = Recent::new(0);
+        // 2 bytes a ms for 2 s, then 1 byte a ms; a publish every 250 ms
+        let bytes_at = |ms: u64| if ms <= 2000 { 2 * ms } else { 4000 + (ms - 2000) };
+        let mut speeds = Vec::new();
+        for k in 1..=40 {
+            let ms = 250 * k;
+            speeds.push((ms, recent.push(ms, bytes_at(ms))));
+        }
+        let at = |ms: u64| speeds.iter().find(|&&(m, _)| m == ms).unwrap().1;
+        assert_eq!(at(1000), 2000.0, "under 3 s in: since the clock started");
+        assert_eq!(at(3000), 5000.0 * 1000.0 / 3000.0, "3 s in: still since the clock started, the fast 2 s and the slow 1 s");
+        assert_eq!(at(6000), 1000.0, "past the change by 3 s: the new speed alone");
+        assert_eq!(at(10_000), 1000.0, "and on, with the ring full");
+        assert!(at(4000) > 1000.0 && at(4000) < 2000.0, "inside the window, a mix");
+    }
+
+    /// A window starts at the clock, from the bytes done then, and needs time; the clock restarting (`restart_clock`, its time going
+    /// back) starts it again
+    #[test]
+    fn a_window_starts_at_the_clock_and_needs_time() {
+        let mut recent = Recent::new(500);
+        assert_eq!(recent.push(1000, 1500), 1000.0);
+        assert_eq!(Recent::new(0).push(0, 10), 0.0);
+        recent.push(5000, 9000);
+        assert_eq!(recent.push(250, 100), 400.0, "restarted: since the new clock's start");
     }
 }

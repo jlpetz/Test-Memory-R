@@ -200,8 +200,15 @@ pub struct LiveFigures {
     pub errors: u64,
     /// The seal's part of `errors` (TODO 109)
     pub seal_errors: u64,
+    /// Since the test began: what its report divides, the ticker's and the window's figures
     pub bytes_per_sec: f64,
-    /// What the first worker not just testing is doing (TODO 74), e.g. "Checking seal"
+    /// Over the last seconds of the workers' own time (TODO 109): the window's chart's line, where a pass that ran apart shows only while
+    /// it runs. A worker that publishes none (a seal stage) counts at its speed since the start.
+    pub recent_bytes_per_sec: f64,
+    /// A worker is in the pass that wraps each chunk in the seal, in a step planned for more than one (TODO 109)
+    pub sealed_pass: bool,
+    /// What the first worker not just testing is doing (TODO 74), e.g. "Checking seal": work a step does apart from its test, the seal's
+    /// before and after it or across memory, a fill, a chain build. A sealed pass's per-chunk check and reseal name none (TODO 109).
     pub stage: Option<crate::tests::Stage>,
 }
 
@@ -433,7 +440,11 @@ fn live_figures(workers: &[TestProgress]) -> LiveFigures {
         live.seal_errors += slot.seal_errors_found.load(Ordering::Relaxed);
         // Each worker's own average since the test began, as of its publish. Summing these rather than dividing the summed bytes by the
         // wall clock keeps the rate from sagging between publishes.
-        live.bytes_per_sec += bytes as f64 * 1000.0 / ms as f64;
+        let since_start = bytes as f64 * 1000.0 / ms as f64;
+        live.bytes_per_sec += since_start;
+        let recent = f64::from_bits(slot.recent_bytes_per_sec.load(Ordering::Relaxed));
+        live.recent_bytes_per_sec += if recent > 0.0 { recent } else { since_start };
+        live.sealed_pass |= slot.sealed_pass.load(Ordering::Relaxed);
     }
     live
 }
@@ -461,6 +472,24 @@ pub fn monitor(progress: Arc<ProgressTracker>, fe: Arc<dyn Frontend>) {
 mod tests {
     use super::*;
     use crate::tests::Stage;
+
+    /// TODO 109: the chart's speed sums the workers' speeds over their last seconds, a worker that publishes none (a seal stage)
+    /// counting at its speed since the start, and one worker in its sealed pass marks the test's; the speed since the start is apart
+    #[test]
+    fn the_recent_speed_sums_the_workers_and_stands_in_for_none() {
+        let workers = [TestProgress::new(), TestProgress::new()];
+        for worker in &workers {
+            worker.bytes_processed.store(1000, Ordering::Relaxed);
+            worker.last_update_ms.store(1000, Ordering::Relaxed);
+        }
+        workers[0].recent_bytes_per_sec.store(500.0f64.to_bits(), Ordering::Relaxed);
+        workers[1].sealed_pass.store(true, Ordering::Relaxed);
+        let live = live_figures(&workers);
+        assert_eq!((live.bytes_per_sec, live.recent_bytes_per_sec, live.sealed_pass), (2000.0, 1500.0, true));
+        workers[1].reset();
+        let live = live_figures(&workers);
+        assert_eq!((live.recent_bytes_per_sec, live.sealed_pass), (500.0, false), "a reset slot hasn't published");
+    }
 
     /// A snapshot as a frontend reads it (TODO 29): nothing before the suite begins; while a test runs, the figures and errors of its
     /// workers that have published, live, apart from the finished tests' errors; once its results are in, its errors with the finished

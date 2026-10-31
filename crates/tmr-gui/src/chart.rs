@@ -1,5 +1,6 @@
 //! The throughput chart (TODO 7), in retained XAML shapes: Reactor's Canvas with a Line per segment and an Ellipse per error mark. One
-//! series (a 2 px line, the seal's work in its own colour, and a gap where there are no figures, TODO 109), hairline gridlines at the
+//! series (a 2 px line, the speed over the last seconds of the test's own time; the seal's work and a step's sealed first pass in the
+//! seal's colour, and a gap where there are no figures, TODO 109), hairline gridlines at the
 //! axis's quarters, the y axis rounded up from the samples' largest (`Series::axis_top`), a "60 s ago .. now" x axis (120 samples at
 //! 500 ms), a thin labelled line where each stage began (`C1 T5 Mem-MovingInv256`), and at each sample where the run's errors rose a mark:
 //! a thin vertical line in the palette's error red, with a dot on the series.
@@ -145,7 +146,7 @@ pub fn shapes_chart(series: &Series, width: f64, p: &Palette) -> View {
     // has none
     let n = series.samples.len();
     let samples: Vec<(f64, Sample)> = series.samples.iter().enumerate().map(|(i, &s)| (plot.x_samples_ago(n - 1 - i), s)).collect();
-    let colour = |s: Sample| if matches!(s, Sample::Seal(_)) { p.chart_seal } else { p.accent };
+    let colour = |s: Sample| if matches!(s, Sample::Seal(_) | Sample::SealedPass(_)) { p.chart_seal } else { p.accent };
     for (j, pair) in samples.windows(2).enumerate() {
         let ((x1, from), (x2, to)) = (pair[0], pair[1]);
         let (Some(v1), Some(v2)) = (from.value(), to.value()) else { continue };
