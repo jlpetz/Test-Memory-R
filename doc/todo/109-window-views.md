@@ -138,9 +138,14 @@ The owner's notes on that, 2026-10-31, and what they changed:
   pass, its per-chunk check and reseal naming no stage; the chart plots each worker's speed over
   the last 3 s of its own time (a ring of its last 16 publishes, in its progress slot), and a
   sealed first pass of a step planned for more than one pass in the seal's colour. The figures
-  beside it stay the speed since the test began, which its report divides. Still open with the
-  owner: per-test seal settings (its store, plain or non-temporal; a flush after the check) and
-  the existing flush before verify as on/off/auto, decided per step at plan time and shown.
+  beside it stay the speed since the test began, which its report divides. No new settings (the
+  owner, 2026-11-01): the ones there are already serve cache-resident and DRAM tests alike, a
+  test's `seal: false` (one that makes its own data runs in cache, the check before the step
+  outside its time), its chunk size, and its `flush_before_verify` (honoured by the Tier 1 tests,
+  Mem-StuckBit and Mem-Refresh). Weighed and left out: the seal's store per test (a plain one may
+  rest in cache, writes at 38-40 GiB/s, leaves its write-back to the next chunks' tests, and
+  still reads RAM in pass 1, so it gives no in-cache run), a flush after the check (pass 1's
+  timing only; the chart's colour explains the difference), and on/off/auto for either flush.
 - The owner checked the round in the window, 2026-10-31 (runs stopped and interrupted too): fine.
   The report beside the list at 1080p is dropped (the owner: not now). The Reactor request is
   TODO 111.
