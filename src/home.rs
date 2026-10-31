@@ -1,8 +1,8 @@
 //! TMR's home (TODO 104): the one folder that holds what it reads and writes of its own, `configs\`, `results\`, `logs\`, `tmr-cfg.json`
-//! and the window's `colours.json`. It is the real exe's folder (the owner, 2026-10-25), so an unzipped tmr.exe keeps them beside it as
-//! TM5 did, and so does an installed one: for all users, in Program Files, the installer makes `configs\`, `results\`, `logs\` and
-//! `tmr-cfg.json` writable by users (`dist/tmr.iss`). `TMR_HOME` puts the home elsewhere: for `cargo run`, whose exe is under `target\`,
-//! which `cargo clean` empties, and for scripts.
+//! and the window's `window.json` (its settings and colours, TODO 109). It is the real exe's folder (the owner, 2026-10-25), so an
+//! unzipped tmr.exe keeps them beside it as TM5 did, and so does an installed one: for all users, in Program Files, the installer makes
+//! `configs\`, `results\`, `logs\`, `tmr-cfg.json` and `window.json` writable by users (`dist/tmr.iss`). `TMR_HOME` puts the home
+//! elsewhere: for `cargo run`, whose exe is under `target\`, which `cargo clean` empties, and for scripts.
 //!
 //! Not the current folder, as it was: that is wherever TMR started, the shell's folder, System32 for an Explorer-style launch or an
 //! elevated prompt, Documents over WinRM. A path the user types (`config=`, `--compare-results`) still means the current folder first.

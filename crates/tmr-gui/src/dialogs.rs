@@ -1,10 +1,10 @@
-//! Windows' own dialogs and the shell, for the window's command bar (TODO 109): the Open dialog, for a config and for the two results files
-//! Compare takes, and opening a file or a folder as Explorer does. Reactor 0.100.0 has no file dialog (nor has its master), so the `windows`
-//! crate's IFileOpenDialog, owned by the window.
+//! Windows' own dialogs and the shell, for the window's command bar (TODO 109): the Open dialog, for a config and for the Compare tab's
+//! results files, and opening a file or a folder as Explorer does. Reactor 0.100.0 has no file dialog (nor has its master), so the
+//! `windows` crate's IFileOpenDialog, owned by the window.
 //!
-//! Each runs on a thread of its own, in a single-threaded apartment of its own, which the window's thread-pool waiter joins: on the window's
-//! thread the dialog's modal loop would pump the window's messages inside `update`, so Reactor's next message would arrive while it still
-//! handled the last, and ShellExecute may load shell extensions, which want an apartment, and take a while.
+//! Each runs on a thread of its own, in a single-threaded apartment of its own, which the window's thread-pool waiter joins: on the
+//! window's thread the dialog's modal loop would pump the window's messages inside `update`, so Reactor's next message would arrive while
+//! it still handled the last, and ShellExecute may load shell extensions, which want an apartment, and take a while.
 
 use std::path::{Path, PathBuf};
 

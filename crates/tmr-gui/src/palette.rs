@@ -1,11 +1,10 @@
-//! The colour palette (TODO 7, the owner's note 1: colours are a setting): built-in defaults per light/dark, overridable from
-//! `colours.json` next to tmr.exe (in TMR's home, `tmr::home`). The file is read once, when the window opens; a missing file means the
-//! defaults, and a bad key or value is reported on the console and that one colour keeps its default.
+//! The colour palette (TODO 7, the owner's note 1: colours are a setting): built-in defaults per light/dark, overridable from the
+//! `colours` of the window's settings, `window.json` in TMR's home (`settings.rs`, TODO 109). The file is read once, when the window opens;
+//! a missing file means the defaults, and a bad key or value goes in the errors list and that one colour keeps its default.
 //!
-//! `colours.json` holds a `"dark"` and/or a `"light"` object, each mapping a key below to a colour string, `"#RRGGBB"` or `"#AARRGGBB"`
-//! (alpha first, as XAML writes it). Keys starting with `_` are ignored, so the file can carry notes. Any key left out keeps its default.
-//! `crates/tmr-gui/colours.example.json` has every key at its default (a test keeps it so): copy it into TMR's folder (beside tmr.exe, or
-//! `TMR_HOME`) as `colours.json` and edit it.
+//! `colours` holds a `"dark"` and/or a `"light"` object, each mapping a key below to a colour string, `"#RRGGBB"` or `"#AARRGGBB"` (alpha
+//! first, as XAML writes it). Keys starting with `_` are ignored, so it can carry notes. Any key left out keeps its default.
+//! `crates/tmr-gui/window.example.json` has every key at its default (a test keeps it so).
 //!
 //! | key               | used for                                                             |
 //! |-------------------|----------------------------------------------------------------------|
@@ -13,10 +12,10 @@
 //! | `text_secondary`  | the info line, table headings, empty-state lines, chart axis labels, |
 //! |                   | the chart's stage lines and their labels                             |
 //! | `error`           | error bullets, a non-zero error count, the chart's error marks       |
-//! | `critical`        | the "Failed" badge fill                                              |
+//! | `critical`        | the "Failed" badge fill, the Stop button                             |
 //! | `success`         | the "Running" and "Passed" badge fill                                |
 //! | `neutral`         | the other badges' fill: Ready, Stopping, Interrupted, Not run        |
-//! | `on_status`       | badge text                                                           |
+//! | `on_status`       | badge text, the Stop button's text                                   |
 //! | `accent`          | the chart's throughput line                                          |
 //! | `chart_seal`      | the chart's line where the figures are the seal's work               |
 //! | `chart_grid`      | the chart's gridlines, the header divider                            |
@@ -142,36 +141,13 @@ impl Palettes {
         if dark { &self.dark } else { &self.light }
     }
 
-    /// The defaults, with `colours.json` in TMR's home (next to the exe, `tmr::home`) applied over them if it exists, and what it gets
-    /// wrong, for the window's errors: it opens before Start sets up its logger, and maybe with no console.
-    pub fn load() -> (Self, Vec<String>) {
-        let mut problems = Vec::new();
-        let path = tmr::home::dir().join("colours.json");
-        let palettes = match std::fs::read_to_string(&path) {
-            Ok(text) => Self::parse(&text, &mut problems),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::DEFAULT,
-            Err(e) => {
-                problems.push(format!("{}: {e}", path.display()));
-                Self::DEFAULT
-            }
-        };
-        (palettes, problems)
-    }
+    pub const DEFAULT: Self = Self { light: Palette::LIGHT, dark: Palette::DARK };
 
-    const DEFAULT: Self = Self { light: Palette::LIGHT, dark: Palette::DARK };
-
-    /// `text`'s colours over the defaults; what it gets wrong into `problems`, each keeping its default
-    fn parse(text: &str, problems: &mut Vec<String>) -> Self {
+    /// The settings' `colours` over the defaults; what they get wrong into `problems`, each keeping its default
+    pub fn parse(colours: &serde_json::Value, problems: &mut Vec<String>) -> Self {
         let mut palettes = Self::DEFAULT;
-        let root: serde_json::Value = match serde_json::from_str(text) {
-            Ok(root) => root,
-            Err(e) => {
-                problems.push(format!("{e}; using the default colours"));
-                return palettes;
-            }
-        };
-        let Some(root) = root.as_object() else {
-            problems.push("not a JSON object; using the default colours".to_string());
+        let Some(root) = colours.as_object() else {
+            problems.push("colours is not an object: the default colours".to_string());
             return palettes;
         };
         for (scheme, value) in root {
@@ -180,12 +156,12 @@ impl Palettes {
                 "light" => &mut palettes.light,
                 s if s.starts_with('_') => continue,
                 s => {
-                    problems.push(format!("unknown scheme {s:?} (dark or light)"));
+                    problems.push(format!("colours.{s} is not a scheme (dark or light)"));
                     continue;
                 }
             };
             let Some(entries) = value.as_object() else {
-                problems.push(format!("{scheme:?} is not an object"));
+                problems.push(format!("colours.{scheme} is not an object"));
                 continue;
             };
             for (key, value) in entries {
@@ -193,12 +169,12 @@ impl Palettes {
                     continue;
                 }
                 let Some((_, field)) = KEYS.iter().find(|(k, _)| k == key) else {
-                    problems.push(format!("{scheme}.{key} is not a colour key"));
+                    problems.push(format!("colours.{scheme}.{key} is not a colour key"));
                     continue;
                 };
                 match value.as_str().and_then(parse_colour) {
                     Some(colour) => *field(palette) = colour,
-                    None => problems.push(format!("{scheme}.{key} = {value} is not #RRGGBB or #AARRGGBB")),
+                    None => problems.push(format!("colours.{scheme}.{key} = {value} is not #RRGGBB or #AARRGGBB")),
                 }
             }
         }
@@ -220,103 +196,81 @@ fn parse_colour(text: &str) -> Option<Color> {
     }
 }
 
+/// What each key colours, for the example file (same order as `KEYS`).
+#[cfg(test)]
+const ABOUT: [&str; 16] = [
+    "most text: title, table cells, error lines, card titles, CPU name",
+    "info line, table headings, empty-state lines, chart axis labels, the chart's stage lines and labels",
+    "error bullets, a non-zero error count, the chart's error marks",
+    "the 'Failed' badge fill, the Stop button",
+    "the 'Running' and 'Passed' badge fill",
+    "the other badges' fill: 'Ready', 'Stopping', 'Interrupted', 'Not run'",
+    "badge text, the Stop button's text",
+    "the chart's throughput line",
+    "the chart's line where the figures are the seal's work",
+    "the chart's gridlines, the header divider",
+    "card fill",
+    "card border, progress track border",
+    "alternate table rows",
+    "progress bar, empty part",
+    "progress bar, filled part",
+    "the percentage inside the progress bar",
+];
+
+#[cfg(test)]
+fn format_colour(c: Color) -> String {
+    if c.a == 0xFF { format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b) } else { format!("#{:02X}{:02X}{:02X}{:02X}", c.a, c.r, c.g, c.b) }
+}
+
+/// The example file's `colours`, as `window.example.json` nests it (`settings.rs`): every key at its default, and what it colours
+#[cfg(test)]
+pub(crate) fn example_colours() -> String {
+    let mut out = String::from("{\n");
+    out.push_str("    \"_note\": \"egui's grey text instead of WinUI's white: dark.text_primary #8C8C8C, light.text_primary #505050.\",\n");
+    out.push_str("    \"_keys\": {\n");
+    for (i, ((key, _), about)) in KEYS.iter().zip(ABOUT).enumerate() {
+        let comma = if i + 1 < KEYS.len() { "," } else { "" };
+        out.push_str(&format!("      \"{key}\": \"{about}\"{comma}\n"));
+    }
+    out.push_str("    },\n");
+    for (name, palette, last) in [("dark", Palette::DARK, false), ("light", Palette::LIGHT, true)] {
+        let mut palette = palette;
+        out.push_str(&format!("    \"{name}\": {{\n"));
+        for (i, (key, field)) in KEYS.iter().enumerate() {
+            let comma = if i + 1 < KEYS.len() { "," } else { "" };
+            let value = format_colour(*field(&mut palette));
+            out.push_str(&format!("      \"{key}\": \"{value}\"{comma}\n"));
+        }
+        out.push_str(if last { "    }\n" } else { "    },\n" });
+    }
+    out.push_str("  }");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn format_colour(c: Color) -> String {
-        if c.a == 0xFF { format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b) } else { format!("#{:02X}{:02X}{:02X}{:02X}", c.a, c.r, c.g, c.b) }
-    }
-
-    /// What each key colours, for the example file (same order as `KEYS`).
-    const ABOUT: [&str; 16] = [
-        "most text: title, table cells, error lines, card titles, CPU name",
-        "info line, table headings, empty-state lines, chart axis labels, the chart's stage lines and labels",
-        "error bullets, a non-zero error count, the chart's error marks",
-        "the 'Failed' badge fill",
-        "the 'Running' and 'Passed' badge fill",
-        "the other badges' fill: 'Ready', 'Stopping', 'Interrupted', 'Not run'",
-        "badge text",
-        "the chart's throughput line",
-        "the chart's line where the figures are the seal's work",
-        "the chart's gridlines, the header divider",
-        "card fill",
-        "card border, progress track border",
-        "alternate table rows",
-        "progress bar, empty part",
-        "progress bar, filled part",
-        "the percentage inside the progress bar",
-    ];
-
-    /// The example file: every key at its default, and what it colours
-    fn example_text() -> String {
-        let mut out = String::from("{\n");
-        out.push_str(
-            "  \"_about\": [\n    \
-             \"Copy this file into TMR's folder (beside tmr.exe, or TMR_HOME) as colours.json and edit it; it is read when the window opens.\",\n    \
-             \"Colours are #RRGGBB or #AARRGGBB (alpha first). Leave a key out to keep its default; keys starting with _ are ignored.\",\n    \
-             \"egui's grey text instead of WinUI's white: dark.text_primary #8C8C8C, light.text_primary #505050.\"\n  ],\n",
-        );
-        out.push_str("  \"_keys\": {\n");
-        for (i, ((key, _), about)) in KEYS.iter().zip(ABOUT).enumerate() {
-            let comma = if i + 1 < KEYS.len() { "," } else { "" };
-            out.push_str(&format!("    \"{key}\": \"{about}\"{comma}\n"));
-        }
-        out.push_str("  },\n");
-        for (name, palette, last) in [("dark", Palette::DARK, false), ("light", Palette::LIGHT, true)] {
-            let mut palette = palette;
-            out.push_str(&format!("  \"{name}\": {{\n"));
-            for (i, (key, field)) in KEYS.iter().enumerate() {
-                let comma = if i + 1 < KEYS.len() { "," } else { "" };
-                let value = format_colour(*field(&mut palette));
-                out.push_str(&format!("    \"{key}\": \"{value}\"{comma}\n"));
-            }
-            out.push_str(if last { "  }\n" } else { "  },\n" });
-        }
-        out.push_str("}\n");
-        out
-    }
-
-    /// `colours.example.json` is every key at its default; `TMR_BLESS=1 cargo test -p test-memory-r-gui` rewrites it, as it does the console's
-    /// goldens
+    /// The settings' colours replace the defaults key by key; a bad one keeps its default and is reported
     #[test]
-    fn the_example_file_has_every_key_at_its_default() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("colours.example.json");
-        let text = example_text();
-        if std::env::var_os("TMR_BLESS").is_some_and(|v| v == "1") {
-            std::fs::write(&path, &text).unwrap();
-        }
-        let saved = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}; `TMR_BLESS=1` writes it", path.display()));
-        assert_eq!(
-            saved.replace("\r\n", "\n"),
-            text,
-            "{} is stale: `TMR_BLESS=1 cargo test -p test-memory-r-gui` rewrites it",
-            path.display()
-        );
+    fn colours_override_key_by_key() {
         let mut problems = Vec::new();
-        let parsed = Palettes::parse(&text, &mut problems);
-        assert_eq!((parsed.dark, parsed.light, problems.len()), (Palette::DARK, Palette::LIGHT, 0), "{problems:?}");
-    }
-
-    /// A file's colours replace the defaults key by key; a bad one keeps its default and is reported
-    #[test]
-    fn a_colours_file_overrides_key_by_key() {
-        let mut problems = Vec::new();
-        let parsed = Palettes::parse(
-            r##"{"_note": 1, "dark": {"text_primary": "#8C8C8C", "error": "#80FF0000", "accent": "blue",
-                                          "nope": "#000000"}, "dim": {}}"##,
-            &mut problems,
-        );
+        let colours = serde_json::json!({
+            "_note": 1,
+            "dark": {"text_primary": "#8C8C8C", "error": "#80FF0000", "accent": "blue", "nope": "#000000"},
+            "dim": {}
+        });
+        let parsed = Palettes::parse(&colours, &mut problems);
         assert_eq!(parsed.dark.text_primary, Color::rgb(0x8C, 0x8C, 0x8C));
         assert_eq!(parsed.dark.error, Color::argb(0x80, 0xFF, 0, 0));
         assert_eq!((parsed.dark.accent, parsed.light), (Palette::DARK.accent, Palette::LIGHT));
         assert_eq!(problems, [
-            "dark.accent = \"blue\" is not #RRGGBB or #AARRGGBB",
-            "dark.nope is not a colour key",
-            "unknown scheme \"dim\" (dark or light)"
+            "colours.dark.accent = \"blue\" is not #RRGGBB or #AARRGGBB",
+            "colours.dark.nope is not a colour key",
+            "colours.dim is not a scheme (dark or light)"
         ]);
         let mut problems = Vec::new();
-        assert_eq!(Palettes::parse("[", &mut problems).dark, Palette::DARK);
+        assert_eq!(Palettes::parse(&serde_json::json!([]), &mut problems).dark, Palette::DARK);
         assert_eq!(problems.len(), 1);
     }
 }

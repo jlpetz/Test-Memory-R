@@ -290,8 +290,8 @@ pub fn axis_label(value: f64) -> String {
     format!("{}{unit}", text.trim_end_matches('0').trim_end_matches('.'))
 }
 
-/// A list of lines, the errors list's and the log's: its newest `cap` entries, oldest first, and how many came before them. Each entry has a
-/// number, its place among all of them, which stays its own as older ones go: the window's key for it.
+/// A list of lines, the errors list's and the log's: its newest `cap` entries, oldest first, and how many came before them. Each entry has
+/// a number, its place among all of them, which stays its own as older ones go: the window's key for it.
 #[derive(Debug)]
 pub struct Lines {
     kept: VecDeque<String>,

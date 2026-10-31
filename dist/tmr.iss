@@ -6,9 +6,9 @@
 ; me only" on its first page or /CURRENTUSER, in %LOCALAPPDATA%\Programs, with no UAC. winget passes /ALLUSERS or /CURRENTUSER by the
 ; scope it picks.
 ;
-; TMR keeps its files beside tmr.exe (src/home.rs): configs\, results\, logs\ and tmr-cfg.json. Users can't write in Program Files, and
-; TMR runs its tests unelevated, so for all users those are made writable by users: never the exe's folder or the exe, since anyone able
-; to replace tmr.exe could have an admin run their program. An upgrade never overwrites a config, and an uninstall leaves what TMR and
+; TMR keeps its files beside tmr.exe (src/home.rs): configs\, results\, logs\, tmr-cfg.json and window.json. Users can't write in
+; Program Files, and TMR runs its tests unelevated, so for all users those are made writable by users: never the exe's folder or the
+; exe, since anyone able to replace tmr.exe could have an admin run their program. An upgrade never overwrites a config, and an uninstall leaves what TMR and
 ; the user made.
 
 #ifndef AppVersion
@@ -70,6 +70,8 @@ Source: "{#Stage}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesu
 Source: "{#Stage}\configs\*"; DestDir: "{app}\configs"; Flags: onlyifdoesntexist uninsneveruninstall
 ; The calibrations save into it, beside the exe: an empty one, writable by users, which TMR reads as no settings
 Source: "tmr-cfg.json"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsneveruninstall; Permissions: users-modify
+; The window's settings save into it as well (crates/tmr-gui/src/settings.rs): an empty one, writable by users, which is its defaults
+Source: "window.json"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsneveruninstall; Permissions: users-modify
 
 [Icons]
 ; A double-click opens TMR's window (crates/tmr-app/src/launch.rs)

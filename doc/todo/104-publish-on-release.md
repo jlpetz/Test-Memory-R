@@ -15,7 +15,7 @@ second agent) came first; the owner's calls on it:
   `test-memory-r-gui`, lib names kept. winget: `Petz.TMR` (no `Petz` publisher in winget-pkgs on
   2026-10-25). Both are permanent once used.
 - **Files beside the real exe**, not the current folder: `configs\`, `results\`, `logs\` and
-  `tmr-cfg.json` (and the window's `colours.json`). `TMR_HOME` points them elsewhere: for `cargo
+  `tmr-cfg.json` (and the window's `window.json`, TODO 109). `TMR_HOME` points them elsewhere: for `cargo
   run`, whose exe is under `target\` (`cargo clean` would take the results with it), the scripts
   and the test hosts. The current folder was wherever TMR started: the shell's, System32 for an
   Explorer-style launch or an elevated prompt, Documents over WinRM; and even `--help` made

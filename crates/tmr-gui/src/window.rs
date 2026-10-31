@@ -23,6 +23,7 @@ use crate::logger::{self, LogLine, LogLines};
 use crate::model::{Bar, Model, Opened, Slot, Status, StepRow};
 use crate::palette::{Palette, Palettes, brush};
 use crate::report::{Block, Report};
+use crate::settings::{Settings, Theme};
 use crate::{Feed, GuiFrontend, chart};
 
 const PAGE_MARGIN_X: f64 = 20.0;
@@ -31,8 +32,8 @@ const CARD_PADDING_X: f64 = 16.0;
 const PROGRESS_HEIGHT: f64 = 22.0;
 /// The window's clock: the waiter returns at least this often while the session runs
 const TICK: Duration = Duration::from_millis(500);
-/// The rows and error lines drawn, the newest: a night's run has thousands, and every redraw builds the ones drawn. Every row drawn opens its
-/// report: the model keeps as many.
+/// The rows and error lines drawn, the newest: a night's run has thousands, and every redraw builds the ones drawn. Every row drawn opens
+/// its report: the model keeps as many.
 const SHOWN: usize = crate::model::REPORTS_KEPT;
 /// The log lines the Log tab draws, the newest (TODO 109)
 const LOG_SHOWN: usize = 500;
@@ -82,6 +83,8 @@ pub(crate) enum Message {
     Swap,
     /// Two files compared, and what came of it
     Compared((PathBuf, PathBuf), Result<ResultsComparison, String>),
+    /// The chart's ▾: shown or hidden, which `window.json` keeps (TODO 109)
+    Chart,
     /// An item of the `…` menu: its label
     Menu(String),
     /// A file or a folder opened, or why the shell couldn't
@@ -125,6 +128,8 @@ pub(crate) struct Window {
     tab: Tab,
     /// The About dialog is open
     about: bool,
+    /// `window.json`'s (TODO 109): the chart shown or hidden, the theme, the parameters, the size
+    settings: Settings,
     dark: bool,
     width: f64,
     palettes: Palettes,
@@ -157,6 +162,10 @@ impl Tab {
         }
     }
 }
+
+/// The window's size as it opens the first time, before `window.json` has one
+const WIDTH: f64 = 860.0;
+const HEIGHT: f64 = 960.0;
 
 /// The run button's width: it says Start, Stop, Stopping…, Finishing… or Run again, and keeps its place
 const RUN_BUTTON: f64 = 112.0;
@@ -250,6 +259,13 @@ impl Window {
         }
     }
 
+    /// Writes `window.json`, or says in the errors list why it couldn't
+    fn save_settings(&mut self) {
+        if let Err(e) = self.settings.save() {
+            self.model.errors.push(format!("window.json: {e}"));
+        }
+    }
+
     /// The Compare tab's two files, compared on a pool thread once both are chosen, each pair once
     fn compare(&mut self, context: &ComponentContext<Self>) {
         if let Some(pair) = self.model.compare.next() {
@@ -289,19 +305,33 @@ const MENU_RESULTS: &str = "Open the results file";
 const MENU_RESULTS_FOLDER: &str = "Open the results folder";
 const MENU_ABOUT: &str = "About TMR";
 
+/// The window's size, as it closes, into `window.json` (TODO 109): Run again's window opens as this one was
+impl Drop for Window {
+    fn drop(&mut self) {
+        let _ = self.settings.save();
+    }
+}
+
 impl Component for Window {
     type Input = Vec<String>;
     type Message = Message;
 
     fn create(args: &Vec<String>, context: &ComponentContext<Self>) -> Self {
         crate::window_opened();
-        let (palettes, problems) = Palettes::load();
-        let start = args.iter().any(|arg| arg == START);
-        let args: Vec<String> = args.iter().filter(|arg| *arg != START).cloned().collect();
+        let (settings, palettes, problems) = Settings::load();
+        let start = args.iter().any(|arg| arg == START) || settings.start_on_open;
+        let mut args: Vec<String> = args.iter().filter(|arg| *arg != START).cloned().collect();
+        // Given no parameters, the last run's (TODO 109)
+        if args.len() <= 1
+            && let Some(parameters) = &settings.parameters
+        {
+            args.extend(crate::model::args_of(parameters));
+        }
         let mut model = Model::new(&args);
         // Before Start there is no log file to take them, and maybe no console
-        model.errors.extend(problems.into_iter().map(|problem| format!("colours.json: {problem}")));
-        let mut window = Self { model, tab: Tab::Run, about: false, dark: false, width: 860.0, palettes };
+        model.errors.extend(problems.into_iter().map(|problem| format!("window.json: {problem}")));
+        let (width, dark) = (settings.size.map_or(WIDTH, |(width, _)| width), settings.theme == Theme::Dark);
+        let mut window = Self { model, tab: Tab::Run, about: false, settings, dark, width, palettes };
         if start {
             window.start(context);
         }
@@ -312,7 +342,12 @@ impl Component for Window {
         match message {
             Message::Feed(batch) => self.take(*batch, context),
             // One session a process: the engine's run settings are set once (TODO 29), so another run is another process (Run again)
-            Message::Start if self.model.status == Status::Ready => self.start(context),
+            Message::Start if self.model.status == Status::Ready => {
+                // The parameters the window opens with next time, when given none
+                self.settings.parameters = Some(self.model.args.clone());
+                self.save_settings();
+                self.start(context);
+            }
             Message::Start => {}
             Message::RunAgain if self.model.session_over() => {
                 crate::run_again(Some(crate::model::args_of(&self.model.args)));
@@ -399,6 +434,10 @@ impl Component for Window {
                 self.compare(context);
             }
             Message::Compared(pair, result) => self.model.compare.finished(pair, result),
+            Message::Chart => {
+                self.settings.chart = !self.settings.chart;
+                self.save_settings();
+            }
             Message::Menu(label) => self.menu(&label, context),
             Message::Opened(Ok(())) => {}
             Message::Opened(Err(e)) => self.model.errors.push(e),
@@ -408,17 +447,33 @@ impl Component for Window {
                     self.tab = tab;
                 }
             }
-            Message::Scheme(scheme) => self.dark = scheme == ColorScheme::Dark,
-            Message::Size(size) => self.width = size.width,
+            Message::Scheme(scheme) => {
+                self.dark = match self.settings.theme {
+                    Theme::System => scheme == ColorScheme::Dark,
+                    Theme::Light => false,
+                    Theme::Dark => true,
+                }
+            }
+            // Saved as the window closes (`Drop`)
+            Message::Size(size) => {
+                self.width = size.width;
+                self.settings.size = Some((size.width, size.height));
+            }
         }
     }
 
     fn view(&self, _args: &Vec<String>, context: &mut ViewContext<Self>) -> View {
         context.window_title(format!("Test Memory R (TMR) v{}", env!("CARGO_PKG_VERSION")));
+        let (width, height) = self.settings.size.unwrap_or((WIDTH, HEIGHT));
+        let theme = match self.settings.theme {
+            Theme::System => WindowTheme::System,
+            Theme::Light => WindowTheme::Light,
+            Theme::Dark => WindowTheme::Dark,
+        };
         let visuals = WindowVisuals::new()
             .backdrop(WindowBackdrop::Mica)
-            .theme(WindowTheme::System)
-            .client_size(860.0, 960.0)
+            .theme(theme)
+            .client_size(width, height)
             .constraints(WindowConstraints { min_width: Some(720.0), min_height: Some(680.0), ..Default::default() });
         context.window_visuals(match icon_path() {
             Some(path) => visuals.icon(path),
@@ -741,7 +796,7 @@ impl Window {
                     GridLength::Star(3.0), // results
                     GridLength::Star(1.4), // errors
                 ])
-                .children((self.position(0), self.chart_card(1), self.results(2, context), self.error_list(3))),
+                .children((self.position(0), self.chart_card(1, context), self.results(2, context), self.error_list(3))),
             Tab::Log => self.log_card(row),
             Tab::Plan => section_card(
                 row,
@@ -851,7 +906,7 @@ impl Window {
         card(row, p, title, content)
     }
 
-    fn chart_card(&self, row: i32) -> View {
+    fn chart_card(&self, row: i32, context: &ViewContext<Self>) -> View {
         let p = self.palette();
         let series = &self.model.series;
         let latest = match series.latest() {
@@ -861,11 +916,33 @@ impl Window {
         };
         let marks = series.marks().count();
         let title = format!("Throughput (MiB/s) · last 60 s · now {latest}");
-        // Title on the left, a legend on the right (line = MiB/s, the seal's line, red mark = errors rose). A temperature series would add
-        // an item here.
-        let header = Grid::new().columns([GridLength::STAR, GridLength::Auto]).children((
-            card_title(title, p).grid_column(0),
-            StackPanel::new().grid_column(1).orientation(Orientation::Horizontal).spacing(6.0).children((
+        // Its ▾ hides it, and its ▸ shows it (TODO 109): hidden, its title line stays, with the speed now, and its shapes aren't built
+        let chevron = Button::new()
+            .style(ButtonStyle::Subtle)
+            .margin(Thickness::new(-11.0, -5.0, 0.0, -6.0))
+            .grid_column(0)
+            .on_click(context.callback(|()| Message::Chart))
+            .content(if self.settings.chart { "▾" } else { "▸" });
+        if !self.settings.chart {
+            let header = Grid::new()
+                .columns([GridLength::Auto, GridLength::STAR])
+                .column_spacing(4.0)
+                .children((chevron, card_title(title, p).vertical_alignment(VerticalAlignment::Center).grid_column(1)));
+            return Border::new()
+                .grid_row(row)
+                .background(brush(p.card_background))
+                .border_brush(brush(p.card_stroke))
+                .border_thickness(1.0)
+                .corner_radius(8.0)
+                .padding(Thickness::new(CARD_PADDING_X, 10.0, CARD_PADDING_X, 10.0))
+                .content(header);
+        }
+        // The chevron and the title on the left, a legend on the right (line = MiB/s, the seal's line, red mark = errors rose). A
+        // temperature series would add an item here.
+        let header = Grid::new().columns([GridLength::Auto, GridLength::STAR, GridLength::Auto]).column_spacing(4.0).children((
+            chevron,
+            card_title(title, p).vertical_alignment(VerticalAlignment::Center).grid_column(1),
+            StackPanel::new().grid_column(2).orientation(Orientation::Horizontal).spacing(6.0).children((
                 Border::new().width(16.0).height(2.0).vertical_alignment(VerticalAlignment::Center).background(brush(p.accent)),
                 legend_text("MiB/s", p),
                 Border::new()

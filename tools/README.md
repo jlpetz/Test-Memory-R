@@ -192,7 +192,7 @@ before testing an override can reach. The engine's code the last three run is dr
 `tmr::test_support`, which the engine has in its own tests and under its `test-support` feature,
 which only tmr-cli's tests turn on (TODO 29 S5). The one-shot commands' text is the engine's
 golden, `testdata/console/commands.txt`. `TMR_BLESS=1 cargo test` rewrites both sets (the default
-members; `--workspace` would also build the window and rewrite its `colours.example.json`), and
+members; `--workspace` would also build the window and rewrite its `window.example.json`), and
 `git diff crates/tmr-cli/testdata/ testdata/` shows what changed. The rest rests on an A/B of the
 real exe, diffed here: the setup path, which can't run in a test (secedit, `process::exit`); the
 run around the cycle (WHEA, allocation, the seed, the cycle's start, the verdict, the results); the

@@ -26,6 +26,7 @@ mod model;
 mod palette;
 mod report;
 mod sections;
+mod settings;
 mod sysinfo;
 mod window;
 

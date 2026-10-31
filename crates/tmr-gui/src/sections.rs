@@ -1,9 +1,9 @@
-//! The console's startup sections, as the window's tabs show them (TODO 109): Plan (the plan, its tests' configuration, the memory channels,
-//! the patterns' seed), System (the CPU, its caches and their calibration, the TSC, the memory modules), Threads (the CPUs chosen, the cores
-//! with each thread's CPU) and Memory (Windows' memory, the large pages, the memory plan, each thread's allocation). All of it is setup: a
-//! section doesn't change once the suite has started, and the run's work by thread goes in the final summary's report. Each section is the
-//! console's: its reports the engine's tables (`report::blocks`), its lines in the window's words, in the order the session sent them. Plain
-//! Rust, as `model.rs`.
+//! The console's startup sections, as the window's tabs show them (TODO 109): Plan (the plan, its tests' configuration, the memory
+//! channels, the patterns' seed), System (the CPU, its caches and their calibration, the TSC, the memory modules), Threads (the CPUs
+//! chosen, the cores with each thread's CPU) and Memory (Windows' memory, the large pages, the memory plan, each thread's allocation). All
+//! of it is setup: a section doesn't change once the suite has started, and the run's work by thread goes in the final summary's report.
+//! Each section is the console's: its reports the engine's tables (`report::blocks`), its lines in the window's words, in the order the
+//! session sent them. Plain Rust, as `model.rs`.
 
 use tmr::frontend::{
     CacheCalibrationState, ColumnAlignment, ErrorMode, MemoryModule, MemoryStatus, Run, SealCalibrationState, Selection, Setup, TableData,
