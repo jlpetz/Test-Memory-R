@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use tmr::frontend::{CpuPerformanceSummary, NotRun, PageSizeLevel, Run, RunOutcome, RunStatus, SealOp, StepReport, WheaCounts};
+use tmr::frontend::{CpuPerformanceSummary, NotRun, PageSizeLevel, Run, RunOutcome, RunStatus, SealOp, StepReport};
 
 use super::{report_text, ticker};
 use crate::console;
@@ -83,7 +83,7 @@ pub(super) fn text(run: &Run) -> (String, Written) {
         Run::StepFinished(report) => (step_report(report), Written::Block),
         Run::LateWhea(events) => (events.iter().map(|event| format!("{}\n", event)).collect(), Written::Plain),
         Run::CpuPerformance(summary) => (cpu_performance(summary), Written::Plain),
-        Run::SuiteEnded { outcome, status, errors, whea } => {
+        Run::SuiteEnded { outcome, status, errors } => {
             let mut text = String::new();
             // Display completion status
             if *outcome == RunOutcome::Interrupted {
@@ -96,7 +96,7 @@ pub(super) fn text(run: &Run) -> (String, Written) {
             if *status == RunStatus::Failed {
                 // Same form as the per-test topline. Either count alone fails the run: a WHEA event with `0 errors` is a fault that ECC
                 // corrected, or one raised during a test phase that does not verify — still not a stable configuration.
-                text += &format!("\n❌ Test suite failed: {} + {} WHEA{}\n", errors, whea.total, whea.split_suffix());
+                text += &format!("\n❌ Test suite failed: {errors}\n");
             }
             (text, Written::Plain)
         }
@@ -229,29 +229,24 @@ fn step_report(report: &StepReport) -> String {
     //
     // The ✅/❌ here is a verdict; the 🔴/🟢 in `cycles_info` is not — those mark *which limit ended the test*, so the two glyph pairs are
     // deliberately different.
-    let test_passed = s.errors == 0 && s.seal_errors == 0 && s.whea_total == 0;
-    let pass_indicator = if test_passed { "✅" } else { "❌" };
-    // The test's and, in a sealed run, the seal's (what the checks before this step and its chunks found), in the one form (TODO 109)
+    // The test's, in a sealed run the seal's (what the checks before this step and its chunks found), and WHEA's, in the one form (TODO
+    // 109): WHEA always shown, even at zero, so a clean line still states that we were watching, its C/UC split only when there is
+    // something to split
     let errors = report.errors();
-    let whea = WheaCounts { total: s.whea_total, corrected: s.whea_corrected };
+    let pass_indicator = if errors.total() == 0 { "✅" } else { "❌" };
 
-    // WHEA is always shown, even at zero, so a clean line still states that we were watching; the C/UC split only appears when there is
-    // something to split. "errors" is the word every table uses for these (the `Errors` column) — "data" would collide with the `Data`
-    // column, which is bytes processed.
     // The step's verdict and wall time, the bits that failed on a line of their own (TODO 109: after each count they cluttered it), then
     // its test's own figures, the work around it by operation (TODO 90, `n/a` where it did none), and its config
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "📊 Test report - Cycle {} - Step {} {}: {} {:.1}s, {} + {} WHEA{}{}",
+        "📊 Test report - Cycle {} - Step {} {}: {} {:.1}s, {}{}",
         cycle,
         s.step,
         s.label,
         pass_indicator,
         wall.as_secs_f64(),
         errors,
-        whea.total,
-        whea.split_suffix(),
         cycles_info
     );
     if let Some(bits) = report.failing_bits_line() {

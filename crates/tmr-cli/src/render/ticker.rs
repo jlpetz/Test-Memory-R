@@ -96,9 +96,8 @@ fn suite_line(snapshot: &ProgressSnapshot, errors: ErrorCounts) -> String {
     }
 
     // The one form, the per-test topline's too (TODO 109): always shown, the test and seal parts and the C/UC split only when non-zero
-    let whea = snapshot.whea;
-    let flag = if errors.total() > 0 || whea.total > 0 { "⚠️ " } else { "" };
-    let _ = write!(line, " | {}{} + {} WHEA{}", flag, errors, whea.total, whea.split_suffix());
+    let flag = if errors.total() > 0 { "⚠️ " } else { "" };
+    let _ = write!(line, " | {flag}{errors}");
     line
 }
 

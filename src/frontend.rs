@@ -249,7 +249,7 @@ pub enum Run {
     /// What each thread, CPU and physical core did over the whole run
     CpuPerformance(Box<CpuPerformanceSummary>),
     /// The suite ended: how, the verdict, and the run's errors (`status` is `Failed` exactly when the run failed)
-    SuiteEnded { outcome: RunOutcome, status: RunStatus, errors: ErrorCounts, whea: WheaCounts },
+    SuiteEnded { outcome: RunOutcome, status: RunStatus, errors: ErrorCounts },
     /// The final summary of the run
     FinalSummary(Box<FinalTestSummaryReport>),
     /// The results file was saved, at the end of the run: once, after the final save. The saves between cycles are silent.
@@ -296,9 +296,12 @@ pub struct StepReport {
 }
 
 impl StepReport {
-    /// Its memory errors, its test's and, in a sealed run, the seal's: what the checks before it and its chunks found (TODO 109)
+    /// Its errors, its test's, in a sealed run the seal's (what the checks before it and its chunks found), and the WHEA events while it
+    /// ran (TODO 109)
     pub fn errors(&self) -> ErrorCounts {
-        ErrorCounts { test: self.summary.errors, seal: self.summary.seal_errors, sealed: self.sealed }
+        let s = &self.summary;
+        let whea = WheaCounts { total: s.whea_total, corrected: s.whea_corrected };
+        ErrorCounts { test: s.errors, seal: s.seal_errors, whea, sealed: self.sealed }
     }
 
     /// `Failing bits: test (bits 12, 31), seal (bit 5)`, each part that has any, a line of its own under the step's headline (TODO 109:

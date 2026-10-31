@@ -4,7 +4,7 @@
 
 use std::error::Error;
 
-use tmr::frontend::{CpuPerformanceSummary, FinalTestSummaryReport, Renderer, Reporter, StepReport, TableData, WheaCounts};
+use tmr::frontend::{CpuPerformanceSummary, FinalTestSummaryReport, Renderer, Reporter, StepReport, TableData};
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
@@ -36,15 +36,8 @@ impl Report {
     pub fn of_step(report: &StepReport) -> Self {
         let StepReport { cycle, summary: s, wall, timed_secs, cycle_limit, stopped_by_time, config, threads, latency, .. } = report;
         let errors = report.errors();
-        let failed = errors.total() > 0 || s.whea_total > 0;
-        let whea = WheaCounts { total: s.whea_total, corrected: s.whea_corrected };
-        let verdict = format!(
-            "{} · {:.1} s · {errors} + {} WHEA{}",
-            if failed { "❌ Failed" } else { "✅ Passed" },
-            wall.as_secs_f64(),
-            whea.total,
-            whea.split_suffix()
-        );
+        let failed = errors.total() > 0;
+        let verdict = format!("{} · {:.1} s · {errors}", if failed { "❌ Failed" } else { "✅ Passed" }, wall.as_secs_f64());
 
         let ops_per_sec = if *timed_secs > 0.0 { s.operations as f64 / timed_secs } else { 0.0 };
         let latency_line = match (s.latency_p50_ns, s.latency_spread) {
@@ -98,21 +91,13 @@ impl Report {
     /// The run's final summary: the engine's tables, the overview's verdict first, then the run's work by thread, CPU and core, `work`
     /// (`cpu_performance`; the console prints it just before the summary)
     pub fn of_summary(report: &FinalTestSummaryReport, work: Vec<Block>) -> Self {
-        // The overview's: both error sources fail the run
+        // The overview's: every error fails the run, WHEA's among them
         let errors = report.errors();
-        let failed = errors.total() > 0 || report.whea_total > 0;
-        let whea = if report.whea_monitored {
-            format!(
-                "{} WHEA{}",
-                report.whea_total,
-                WheaCounts { total: report.whea_total, corrected: report.whea_corrected }.split_suffix()
-            )
-        } else {
-            "WHEA not monitored".to_string()
-        };
+        let failed = errors.total() > 0;
+        let whea = if report.whea_monitored { "" } else { ", WHEA not monitored" };
         let cycles = report.cycles_completed;
         let verdict = format!(
-            "{} · {cycles} cycle{} in {} · {errors} + {whea}",
+            "{} · {cycles} cycle{} in {} · {errors}{whea}",
             if failed { "❌ Failed" } else { "✅ Passed" },
             if cycles == 1 { "" } else { "s" },
             report.total_runtime
@@ -257,7 +242,7 @@ mod tests {
         let outline = outline(&report);
         assert_eq!(outline[outline.len() - 3..], ["—", "The run's work, by thread, CPU and core", "the work"], "the run's work last");
         assert!(
-            report.verdict.starts_with("✅ Passed · ") && report.verdict.ends_with("0 errors + WHEA not monitored"),
+            report.verdict.starts_with("✅ Passed · ") && report.verdict.ends_with("0 errors (0 test + 0 WHEA), WHEA not monitored"),
             "{}",
             report.verdict
         );

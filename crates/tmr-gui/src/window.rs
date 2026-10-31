@@ -562,19 +562,9 @@ impl Window {
                     // A tooltip wraps its target: the target's grid placement goes first
                     .tooltip("The suite's runtime, from its first cycle, as the console's ticker counts it"),
             ));
-        // The errors on the left, a non-zero count in the error colour; the time left on the right, under the runtime. Each from the
-        // suite's start. The count keeps its width, the run's most important figure; the time left is what gives way.
+        // The time left on the right, under the runtime, from the suite's start. The run's errors are with the other figures that change as
+        // it runs, beside the cycle (`position`, TODO 109).
         let mut counts: Vec<(u64, View)> = Vec::new();
-        if let Some(count) = &self.model.error_count {
-            let (weight, colour) = if count.alarm { (FontWeight::SEMI_BOLD, p.error) } else { (FontWeight::NORMAL, p.text_secondary) };
-            let text = TextBlock::new().text(count.text.clone()).font_weight(weight).foreground(brush(colour));
-            let about = format!(
-                "{}\nThe run's memory errors, the running test's so far included, and the hardware errors WHEA reported: \
-                 C corrected, UC uncorrected",
-                count.text
-            );
-            counts.push((0, text.grid_column(0).tooltip(about)));
-        }
         if let Some(time_left) = &self.model.time_left {
             let text = TextBlock::new()
                 .text(time_left.clone())
@@ -676,39 +666,52 @@ impl Window {
         StackPanel::new().spacing(2.0).horizontal_alignment(HorizontalAlignment::Right).keyed_children(lines)
     }
 
-    /// The position, the cycle and the test with their clocks, and beside it, right-justified, what the test is doing: its stage and its
-    /// figures. Then the progress bar. The position keeps its width beside the figures, which give way when the window is narrow; alone,
-    /// it takes the line, and is cut short past it, its tooltip having it all.
+    /// Where the run is, as the console's ticker has it, its two lines together (TODO 109): the cycle, the run's errors beside it, in the
+    /// error colour once there are any; under it the test, its stage and figures beside it. Then the progress bar. A line's left part keeps
+    /// its width beside its right, which gives way when the window is narrow; alone, it takes the line, and is cut short past it, its
+    /// tooltip having it all.
     fn position(&self, row: i32) -> View {
         let p = self.palette();
         let paused = matches!(self.model.status, Status::Stopping | Status::Interrupted);
-        let position = &self.model.position;
-        let mut line: Vec<(u64, View)> = vec![(
-            0,
-            TextBlock::new()
-                .text(position.clone())
-                .font_size(16.0)
-                .font_weight(FontWeight::SEMI_BOLD)
-                .foreground(brush(p.text_primary))
-                .text_trimming(TextTrimming::CharacterEllipsis)
-                .vertical_alignment(VerticalAlignment::Center)
-                .grid_column(0)
-                .tooltip(position.clone()),
-        )];
-        let columns = match &self.model.live {
-            Some(live) => {
-                let text =
-                    TextBlock::new().text(live.clone()).foreground(brush(p.text_secondary)).text_trimming(TextTrimming::CharacterEllipsis);
-                let text = text.horizontal_alignment(HorizontalAlignment::Right).vertical_alignment(VerticalAlignment::Center);
-                line.push((1, text.grid_column(1).tooltip(live.clone())));
-                vec![GridLength::Auto, GridLength::STAR]
-            }
-            None => vec![GridLength::STAR],
+        let line = |left: TextBlock, about: String, right: Option<View>| -> View {
+            let left = left.text_trimming(TextTrimming::CharacterEllipsis).vertical_alignment(VerticalAlignment::Center);
+            let mut parts: Vec<(u64, View)> = vec![(0, left.grid_column(0).tooltip(about))];
+            let columns = match right {
+                Some(right) => {
+                    parts.push((1, right));
+                    vec![GridLength::Auto, GridLength::STAR]
+                }
+                None => vec![GridLength::STAR],
+            };
+            Grid::new().column_spacing(16.0).columns(columns).keyed_children(parts)
         };
-        StackPanel::new().grid_row(row).spacing(6.0).children((
-            Grid::new().column_spacing(16.0).columns(columns).keyed_children(line),
-            progress_bar(&self.model.bar, paused, self.width - 2.0 * PAGE_MARGIN_X, p),
-        ))
+        let right = |text: TextBlock, about: String| -> View {
+            let text = text.text_trimming(TextTrimming::CharacterEllipsis).horizontal_alignment(HorizontalAlignment::Right);
+            text.vertical_alignment(VerticalAlignment::Center).grid_column(1).tooltip(about)
+        };
+        let position = &self.model.position;
+        let errors = self.model.error_count.as_ref().map(|count| {
+            let (weight, colour) = if count.alarm { (FontWeight::SEMI_BOLD, p.error) } else { (FontWeight::NORMAL, p.text_secondary) };
+            let about = format!(
+                "{}\nThe run's errors, the running test's so far included: the tests' bad words, the seal's, and the hardware errors WHEA \
+                 reported, C corrected and UC uncorrected. Any of them fails the run.",
+                count.text
+            );
+            right(TextBlock::new().text(count.text.clone()).font_weight(weight).foreground(brush(colour)), about)
+        });
+        let cycle =
+            TextBlock::new().text(position.clone()).font_size(16.0).font_weight(FontWeight::SEMI_BOLD).foreground(brush(p.text_primary));
+        let mut lines: Vec<(u64, View)> = vec![(0, line(cycle, position.clone(), errors))];
+        if let Some(test) = &self.model.test_position {
+            let figures = self
+                .model
+                .live
+                .as_ref()
+                .map(|live| right(TextBlock::new().text(live.clone()).foreground(brush(p.text_secondary)), live.clone()));
+            lines.push((1, line(TextBlock::new().text(test.clone()).foreground(brush(p.text_primary)), test.clone(), figures)));
+        }
+        lines.push((2, progress_bar(&self.model.bar, paused, self.width - 2.0 * PAGE_MARGIN_X, p)));
+        StackPanel::new().grid_row(row).spacing(6.0).keyed_children(lines)
     }
 
     /// The command bar (TODO 109), every control in one place, at the top: the parameters box, as wide as a run's parameters want and no

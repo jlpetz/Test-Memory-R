@@ -30,7 +30,7 @@ fn events_print_as_their_golden() {
         |names: &[&str]| Run::LeftOut { tests: names.iter().map(|name| (name.to_string(), "no AVX-512F".to_string())).collect() };
     // A sealed run's: its errors the test's, and in the last case, one of them the seal's
     let verdict =
-        |outcome, status, test, seal, whea| Run::SuiteEnded { outcome, status, errors: ErrorCounts { test, seal, sealed: true }, whea };
+        |outcome, status, test, seal, whea| Run::SuiteEnded { outcome, status, errors: ErrorCounts { test, seal, whea, sealed: true } };
     let suite = |seed, transfer_bits, transfer_source| Run::SuiteStarted {
         progress: Arc::new(ProgressTracker::new()),
         seed,

@@ -264,14 +264,15 @@ pub struct FinalTestSummaryReport {
 }
 
 impl FinalTestSummaryReport {
-    /// The run's memory errors, its tests' and the seal's (TODO 109): the seal's are what its checks before the steps' chunks and before
+    /// The run's errors, its tests', the seal's and WHEA's (TODO 109): the seal's are what its checks before the steps' chunks and before
     /// the steps found (each test's `seal_errors`) and its final checks
     pub fn errors(&self) -> crate::progress::ErrorCounts {
         let seal = self
             .seal
             .as_ref()
             .map_or(0, |seal| seal.final_check_errors + self.per_test_summaries.iter().map(|test| test.seal_errors).sum::<u64>());
-        crate::progress::ErrorCounts { test: self.total_errors.saturating_sub(seal), seal, sealed: self.seal.is_some() }
+        let whea = crate::whea::WheaCounts { total: self.whea_total, corrected: self.whea_corrected };
+        crate::progress::ErrorCounts { test: self.total_errors.saturating_sub(seal), seal, whea, sealed: self.seal.is_some() }
     }
 }
 

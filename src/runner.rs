@@ -1192,7 +1192,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     // is derived from it directly. A halt fails the run even at zero counts: the one halt trigger that carries no count is a lost worker
     // result.
     let errors = progress.errors();
-    let failed = outcome == RunOutcome::Halted || errors.total() > 0 || whea_totals.total > 0;
+    let failed = outcome == RunOutcome::Halted || errors.total() > 0;
     // `tests_done` counts the current cycle only; a finished cycle means tests ran.
     let any_test_ran = cycles_done > 0 || progress.tests_done() > 0;
     let status = if failed {
@@ -1206,7 +1206,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     };
 
     // The verdict
-    fe.event(Run::SuiteEnded { outcome, status, errors, whea: whea_totals }.into());
+    fe.event(Run::SuiteEnded { outcome, status, errors }.into());
 
     // Always display and save results (even for partial/interrupted runs)
     display_and_save_results(&test_run_result, suite_duration, whea_totals, whea_monitored, outcome, status, fe.as_ref());

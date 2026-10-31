@@ -37,7 +37,7 @@ Stage 1: Pre-allocating memory blocks...
 ## a final check that found errors
 🔒 Final seal check (tmr-256): 2 errors (bit 5), 1.2s, 24.00 GiB @ 20827 MiB/s
 ## a step unsealed, ended by its time limit, with a WHEA event and repetitions
-📊 Test report - Cycle 3 - Step 5 Mem-Refresh256 (Test 7): ❌ 61.2s, 0 errors + 1 WHEA (1C/0UC), Cycles 🟢 5/∞, Time Limit 🔴
+📊 Test report - Cycle 3 - Step 5 Mem-Refresh256 (Test 7): ❌ 61.2s, 1 error (0 test + 1 WHEA 1C/0UC), Cycles 🟢 5/∞, Time Limit 🔴
    Test: 60.0s, 120.00 GiB @ 2048 MiB/s, 2.50B ops @ 41.67M ops/s
    Intermediate: seal fill n/a; seal check n/a; pattern fill n/a; chain build n/a
    Config: parameter=-, mode=TMR-10, extent=FullAllocation, chunk=Absolute (4.00 MiB), test_reps=2, verify_reps=3, wrc=1
@@ -48,7 +48,7 @@ Stage 1: Pre-allocating memory blocks...
          1           0           0      0            59.5s       -0.2s   60.00 GiB     +0.00 B  1032.6 MiB/s        +4.3           4           0                  ✅       
        Avg                                           59.8s               60.00 GiB              1028.3 MiB/s                     4.5           0  1 (1C/0UC)      ❌       
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 0 errors (0 test + 0 seal) + 1 WHEA (1C/0UC) | Test 5/6 Mem-Refresh256 (Test 7) (00:01:01)
+Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 1 error (0 test + 0 seal + 1 WHEA 1C/0UC) | Test 5/6 Mem-Refresh256 (Test 7) (00:01:01)
 
 ## WHEA after the monitor's last tick
 ⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)
@@ -95,10 +95,10 @@ Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 0 er
 ✅ All test cycles completed successfully!
 ## errors
 
-❌ Test suite failed: 3 errors (3 test + 0 seal) + 0 WHEA
+❌ Test suite failed: 3 errors (3 test + 0 seal + 0 WHEA)
 ## halted on a WHEA event
 
-❌ Test suite failed: 0 errors (0 test + 0 seal) + 1 WHEA (0C/1UC)
+❌ Test suite failed: 1 error (0 test + 0 seal + 1 WHEA 0C/1UC)
 ## interrupted
 
 ⚠️  Test suite interrupted by user (CTRL+C)
@@ -106,7 +106,7 @@ Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 0 er
 
 ⚠️  Test suite interrupted by user (CTRL+C)
 
-❌ Test suite failed: 2 errors (1 test + 1 seal) + 2 WHEA (2C/0UC)
+❌ Test suite failed: 4 errors (1 test + 1 seal + 2 WHEA 2C/0UC)
 ## interrupted before any test
 
 ⚠️  Test suite interrupted by user (CTRL+C)

@@ -83,33 +83,39 @@ impl RunOutcome {
     }
 }
 
-/// A run's or a step's memory errors (TODO 109), as every frontend and report words them: `4 errors (2 test + 2 seal)`, the total, then in
-/// a sealed run the test's and the seal's parts, `0 errors (0 test + 0 seal)` too; unsealed, `3 errors`. WHEA's are never in the total: a
-/// WHEA event is the hardware's own report (a corrected one can be a fault TMR never read), not a bad word TMR read back, so a sum would
-/// mean neither. Each frontend puts them after it: `+ 2 WHEA (1C/1UC)`.
+/// A run's or a step's errors (TODO 109), as every frontend and report words them, one consolidated count with where each came from (the
+/// owner, 2026-10-31): `3 errors (1 test + 1 seal + 1 WHEA 1C/0UC)`, the test's bad words, the seal's, and the hardware events WHEA
+/// reported, its corrected and uncorrected when it has any; `0 errors (0 test + 0 seal + 0 WHEA)`; unsealed, `0 errors (0 test + 0 WHEA)`.
+/// WHEA is in the total as it is in the verdict: TMR takes every WHEA hardware event (`whea.rs`), as any of them during a run is evidence
+/// the overclock isn't stable. The tables keep each in a column of its own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ErrorCounts {
     pub test: u64,
     pub seal: u64,
+    pub whea: crate::whea::WheaCounts,
     /// The run is sealed, so the seal's part is shown, 0 or not
     pub sealed: bool,
 }
 
 impl ErrorCounts {
+    /// Every error, the test's, the seal's and WHEA's: what the verdict fails on
     pub fn total(self) -> u64 {
-        self.test + self.seal
+        self.test + self.seal + self.whea.total
     }
 }
 
 impl fmt::Display for ErrorCounts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let total = self.total();
-        write!(f, "{total} error{}", if total == 1 { "" } else { "s" })?;
-        // Always in a sealed run, zeros too (the owner, 2026-10-31): the parts say what was checked
+        write!(f, "{total} error{} ({} test", if total == 1 { "" } else { "s" }, self.test)?;
         if self.sealed {
-            write!(f, " ({} test + {} seal)", self.test, self.seal)?;
+            write!(f, " + {} seal", self.seal)?;
         }
-        Ok(())
+        write!(f, " + {} WHEA", self.whea.total)?;
+        if self.whea.total > 0 {
+            write!(f, " {}C/{}UC", self.whea.corrected, self.whea.uncorrected())?;
+        }
+        write!(f, ")")
     }
 }
 
@@ -125,7 +131,7 @@ impl ProgressSnapshot {
     }
 
     fn counts(&self, total: u64, seal: u64) -> ErrorCounts {
-        ErrorCounts { test: total.saturating_sub(seal), seal, sealed: self.sealed }
+        ErrorCounts { test: total.saturating_sub(seal), seal, whea: self.whea, sealed: self.sealed }
     }
 }
 
@@ -346,11 +352,12 @@ impl ProgressTracker {
         self.position().tests_done
     }
 
-    /// The memory errors of every finished step, the tests' and the seal's (TODO 109)
+    /// The errors of every finished step, the tests' and the seal's, and the run's WHEA events (TODO 109)
     pub(crate) fn errors(&self) -> ErrorCounts {
+        let whea = self.whea.counts();
         let position = self.position();
         let sealed = self.suite.get().is_some_and(|plan| plan.sealed);
-        ErrorCounts { test: position.errors.saturating_sub(position.seal_errors), seal: position.seal_errors, sealed }
+        ErrorCounts { test: position.errors.saturating_sub(position.seal_errors), seal: position.seal_errors, whea, sealed }
     }
 
     /// The suite is over: the monitor thread makes its frontend's last call (`ticks_done`) and exits. There is no final ticker line,
@@ -482,8 +489,8 @@ mod tests {
             (1, Some(2), Some(Duration::from_secs(600)), 0, 4)
         );
         assert_eq!((running.finished_errors, running.live_errors, running.whea.total), (0, 3, 0));
-        assert_eq!(running.errors(), ErrorCounts { test: 2, seal: 1, sealed: true }, "the seal's part apart");
-        assert_eq!(running.errors().to_string(), "3 errors (2 test + 1 seal)");
+        assert_eq!(running.errors(), ErrorCounts { test: 2, seal: 1, whea: Default::default(), sealed: true }, "the seal's part apart");
+        assert_eq!(running.errors().to_string(), "3 errors (2 test + 1 seal + 0 WHEA)");
         let test = running.test.as_ref().expect("a test is running");
         assert_eq!(
             (test.number, test.name.as_str(), test.time_limit, test.finished, test.publishes),
@@ -505,18 +512,37 @@ mod tests {
         let finished = progress.snapshot().expect("the suite has begun");
         assert_eq!((finished.tests_done, finished.finished_errors, finished.live_errors, finished.finished_seal_errors), (1, 3, 0, 1));
         progress.add_seal_errors(4);
-        assert_eq!(progress.snapshot().map(|s| s.errors().to_string()).as_deref(), Some("7 errors (2 test + 5 seal)"), "a final check's");
+        assert_eq!(
+            progress.snapshot().map(|s| s.errors().to_string()).as_deref(),
+            Some("7 errors (2 test + 5 seal + 0 WHEA)"),
+            "a final check's"
+        );
         let test = finished.test.as_ref().expect("the test that finished");
         assert_eq!((test.finished, test.live.errors), (true, 3));
     }
 
-    /// TODO 109: the errors' one form: the total, its parts in a sealed run with errors, one error singular, WHEA never in it
+    /// TODO 109: the errors' one form: the total, WHEA's in it, then its parts, the seal's in a sealed run, WHEA's split when it has any;
+    /// one error singular
     #[test]
     fn errors_are_the_total_then_its_parts() {
-        let count = |test, seal, sealed| ErrorCounts { test, seal, sealed }.to_string();
-        assert_eq!([count(0, 0, true), count(1, 0, true), count(2, 2, true), count(3, 0, false), count(1, 0, false)], [
-            "0 errors (0 test + 0 seal)", "1 error (1 test + 0 seal)", "4 errors (2 test + 2 seal)", "3 errors", "1 error"
-        ]);
+        let whea = |total, corrected| crate::whea::WheaCounts { total, corrected };
+        let count = |test, seal, whea, sealed| ErrorCounts { test, seal, whea, sealed }.to_string();
+        assert_eq!(
+            [
+                count(0, 0, whea(0, 0), true),
+                count(1, 0, whea(0, 0), true),
+                count(1, 1, whea(1, 1), true),
+                count(3, 0, whea(2, 0), false),
+                count(0, 0, whea(0, 0), false)
+            ],
+            [
+                "0 errors (0 test + 0 seal + 0 WHEA)",
+                "1 error (1 test + 0 seal + 0 WHEA)",
+                "3 errors (1 test + 1 seal + 1 WHEA 1C/0UC)",
+                "5 errors (3 test + 2 WHEA 0C/2UC)",
+                "0 errors (0 test + 0 WHEA)"
+            ]
+        );
     }
 
     /// TODO 109: the seal's work before a step's test publishes as the test's figures, marked the seal's; once the test starts, the
