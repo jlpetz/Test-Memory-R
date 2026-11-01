@@ -61,7 +61,7 @@ impl OpWork {
     /// MiB/s, when it covered bytes in measurable time
     pub fn mib_s(&self) -> Option<f64> {
         let secs = self.time.as_secs_f64();
-        (self.bytes > 0 && secs > 0.0).then(|| self.bytes as f64 / (1024.0 * 1024.0) / secs)
+        (self.bytes > 0 && secs > 0.0).then_some(self.bytes as f64 / (1024.0 * 1024.0) / secs)
     }
 }
 
