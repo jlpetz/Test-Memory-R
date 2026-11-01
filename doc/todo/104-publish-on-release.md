@@ -218,3 +218,20 @@ Code signing is its own question, whichever the package: an unsigned download ge
 "Windows protected your PC" until it builds a reputation, and a signed one does too until its
 certificate has one (Microsoft's SmartScreen page); Smart App Control blocks unsigned apps however
 they arrive.
+
+## Inno Setup 7.1.1: not yet (checked 2026-11-01)
+
+The owner asked whether release.yml should move from 7.1.0 to 7.1.1 (released 2026-10-28; its x64
+setup's SHA-256 `8a5a6711...b3f0`, GitHub's digest and winget-pkgs' manifest agreeing). Not yet:
+- An installer carries its setup data's version (`SetupID` in issrc's `Projects/Src/Shared.Struct.pas`):
+  7.1.0 writes `7.0.0.3`, 7.1.1 writes `7.1.1`, with the data's format changed.
+- Komac reads our installer for the winget manifest through the `inno` crate, whose
+  `MAX_SUPPORTED_VERSION` is 7.0.x in 0.7.0 (Komac 2.17.1's), 0.7.2 and its main on 2026-11-01. So
+  a 7.1.1-built installer would fail the winget step (`UnsupportedVersion`).
+- Nothing in 7.1.1 matters to our installer: a Sign Tool path change (we don't sign), a screen-reader
+  fix for checkbox lists, a download error's message (we download nothing), long button captions in
+  some languages, and the Compiler IDE's own fixes.
+
+The trigger: an `inno` release that raises `MAX_SUPPORTED_VERSION` past 7.0.x, and a Komac release
+on it. Then bump both pins together (their SHA-256s from winget-pkgs' manifest and Komac's
+SHA256SUMS), and the note beside the winget step.

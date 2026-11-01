@@ -81,7 +81,10 @@ jobs:
         Get-ChildItem $stage -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
 
     # Inno Setup 7.1, for its 64-bit setup (SetupArchitecture=x64). The runners and Chocolatey have only 6.7, so its own release, pinned
-    # by its SHA-256 (winget-pkgs' manifest for JRSoftware.InnoSetup.7 7.1.0), into a folder of the job's
+    # by its SHA-256 (winget-pkgs' manifest for JRSoftware.InnoSetup.7 7.1.0), into a folder of the job's temp. Not 7.1.1 yet (checked
+    # 2026-11-01): its installers' setup data is version 7.1.1 where 7.1.0's is 7.0.0.3, and Komac's reader (the inno crate, 0.7.2 and
+    # its main) takes at most 7.0.x, so the winget step below would fail. Bump when an inno release raises its MAX_SUPPORTED_VERSION and
+    # a Komac release takes it; nothing in 7.1.1 is needed here meanwhile (TODO 104's detail).
     - name: 📦 Build the installer
       shell: pwsh
       run: |
@@ -197,7 +200,8 @@ jobs:
     # and their switches (/ALLUSERS, /CURRENTUSER, from PrivilegesRequiredOverridesAllowed), the ProductCode (the AppId's, which never
     # changes) and this version's Apps & Features name. The installer manifest's root fields (Commands, Dependencies, MinimumOSVersion)
     # carry over from the version before, unchanged (a new MinVersion or runtime is the pull request's to edit by hand); a field under
-    # an installer doesn't. Komac 2.17 reads Inno Setup up to 7.1, so a newer Inno Setup above needs a newer Komac. A pull request for this
+    # an installer doesn't. Komac 2.17 reads setup data up to version 7.0.x, which Inno Setup 7.1.0 writes (7.0.0.3) and 7.1.1 doesn't, so
+    # a newer Inno Setup above needs a newer Komac. A pull request for this
     # version in any state makes it exit without another, so a re-run opens no second one. The fork is synced first, as winget-releaser
     # does: winget-pkgs changes its own workflows often, and a fork behind them can't take the branch (so the token has public_repo and
     # workflow; it is a separate bot account's, the owner 2026-10-28, so a leak reaches that account, not Test-Memory-R).
