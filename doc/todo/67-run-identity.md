@@ -31,7 +31,8 @@ reconstructed from `logs/`, and `--compare-results` had no basis on which to war
   full precision: whole MiB/s, 2 dp GiB, and `ByteSize` human units that only use a unit dividing
   the value **exactly**, so `"480 MiB"` round-trips and `49153` stays `"49153 B"`. The four
   `*_throughput_gib_s` fields were removed as duplicates (every producer computed `mib_s / 1024.0`);
-  rounding had made the pair mutually inconsistent.
+  rounding had made the pair mutually inconsistent. (The rounding went 2026-11-02, TODO 72: the file
+  saves its figures unrounded, for tools and an exact replay. `ByteSize` stays: it is exact.)
 
 **Timestamp alignment (2026-09-09)** — the log and result files of a single run could not be paired.
 `setup_logging()` used `Local::now()` and `TestRunResult::new()` used `Utc::now()`, sampled at

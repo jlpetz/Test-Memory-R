@@ -105,6 +105,25 @@ and saves it after each cycle. Run on 2026-10-22, release build, on the dev box 
 | final save | `to_string_pretty` 19.4 ms; `save_atomic` 37 ms with the flush to the disk, 24 ms before it |
 | over the run | 220.4 MB written by the 50 saves, 462 ms serializing in all |
 
+**Unrounded, 2026-11-02.** The file saves its figures as the run has them, none rounded (the owner:
+the file is for tools, and an exact replay needs the raw values); before, a speed was saved whole
+and times, latencies and GiB to 2 dp. The size test's figures are now worked out as a run's are
+(from a `Duration`, cycles over the TSC's GHz, bytes over time), where they were 2 dp already.
+Rounded on save, those figures give the table's sizes to within 0.01 MB (8.64 MB pretty, not
+8.63); unrounded:
+
+| What | Rounded | Unrounded | Growth |
+|---|---|---|---|
+| final file, pretty | 8.64 MB (311 B a record) | 8.97 MB (322 B a record) | +0.33 MB, +3.8% |
+| final file, compact | 3.64 MB | 3.98 MB | +0.34 MB, +9.3% |
+| over the run | 220.5 MB | 229.1 MB | +8.6 MB, +3.9% |
+
+The time to serialize didn't change (the two builds alternated, three runs each: `to_string_pretty`
+19.1-19.4 ms on the final file, 459-468 ms over the run, either way). A cycle adds 0.18 MB at
+32 x 16, not 0.17; the shapes below grow by about 4% too. The console's final summary from a saved
+and loaded file is the text it showed at the run's end, figures and all (`tmr-cli`'s
+`renderer::tests::the_final_summary_from_the_results_file_is_the_consoles`).
+
 The design's estimate (about 300 B a record, 7.7 MB final, 200 MB over the run) holds for this
 shape. Other shapes, worked out from the measured 311 B a thread record and about 840 B a step for
 the rest (0.67 MB over 800 steps), and the measured 445 MB/s of `to_string_pretty`:

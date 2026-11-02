@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::constants::{BYTES_PER_GIB_F64, MB_F64};
 use crate::failing_bits::FailingBits;
-use crate::formatting::{serialize_round_2dp, serialize_round_int, serialize_round_opt_2dp};
 use crate::progress::TestSummary;
 
 /// For `skip_serializing_if`: a count that is zero is left out, and reads back as zero.
@@ -29,6 +28,9 @@ fn write_to_disk(path: &str, bytes: &[u8], new: bool) -> std::io::Result<()> {
     file.sync_all()
 }
 
+/// A run's results file. Its figures are saved as the run has them, none rounded (the owner, TODO 72): the file is for tools, and a replay
+/// of what the console showed needs the raw values, which a reader rounds as it shows them. Rounded, a speed of 43122.8 MiB/s read back as
+/// 43123, and a test run twice a cycle at 100.6 and 101.6 MiB/s averaged 101.5 from the file, not the 101.1 the console showed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestRunResult {
     pub metadata: TestRunMetadata,
@@ -126,7 +128,7 @@ pub struct TestResult {
     pub duration_ms: u128,
     /// The test's own time, its slowest thread's: the step's without the setup a test leaves out of its clock (TODO 90), which its speed
     /// divides by; the console's `Test:` time (TODO 72). 0 in results written before it.
-    #[serde(default, serialize_with = "serialize_round_2dp")]
+    #[serde(default)]
     pub timed_ms: f64,
     pub bytes_processed: u64,
     /// The operations its threads counted, the console's `ops` (TODO 72); 0 in results written before it
@@ -148,7 +150,6 @@ pub struct TestResult {
     pub intermediate: OpRecords,
     /// Recorded in MiB/s only. A GiB/s field alongside it would be the same measurement stored twice — every producer computed it as `mib_s
     /// / 1024.0` — and rounding the pair to different scales made the two disagree. Readers that want GiB/s divide by 1024.
-    #[serde(serialize_with = "serialize_round_int")]
     pub throughput_mib_s: f64,
     pub errors: u64,
     /// Checks that found a difference (TODO 27). `errors` counts the bad words their rescans found, and one for each check a rescan didn't
@@ -172,25 +173,25 @@ pub struct TestResult {
     // Latency metrics (Some for latency tests, None for other tests)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_samples: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p5_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p10_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p25_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p50_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p75_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p90_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p95_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p99_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p99_9_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_spread: Option<f64>,
     /// Each thread's part of the step, by thread (TODO 72): what the console's thread table shows, and where the thread ran. Absent for a
     /// step that didn't run, and in results written before it.
@@ -212,7 +213,6 @@ pub struct ThreadStepRecord {
     pub node: Option<u32>,
     pub bytes: u64,
     /// Its own time on the test (`WorkResult::timed`), else its time on the step
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub ms: f64,
     pub errors: u64,
     /// As the step's, its own
@@ -233,14 +233,10 @@ pub struct ThreadStepRecord {
 /// One thread's latencies in a step (`ThreadStepRecord::latency`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct ThreadLatency {
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub min_ns: f64,
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub p50_ns: f64,
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub p99_ns: f64,
     /// P95 / P5
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub spread: f64,
 }
 
@@ -248,14 +244,12 @@ pub struct ThreadLatency {
 pub struct CycleStats {
     pub total_bytes: u64,
     pub total_errors: u64,
-    #[serde(serialize_with = "serialize_round_int")]
     pub avg_throughput_mib_s: f64,
 }
 
 /// One operation's work in the results file (TODO 90): its time and the bytes it covered.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpRecord {
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub ms: f64,
     pub bytes: u64,
 }
@@ -287,9 +281,7 @@ pub struct OverallStats {
     pub status: Option<String>,
     pub total_runtime_secs: u64,
     pub cycles_completed: u32,
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub total_data_processed_gib: f64,
-    #[serde(serialize_with = "serialize_round_int")]
     pub overall_throughput_mib_s: f64,
     pub total_errors: u64,
     // Run-level WHEA tally, taken from the monitor's cumulative counters rather than summed from the per-test figures (see
@@ -324,7 +316,6 @@ pub struct TestAverage {
     pub label: String,
     pub avg_duration_ms: u128,
     pub avg_bytes_processed: u64,
-    #[serde(serialize_with = "serialize_round_int")]
     pub avg_throughput_mib_s: f64,
     pub total_errors: u64,
     pub total_seal_errors: u64,
@@ -342,25 +333,25 @@ pub struct TestAverage {
     // Latency metrics (averaged across cycles, Some for latency tests, None for other tests)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_samples: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p5_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p10_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p25_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p50_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p75_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p90_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p95_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p99_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_p99_9_ns: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_round_opt_2dp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_spread: Option<f64>,
 }
 
@@ -379,13 +370,9 @@ pub struct TestComparison {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OverallComparison {
     pub runtime_diff_secs: i64,
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub runtime_diff_percent: f64,
-    #[serde(serialize_with = "serialize_round_int")]
     pub throughput_diff_mib_s: f64,
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub throughput_diff_percent: f64,
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub data_processed_diff_gib: f64,
     pub errors_diff: i64,
 }
@@ -398,11 +385,8 @@ pub struct TestComparisonResult {
     pub name: String,
     pub label: String,
     pub duration_diff_ms: i128,
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub duration_diff_percent: f64,
-    #[serde(serialize_with = "serialize_round_int")]
     pub throughput_diff_mib_s: f64,
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub throughput_diff_percent: f64,
     pub bytes_diff: i64,
     pub errors_diff: i64,
@@ -1011,25 +995,25 @@ impl TestComparison {
 }
 
 /// A directory of a test's own in the system's temp directory, for the results files it writes, removed with what it holds when it drops, a
-/// failed test's too.
-#[cfg(test)]
+/// failed test's too. The test support's too (`test_support::final_summary_saved_and_loaded`).
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct TempDir(std::path::PathBuf);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl TempDir {
     pub(crate) fn new(name: &str) -> Self {
         let dir = std::env::temp_dir().join(format!("tmr-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
         TempDir(dir)
     }
 
     pub(crate) fn file(&self, name: &str) -> String {
-        self.0.join(name).to_str().unwrap().to_string()
+        self.0.join(name).to_str().expect("the temp directory's path is UTF-8").to_string()
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
@@ -1273,8 +1257,9 @@ mod tests {
     }
 
     /// The per-cycle save on a long run (TODO 72): 32 threads, 16 steps (2 of them latency steps) and 50 sealed cycles, every step with its
-    /// thread records, saved after each cycle as a run of cycles of a minute or more saves. Prints the final file's size, pretty and
-    /// compact, the time to serialize and to save it, and what the run writes in all; the figures are in
+    /// thread records, saved after each cycle as a run of cycles of a minute or more saves. Its figures are worked out as a run's are, a
+    /// time from a `Duration`, a latency from cycles over the TSC's GHz, a speed from bytes over time, so they have a run's digits. Prints
+    /// the final file's size, pretty and compact, the time to serialize and to save it, and what the run writes in all; the figures are in
     /// doc/todo/72-results-console-parity.md.
     /// `cargo test --release -- --ignored a_long_runs_results_file --nocapture`
     #[test]
@@ -1286,6 +1271,8 @@ mod tests {
         const THREADS: usize = 32;
         const STEPS: usize = 16;
         const CYCLES: u32 = 50;
+        let ms = |nanos: u64| Duration::from_nanos(nanos).as_secs_f64() * 1000.0;
+        let ns = |cycles: f64| cycles / 4.299_874;
         let (_, mut result) = written_before_todo_72();
         result.cycles.clear();
         let record = |thread: usize, step: usize, latency: bool| ThreadStepRecord {
@@ -1294,26 +1281,33 @@ mod tests {
             core: Some(thread),
             node: Some((thread / 16) as u32),
             bytes: 1_073_741_824 + 4096 * thread as u64,
-            ms: 4_123.45 + thread as f64,
+            ms: ms(4_123_456_789 + 1_000_003 * thread as u64),
             errors: 0,
             operations: 134_217_728 + step as u64,
             cycles: 3,
-            latency: latency.then_some(ThreadLatency { min_ns: 70.12, p50_ns: 72.53, p99_ns: 85.07, spread: 1.08 }),
+            latency: latency.then(|| ThreadLatency {
+                min_ns: ns(301.5 + thread as f64),
+                p50_ns: ns(311.9),
+                p99_ns: ns(365.8),
+                spread: ns(328.1) / ns(302.9),
+            }),
             ..Default::default()
         };
         let step = |n: usize| {
             let latency = n > STEPS - 2;
             let mut ops = crate::ops::OpTally::default();
-            ops.add(Op::SealCheck, Duration::from_millis(350), 32 << 30);
-            ops.add(Op::SealFill, Duration::from_millis(420), 32 << 30);
+            ops.add(Op::SealCheck, Duration::from_nanos(350_123_457), 32 << 30);
+            ops.add(Op::SealFill, Duration::from_nanos(420_987_654), 32 << 30);
+            let timed_ms = ms(4_155_456_789 + n as u64);
             TestSummary {
-                timed_ms: 4_155.45,
+                timed_ms,
                 operations: 4_294_967_296 + n as u64,
                 ops,
+                throughput_mib_s: (32u64 << 30) as f64 / MB_F64 / (timed_ms / 1000.0),
                 latency_samples: latency.then_some(64_000),
-                latency_p50_ns: latency.then_some(72.53),
-                latency_p99_ns: latency.then_some(85.07),
-                latency_spread: latency.then_some(1.08),
+                latency_p50_ns: latency.then(|| ns(311.9)),
+                latency_p99_ns: latency.then(|| ns(365.8)),
+                latency_spread: latency.then(|| ns(328.1) / ns(302.9)),
                 threads: (0..THREADS).map(|thread| record(thread, n, latency)).collect(),
                 ..summary(n, 4_200, 32 << 30, 0)
             }

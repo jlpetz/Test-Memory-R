@@ -285,3 +285,60 @@ pub fn final_summary_report() -> FinalTestSummaryReport {
     result.set_whea_totals(crate::whea::WheaCounts { total: 1, corrected: 1 }, true);
     crate::reporting::converters::create_overall_stats_summary_report(&result)
 }
+
+/// The final summary of a run as the console shows it at the run's end, and as its results file gives it, saved and loaded (TODO 72): the
+/// CLI's test renders the two and finds them the same text. The run is two sealed cycles with a run's figures, not round ones:
+/// Mem-StuckBit256_A twice a cycle, at 100.6 and 101.6 MiB/s, which average 101.1 (101.5 from the two rounded to whole MiB/s); a latency
+/// step between them whose P75 is 72.7496 ns (rounded to 2 dp, 72.75, which shows as 72.8); the seal's work and a step's timed to the
+/// nanosecond; over 63 s, so 30.48 MiB/s in all.
+pub fn final_summary_saved_and_loaded() -> (FinalTestSummaryReport, FinalTestSummaryReport) {
+    use crate::ops::Op;
+    use crate::reporting::converters::create_overall_stats_summary_report;
+    use crate::results::{CycleSeal, TempDir, TestRunResult};
+    let step = |n: usize, test_index: usize, name: &str, bytes: u64, mib_s: f64| TestSummary {
+        test_index,
+        name: name.to_string(),
+        label: name.to_string(),
+        timed_ms: bytes as f64 / MIB as f64 / mib_s * 1000.0,
+        throughput_mib_s: mib_s,
+        ..summary(n, 4_000 + 777 * n as u128, bytes, 0)
+    };
+    let latency = TestSummary {
+        latency_samples: Some(2048),
+        latency_p5_ns: Some(71.032_557_917_235_8),
+        latency_p10_ns: Some(71.497_673_428_103_6),
+        latency_p25_ns: Some(72.009_531_714_377_1),
+        latency_p50_ns: Some(72.497_101_386_412_3),
+        latency_p75_ns: Some(72.749_631_578_947_4),
+        latency_p90_ns: Some(74.502_234_512_998_1),
+        latency_p95_ns: Some(76.471_398_215_664_2),
+        latency_p99_ns: Some(85.049_877_106_337_9),
+        latency_p99_9_ns: Some(112.503_721_941_802_7),
+        latency_spread: Some(76.471_398_215_664_2 / 71.032_557_917_235_8),
+        ..step(2, 1, "Lat-L1-Read", 48 << 10, 410.373_917_628_441)
+    };
+    let mut ops = crate::ops::OpTally::default();
+    ops.add(Op::SealCheck, Duration::from_nanos(350_123_457), 480 * MIB);
+    ops.add(Op::SealFill, Duration::from_nanos(420_987_654), 480 * MIB);
+    let seal = CycleSeal {
+        seal_ms: 410,
+        seal_bytes: 960 * MIB,
+        between_steps_ms: 90,
+        final_check_ms: 380,
+        final_check_bytes: 960 * MIB,
+        ..Default::default()
+    };
+    let mut result = TestRunResult::new(Default::default());
+    for cycle in 1..=2 {
+        let stuck_bit = |n: usize, mib_s: f64| step(n, 0, "Mem-StuckBit256_A", 480 * MIB, mib_s);
+        let steps = vec![stuck_bit(1, 100.6), latency.clone(), TestSummary { ops, ..stuck_bit(3, 101.6) }];
+        result.add_cycle(cycle, 31 + cycle, steps, Some(seal.clone()), false);
+    }
+    result.finalize(Duration::from_secs(63));
+    result.set_whea_totals(crate::whea::WheaCounts::default(), true);
+    let dir = TempDir::new("summary-saved");
+    let path = dir.file("result.json");
+    result.save_atomic(&path).unwrap_or_else(|e| panic!("{e}"));
+    let loaded = TestRunResult::load_from_file(&path).unwrap_or_else(|e| panic!("{e}"));
+    (create_overall_stats_summary_report(&result), create_overall_stats_summary_report(&loaded))
+}

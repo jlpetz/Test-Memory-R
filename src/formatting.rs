@@ -68,31 +68,15 @@ impl<'de> serde::Deserialize<'de> for ByteSize {
     }
 }
 
-/// Serde helpers that trim float noise out of JSON output.
-///
-/// Full `f64` precision on a derived quantity is not information — `30538.906752411574` MiB/s is resolution far below the run-to-run
-/// variance of the thing being measured, and it makes result files hard to read. These round at *serialisation* time only, so in-memory
-/// arithmetic keeps full precision.
-///
-/// Scales are chosen so the last digit still means something: whole MiB/s (sub-1 MiB/s on a ~30,000 MiB/s figure is noise), 2 dp for GiB
-/// and GiB/s (~10 MiB), and 2 dp for nanoseconds (~1% at L1 latency, where it is still a real difference).
-pub fn serialize_round_int<S: serde::Serializer>(value: &f64, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_i64(value.round() as i64)
-}
-
+/// Serde helpers that round a figure as it is saved, for the calibration in `tmr-cfg.json` (`calibration.rs`), which a person reads; the
+/// figures in memory keep their precision. The results file saves its figures as they are (TODO 72): it is for tools, and an exact replay
+/// needs them.
 pub fn serialize_round_2dp<S: serde::Serializer>(value: &f64, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_f64((value * 100.0).round() / 100.0)
 }
 
 pub fn serialize_round_3dp<S: serde::Serializer>(value: &f64, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_f64((value * 1000.0).round() / 1000.0)
-}
-
-pub fn serialize_round_opt_2dp<S: serde::Serializer>(value: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
-    match value {
-        Some(v) => s.serialize_some(&((v * 100.0).round() / 100.0)),
-        None => s.serialize_none(),
-    }
 }
 
 #[cfg(test)]

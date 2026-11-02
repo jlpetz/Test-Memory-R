@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_config::MachineIdentity;
 use crate::constants::bytes_to_gib_f64 as to_gib;
-use crate::formatting::{ByteSize, serialize_round_2dp};
+use crate::formatting::ByteSize;
 use crate::smbios::MemoryModule;
 
 // ===========================================================================
@@ -106,11 +106,9 @@ pub struct RunIdentity {
     pub tsc_frequency_ghz: f64,
 
     /// Physically installed RAM (`GetPhysicallyInstalledSystemMemory`).
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub installed_memory_gib: f64,
     /// RAM the OS reports as usable (`GlobalMemoryStatusEx`). Lower than installed on machines that carve out firmware/graphics
     /// reservations.
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub os_visible_memory_gib: f64,
 
     /// SIMD instruction sets available at runtime. Auto-dispatch tests resolve their width from this, so it determines which code path a
@@ -124,7 +122,6 @@ pub struct RunIdentity {
 
     /// Number of memory modules SMBIOS reported, and their summed capacity.
     pub memory_modules_reported: usize,
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub memory_reported_gib: f64,
 
     /// Per-module SMBIOS Type 17 detail.
@@ -259,26 +256,20 @@ pub struct MemorySnapshot {
     pub allocation_type: String,
 
     /// The figure the spec's percentage was applied to (total or available, per the mode).
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub reference_gib: f64,
     /// Bytes the plan asked for.
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub requested_gib: f64,
     /// Bytes deliberately left to the OS.
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub reserve_gib: f64,
 
     /// Free memory and load at the moment the plan was computed. For a non-deterministic spec this is the input that decided the size, so
     /// it is the only way to explain why two runs differ.
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub available_at_start_gib: f64,
     pub memory_load_percent_at_start: u32,
 
     /// What actually came back, summed over every allocated block. May be below `requested_gib`: a partially satisfied run still produces
     /// results (one observed run got 7 of 8 blocks).
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub allocated_gib: f64,
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub per_thread_gib: f64,
     /// The requests the allocator made to Windows, and how many it refused (the allocation report's Requests and Refused); absent from
     /// results written before them.
@@ -306,11 +297,8 @@ pub struct MemorySnapshot {
 /// automatically comparable** — this is what says so.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PageSizeMix {
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub huge_1gib_gib: f64,
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub large_2mib_gib: f64,
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub regular_4kib_gib: f64,
 }
 
@@ -438,7 +426,6 @@ pub struct CalibratedTier {
     pub optimal_size: ByteSize,
     /// Median latency measured at `optimal_size`. Recorded alongside the size because it is the evidence for it — a tier whose latency
     /// looks wrong explains an extent size that looks wrong.
-    #[serde(serialize_with = "serialize_round_2dp")]
     pub median_latency_ns: f64,
 }
 

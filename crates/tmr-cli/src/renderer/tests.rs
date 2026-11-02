@@ -246,6 +246,24 @@ fn final_summary() {
     check("report_final_summary", &text);
 }
 
+/// TODO 72: the final summary from a run's results file, saved and loaded, is the text the console showed at the run's end, to the last
+/// digit: the file keeps the run's figures as they were (`test_support::final_summary_saved_and_loaded`). Rounded on save, the run's
+/// speed read 30.0 MiB/s, not 30.5, the test run twice a cycle 102 MiB/s, not 101, and the latency step's P75 72.8, not 72.7.
+#[test]
+fn the_final_summary_from_the_results_file_is_the_consoles() {
+    let (live, saved) = test_support::final_summary_saved_and_loaded();
+    let (result, live) = rendered(|reporter| reporter.report_final_summary(&live));
+    result.unwrap();
+    let (result, saved) = rendered(|reporter| reporter.report_final_summary(&saved));
+    result.unwrap();
+    assert_eq!(saved, live);
+    // The figures rounding would change, as the console shows them
+    let row = |name: &str| live.lines().find(|line| line.contains(name)).unwrap_or_else(|| panic!("{name}'s row:\n{live}")).to_string();
+    assert!(row("Overall Throughput").contains(" 30.5 MiB/s"), "{live}");
+    assert!(row("Mem-StuckBit256_A").contains(" 101 MiB/s"), "{live}");
+    assert!(row("Lat-L1-Read").contains(" 72.7 "), "{live}");
+}
+
 /// Two threads' latencies and the consolidated row.
 #[test]
 fn latency_summary() {
