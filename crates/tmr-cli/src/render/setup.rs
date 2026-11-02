@@ -97,6 +97,35 @@ pub(super) fn text(setup: &Setup) -> String {
         Setup::LargePageCheck => {
             let _ = writeln!(text, "Checking Large Page access");
         }
+        // After the question's A, whose answer said it was granting (`prompts::large_page_restart`)
+        Setup::LargePageGrant { account, outcome: Ok(()) } => {
+            let _ = writeln!(
+                text,
+                "✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to {}, which keeps it until it is removed",
+                account
+            );
+            let _ = writeln!(text, "🔄 RESTART REQUIRED: restart Windows for it to take effect, then run TMR again");
+            let _ = writeln!(text);
+            let _ = writeln!(text, "To restart:");
+            let _ = writeln!(text, "  • Windows: shutdown /r /t 0");
+            let _ = writeln!(text, "  • Or use Start Menu → Power → Restart");
+            let _ = writeln!(text);
+            let _ = writeln!(text, "TMR will exit now.");
+        }
+        Setup::LargePageGrant { account, outcome: Err(e) } => {
+            let _ = writeln!(text, "❌ Couldn't grant 'Lock pages in memory' (SeLockMemoryPrivilege) to {}: {}", account, e);
+            let _ = writeln!(text);
+            let _ = writeln!(text, "📖 Manual Setup:");
+            let _ = writeln!(text, "1. Run gpedit.msc as Administrator");
+            let _ = writeln!(
+                text,
+                "2. Navigate to: Computer Configuration → Windows Settings → Security Settings → Local Policies → User Rights Assignment"
+            );
+            let _ = writeln!(text, "3. Double-click 'Lock pages in memory'");
+            let _ = writeln!(text, "4. Add {} (or the 'Administrators' group)", account);
+            let _ = writeln!(text, "5. Restart Windows");
+            let _ = writeln!(text);
+        }
         Setup::LargePageDiagnostic { report } => {
             let _ = writeln!(text, "{}", report);
         }

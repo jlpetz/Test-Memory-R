@@ -67,6 +67,12 @@ impl Sections {
             })),
             Setup::MemoryStatus(Some(status)) => self.memory.push(Block::Table(memory_status_table(status))),
             Setup::LargePageDiagnostic { report } => self.memory.push(text(report.trim_end().to_string())),
+            Setup::LargePageGrant { account, outcome } => self.memory.push(match outcome {
+                Ok(()) => text(format!(
+                    "Large pages: 'Lock pages in memory' granted to {account}, until it is removed; it takes effect once Windows restarts"
+                )),
+                Err(e) => Block::Warning(format!("Large pages: 'Lock pages in memory' couldn't be granted to {account}: {e}")),
+            }),
             Setup::LargePageStatus { usable, min_page, min_needs_large } => self.memory.push(if *usable {
                 text("Large pages: on, tested".to_string())
             } else if *min_needs_large {

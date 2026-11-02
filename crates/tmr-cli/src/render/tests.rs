@@ -414,6 +414,11 @@ fn setup_events_print_as_their_golden() {
         ("panicking, time only", selection(ErrorMode::Panic, true, 0, false, None, Some(60))),
         ("no limits", selection(ErrorMode::Log, true, 0, false, None, None)),
         ("large pages are checked", Setup::LargePageCheck),
+        ("the right granted", Setup::LargePageGrant { account: r"PC\owner".to_string(), outcome: Ok(()) }),
+        ("the grant failed", Setup::LargePageGrant {
+            account: r"PC\owner".to_string(),
+            outcome: Err("Setup failed: secedit export failed: access denied".to_string()),
+        }),
         ("what the check did", Setup::LargePageDiagnostic {
             report: "🔍 Large Page Diagnostic\n  Privilege: assigned and enabled\n  Test allocation: 2 MiB, succeeded".to_string(),
         }),

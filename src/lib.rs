@@ -105,7 +105,7 @@ pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 use cache::SystemInfo;
 use config::*;
 use layout::{BlockInfo, EnhancedMemoryLayout};
-use memory::{check_large_page_privilege, check_restart_needed};
+use memory::check_large_page_privilege;
 use progress::ProgressTracker;
 use runner::AllocationBlock;
 use simd::detect_simd_capabilities;

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use tmr::frontend::{ErrorMode, Event, Frontend, RestartChoice, Run, RunStatus};
+use tmr::frontend::{ErrorMode, Event, Frontend, LargePageQuestion, RestartChoice, Run, RunStatus};
 use tmr::test_support::{FakeCycle, Flip, GoldenRun, TestRunOverrides, default_plan};
 
 use super::CliFrontend;
@@ -64,7 +64,7 @@ impl Frontend for Recording {
         crate::console::print_above(&format!("<{line}>"));
     }
 
-    fn large_page_restart(&self) -> RestartChoice {
+    fn large_page_restart(&self, _: &LargePageQuestion) -> RestartChoice {
         unreachable!("a run asks nothing: the restart is setup's question")
     }
 }

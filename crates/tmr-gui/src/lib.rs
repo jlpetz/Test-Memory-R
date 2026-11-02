@@ -1,8 +1,9 @@
 //! TMR's window (TODO 7): a session's events and progress in WinUI 3, through windows-reactor. A double-click opens it, or `tmr --gui ...`
 //! (crates/tmr-app's `launch.rs`, TODO 29 S6). Start runs the session on its own thread with the parameters in the window's box, the exe's
 //! own to begin with, as the CLI runs them (`tmr::session::run`), and the window shows its setup's facts (the info line, the system panel),
-//! the large-page restart question as a dialog, and its run. Its log records go to the log file, and the warnings and errors to the
-//! window's errors list too (`logger.rs`). One run a process: the engine's run settings are set once (`doc/todo/29-split-design.md`).
+//! the large-page question (the restart, the right granted first when TMR could grant it) as a dialog, and its run. Its log records go to
+//! the log file, and the warnings and errors to the window's errors list too (`logger.rs`). One run a process: the engine's run settings
+//! are set once (`doc/todo/29-split-design.md`).
 //!
 //! The engine's events cross to the window on a channel (`GuiFrontend`), which a waiter on the thread pool drains every 500 ms, reading the
 //! suite's progress and the log's lines as it does (`window::listen`). `model.rs` turns what it brings into what the window shows, and
@@ -36,15 +37,16 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use tmr::frontend::{Event, Frontend, RestartChoice, RunStatus};
+use tmr::frontend::{Event, Frontend, LargePageQuestion, RestartChoice, RunStatus};
 use tmr::session::SessionEnd;
 
 /// What the session's thread hands the window.
 enum Feed {
     /// A session's event, as the engine sent it
     Event(Event),
-    /// Large pages need Windows restarted: the window asks, and answers on the reply (`GuiFrontend::large_page_restart`)
-    Ask(SyncSender<RestartChoice>),
+    /// Large pages need Windows restarted, and the right granted first when the question offers it: the window asks, and answers on the
+    /// reply (`GuiFrontend::large_page_restart`)
+    Ask { question: LargePageQuestion, reply: SyncSender<RestartChoice> },
     /// The session ended: how, or the error that stopped it
     Ended(Result<SessionEnd, String>),
 }
@@ -74,12 +76,13 @@ impl Frontend for GuiFrontend {
     }
 
     /// The window asks with a dialog, and this thread waits for its answer. Once the window has gone nobody can answer, and the session is
-    /// being stopped (`end_session`), so the answer is Exit: the session ends with nothing allocated, as not run (`UNANSWERED`). 4 KiB
-    /// pages, the console's answer to an empty line, would allocate the run's memory only for the stop to end the run before its first
-    /// cycle.
-    fn large_page_restart(&self) -> RestartChoice {
+    /// being stopped (`end_session`). To the restart's question the answer is then Exit: the session ends with nothing allocated, as not
+    /// run (`UNANSWERED`), where 4 KiB pages, the console's answer to an empty line, would allocate the run's memory only for the stop to
+    /// end the run before its first cycle. To the grant's it is 4 KiB pages, as for a frontend that can't ask: Exit would grant the right
+    /// with nobody saying yes.
+    fn large_page_restart(&self, question: &LargePageQuestion) -> RestartChoice {
         let (reply, answer) = mpsc::sync_channel(1);
-        if self.feed.send(Feed::Ask(reply)).is_ok() {
+        if self.feed.send(Feed::Ask { question: question.clone(), reply }).is_ok() {
             loop {
                 match answer.recv_timeout(ANSWER_WAIT) {
                     Ok(choice) => return choice,
@@ -89,8 +92,13 @@ impl Frontend for GuiFrontend {
                 }
             }
         }
-        UNANSWERED.store(true, Ordering::Relaxed);
-        RestartChoice::Exit
+        match question {
+            LargePageQuestion::Restart => {
+                UNANSWERED.store(true, Ordering::Relaxed);
+                RestartChoice::Exit
+            }
+            LargePageQuestion::Grant { .. } => RestartChoice::Continue4K,
+        }
     }
 }
 
@@ -202,48 +210,60 @@ fn closed(error: Option<String>, opened: bool, started: bool, exit_code: Option<
 mod tests {
     use super::*;
 
-    /// The restart question (TODO 29 S6): the session's thread waits for the window's answer, and once nobody can answer (the question
-    /// dropped, no window, or the window closed with it open), the answer is Exit, as not run. The only test that touches the window's
-    /// flags: closing is last.
+    /// The large-page question (TODO 29 S6): the session's thread waits for the window's answer, and once nobody can answer (the question
+    /// dropped, no window, or the window closed with it open), the answer to the restart's is Exit, as not run, and to the grant's 4 KiB
+    /// pages, so nothing is granted unasked. The only test that touches the window's flags: closing is last.
     #[test]
     fn the_restart_question_waits_for_the_window_and_gives_up_once_it_has_gone() {
-        let ask = || {
+        let restart = LargePageQuestion::Restart;
+        let grant = LargePageQuestion::Grant { account: r"PC\owner".to_string() };
+        let ask = |question: &LargePageQuestion| {
             let (feed, window) = mpsc::channel();
-            let asked = std::thread::spawn(move || GuiFrontend { feed, transcript: None }.large_page_restart());
-            let Ok(Feed::Ask(reply)) = window.recv() else {
+            let sent = question.clone();
+            let asked = std::thread::spawn(move || GuiFrontend { feed, transcript: None }.large_page_restart(&sent));
+            let Ok(Feed::Ask { question: shown, reply }) = window.recv() else {
                 panic!("the question wasn't asked");
             };
+            assert_eq!(&shown, question, "the window shows the question asked");
             (asked, reply, window)
         };
         let unanswered = || UNANSWERED.swap(false, Ordering::Relaxed);
 
         // Answered after a wait or two, the window open: it is still waited for
-        let (asked, reply, _window) = ask();
+        let (asked, reply, _window) = ask(&restart);
         std::thread::sleep(ANSWER_WAIT * 3 / 2);
         reply.send(RestartChoice::Continue4K).unwrap();
         assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Continue4K, false));
-        let (asked, reply, _window) = ask();
+        let (asked, reply, _window) = ask(&restart);
         reply.send(RestartChoice::Exit).unwrap();
         assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Exit, false), "the restart chosen");
+        let (asked, reply, _window) = ask(&grant);
+        reply.send(RestartChoice::Exit).unwrap();
+        assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Exit, false), "the grant chosen");
 
-        let (asked, reply, _window) = ask();
+        let (asked, reply, _window) = ask(&restart);
         drop(reply);
         assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Exit, true), "dropped unanswered");
-        let (feed, window) = mpsc::channel();
-        drop(window);
-        assert_eq!(
-            (GuiFrontend { feed, transcript: None }.large_page_restart(), unanswered()),
-            (RestartChoice::Exit, true),
-            "no window to ask"
-        );
+        let (asked, reply, _window) = ask(&grant);
+        drop(reply);
+        assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Continue4K, false), "the grant dropped unanswered");
+        let no_window = |question: &LargePageQuestion| {
+            let (feed, window) = mpsc::channel();
+            drop(window);
+            (GuiFrontend { feed, transcript: None }.large_page_restart(question), unanswered())
+        };
+        assert_eq!(no_window(&restart), (RestartChoice::Exit, true), "no window to ask");
+        assert_eq!(no_window(&grant), (RestartChoice::Continue4K, false), "no window to ask for the grant");
 
         // The window closes with the question open, the reply still held: the window's state may hold it after Reactor's loop has ended
-        let (asked, _reply, _window) = ask();
+        let (asked, _reply, _window) = ask(&restart);
         std::thread::sleep(ANSWER_WAIT / 2);
         let closed = Instant::now();
         WINDOW_CLOSED.store(true, Ordering::Relaxed);
         assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Exit, true), "closed unanswered");
         assert!(closed.elapsed() < 2 * ANSWER_WAIT, "given up after {:?}", closed.elapsed());
+        let (asked, _reply, _window) = ask(&grant);
+        assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Continue4K, false), "the grant asked once closed");
     }
 
     /// The exit status is the CLI's for the same end, and the restart is 0 only when it was chosen (TODO 29 S6)

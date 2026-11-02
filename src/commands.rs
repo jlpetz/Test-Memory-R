@@ -75,8 +75,9 @@ pub fn run(command: &Command, out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
             writeln!(out, "🔧 TMR Large Page Setup Tool")?;
             writeln!(out, "=============================\n")?;
 
-            let diagnostic = crate::memory::diagnose_and_setup_large_pages();
-            writeln!(out, "{}", diagnostic)?;
+            // The command is the request: it grants without asking, as a session doesn't (`session::run`)
+            let report = crate::memory::setup_large_pages();
+            writeln!(out, "{}", report)?;
 
             // Test final state
             match crate::check_large_page_privilege() {

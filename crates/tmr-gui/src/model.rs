@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use tmr::commands::ResultsComparison;
 use tmr::frontend::{
-    AllocationReport, ErrorCounts, Event, NotRun, ProgressSnapshot, ProgressTracker, RestartChoice, Run, RunOutcome, RunStatus, SealOp,
-    Setup, StepReport, TestConfigurationReport, TestSnapshot,
+    AllocationReport, ErrorCounts, Event, LargePageQuestion, NotRun, ProgressSnapshot, ProgressTracker, RestartChoice, Run, RunOutcome,
+    RunStatus, SealOp, Setup, StepReport, TestConfigurationReport, TestSnapshot,
 };
 use tmr::session::{SessionEnd, Stopped};
 
@@ -35,6 +35,21 @@ pub const ERRORS_KEPT: usize = 10_000;
 
 /// The log lines the Log tab keeps, the newest (TODO 109): the log file has every line
 pub const LOG_KEPT: usize = 10_000;
+
+/// The large-page dialog's words (`Model::restart_dialog`), as `window.rs` draws them. Its close button (and Esc) is 4 KiB pages either
+/// way.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RestartDialog {
+    pub title: &'static str,
+    /// The primary button's, which answers Exit
+    pub exit: &'static str,
+    pub text: String,
+}
+
+/// What 4 KiB pages mean, the close button's answer, the end of either question
+const FOUR_KIB_PAGES: &str = "standard 4 KiB pages, about 5-10% slower: every test still runs and every pattern is still checked, but \
+                              slower memory traffic is less stress, so marginal errors that only appear at full bandwidth may go \
+                              undetected.";
 
 /// The step reports kept, the newest steps': as many as the window draws rows (TODO 109), so every row drawn opens one. A report holds a
 /// line for each thread.
@@ -457,8 +472,10 @@ pub struct Model {
     /// The run's log file, from Start on (`tmr::logfile::path`, whose name is fixed as Start asks for it)
     pub log_path: Option<PathBuf>,
     facts: Facts,
-    /// The large-page restart question, while it waits for the dialog's answer: the session's thread waits on the reply
+    /// The large-page question, while it waits for the dialog's answer: the session's thread waits on the reply
     restart: Option<SyncSender<RestartChoice>>,
+    /// What the last large-page question asked, kept after its answer, so the dialog's words hold while it closes
+    question: Option<LargePageQuestion>,
     /// The lines the logger's channel dropped, as it last counted them
     log_lines_dropped: u64,
     /// The suite's progress, from its start on
@@ -505,6 +522,7 @@ impl Model {
             log_path: None,
             facts: Facts::default(),
             restart: None,
+            question: None,
             log_lines_dropped: 0,
             progress: None,
             cycle: 0,
@@ -650,6 +668,12 @@ impl Model {
                 self.facts.allocation = Some(format!("{} thread{}", selection.threads, plural(selection.threads)));
             }
             Setup::LargePageCheck => self.position = "Checking large pages".to_string(),
+            // After the dialog's yes to the grant
+            Setup::LargePageGrant { outcome: Ok(()), .. } => self.position = "Exiting, to restart Windows".to_string(),
+            Setup::LargePageGrant { account, outcome: Err(e) } => {
+                self.position = "Setting up, without large pages".to_string();
+                self.errors.push(format!("Couldn't grant 'Lock pages in memory' to {account}: {e}"));
+            }
             Setup::LargePageStatus { usable, .. } => self.facts.no_large_pages = !usable,
             Setup::MemoryStatus(status) => {
                 if let Some(status) = status {
@@ -670,16 +694,48 @@ impl Model {
         }
     }
 
-    /// Large pages need Windows restarted: the dialog asks whether to exit or continue on 4 KiB pages, and `answer_restart` replies on
-    /// `reply`
-    pub fn ask_restart(&mut self, reply: SyncSender<RestartChoice>) {
-        self.position = "Large pages need Windows restarted".to_string();
+    /// Large pages need Windows restarted, and the right granted first when `question` offers it: the dialog asks whether to exit (after
+    /// the grant) or continue on 4 KiB pages, and `answer_restart` replies on `reply`
+    pub fn ask_restart(&mut self, question: LargePageQuestion, reply: SyncSender<RestartChoice>) {
+        self.position = match question {
+            LargePageQuestion::Restart => "Large pages need Windows restarted",
+            LargePageQuestion::Grant { .. } => "Large pages need a right granted",
+        }
+        .to_string();
         self.restart = Some(reply);
+        self.question = Some(question);
     }
 
-    /// The restart question is waiting for its answer: the dialog is open
+    /// The large-page question is waiting for its answer: the dialog is open
     pub fn restart_asked(&self) -> bool {
         self.restart.is_some()
+    }
+
+    /// The dialog's words for the last question asked (the restart's before any): the console's question (crates/tmr-cli's `prompts.rs`)
+    /// in a window's
+    pub fn restart_dialog(&self) -> RestartDialog {
+        match &self.question {
+            None | Some(LargePageQuestion::Restart) => RestartDialog {
+                title: "Large pages need Windows restarted",
+                exit: "Exit, to restart Windows",
+                text: format!(
+                    "The large-page privilege is set up, but takes effect only after Windows restarts.\n\n\
+                     Exit TMR and restart Windows: TMR then runs on large pages (recommended for the most memory stress).\n\n\
+                     Or continue on {FOUR_KIB_PAGES}"
+                ),
+            },
+            Some(LargePageQuestion::Grant { account }) => RestartDialog {
+                title: "Large pages need the 'Lock pages in memory' right",
+                exit: "Grant it, then restart Windows",
+                text: format!(
+                    "TMR runs as {account}, which doesn't have the right large pages need, 'Lock pages in memory' \
+                     (SeLockMemoryPrivilege). As administrator, TMR can grant it: {account} then keeps it until it is removed \
+                     (gpedit.msc: User Rights Assignment), and it takes effect only after Windows restarts: this session ends once it \
+                     is granted, and after the restart TMR runs on large pages (recommended for the most memory stress).\n\n\
+                     Or grant nothing, and continue this time on {FOUR_KIB_PAGES}"
+                ),
+            },
+        }
     }
 
     /// The dialog's answer, to the session's thread. On 4 KiB pages, the errors list says so.
@@ -689,15 +745,19 @@ impl Model {
         };
         // The session's thread waits for it while the window is open
         let _ = reply.send(choice);
+        let grant = matches!(self.question, Some(LargePageQuestion::Grant { .. }));
         match choice {
+            RestartChoice::Exit if grant => self.position = "Granting the large-page right".to_string(),
             RestartChoice::Exit => self.position = "Exiting, to restart Windows".to_string(),
             RestartChoice::Continue4K => {
                 self.position = "Setting up, on 4 KiB pages".to_string();
-                self.errors.push(
-                    "Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages \
-                                  (minpage=regular)"
-                        .to_string(),
-                );
+                self.errors.push(if grant {
+                    "Large pages need the 'Lock pages in memory' right, not granted: this run takes 4 KiB pages (minpage=regular)"
+                        .to_string()
+                } else {
+                    "Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)"
+                        .to_string()
+                });
             }
         }
     }
@@ -1455,7 +1515,7 @@ mod tests {
         }
         assert_eq!(m.position, "Checking large pages");
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
-        m.ask_restart(reply);
+        m.ask_restart(LargePageQuestion::Restart, reply);
         m.answer_restart(RestartChoice::Continue4K);
         assert_eq!(answer.try_recv(), Ok(RestartChoice::Continue4K));
         for setup in [
@@ -1581,7 +1641,7 @@ mod tests {
         assert_eq!(m.position, "Setting up", "no question, no answer");
 
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
-        m.ask_restart(reply);
+        m.ask_restart(LargePageQuestion::Restart, reply);
         assert_eq!((m.restart_asked(), m.position.as_str()), (true, "Large pages need Windows restarted"));
         m.answer_restart(RestartChoice::Exit);
         m.answer_restart(RestartChoice::Continue4K);
@@ -1598,11 +1658,59 @@ mod tests {
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
         drop(answer);
         let mut m = model();
-        m.ask_restart(reply);
+        m.ask_restart(LargePageQuestion::Restart, reply);
         m.answer_restart(RestartChoice::Continue4K);
         assert_eq!(m.position, "Setting up, on 4 KiB pages");
         assert_eq!(m.errors, [
             "Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)"
+        ]);
+    }
+
+    /// The grant's question: the dialog names the account, says it keeps the right until it is removed and that it takes a restart, and
+    /// keeps its words as it closes; a yes is the session's to make, which then shows the grant or why it failed, and 4 KiB pages say
+    /// nothing was granted. The restart's words before any question.
+    #[test]
+    fn the_grant_question_names_the_account_and_says_what_a_yes_does() {
+        let mut m = model();
+        m.start();
+        assert_eq!(m.restart_dialog().title, "Large pages need Windows restarted", "the restart's words before any question");
+        let account = r"PC\owner".to_string();
+        let ask = |m: &mut Model| {
+            let (reply, answer) = std::sync::mpsc::sync_channel(1);
+            m.ask_restart(LargePageQuestion::Grant { account: account.clone() }, reply);
+            answer
+        };
+        let answer = ask(&mut m);
+        assert_eq!((m.restart_asked(), m.position.as_str()), (true, "Large pages need a right granted"));
+        let words = m.restart_dialog();
+        assert_eq!((words.title, words.exit), ("Large pages need the 'Lock pages in memory' right", "Grant it, then restart Windows"));
+        for said in [r"TMR runs as PC\owner,", r"PC\owner then keeps it until it is removed", "only after Windows restarts", "4 KiB pages"]
+        {
+            assert!(words.text.contains(said), "{said}: {}", words.text);
+        }
+        m.answer_restart(RestartChoice::Exit);
+        assert_eq!(answer.try_recv(), Ok(RestartChoice::Exit));
+        assert_eq!((m.restart_asked(), m.position.as_str()), (false, "Granting the large-page right"));
+        assert_eq!(m.restart_dialog(), words, "the words hold as the dialog closes");
+        m.apply(Setup::LargePageGrant { account: account.clone(), outcome: Ok(()) }.into());
+        assert_eq!((m.position.as_str(), m.errors.total()), ("Exiting, to restart Windows", 0));
+        m.ended(Ok(SessionEnd::RestartChosen));
+        assert_eq!(m.position, "Restart Windows for large pages, then run again");
+
+        // The grant failed: the session goes on without the right, and the errors say why
+        let mut m = model();
+        let _answer = ask(&mut m);
+        m.answer_restart(RestartChoice::Exit);
+        m.apply(Setup::LargePageGrant { account: account.clone(), outcome: Err("Setup failed: secedit export failed".to_string()) }.into());
+        assert_eq!(m.position, "Setting up, without large pages");
+        assert_eq!(m.errors, [r"Couldn't grant 'Lock pages in memory' to PC\owner: Setup failed: secedit export failed"]);
+
+        let mut m = model();
+        let answer = ask(&mut m);
+        m.answer_restart(RestartChoice::Continue4K);
+        assert_eq!((answer.try_recv(), m.position.as_str()), (Ok(RestartChoice::Continue4K), "Setting up, on 4 KiB pages"));
+        assert_eq!(m.errors, [
+            "Large pages need the 'Lock pages in memory' right, not granted: this run takes 4 KiB pages (minpage=regular)"
         ]);
     }
 

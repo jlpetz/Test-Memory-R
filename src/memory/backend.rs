@@ -16,7 +16,7 @@ use windows::Win32::System::SystemServices::{
 
 use crate::constants::{HUGE_PAGE_SIZE_USIZE, LARGE_PAGE_SIZE_USIZE, MB, PAGE_SIZE_4KB};
 use crate::memory::allocator::{AllocationConfig, PageSizeLevel};
-use crate::memory::privileges::setup_large_pages_automatically;
+use crate::memory::privileges::enable_large_pages;
 
 // Win32 codes an allocation can be refused with. 1450 = no contiguous physical memory (a pool ran dry), 1314 = no SeLockMemoryPrivilege, 87
 // = a bug in the request (TMR-APP CLAUDE.md).
@@ -208,7 +208,7 @@ impl WindowsBackend {
             },
         };
 
-        if needs_large_pages && setup_large_pages_automatically().is_err() {
+        if needs_large_pages && enable_large_pages().is_err() {
             log::debug!("Large/huge page error - missing privilege");
             // Fall back for non-strict modes
             match &config.page_size {

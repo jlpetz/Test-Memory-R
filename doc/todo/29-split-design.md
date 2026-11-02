@@ -163,7 +163,7 @@ pub fn commands::calibrate(.., out: &mut dyn io::Write, confirm: &mut dyn FnMut(
 **GUI (`GuiFrontend`).**
 - `event()` is an unbounded `mpsc::Sender::send`: about 25 setup events, then steps+4 per cycle.
 - `tick` and `ticks_done` are no-ops; WHEA is still polled by the engine's monitor.
-- `large_page_restart()` sends `Feed::Ask(reply: SyncSender<RestartChoice>)`, blocks on `recv()`, and the UI answers with a ContentDialog. If the window is gone, the answer is Exit (S6; planned as Continue4K, as an empty answer is on the console): closing the window stops the session, and 4 KiB pages would allocate the run's memory only for the stop to end it before the first cycle.
+- `large_page_restart()` sends `Feed::Ask(reply: SyncSender<RestartChoice>)`, blocks on `recv()`, and the UI answers with a ContentDialog. If the window is gone, the answer is Exit (S6; planned as Continue4K, as an empty answer is on the console): closing the window stops the session, and 4 KiB pages would allocate the run's memory only for the stop to end it before the first cycle. Since 2026-11-02 that is the restart's question; the grant's (`LargePageQuestion::Grant`) is answered 4 KiB pages then, as Exit would grant the right unasked.
 
 **Stop.**
 - The CLI's ctrlc handler is moved verbatim (cli.rs:958-979) and installed once per process when Setup::Starting renders; a second `set_handler` aborts (cli.rs:979).
@@ -673,7 +673,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - ~~ticker frames in WinRM captures.~~ Both done 2026-11-02: one flag a process, whether stdout is a console (`console::is_console`, set in `console::init`), which the reports' colours and the ticker read, as the log's colours do: a redirected stdout gets neither.
 - After the size test: store per-thread rows for every step of every cycle in pretty JSON, compact JSON, or per-test averages only?
 - GUI responsiveness under cpus=100% at High worker priority: raise the window thread's priority during a run, or leave one core free in GUI mode?
-- An elevated launch silently grants the large-page privilege through secedit (privileges.rs:335-346). Should it become a question, now that a double-click can trigger it?
+- ~~An elevated launch silently grants the large-page privilege through secedit (privileges.rs:335-346). Should it become a question, now that a double-click can trigger it?~~ A question (the owner, 2026-11-02): the restart's, widened (`LargePageQuestion`): grant it and restart Windows, or 4 KiB pages this time, granting nothing; a frontend that can't ask answers 4 KiB pages. `--setup-large-pages` still grants unasked: the command is the request.
 - TODO 29's log transcript, which makes the log file hold everything the console showed: next after the split, or later? It changes what logs/*.log contains.
 - GUI v1 input: is a single args box in the CLI's key=value syntax enough? Should it save to AppConfig.last_config, and should ui_mode/auto_start (app_config.rs:200-208) be wired or deleted?
 - 'Run again' relaunches the exe (one run per process). Acceptable for v1?

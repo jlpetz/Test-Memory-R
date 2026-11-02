@@ -1,21 +1,42 @@
-//! The CLI's questions (TODO 29), over any reader and writer so a test can script the answers: the large-page restart
-//! (`Frontend::large_page_restart`) and a calibration's save (the `confirm` that `tmr::commands::run` takes). The CLI asks on the console.
+//! The CLI's questions (TODO 29), over any reader and writer so a test can script the answers: the large-page restart, the right granted
+//! first when TMR could grant it (`Frontend::large_page_restart`), and a calibration's save (the `confirm` that `tmr::commands::run`
+//! takes). The CLI asks on the console.
 
 use std::io::{self, BufRead, Write};
 
-use tmr::frontend::RestartChoice;
+use tmr::frontend::{LargePageQuestion, RestartChoice};
 
-/// Large pages need a restart: what that means, the choice, A or B, and what the answer does. A that exits, B that continues on 4 KiB
-/// pages; anything else, an empty answer, the input's end or an input that can't be read continue on them too, saying the choice was
-/// invalid.
-pub fn large_page_restart(input: &mut dyn BufRead, out: &mut dyn Write) -> io::Result<RestartChoice> {
-    writeln!(out, "⚠️  LARGE PAGE SETUP REQUIRES RESTART")?;
-    writeln!(out, "=====================================")?;
-    writeln!(out, "The Large Page privilege has been configured but requires a restart to take effect.")?;
+/// Large pages need a restart, and the right they need granted first when `question` offers the grant: what that means (which account
+/// gets the right, that it keeps it until it is removed, and that it takes a restart), the choice, A or B, and what the answer does. A
+/// exits, after the grant when it is offered; B continues on 4 KiB pages and grants nothing; anything else, an empty answer, the input's
+/// end or an input that can't be read do as B does, saying the choice was invalid. The grant's outcome is the session's to show
+/// (`Setup::LargePageGrant`).
+pub fn large_page_restart(question: &LargePageQuestion, input: &mut dyn BufRead, out: &mut dyn Write) -> io::Result<RestartChoice> {
+    let grant = match question {
+        LargePageQuestion::Restart => {
+            writeln!(out, "⚠️  LARGE PAGE SETUP REQUIRES RESTART")?;
+            writeln!(out, "=====================================")?;
+            writeln!(out, "The Large Page privilege has been configured but requires a restart to take effect.")?;
+            None
+        }
+        LargePageQuestion::Grant { account } => {
+            writeln!(out, "⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT")?;
+            writeln!(out, "====================================================")?;
+            writeln!(out, "TMR runs as {account}, which doesn't have it (SeLockMemoryPrivilege). As Administrator, TMR can grant it:")?;
+            writeln!(out, "{account} then keeps it until it is removed (gpedit.msc: User Rights Assignment), and it takes effect")?;
+            writeln!(out, "only after Windows restarts.")?;
+            Some(account)
+        }
+    };
+    // What B and an invalid answer add when the grant is offered
+    let (this_time, nothing) = if grant.is_some() { (" this time", ", granting nothing") } else { ("", "") };
     writeln!(out)?;
     writeln!(out, "Choose your preferred action:")?;
-    writeln!(out, "  A) Exit TMR and restart system (RECOMMENDED for optimal performance)")?;
-    writeln!(out, "  B) Continue with standard 4KB pages (~5-10% slower, so less memory stress)")?;
+    match grant {
+        None => writeln!(out, "  A) Exit TMR and restart system (RECOMMENDED for optimal performance)")?,
+        Some(account) => writeln!(out, "  A) Grant it to {account}, exit TMR and restart Windows (RECOMMENDED for optimal performance)")?,
+    }
+    writeln!(out, "  B) Continue with standard 4KB pages{this_time}{nothing} (~5-10% slower, so less memory stress)")?;
     writeln!(out)?;
     write!(out, "Enter your choice (A/B): ")?;
     out.flush()?;
@@ -30,6 +51,10 @@ pub fn large_page_restart(input: &mut dyn BufRead, out: &mut dyn Write) -> io::R
     match choice.as_str() {
         "A" => {
             writeln!(out)?;
+            if let Some(account) = grant {
+                writeln!(out, "🔧 Granting it to {account}...")?;
+                return Ok(RestartChoice::Exit);
+            }
             writeln!(out, "✅ Restart recommended for optimal performance.")?;
             writeln!(out, "After restart, TMR will automatically use large pages.")?;
             writeln!(out)?;
@@ -42,19 +67,23 @@ pub fn large_page_restart(input: &mut dyn BufRead, out: &mut dyn Write) -> io::R
         }
         "B" => {
             writeln!(out)?;
-            writeln!(out, "⚠️  Continuing with standard 4KB pages (minpage=regular for this run).")?;
+            writeln!(out, "⚠️  Continuing with standard 4KB pages (minpage=regular for this run){nothing}.")?;
             writeln!(out, "   Performance impact: ~5-10% slower than large pages")?;
             writeln!(out, "   Every test still runs and every pattern is still checked, but slower")?;
             writeln!(out, "   memory traffic is less stress, so marginal errors that only appear at")?;
             writeln!(out, "   full bandwidth may go undetected")?;
             writeln!(out)?;
-            writeln!(out, "💡 TIP: Restart TMR after rebooting for optimal performance")?;
+            if grant.is_some() {
+                writeln!(out, "💡 TIP: TMR asks again at its next run as Administrator (tmr.exe --setup-large-pages grants it at once)")?;
+            } else {
+                writeln!(out, "💡 TIP: Restart TMR after rebooting for optimal performance")?;
+            }
             writeln!(out)?;
             Ok(RestartChoice::Continue4K)
         }
         _ => {
             writeln!(out)?;
-            writeln!(out, "❌ Invalid choice. Defaulting to continue with 4KB pages (minpage=regular for this run).")?;
+            writeln!(out, "❌ Invalid choice. Defaulting to continue with 4KB pages (minpage=regular for this run){nothing}.")?;
             writeln!(out)?;
             Ok(RestartChoice::Continue4K)
         }
@@ -82,20 +111,26 @@ mod tests {
     use super::*;
 
     /// The restart's question and each answer's text, after a `## case` line: A exits; B, an empty answer, the input's end and anything
-    /// else continue on 4 KiB pages (TODO 29).
+    /// else continue on 4 KiB pages (TODO 29). The grant's question names the account; its A is a yes to the grant (the session's to
+    /// make), its B and no answer grant nothing.
     #[test]
     fn the_restart_question_takes_a_or_b() {
+        let restart = LargePageQuestion::Restart;
+        let grant = LargePageQuestion::Grant { account: r"PC\owner".to_string() };
         let mut text = String::new();
-        for (case, input, choice) in [
-            ("A", &b"a\r\n"[..], RestartChoice::Exit),
-            ("B", b"B\n", RestartChoice::Continue4K),
-            ("an empty answer", b"\n", RestartChoice::Continue4K),
-            ("the input's end", b"", RestartChoice::Continue4K),
-            ("junk", b"maybe\n", RestartChoice::Continue4K),
-            ("an input that isn't text", b"\xff\xfe\n", RestartChoice::Continue4K),
+        for (case, question, input, choice) in [
+            ("A", &restart, &b"a\r\n"[..], RestartChoice::Exit),
+            ("B", &restart, b"B\n", RestartChoice::Continue4K),
+            ("an empty answer", &restart, b"\n", RestartChoice::Continue4K),
+            ("the input's end", &restart, b"", RestartChoice::Continue4K),
+            ("junk", &restart, b"maybe\n", RestartChoice::Continue4K),
+            ("an input that isn't text", &restart, b"\xff\xfe\n", RestartChoice::Continue4K),
+            ("the grant, A", &grant, b"A\n", RestartChoice::Exit),
+            ("the grant, B", &grant, b"b\r\n", RestartChoice::Continue4K),
+            ("the grant, the input's end", &grant, b"", RestartChoice::Continue4K),
         ] {
             let mut out = Vec::new();
-            let got = large_page_restart(&mut &*input, &mut out).unwrap();
+            let got = large_page_restart(question, &mut &*input, &mut out).unwrap();
             assert_eq!(got, choice, "{case}");
             text += &format!("## {case}\n{}\n", String::from_utf8(out).unwrap());
         }

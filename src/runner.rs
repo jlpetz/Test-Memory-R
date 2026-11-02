@@ -6493,7 +6493,7 @@ mod tests {
     impl Frontend for Unseen {
         fn event(&self, _: crate::frontend::Event) {}
 
-        fn large_page_restart(&self) -> crate::frontend::RestartChoice {
+        fn large_page_restart(&self, _: &crate::frontend::LargePageQuestion) -> crate::frontend::RestartChoice {
             unreachable!("a run asks nothing: the restart is setup's question")
         }
     }
@@ -6575,7 +6575,7 @@ mod tests {
                     self.ends.lock().unwrap().push((cycle, partial, std::path::Path::new(&self.path).exists()));
                 }
             }
-            fn large_page_restart(&self) -> crate::frontend::RestartChoice {
+            fn large_page_restart(&self, _: &crate::frontend::LargePageQuestion) -> crate::frontend::RestartChoice {
                 unreachable!("a run asks nothing: the restart is setup's question")
             }
         }
@@ -6666,7 +6666,7 @@ mod tests {
                     self.0.lock().unwrap().push(path);
                 }
             }
-            fn large_page_restart(&self) -> crate::frontend::RestartChoice {
+            fn large_page_restart(&self, _: &crate::frontend::LargePageQuestion) -> crate::frontend::RestartChoice {
                 unreachable!("a run asks nothing: the restart is setup's question")
             }
         }

@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub(crate) use setup::show_end;
-use tmr::frontend::{Event, Frontend, ProgressTracker, Reporter, RestartChoice};
+use tmr::frontend::{Event, Frontend, LargePageQuestion, ProgressTracker, Reporter, RestartChoice};
 
 use crate::renderer::{ConsoleRenderer, create_console_reporter};
 
@@ -44,9 +44,10 @@ impl Frontend for CliFrontend {
         tmr::logfile::write_text(&shown);
     }
 
-    /// Asks on the console. A console that can't be written to is no answer, as the input's end is.
-    fn large_page_restart(&self) -> RestartChoice {
-        crate::prompts::large_page_restart(&mut std::io::stdin().lock(), &mut crate::console::stdout()).unwrap_or(RestartChoice::Continue4K)
+    /// Asks on the console. A console that can't be written to is no answer, as the input's end is: 4 KiB pages, nothing granted.
+    fn large_page_restart(&self, question: &LargePageQuestion) -> RestartChoice {
+        crate::prompts::large_page_restart(question, &mut std::io::stdin().lock(), &mut crate::console::stdout())
+            .unwrap_or(RestartChoice::Continue4K)
     }
 
     /// The ticker, redrawn every 2 seconds. Anything WHEA reported since the last draw is printed above it. On a stdout that isn't a

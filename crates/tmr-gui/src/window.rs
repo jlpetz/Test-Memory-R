@@ -56,7 +56,8 @@ pub(crate) enum Message {
     Stop,
     /// The parameters box's text, as typed
     Args(String),
-    /// The restart dialog's answer: its primary button exits, its close button (and Esc) continues on 4 KiB pages
+    /// The large-page dialog's answer: its primary button exits, after the grant when it offers one; its close button (and Esc) continues
+    /// on 4 KiB pages
     Restart(ContentDialogResult),
     /// A DIMM chosen in the system panel's selector: its menu item
     Dimm(String),
@@ -245,7 +246,7 @@ impl Window {
         for item in feed {
             match item {
                 Feed::Event(event) => self.model.apply(event),
-                Feed::Ask(reply) => self.model.ask_restart(reply),
+                Feed::Ask { question, reply } => self.model.ask_restart(question, reply),
                 Feed::Ended(result) => {
                     self.model.ended(result);
                     ended = true;
@@ -1014,17 +1015,19 @@ impl Window {
         card(row, p, card_title(format!("Errors · {total}{shown}{dropped}"), p), body)
     }
 
-    /// The large-page restart question, the console's A/B as a dialog, open while the session's thread waits for its answer. Esc is the
+    /// The large-page question, the console's A/B as a dialog, open while the session's thread waits for its answer: the restart, or the
+    /// grant and then the restart, in the words of the last question asked (`Model::restart_dialog`), which hold as it closes. Esc is the
     /// close button's: 4 KiB pages, as an empty answer is on the console.
     fn restart_dialog(&self, context: &ViewContext<Self>) -> View {
+        let words = self.model.restart_dialog();
         // The text in the dialog's own colours: it follows the system's theme, not the palette's
         ContentDialog::new()
-            .title("Large pages need Windows restarted")
-            .primary_button_text("Exit, to restart Windows")
+            .title(words.title)
+            .primary_button_text(words.exit)
             .close_button_text("Continue on 4 KiB pages")
             .is_open(self.model.restart_asked())
             .on_closed(context.callback(Message::Restart))
-            .content(TextBlock::new().text(RESTART_QUESTION).text_wrapping(TextWrapping::Wrap))
+            .content(TextBlock::new().text(words.text).text_wrapping(TextWrapping::Wrap))
     }
 }
 
@@ -1202,13 +1205,6 @@ fn largest_png(ico: &[u8]) -> Option<&[u8]> {
         .max_by_key(|&(width, _)| width)
         .map(|(_, frame)| frame)
 }
-
-/// The restart dialog's text, the console's question (`tmr_cli`'s prompts) in a window's words
-const RESTART_QUESTION: &str = "The large-page privilege is set up, but takes effect only after Windows restarts.\n\n\
-    Exit TMR and restart Windows: TMR then runs on large pages (recommended for the most memory stress).\n\n\
-    Or continue on standard 4 KiB pages, about 5-10% slower: every test still runs and every pattern is still \
-    checked, but slower memory traffic is less stress, so marginal errors that only appear at full bandwidth may \
-    go undetected.";
 
 /// A report beside the results (TODO 109): its title and the close button, then, scrolling both ways, its verdict, its lines and its
 /// tables. A wide table scrolls rather than squeezing its columns, and a line doesn't wrap: the console's report is as wide.

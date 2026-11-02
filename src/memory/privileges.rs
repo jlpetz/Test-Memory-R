@@ -293,34 +293,121 @@ pub fn enable_large_page_privilege_enhanced() -> Result<(), String> {
     }
 }
 
-pub fn auto_grant_large_page_privilege() -> Result<String, String> {
+/// What a session asks about large pages before its run (`Frontend::large_page_restart`), when this process is elevated and its token
+/// lacks the right they need, SeLockMemoryPrivilege ('Lock pages in memory'). Either way they take effect only once Windows restarts: a
+/// token takes the rights its account has at its sign-in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LargePageQuestion {
+    /// The security policy assigns the right already, so only the restart is missing. To some account: the check doesn't say which
+    /// (`check_if_privilege_in_policy`).
+    Restart,
+    /// The policy doesn't assign it, and TMR could grant it to `account` (`DOMAIN\user`, the account TMR runs as), which then keeps it
+    /// until it is removed
+    Grant { account: String },
+}
+
+/// The account TMR runs as, `DOMAIN\user`: the one a grant names
+fn account() -> String {
+    let username = std::env::var("USERNAME").unwrap_or_else(|_| "Administrator".to_string());
+    let domain = std::env::var("USERDOMAIN").unwrap_or_else(|_| std::env::var("COMPUTERNAME").unwrap_or_else(|_| "WORKGROUP".to_string()));
+    format!("{}\\{}", domain, username)
+}
+
+/// The large-page question this process has for its user (`session::run`), if any: none when its token has the right, or when it isn't
+/// elevated, so it couldn't grant it (the diagnostic says what to do then). Reads the security policy (a `secedit /export`), and changes
+/// nothing.
+pub fn large_page_question() -> Option<LargePageQuestion> {
+    let in_token = check_privilege_state() != PrivilegeState::NotAssigned;
+    // An export that fails reads as no assignment: the question offers the grant, which would then fail as the export did, and say why
+    question_for(in_token, is_elevated(), || check_if_privilege_in_policy().unwrap_or_default(), account)
+}
+
+/// `large_page_question`'s choice, from whether this token has the right (`in_token`, enabled or not) and this process is `elevated`:
+/// `in_policy` (the `secedit /export`) is read only when those two leave a question to ask, and `account` named only for the grant
+fn question_for(
+    in_token: bool, elevated: bool, in_policy: impl FnOnce() -> bool, account: impl FnOnce() -> String,
+) -> Option<LargePageQuestion> {
+    if in_token || !elevated {
+        return None;
+    }
+    Some(if in_policy() { LargePageQuestion::Restart } else { LargePageQuestion::Grant { account: account() } })
+}
+
+/// Grants `account` the right large pages need, editing the machine's security policy (`grant_privilege_via_secedit`). Called only once
+/// the user has said yes to the question that named `account` (`session::run`), or by `--setup-large-pages` (`setup_large_pages`), the
+/// command being the request. The account keeps the right until it is removed, and it takes effect once Windows restarts.
+pub fn grant_large_pages(account: &str) -> Result<(), String> {
     if !is_elevated() {
         return Err("Administrator privileges required".to_string());
     }
 
-    let username = std::env::var("USERNAME").unwrap_or_else(|_| "Administrator".to_string());
-    let domain = std::env::var("USERDOMAIN").unwrap_or_else(|_| std::env::var("COMPUTERNAME").unwrap_or_else(|_| "WORKGROUP".to_string()));
-    let full_username = format!("{}\\{}", domain, username);
+    log::info!("Attempting to grant SeLockMemoryPrivilege to: {}", account);
 
-    log::info!("Attempting to grant SeLockMemoryPrivilege to: {}", full_username);
-
-    match grant_privilege_via_secedit(&full_username) {
-        Ok(()) => Ok(format!("Successfully granted SeLockMemoryPrivilege to {}", full_username)),
-        Err(e) => {
-            // Provide more specific error context
-            if e.contains("configure failed") && e.contains("privileges") {
-                Err("Privilege assignment failed - may already be assigned (restart needed)".to_string())
-            } else if e.contains("UTF-8") || e.contains("encoding") {
-                Err("File encoding issue during policy modification".to_string())
-            } else {
-                Err(format!("Setup failed: {}", e))
-            }
+    grant_privilege_via_secedit(account).map_err(|e| {
+        // Provide more specific error context
+        if e.contains("configure failed") && e.contains("privileges") {
+            "Privilege assignment failed - may already be assigned (restart needed)".to_string()
+        } else if e.contains("UTF-8") || e.contains("encoding") {
+            "File encoding issue during policy modification".to_string()
+        } else {
+            format!("Setup failed: {}", e)
         }
-    }
+    })
 }
 
-/// Enhanced large page setup with automatic privilege granting
-pub fn setup_large_pages_automatically() -> Result<String, String> {
+/// `--setup-large-pages`: the diagnostic, then, when the right is missing from this token and this process is elevated, the grant, to the
+/// account TMR runs as. It doesn't ask: the command is the request.
+pub fn setup_large_pages() -> String {
+    let mut report = diagnose_large_pages();
+    if check_privilege_state() == PrivilegeState::NotAssigned && is_elevated() {
+        let account = account();
+        let outcome = grant_large_pages(&account);
+        report.push_str(&grant_report(&account, outcome));
+    }
+    report
+}
+
+/// What `--setup-large-pages` says of its grant to `account`, one line each, and the manual steps when it failed
+fn grant_report(account: &str, outcome: Result<(), String>) -> String {
+    let mut messages = Vec::new();
+    match outcome {
+        Ok(()) => {
+            messages.push(format!("✅ Successfully granted SeLockMemoryPrivilege to {}, which keeps it until it is removed", account));
+            messages.push("".to_string());
+            messages.push("🔄 RESTART REQUIRED: Restart Windows (or sign out and back in) for it to take effect".to_string());
+        }
+        Err(grant_error) => {
+            messages.push(format!("❌ Automatic setup failed: {}", grant_error));
+            messages.push("".to_string());
+
+            // Provide context-aware guidance
+            if grant_error.contains("already") || grant_error.contains("assigned") {
+                messages.push("💡 POSSIBLE CAUSE: Privilege already set but restart needed".to_string());
+                messages.push("   If you recently used gpedit.msc or other tools to grant the privilege,".to_string());
+                messages.push("   restart TMR (or log off/log on) to apply the changes.".to_string());
+                messages.push("".to_string());
+                messages.push("🔄 TRY FIRST: Restart TMR and run again".to_string());
+                messages.push("".to_string());
+            }
+
+            messages.push("📖 Manual Setup (if restart doesn't work):".to_string());
+            messages.push("1. Run gpedit.msc as Administrator".to_string());
+            messages.push(
+                "2. Navigate to: Computer Configuration → Windows Settings → Security Settings → Local Policies → User Rights Assignment"
+                    .to_string(),
+            );
+            messages.push("3. Double-click 'Lock pages in memory'".to_string());
+            messages.push("4. Add your user account or 'Administrators' group".to_string());
+            messages.push("5. Restart Windows (or sign out and back in)".to_string());
+        }
+    }
+    messages.join("\n") + "\n"
+}
+
+/// The large-page check's lines: the account, the right's state in this token, enabling it there when it is disabled, and a test
+/// allocation. It never grants the right (`grant_large_pages` does, asked). The allocator calls it too, before a large-page request
+/// (`WindowsBackend::allocate_with_virtualalloc2`).
+pub fn enable_large_pages() -> Result<String, String> {
     let mut messages = Vec::new();
 
     // Show current user
@@ -335,42 +422,15 @@ pub fn setup_large_pages_automatically() -> Result<String, String> {
             messages.push("❌ SeLockMemoryPrivilege: NOT in current session token".to_string());
 
             if is_elevated() {
-                messages.push("✅ Running as Administrator - attempting automatic setup...".to_string());
-
-                match auto_grant_large_page_privilege() {
-                    Ok(success_msg) => {
-                        messages.push(format!("✅ {}", success_msg));
-                        messages.push("".to_string());
-                        messages.push("🔄 RESTART REQUIRED: Restart TMR for changes to take effect".to_string());
-                        return Ok(messages.join("\n"));
-                    }
-                    Err(grant_error) => {
-                        messages.push(format!("❌ Automatic setup failed: {}", grant_error));
-                        messages.push("".to_string());
-
-                        // Provide context-aware guidance
-                        if grant_error.contains("already") || grant_error.contains("assigned") {
-                            messages.push("💡 POSSIBLE CAUSE: Privilege already set but restart needed".to_string());
-                            messages.push("   If you recently used gpedit.msc or other tools to grant the privilege,".to_string());
-                            messages.push("   restart TMR (or log off/log on) to apply the changes.".to_string());
-                            messages.push("".to_string());
-                            messages.push("🔄 TRY FIRST: Restart TMR and run again".to_string());
-                            messages.push("".to_string());
-                        }
-
-                        messages.push("📖 Manual Setup (if restart doesn't work):".to_string());
-                        messages.push("1. Run gpedit.msc as Administrator".to_string());
-                        messages.push("2. Navigate to: Computer Configuration → Windows Settings → Security Settings → Local Policies → User Rights Assignment".to_string());
-                        messages.push("3. Double-click 'Lock pages in memory'".to_string());
-                        messages.push("4. Add your user account or 'Administrators' group".to_string());
-                        messages.push("5. Restart TMR".to_string());
-                    }
-                }
+                // A session asks first (`large_page_question`), and `--setup-large-pages` grants it next (`setup_large_pages`)
+                messages.push("✅ Running as Administrator: TMR can grant it".to_string());
             } else {
                 messages.push("❌ Not running as Administrator".to_string());
                 messages.push("".to_string());
                 messages.push("🔧 SOLUTIONS (try in order):".to_string());
-                messages.push("1. Restart TMR as Administrator for automatic setup".to_string());
+                messages.push(
+                    "1. Restart TMR as Administrator: it asks to grant it (tmr.exe --setup-large-pages grants it at once)".to_string(),
+                );
                 messages.push("2. If recently configured: Restart TMR normally (privilege may need activation)".to_string());
                 messages.push("3. Manual setup via gpedit.msc".to_string());
             }
@@ -462,7 +522,9 @@ fn test_large_page_allocation() -> Result<(), String> {
     }
 }
 
-pub fn diagnose_and_setup_large_pages() -> String {
+/// The large-page check's report (`Setup::LargePageDiagnostic`): elevated or not, the account, and `enable_large_pages`' lines. It never
+/// grants the right: a session asks first (`large_page_question`), and `--setup-large-pages` grants it after this (`setup_large_pages`).
+pub fn diagnose_large_pages() -> String {
     let mut report = String::new();
 
     report.push_str("🔧 TMR Large Page Auto-Setup starting\n\n");
@@ -486,8 +548,8 @@ pub fn diagnose_and_setup_large_pages() -> String {
 
     report.push('\n');
 
-    // Attempt automatic setup
-    let _setup_successful = match setup_large_pages_automatically() {
+    // Enable it in this token, and try it
+    let _setup_successful = match enable_large_pages() {
         Ok(setup_result) => {
             report.push_str("Auto-Setup Results:\n");
             report.push_str(&setup_result);
@@ -675,17 +737,7 @@ fn modify_security_policy(content: &str, username: &str) -> Result<String, Strin
     Ok(lines.join("\r\n"))
 }
 
-pub fn check_restart_needed() -> bool {
-    // If token shows NotAssigned but we're Administrator, check if privilege might be in policy
-    match check_privilege_state() {
-        PrivilegeState::NotAssigned if is_elevated() => {
-            // Quick check: try to export policy and see if SeLockMemoryPrivilege exists
-            check_if_privilege_in_policy().unwrap_or_default()
-        }
-        _ => false, // If privilege is in token (even disabled), no restart needed
-    }
-}
-
+/// Whether the security policy assigns SeLockMemoryPrivilege to any account: a `secedit /export`, read and deleted
 fn check_if_privilege_in_policy() -> Result<bool, String> {
     // In TEMP, as the grant's export is: not the current folder, which an elevated prompt has as System32 (TODO 104)
     let export = std::env::temp_dir().join("tmr_quick_check.inf");
@@ -717,4 +769,36 @@ fn check_if_privilege_in_policy() -> Result<bool, String> {
     });
 
     Ok(has_privilege)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    /// The large-page question (TODO 29): none when the token has the right, enabled or not, or when TMR isn't elevated, and the policy
+    /// left unread then; elevated without it, the restart when the policy assigns it, else the grant, to the account TMR runs as. Stand-ins
+    /// for the policy and the account: no test reads or changes the security policy.
+    #[test]
+    fn the_grant_is_offered_only_elevated_and_without_the_right_in_the_policy() {
+        let ask = |in_token, elevated, in_policy: bool| {
+            let read = Cell::new(false);
+            let question = question_for(
+                in_token,
+                elevated,
+                || {
+                    read.set(true);
+                    in_policy
+                },
+                || r"PC\owner".to_string(),
+            );
+            (question, read.get())
+        };
+        assert_eq!(ask(true, true, false), (None, false), "the right in the token");
+        assert_eq!(ask(true, false, false), (None, false), "the right in the token, not elevated");
+        assert_eq!(ask(false, false, false), (None, false), "not elevated: the diagnostic says what to do");
+        assert_eq!(ask(false, true, true), (Some(LargePageQuestion::Restart), true), "the right in the policy: only the restart missing");
+        assert_eq!(ask(false, true, false), (Some(LargePageQuestion::Grant { account: r"PC\owner".to_string() }), true), "nowhere");
+    }
 }
