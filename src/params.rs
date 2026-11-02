@@ -53,15 +53,37 @@ impl ParamRegistry {
         let mut params = HashMap::new();
         let mut flags = HashMap::new();
 
-        // Memory allocation parameters
+        // Memory allocation parameters. Kept as given: the session parses it again, with this `AllocationMode::parse`, into its strategy.
         params.insert("memory", ParamDef {
             key: "memory",
             can_override_config: true,
-            parser: |v| Ok(ParamValue::String(v.to_string())), // Return raw value, complex parsing happens later
+            parser: |v| match crate::memory::allocation_strategy::AllocationMode::parse(v) {
+                Ok(_) => Ok(ParamValue::String(v.to_string())),
+                Err(e) => Err(format!(
+                    "Invalid memory '{v}': {e}. Valid: a share (20%) or a size (2GiB, 2048MB), alone or followed by -from-available, \
+                     -from-total or -target"
+                )),
+            },
         });
 
-        // CPU configuration parameters
-        params.insert("cpus", ParamDef { key: "cpus", can_override_config: true, parser: |v| Ok(ParamValue::String(v.to_string())) });
+        // CPU configuration parameters. `cpus=` is a share of the available CPUs or a count of them, as `session::run` reads it (clamped to
+        // 1..=available); it would read anything else as every CPU.
+        params.insert("cpus", ParamDef {
+            key: "cpus",
+            can_override_config: true,
+            parser: |v| {
+                let s = v.trim();
+                let read = match s.strip_suffix('%') {
+                    Some(share) => share.parse::<u32>().is_ok(),
+                    None => s.parse::<usize>().is_ok(),
+                };
+                if read {
+                    Ok(ParamValue::String(s.to_string()))
+                } else {
+                    Err(format!("Invalid cpus '{v}'. Valid: N% (a share of the available CPUs, e.g. 50%) or N (a count, e.g. 4)"))
+                }
+            },
+        });
 
         params.insert("cputype", ParamDef {
             key: "cputype",
@@ -342,11 +364,29 @@ impl ParamRegistry {
             },
         });
 
-        // Config file parameter
-        params.insert("config", ParamDef { key: "config", can_override_config: false, parser: |v| Ok(ParamValue::String(v.to_string())) });
+        // Config file parameter: a path, which `config::load_config` looks for. An empty one the session takes as no config at all.
+        params.insert("config", ParamDef {
+            key: "config",
+            can_override_config: false,
+            parser: |v| {
+                if v.trim().is_empty() {
+                    Err(format!("Invalid config '{v}'. Valid: a config file's path (a TMR .json or a TM5 .cfg)"))
+                } else {
+                    Ok(ParamValue::String(v.to_string()))
+                }
+            },
+        });
 
-        // Test filter parameter (supports glob patterns and comma-separated lists)
-        params.insert("test", ParamDef { key: "test", can_override_config: false, parser: |v| Ok(ParamValue::String(v.to_string())) });
+        // Test filter parameter: names or glob patterns, comma-separated. `runner::retain_matching` drops a pattern that isn't a glob, with
+        // a warning in the log alone, and runs what the others match.
+        params.insert("test", ParamDef {
+            key: "test",
+            can_override_config: false,
+            parser: |v| match v.split(',').map(str::trim).find_map(|pattern| globset::Glob::new(pattern).err()) {
+                None => Ok(ParamValue::String(v.to_string())),
+                Some(e) => Err(format!("Invalid test '{v}': {e}. Valid: test names or glob patterns (Mem-*, Lat-L?-*), comma-separated")),
+            },
+        });
 
         params.insert("priority", ParamDef {
             key: "priority",
@@ -516,6 +556,73 @@ mod tests {
         for bad in ["", "turbo", "idle", "15"] {
             let e = parse("window-priority", bad).unwrap_err();
             assert!(e.contains(&format!("Invalid window-priority '{bad}'")), "{e}");
+        }
+    }
+
+    /// `key=v`'s value as the parser keeps it, or its message
+    fn kept(key: &str, v: &str) -> Result<String, String> {
+        super::parse_and_validate_args(&[format!("{key}={v}")]).map(|parsed| super::get_string(&parsed, key, "(none)"))
+    }
+
+    /// `cpus=` takes a share of the available CPUs or a count of them, as the session reads them (clamped there: 0 is one CPU, more than
+    /// the pool all of it), trimmed, and refuses anything else, naming the two, which the session would read as every CPU
+    #[test]
+    fn cpus_takes_a_share_or_a_count() {
+        #[rustfmt::skip]
+        let valid = [
+            ("100%", "100%"), ("50%", "50%"), ("1%", "1%"), ("0%", "0%"), ("150%", "150%"),
+            ("1", "1"), ("4", "4"), ("0", "0"), ("512", "512"), (" 8 ", "8"),
+        ];
+        for (given, kept_as) in valid {
+            assert_eq!(kept("cpus", given).as_deref(), Ok(kept_as), "cpus={given}");
+        }
+        for bad in ["lots", "", "%", "50%%", "%50", "-1", "1.5", "50 %", "half", "4cores", "1-4", "99999999999%"] {
+            let e = kept("cpus", bad).unwrap_err();
+            assert!(e.contains(&format!("Invalid cpus '{bad}'. Valid: N% (a share of the available CPUs, e.g. 50%) or N (a count")), "{e}");
+        }
+    }
+
+    /// `memory=` takes what `AllocationMode::parse` does, kept as given, and refuses the rest at parsing, with that parse's reason and
+    /// the forms
+    #[test]
+    fn memory_takes_what_the_allocation_reads() {
+        for ok in ["50%", "10%-from-available", "2GiB", "2048MB", "1024-legacy", "8GiB-from-total", "64GiB-target", "80%-target"] {
+            assert_eq!(kept("memory", ok).as_deref(), Ok(ok), "memory={ok}");
+        }
+        for (bad, reason) in [
+            ("lots", "Unrecognized memory format"),
+            ("", "Unrecognized memory format"),
+            ("150%", "Percentage must be between 0-100"),
+            ("xGiB-target", "Invalid GiB/GB format"),
+        ] {
+            let e = kept("memory", bad).unwrap_err();
+            assert!(e.contains(&format!("Invalid memory '{bad}': {reason}")) && e.contains("Valid: a share (20%) or a size"), "{e}");
+        }
+    }
+
+    /// `test=` takes names and glob patterns, comma-separated, kept as given, and refuses a pattern that isn't a glob, which the runner
+    /// would drop and run the rest
+    #[test]
+    fn test_takes_names_and_globs() {
+        for ok in ["Mem-SimpleV2-512_A", "Spd-*", "Mem-Mirror*,Lat-L3-*", "Lat-L?-*, Mem-*", "Mem-{Refresh}*"] {
+            assert_eq!(kept("test", ok).as_deref(), Ok(ok), "test={ok}");
+        }
+        // The last: the list splits at its commas first, so an alternation can't hold one
+        for bad in ["Lat-[L3", "Mem-*,Lat-{L1", "Mem-{Refresh,Mirror}*"] {
+            let e = kept("test", bad).unwrap_err();
+            assert!(e.contains(&format!("Invalid test '{bad}': ")) && e.contains("Valid: test names or glob patterns"), "{e}");
+        }
+    }
+
+    /// `config=` takes any path, kept as given (the loader looks for it), and refuses an empty one, which would be no config
+    #[test]
+    fn config_takes_a_path() {
+        for ok in ["x.cfg", r"C:\My configs\x.cfg", "configs/anta777.cfg"] {
+            assert_eq!(kept("config", ok).as_deref(), Ok(ok), "config={ok}");
+        }
+        for bad in ["", "  "] {
+            let e = kept("config", bad).unwrap_err();
+            assert!(e.contains(&format!("Invalid config '{bad}'. Valid: a config file's path")), "{e}");
         }
     }
 }

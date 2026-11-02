@@ -193,6 +193,7 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  cycles=5                            # Run 5 complete test cycles")?;
     writeln!(out, "  duration=600                        # Maximum 10 minutes runtime")?;
     writeln!(out, "  cpus=50%                            # Use 50% of available CPUs")?;
+    writeln!(out, "  cpus=4                              #   ...or a count of them")?;
     writeln!(out, "  cputype=cores                       # Use physical cores (vs threads/SMT)")?;
     writeln!(out, "  skip-cores=1                        # Stage 1 FILTER: skip first N CPUs (default: 1 to preserve OS)")?;
     writeln!(out, "  skip-cores=25%                      #   ...or skip the leading N% (portable across core counts)")?;

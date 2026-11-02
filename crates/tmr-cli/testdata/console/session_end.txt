@@ -77,6 +77,7 @@ COMMAND LINE PARAMETERS:
   cycles=5                            # Run 5 complete test cycles
   duration=600                        # Maximum 10 minutes runtime
   cpus=50%                            # Use 50% of available CPUs
+  cpus=4                              #   ...or a count of them
   cputype=cores                       # Use physical cores (vs threads/SMT)
   skip-cores=1                        # Stage 1 FILTER: skip first N CPUs (default: 1 to preserve OS)
   skip-cores=25%                      #   ...or skip the leading N% (portable across core counts)
