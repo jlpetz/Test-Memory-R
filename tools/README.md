@@ -201,14 +201,16 @@ line goes to, as the goldens take stdout and stderr together. Run the same comma
 old binary and the new, each captured, then diff the two here.
 
 Both captures are read the same way. Ticker frames are dropped (by their erase codes, or by their
-lines when a capture lost the codes) and ANSI escapes stripped. Masked: log stamps, hh:mm:ss, run
-stems, pattern seeds and addresses, and what a run measured: times, rates, op and sample counts and
-every other decimal (deviations, latencies, ratios, frequencies, percentages). What a run is
-configured with stays: byte counts, whole seconds (`30s`, a test's limit), a `Wait(500ms)` and a
-cache multiplier (`CacheTotal 2.00x`). A run of lines naming a thread (the workers' `[Thread 3]
-Running ...`) is put in thread order, since the scheduler orders them. A table's cells are joined by
-` | ` (a masked cell no longer sets its column's width), and a table of threads has its rows sorted:
-a step's thread table orders them by time, its latency table by when each thread finished.
+lines when a capture lost the codes) and ANSI escapes stripped: a redirected stdout gets neither
+since 2026-11-02 (`console::is_console`), so these matter for a capture of an older build. Masked:
+log stamps, hh:mm:ss, run stems, pattern seeds and addresses, and what a run measured: times, rates,
+op and sample counts and every other decimal (deviations, latencies, ratios, frequencies,
+percentages). What a run is configured with stays: byte counts, whole seconds (`30s`, a test's
+limit), a `Wait(500ms)` and a cache multiplier (`CacheTotal 2.00x`). A run of lines naming a thread
+(the workers' `[Thread 3] Running ...`) is put in thread order, since the scheduler orders them. A
+table's cells are joined by ` | ` (a masked cell no longer sets its column's width), and a table of
+threads has its rows sorted: a step's thread table orders them by time, its latency table by when
+each thread finished.
 
 ```bash
 cmd /c "tmr.exe --startup-debug memory=50% cputype=cores cpus=100% skip-cores=0 > before.out 2> before.err"

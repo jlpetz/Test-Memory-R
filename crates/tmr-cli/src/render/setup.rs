@@ -1,6 +1,6 @@
 //! A session's setup and its end as the console shows them (TODO 29): each event the print group it replaced, moved here from the engine's
 //! `cli.rs` (the CPU topology's from `cpu_topology.rs`, the memory status's from `runner.rs`) with its format strings. No ticker is up
-//! during setup, so all print with plain `print!`, and to stderr what went there.
+//! during setup, so all print with a plain `console::print`, and to stderr what went there (`console::eprint`).
 
 use std::fmt::Write as _;
 
@@ -8,18 +8,19 @@ use tmr::frontend::{CacheCalibrationState, ErrorMode, MemoryStatus, ParamNote, R
 use tmr::session::{SessionEnd, Stopped};
 
 use super::{rendered, report_text};
+use crate::console;
 
 /// Shows `setup`, and returns what it showed (the transcript's, TODO 109). From `Starting` on, Ctrl+C stops the run gracefully:
 /// `take_ctrl_c` installs that (`crate::take_ctrl_c`; a test passes its own, as a test process keeps Ctrl+C for itself).
 pub(super) fn show(setup: &Setup, take_ctrl_c: impl FnOnce()) -> String {
     let shown = shown(setup);
     match setup {
-        Setup::MemoryStatus(None) => eprint!("{shown}"),
+        Setup::MemoryStatus(None) => console::eprint(&shown),
         Setup::Starting => {
-            print!("{shown}");
+            console::print(&shown);
             take_ctrl_c();
         }
-        _ => print!("{shown}"),
+        _ => console::print(&shown),
     }
     shown
 }
@@ -274,9 +275,9 @@ fn memory_status_text(text: &mut String, status: &MemoryStatus) {
 /// own (`tmr::commands::run`), and the large-page restart's text was the prompt's.
 pub(crate) fn show_end(end: &SessionEnd, program: &str) {
     match end {
-        SessionEnd::Stopped(Stopped::Invalid(e)) => eprintln!("{}", e),
-        SessionEnd::Stopped(Stopped::CpuSelection(e)) => eprintln!("❌ CPU selection error: {}", e),
-        end => print!("{}", end_text(end, program)),
+        SessionEnd::Stopped(Stopped::Invalid(e)) => console::eprint(&format!("{}\n", e)),
+        SessionEnd::Stopped(Stopped::CpuSelection(e)) => console::eprint(&format!("❌ CPU selection error: {}\n", e)),
+        end => console::print(&end_text(end, program)),
     }
 }
 

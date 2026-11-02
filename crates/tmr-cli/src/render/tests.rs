@@ -18,13 +18,16 @@ use tmr::session::{SessionEnd, Stopped};
 use tmr::test_support::failing_bits;
 
 use super::{CliFrontend, draw_when_due, setup, ticker};
-use crate::golden::{capture, check};
+use crate::console;
+use crate::golden::{capture, capture_redirected, check, mask_stamps, turn};
 
 const GIB: u64 = 1 << 30;
 
 /// The run's events the console goldens of a run don't reach, each after a `## case` line.
 #[test]
 fn events_print_as_their_golden() {
+    // Its payloads are the engine's, built before the captures
+    let _turn = turn();
     let fe = CliFrontend::new();
     let left_out =
         |names: &[&str]| Run::LeftOut { tests: names.iter().map(|name| (name.to_string(), "no AVX-512F".to_string())).collect() };
@@ -118,6 +121,37 @@ fn a_cycle_ending_prints_nothing() {
         let ((), printed) = capture(|| fe.event(Run::CycleFinished { cycle: 2, partial }.into()));
         assert_eq!(printed, "", "partial: {partial}");
     }
+}
+
+/// On a stdout that isn't a console (`console::is_console`), what a console shows without its escape codes, the reports' colours and bold
+/// and the log's colours; and no ticker, only the WHEA lines it prints above itself, on its clock as on a console.
+#[test]
+fn a_redirected_stdout_gets_no_escape_codes_and_no_ticker() {
+    let fe = CliFrontend::new();
+    let shown = || {
+        fe.event(Setup::SystemInfo { report: Box::new(crate::renderer::tests::system_info_report()), memory_modules: Vec::new() }.into());
+        fe.event(Run::CpuPerformance(Box::new(cpu_performance())).into());
+        log::warn!("a record");
+    };
+    let ((), on_console) = capture(shown);
+    let ((), redirected) = capture_redirected(shown);
+    assert!(on_console.contains("\x1b[1m📊 ") && on_console.contains("\x1b[33m["), "a console's has its escapes:\n{on_console}");
+    assert!(!redirected.contains('\x1b'), "{redirected}");
+    assert_eq!(mask_stamps(&redirected), mask_stamps(&tmr::logfile::without_colours(&on_console)));
+
+    // The ticker under the WHEA lines, taken down for the line after it and for good at the end
+    let whea = "⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)";
+    let ticked = || {
+        assert!(console::draw_ticker(|| "\nthe ticker".to_string(), || vec![whea.to_string()]), "not held");
+        console::print_above("a line");
+        console::print_block("");
+    };
+    let ((), on_console) = capture(ticked);
+    let ticker = "\nthe ticker";
+    let erase = "\r\x1b[1A\x1b[J";
+    assert_eq!(on_console, format!("{whea}\n{ticker}{erase}a line\n{ticker}{erase}"));
+    let ((), redirected) = capture_redirected(ticked);
+    assert_eq!(redirected, format!("{whea}\na line\n"));
 }
 
 /// The ticker in each of its forms, and a step's stamp, each after a `## case` line.

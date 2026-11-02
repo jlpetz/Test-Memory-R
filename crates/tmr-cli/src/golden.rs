@@ -1,39 +1,107 @@
 //! The console's output against goldens (TODO 29): what a test printed, captured, compared with this crate's `testdata/console/<name>.txt`.
 //! The engine/presentation split moved every print behind a frontend, and into this crate, and these show the moved prints still write the
-//! bytes
-//! they did. `TMR_BLESS=1 cargo test` writes the goldens instead of comparing them;
-//! `git diff crates/tmr-cli/testdata/` then shows what changed. The engine's code a golden runs it reaches through `tmr::test_support`.
+//! bytes they did. `TMR_BLESS=1 cargo test` writes the goldens instead of comparing them; `git diff crates/tmr-cli/testdata/` then shows
+//! what changed. The engine's code a golden runs it reaches through `tmr::test_support`.
 //!
-//! The capture is libtest's own mechanism: `set_output_capture` swaps this thread's buffer for ours, and libtest's spawn hook (under
-//! `--nocapture`, our own) hands the capture on to every thread spawned meanwhile, so the workers' lines land in it too. Two more pieces
-//! make it whole: `console.rs` writes through `print!` in a test build (a locked stdout bypasses the capture), and `Logger` prints each log
-//! record as the CLI's logger does (`setup_logging`), through `console::print_above`, so the records and their order against the prints are
-//! in the golden.
+//! The capture is the CLI's own: every write the CLI makes goes through the console's writer (`console::Writer`), which in a test build
+//! hands it to the capture on now (`write`). The capture is the process's, not a thread's, so the workers' lines land in it too, and
+//! `Logger` prints each log record as the CLI's logger does (`setup_logging`), through `console::print_above`, so the records and their
+//! order against the prints are in the golden. Any other test's records would land in it as well, so the tests that capture or log take
+//! turns at the console (`turn`): a capture takes one for itself, and a test that logs outside its captures (one that builds the engine's
+//! state first, a fake cycle's) holds one through its whole body. A capture sets the console flag, on as on a console (`capture`, as every
+//! golden has it) or off as redirected (`capture_redirected`), so the goldens of text that read the flag without printing it (the
+//! Reporter's, `renderer/tests.rs`) render in a capture too.
 //!
-//! The capture takes stdout and stderr together, as libtest's does, so which of the two a line goes to isn't in a golden: the owner's A/B
-//! of the exe captures them apart (`tools/console_diff.py`).
+//! The capture takes stdout and stderr together, so which of the two a line goes to isn't in a golden: the owner's A/B of the exe captures
+//! them apart (`tools/console_diff.py`).
 
-use std::cell::Cell;
-use std::io;
+use std::cell::{Cell, RefCell};
+use std::marker::PhantomData;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
-type Sink = Arc<Mutex<Vec<u8>>>;
+use crate::console::Stream;
 
-/// Runs `f` and returns what it printed, with its threads' prints and every log record from Info up.
-pub(crate) fn capture<R>(f: impl FnOnce() -> R) -> (R, String) {
-    install_logger();
-    // The detections log what they found at their first use, wherever that is: before the capture, so no golden depends on which test ran
-    // first
-    tmr::test_support::detect();
-    let sink: Sink = Arc::new(Mutex::new(Vec::new()));
-    let restore = Restore { outer: io::set_output_capture(Some(Arc::clone(&sink))), sink: Arc::clone(&sink) };
-    if restore.outer.is_none() {
-        hand_on_capture();
+/// What the CLI wrote while a capture is on, both streams': `None` when none is
+static SINK: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
+fn sink() -> MutexGuard<'static, Option<Vec<u8>>> {
+    SINK.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Where a test build's console writes go (`console::Writer`): into the capture on now; with none on (what a test logs outside its
+/// captures), to libtest's capture of this thread, as a test's own prints go, so they show only when the test fails or under `--nocapture`.
+pub(crate) fn write(stream: Stream, bytes: &[u8]) {
+    let mut sink = sink();
+    if let Some(sink) = sink.as_mut() {
+        sink.extend_from_slice(bytes);
+        return;
     }
+    // Every write is of whole `str`s, so none splits a char
+    let text = String::from_utf8_lossy(bytes);
+    match stream {
+        Stream::Out => print!("{text}"),
+        Stream::Err => eprint!("{text}"),
+    }
+}
+
+/// One test at the console at a time: the sink is the process's, and so is the console flag a capture sets
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    /// This thread's turn at the console while it has one, and how many `Turn`s hold it
+    static TURN: RefCell<(Option<MutexGuard<'static, ()>>, usize)> = const { RefCell::new((None, 0)) };
+}
+
+/// A test's turn at the console, for as long as it lives (`turn`). Not `Send`: it ends on the thread that took it.
+pub(crate) struct Turn(PhantomData<*const ()>);
+
+/// Waits for the console, and has it till the `Turn` drops: no other test's capture is on meanwhile, nor its records. A thread that has a
+/// turn can take another, a capture inside a test's turn its own.
+pub(crate) fn turn() -> Turn {
+    TURN.with_borrow_mut(|(guard, held)| {
+        if guard.is_none() {
+            *guard = Some(ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner));
+        }
+        *held += 1;
+    });
+    Turn(PhantomData)
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        TURN.with_borrow_mut(|(guard, held)| {
+            *held -= 1;
+            if *held == 0 {
+                *guard = None;
+            }
+        });
+    }
+}
+
+/// Runs `f` and returns what it printed, as on a console, with its threads' prints and every log record from Info up. Not nested.
+pub(crate) fn capture<R>(f: impl FnOnce() -> R) -> (R, String) {
+    capture_as(true, f)
+}
+
+/// `capture`, as on a stdout that isn't a console: no escape codes and no ticker (`console::is_console`).
+pub(crate) fn capture_redirected<R>(f: impl FnOnce() -> R) -> (R, String) {
+    capture_as(false, f)
+}
+
+/// `capture`, stdout a console or not
+fn capture_as<R>(console: bool, f: impl FnOnce() -> R) -> (R, String) {
+    let _turn = turn();
+    install_logger();
+    // The detections log what they found at their first use, wherever that is: into a capture of their own, dropped, so no golden depends
+    // on which test ran first
+    *sink() = Some(Vec::new());
+    tmr::test_support::detect();
+    crate::console::set_console(console);
+    *sink() = Some(Vec::new());
+    let _off = Off;
     let value = f();
-    drop(restore);
-    let bytes = std::mem::take(&mut *sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+    let bytes = sink().take().unwrap_or_default();
     (value, String::from_utf8(bytes).expect("the console writes UTF-8"))
 }
 
@@ -54,33 +122,14 @@ pub(crate) fn capture_with_debug<R>(f: impl FnOnce() -> R) -> (R, String) {
     capture(f)
 }
 
-/// Under `--nocapture`, as cargo-nextest runs each test, libtest captures nothing and so hands no capture on to the threads a test spawns:
-/// this thread then hands on its own, as libtest's spawn hook does, once (a hook can't be taken back, and one is enough).
-fn hand_on_capture() {
-    thread_local!(static HANDS_ON: Cell<bool> = const { Cell::new(false) });
-    if !HANDS_ON.replace(true) {
-        std::thread::add_spawn_hook(|_| {
-            let capture = io::set_output_capture(None);
-            io::set_output_capture(capture.clone());
-            move || {
-                io::set_output_capture(capture);
-            }
-        });
-    }
-}
+/// Turns the capture off however `capture`'s closure ends. On a panic, what the closure printed goes to libtest's capture of this thread,
+/// so the failure shows it.
+struct Off;
 
-/// Puts libtest's capture back however `capture`'s closure ends. On a panic, what the closure printed goes to libtest's capture too, so the
-/// failure shows it.
-struct Restore {
-    outer: Option<Sink>,
-    sink: Sink,
-}
-
-impl Drop for Restore {
+impl Drop for Off {
     fn drop(&mut self) {
-        io::set_output_capture(self.outer.take());
-        if std::thread::panicking() {
-            let printed = self.sink.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let printed = sink().take();
+        if let Some(printed) = printed.filter(|_| std::thread::panicking()) {
             print!("{}", String::from_utf8_lossy(&printed));
         }
     }
@@ -256,8 +305,9 @@ fn mask_figures(line: &str) -> String {
     out
 }
 
-/// Prints each record from Info up, and Debug on a thread under `capture_with_debug`, as the CLI's logger prints it on a console
-/// (`setup_logging`), colour and all, through `print_above` as its `LogSink` does. File-only records print nothing, as there.
+/// Prints each record from Info up, and Debug on a thread under `capture_with_debug`, as the CLI's logger prints it (`setup_logging`), in
+/// colour on a console and without on a redirected stdout, through `print_above` as its `LogSink` does. File-only records print nothing,
+/// as there.
 struct Logger;
 
 impl log::Log for Logger {
@@ -276,12 +326,15 @@ impl log::Log for Logger {
             log::Level::Debug => "36",
             log::Level::Trace => "35",
         };
+        // As env_logger strips the escapes when stdout isn't a console (`WriteStyle::Never`)
+        let (colour, reset) = if crate::console::is_console() { (format!("\x1b[{colour}m"), "\x1b[0m") } else { (String::new(), "") };
         crate::console::print_above(&format!(
-            "\x1b[{}m[{} {} {}]\x1b[0m {}\n",
+            "{}[{} {} {}]{} {}\n",
             colour,
             chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
             record.level(),
             record.module_path().unwrap_or("unknown"),
+            reset,
             record.args()
         ));
     }
@@ -289,7 +342,7 @@ impl log::Log for Logger {
     fn flush(&self) {}
 }
 
-/// Installs `Logger` once a process: the first capture does, and every test's records print from then on, into the test's own capture.
+/// Installs `Logger` once a process: the first capture does, and every test's records print from then on, into the capture on then.
 fn install_logger() {
     static LOGGER: Logger = Logger;
     static ONCE: std::sync::Once = std::sync::Once::new();
@@ -302,12 +355,13 @@ fn install_logger() {
 mod tests {
     use super::*;
 
-    /// The capture has what the console module prints above the ticker, the log records, and what a spawned thread prints, in the order
-    /// they were printed.
+    /// The capture has what the console module prints, on stdout and stderr and above the ticker, the log records, and what a spawned
+    /// thread prints, in the order they were printed.
     #[test]
     fn the_capture_has_the_consoles_lines_the_logs_and_the_threads() {
         let ((), text) = capture(|| {
-            println!("plain");
+            crate::console::print("plain\n");
+            crate::console::eprint("to stderr\n");
             crate::console::print_above("above");
             log::info!("a record");
             log::debug!("below the level");
@@ -317,7 +371,7 @@ mod tests {
         let text = mask_stamps(&text);
         assert_eq!(
             text,
-            "plain\nabove\n\x1b[32m[<stamp> INFO tmr_cli::golden::tests]\x1b[0m a record\n\
+            "plain\nto stderr\nabove\n\x1b[32m[<stamp> INFO tmr_cli::golden::tests]\x1b[0m a record\n\
                           \x1b[33m[<stamp> WARN tmr_cli::golden::tests]\x1b[0m from a thread\n"
         );
     }

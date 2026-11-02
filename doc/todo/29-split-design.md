@@ -632,7 +632,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 
 - Setup parity can't be captured in-process: cli.rs::run runs secedit (privileges.rs:341, 737-786) and calls process::exit. It rests on verbatim moves, per-event goldens and the owner's A/B at S4.
 - Ordering depends on the conversion rule, followed by hand. The order test covers coordinator records in the fake cycle; worker and setup records are covered only by the A/B transcripts.
-- `set_output_capture` is perma-unstable (stdio.rs:1105-1111) and the nightly is unpinned, CI's too. S5 didn't replace the bridge with writer goldens, as planned: the goldens of the cycle, the plan, the stops before testing, the events, setup and the order test need what the CLI prints through `print_above` and `print_block`, and the workers' records, captured. So it stays, in tmr-cli's tests, with no end date. A nightly bump can break only those goldens, never the product or the engine's tests (the engine captures nothing since S5). Open for the owner: accept that, or plan writer goldens.
+- ~~`set_output_capture` is perma-unstable (stdio.rs:1105-1111) and the nightly is unpinned, CI's too. S5 didn't replace the bridge with writer goldens, as planned: the goldens of the cycle, the plan, the stops before testing, the events, setup and the order test need what the CLI prints through `print_above` and `print_block`, and the workers' records, captured. So it stays, in tmr-cli's tests, with no end date. A nightly bump can break only those goldens, never the product or the engine's tests (the engine captures nothing since S5). Open for the owner: accept that, or plan writer goldens.~~ Done 2026-11-02 (the owner: replace it): every write the CLI makes goes through `console::Writer`, which a test build hands to a process-wide sink while a golden captures, the capturing tests taking turns (`golden::turn`). No unstable feature is left in tmr-cli, and every golden kept its bytes.
 - The S3 preview still exits the process on setup errors and reads the prompt from the inherited console. It must be launched with `--gui` from a shell until S4/S6.
 - Every Cargo.toml or build.rs change re-hashes the crate and reorders .text (reactor finding). Kernel instructions stay identical but loop alignment moves. Retake bench_ab references after S1 and S3, and with the GUI feature on.
 - hot_loop_spills.py silently reports zero hot loops if the lib name or the build command drifts (`:97`, `:145`, `:213`). The S3 guard and the S0 fingerprint catch it; the fingerprint tool is new itself, so cross-check its first diff by hand.
@@ -669,8 +669,8 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - Text kept as it is on purpose. Fix each of these in its own commit, or keep it?
 - 'Skipping first 1 CPU(s)' with skip-cores=0 (cli.rs:1603);
 - ~~the Ctrl+C wording 'without the final report or results file', untrue once results save every cycle (cli.rs:964, 975)~~: corrected in S1;
-- bold escape codes in redirected output (renderers/console.rs:21);
-- ticker frames in WinRM captures.
+- ~~bold escape codes in redirected output (renderers/console.rs:21);~~
+- ~~ticker frames in WinRM captures.~~ Both done 2026-11-02: one flag a process, whether stdout is a console (`console::is_console`, set in `console::init`), which the reports' colours and the ticker read, as the log's colours do: a redirected stdout gets neither.
 - After the size test: store per-thread rows for every step of every cycle in pretty JSON, compact JSON, or per-test averages only?
 - GUI responsiveness under cpus=100% at High worker priority: raise the window thread's priority during a run, or leave one core free in GUI mode?
 - An elevated launch silently grants the large-page privilege through secedit (privileges.rs:335-346). Should it become a question, now that a double-click can trigger it?
@@ -680,13 +680,13 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - ~~When should release builds include the GUI (`--features tmr-app/gui`: +1.6 MB, Windows App Runtime 2.x needed for the window)?~~ Now (the owner, 2026-10-23): a default feature, in every build and release, one tmr.exe.
 - For the preview stage, is `tmr --gui …` from a shell (setup text and the large-page prompt in the console) acceptable before the double-click launch exists?
 - May the coordinator update CLAUDE.md's asm and clippy command lines (`-p tmr-app`, `--workspace`) when the workspace lands?
-- The capture bridge (`set_output_capture`, perma-unstable) stays in tmr-cli's tests after S5, with no end date: a nightly bump can break those goldens, never the product. Accept that, pinning the nightly if a bump does, or plan writer goldens: the CLI's frontend and `console` writing to an injected sink in its tests, and a test logger writing to the same sink?
+- ~~The capture bridge (`set_output_capture`, perma-unstable) stays in tmr-cli's tests after S5, with no end date: a nightly bump can break those goldens, never the product. Accept that, pinning the nightly if a bump does, or plan writer goldens: the CLI's frontend and `console` writing to an injected sink in its tests, and a test logger writing to the same sink?~~ Writer goldens, done 2026-11-02 (Risks).
 
 ## Weakest parts
 
 - Setup-path byte identity is proven only by verbatim moves plus the owner's A/B transcripts. Branches the dev box never takes (elevated without the privilege, hybrid CPUs, the restart prompt) are covered by neither.
 - The S3 preview runs through a transitional `cli::run_session` that still exits the process on setup errors and reads stdin, so it validates the run vocabulary but not setup. Some of its glue is rewritten in S4.
-- The S0 bridge, tmr-cli's tests' alone since S5 and with no end date, relies on a perma-unstable std API and a cfg(test) shim in console.rs. The plan-only golden needs host-dependent lines masked, and only a run on the dev box will show whether its masking is enough.
+- ~~The S0 bridge, tmr-cli's tests' alone since S5 and with no end date, relies on a perma-unstable std API and a cfg(test) shim in console.rs.~~ Replaced 2026-11-02 by the CLI's own writer (Risks). The plan-only golden needs host-dependent lines masked, and only a run on the dev box will show whether its masking is enough.
 - The module-path parity helper is a deliberate hack that keeps three log lines labelled `tmr::cli` from code that no longer lives there.
 - asm_fingerprint.py is new and unproven. Its normalisation could hide a real change or flag noise; hot_loop_spills.py and a hand check of the first diff are the backstop.
 - The per-cycle save cost and file size are estimates until the ignored test runs, and the fallback (compact or aggregates) is a schema choice made after S1 ships.

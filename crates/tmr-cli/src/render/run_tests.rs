@@ -8,7 +8,7 @@ use tmr::frontend::{ErrorMode, Event, Frontend, RestartChoice, Run, RunStatus};
 use tmr::test_support::{FakeCycle, Flip, GoldenRun, TestRunOverrides, default_plan};
 
 use super::CliFrontend;
-use crate::golden::{capture, capture_with_debug, check, mask_plan, mask_run, mask_stamps};
+use crate::golden::{capture, capture_with_debug, check, mask_plan, mask_run, mask_stamps, turn};
 
 /// A cycle as the console shows it (TODO 29): the fake cycle (`FakeCycle`), logging its errors. Times, rates and the scheduler's order are
 /// masked (`golden::mask_run`). Nothing printed depends on the run's seed either, which can't be fixed here (a process takes it once, and
@@ -17,6 +17,8 @@ use crate::golden::{capture, capture_with_debug, check, mask_plan, mask_run, mas
 /// (`a_cycle_records_each_step_and_its_threads`).
 #[test]
 fn a_cycle_prints_as_its_golden() {
+    // Its fake cycle logs as it is built, before the capture
+    let _turn = turn();
     let cycle = FakeCycle::new(ErrorMode::Log, Flip::Verify);
     let (ran, text) = capture(|| cycle.run(&CliFrontend::new()));
     assert_eq!(ran.ended(), (None, false), "the cycle ran to its end");
@@ -74,6 +76,8 @@ impl Frontend for Recording {
 /// plan, a filter that matched nothing and what it could have matched.
 #[test]
 fn events_come_in_order_with_the_log_records() {
+    // Its fake cycles and runs log as they are built, before each capture
+    let _turn = turn();
     // The events and the run's own records: the workers' order among themselves is the scheduler's
     let order = |text: &str| -> Vec<String> {
         mask_stamps(text)
@@ -154,6 +158,7 @@ fn events_come_in_order_with_the_log_records() {
 /// (`golden::mask_plan`). A CPU with 2 MiB of L3 or less prints another plan.
 #[test]
 fn the_plan_prints_as_its_golden() {
+    let _turn = turn();
     let run = GoldenRun::new(TestRunOverrides { plan: Some(default_plan()), plan_only: true, ..Default::default() });
     let (status, text) = capture(|| run.run(&cli()));
     assert_eq!(status, RunStatus::Passed);
@@ -166,6 +171,7 @@ fn the_plan_prints_as_its_golden() {
 /// line.
 #[test]
 fn what_stops_a_run_prints_as_its_golden() {
+    let _turn = turn();
     let stability = Some(default_plan());
     let cases = [
         ("a filter no test of the plan matches", TestRunOverrides {

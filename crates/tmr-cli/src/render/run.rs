@@ -8,8 +8,8 @@ use tmr::frontend::{CpuPerformanceSummary, NotRun, PageSizeLevel, Run, RunOutcom
 use super::{report_text, ticker};
 use crate::console;
 
-/// How the console writes an event's text: before the suite and after it with plain `print!`, a line while the ticker can be up above it
-/// (`console::print_above`), a step's report as one block under it (`console::print_block`)
+/// How the console writes an event's text: before the suite and after it with a plain `console::print`, a line while the ticker can be up
+/// above it (`console::print_above`), a step's report as one block under it (`console::print_block`)
 pub(super) enum Written {
     Plain,
     Above,
@@ -20,7 +20,7 @@ pub(super) enum Written {
 pub(super) fn show(run: &Run) -> String {
     let (text, written) = text(run);
     match written {
-        Written::Plain => print!("{text}"),
+        Written::Plain => console::print(&text),
         Written::Above => console::print_above(&text),
         Written::Block => console::print_block(&text),
     }

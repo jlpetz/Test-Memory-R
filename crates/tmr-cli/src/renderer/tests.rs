@@ -6,13 +6,19 @@
 use tmr::frontend::{
     CacheInfo, CpuInfo, CpuPerformance, CpuTopologyEntry, CpuTopologyReport, LatencyLevelSummary, LatencyPercentiles,
     LatencyTestSummaryReport, LatencyThreadResult, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
-    PhysicalCorePerformance, SystemInfoReport, ThreadPerformance, ThreadTiming, ThreadTimingReport, TopologySummary, TscCalibrationInfo,
-    WheaCounts,
+    PhysicalCorePerformance, Reporter, SystemInfoReport, ThreadPerformance, ThreadTiming, ThreadTimingReport, TopologySummary,
+    TscCalibrationInfo, WheaCounts,
 };
 use tmr::test_support;
 
-use crate::golden::check;
-use crate::render::rendered;
+use super::ConsoleRenderer;
+use crate::golden::{capture, check};
+
+/// The report as the console shows it, on a console, its colours and bold in: in a capture, which sets the console flag, and so in turn
+/// with the captures (`golden.rs`). A report prints nothing; what building an engine's model logs is dropped.
+fn rendered(report: impl FnOnce(&mut Reporter<ConsoleRenderer>) -> crate::Result<()>) -> (crate::Result<()>, String) {
+    capture(|| crate::render::rendered(report)).0
+}
 
 const KIB: u64 = 1 << 10;
 const MIB: u64 = 1 << 20;

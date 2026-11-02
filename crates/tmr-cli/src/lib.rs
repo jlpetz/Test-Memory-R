@@ -3,22 +3,21 @@
 //! (`tmr::session::run`). Its own crate since S5 of TODO 29, so the engine prints nothing, and the window (`crates/tmr-gui`) doesn't name
 //! it: it has a logger of its own, which writes the same log file (`tmr::logfile`).
 
-// The console goldens capture what a test prints as libtest does, and hand the capture on to the threads a test spawns as it does
-// (`golden.rs`, TODO 29)
-#![cfg_attr(test, feature(internal_output_capture, thread_spawn_hook))]
+// Every write to stdout and stderr goes through the console's writer (`console::Writer`), so the goldens capture all of it: no print macro
+#![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr))]
 // As the engine's (src/lib.rs): a `// SAFETY:` on every `unsafe` block, and `expect` for `unwrap()`
 #![cfg_attr(not(test), warn(clippy::undocumented_unsafe_blocks, clippy::unwrap_used))]
 
-mod console; // single writer path while the progress ticker is on screen
+mod console; // the one path to stdout and stderr, the ticker's, and whether stdout is a console
 #[cfg(test)]
-mod golden;
+mod golden; // the console's output against goldens, for the engine/presentation split (TODO 29)
 mod prompts; // the CLI's questions, over any reader and writer (TODO 29)
 mod render; // the CLI's frontend: a session's events as the console shows them (TODO 29)
 pub use render::transcript; // the console's text of an event, for the window's Log tab too (TODO 109)
 mod renderer; // the engine's reports as the console shows them
-mod table; // the console's output against goldens, for the engine/presentation split (TODO 29)
+mod table; // the console's tables
 
-use std::io::{Write, stdin, stdout};
+use std::io::{Write, stdin};
 use std::sync::Arc;
 
 use env_logger::Builder;
@@ -37,8 +36,11 @@ pub fn main(args: Vec<String>) -> i32 {
     // Initialize enhanced logging, with the log file for a session and the commands that change the system (`tmr::logfile::wanted`)
     setup_logging(tmr::logfile::wanted(&args));
 
-    println!("🚀 Test Memory R (TMR) v{} - High-Performance Memory Testing Tool", tmr::BUILD.version);
-    println!("================================================================================");
+    crate::console::print(&format!(
+        "🚀 Test Memory R (TMR) v{} - High-Performance Memory Testing Tool\n{}\n",
+        tmr::BUILD.version,
+        "=".repeat(80)
+    ));
 
     let program = args.first().cloned().unwrap_or_default();
     match tmr::session::run(args, Arc::new(crate::render::CliFrontend::new())) {
@@ -53,7 +55,7 @@ pub fn main(args: Vec<String>) -> i32 {
 /// The error that stopped a session, as the CLI reports it: `Error: ...` on the console once, and the error in the log file.
 fn report_error(e: &dyn std::error::Error) {
     log::error!(target: tmr::logfile::FILE_ONLY_TARGET, "{e}");
-    eprintln!("Error: {e}");
+    crate::console::eprint(&format!("Error: {e}\n"));
 }
 
 /// How the session ended, on the console (`program` the exe's name, for the help an unknown flag shows), and its exit status. A one-shot
@@ -72,8 +74,8 @@ fn finish(end: &SessionEnd, program: &str) -> i32 {
 
 /// A one-shot command on the console, which a calibration asks whether to save what it measured. Its exit status: 0 done, 2 failed.
 fn run_command(command: &tmr::commands::Command) -> i32 {
-    let mut confirm = |question: &str| crate::prompts::confirm(&mut stdin().lock(), &mut stdout(), question);
-    match tmr::commands::run(command, &mut stdout(), &mut confirm) {
+    let mut confirm = |question: &str| crate::prompts::confirm(&mut stdin().lock(), &mut crate::console::stdout(), question);
+    match tmr::commands::run(command, &mut crate::console::stdout(), &mut confirm) {
         Ok(status) => status.exit_code(),
         // The console can't be written to
         Err(e) => {
@@ -94,7 +96,9 @@ pub(crate) fn take_ctrl_c() {
         if pressed {
             // Second press: the graceful stop is stuck or too slow. Windows frees every page the process holds, large pages included, when
             // it exits. stderr rather than print_above, because a stuck shutdown may be one that is holding the console lock.
-            eprintln!("\n\n🛑 CTRL+C again - exiting now, without the final report; the results file keeps only the cycles saved so far");
+            crate::console::eprint(
+                "\n\n🛑 CTRL+C again - exiting now, without the final report; the results file keeps only the cycles saved so far\n",
+            );
             log::logger().flush();
             // The status Windows itself gives a process killed by CTRL+C, so a script can tell this apart from a run that finished.
             std::process::exit(windows::Win32::Foundation::STATUS_CONTROL_C_EXIT.0);
@@ -111,10 +115,10 @@ pub(crate) fn take_ctrl_c() {
     .expect("Error setting CTRL+C handler");
 }
 
-/// The console's logging: VT escape processing, then env_logger, each record on the console in colour above the ticker, and with
-/// `log_file` in the log file too (`tmr::logfile`).
+/// The console's logging: whether stdout is a console, and its VT escape processing, then env_logger, each record above the ticker, in
+/// colour on a console, and with `log_file` in the log file too (`tmr::logfile`).
 fn setup_logging(log_file: bool) {
-    // VT escape processing, for the log colours and the progress ticker (see console.rs).
+    // Whether stdout is a console, and its VT escape processing, for the log colours and the progress ticker (see console.rs).
     crate::console::init();
 
     // Shared with the result filename so a run's log and result can be paired by name
@@ -127,10 +131,12 @@ fn setup_logging(log_file: bool) {
     let log_file = log_file && {
         // Create logs directory if it doesn't exist
         if let Err(e) = tmr::logfile::create_dir() {
-            eprintln!("Warning: Failed to create logs directory: {}", e);
+            crate::console::eprint(&format!("Warning: Failed to create logs directory: {}\n", e));
         }
         // Initialize file logger for dual logging
-        tmr::logfile::open(&log_filename).inspect_err(|e| eprintln!("Warning: no log file, {}: {e}", log_filename.display())).is_ok()
+        tmr::logfile::open(&log_filename)
+            .inspect_err(|e| crate::console::eprint(&format!("Warning: no log file, {}: {e}\n", log_filename.display())))
+            .is_ok()
     };
 
     // Set up env_logger for console with original nice formatting (colors + module info)
@@ -168,14 +174,10 @@ fn setup_logging(log_file: bool) {
             console_result
         })
         // Through the console module, so a log line can never land inside the progress ticker. A pipe target gets no colour detection of
-        // its own (env_logger would strip the escapes above), so decide here as the stdout target used to: colours on a console, none when
+        // its own (env_logger would strip the escapes above), so decide here, from the process's flag: colours on a console, none when
         // redirected.
         .target(env_logger::Target::Pipe(Box::new(crate::console::LogSink)))
-        .write_style(if std::io::IsTerminal::is_terminal(&stdout()) {
-            env_logger::WriteStyle::Always
-        } else {
-            env_logger::WriteStyle::Never
-        })
+        .write_style(if crate::console::is_console() { env_logger::WriteStyle::Always } else { env_logger::WriteStyle::Never })
         .init();
 
     // Log startup info

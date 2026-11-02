@@ -1,24 +1,124 @@
-//! The one path to the terminal while the progress ticker is on screen.
+//! The one path to the terminal: every write the CLI makes to stdout or stderr goes through this module's writer (`Writer`, and `print`
+//! and `eprint` for a whole text), so a unit test build can take them all into a golden's capture (`golden.rs`). And whether stdout is a
+//! console (`is_console`), the process's one answer to it: a redirected stdout gets no escape codes and no ticker.
 //!
 //! The ticker sits under the last line of output and is redrawn in place, which means moving the cursor back up over every row it covers.
 //! Anything another thread printed in the meantime would be overwritten by that, or stranded between two ticker rows. So everything that
-//! can print while the ticker is up — the logger, WHEA events, the Ctrl+C handler, the run's events (`render`) — goes through here: each
-//! print takes the ticker down, writes, and puts it back under one lock, so the ticker is always the last thing on screen and is never
-//! torn.
+//! can print while the ticker is up — the logger, WHEA events, the Ctrl+C handler, the run's events (`render`) — goes through the ticker's
+//! lock here: each print takes the ticker down, writes, and puts it back under one lock, so the ticker is always the last thing on screen
+//! and is never torn.
 //!
-//! Plain `println!` is still fine wherever no ticker can be drawn: before the suite starts, and after it finishes (`hold`). A test's
-//! report, many lines long, prints in one piece through `print_block`.
+//! A plain `print` is still fine wherever no ticker can be drawn: before the suite starts, and after it finishes (`hold`). A test's report,
+//! many lines long, prints in one piece through `print_block`.
 
 // Every `unsafe` block in this file is a Win32 console call. The crate's lint (lib.rs) covers its shipped code; this one the tests too.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use windows::Win32::System::Console::{
     CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetConsoleScreenBufferInfo, GetStdHandle,
     STD_OUTPUT_HANDLE, SetConsoleMode,
 };
+
+/// Whether stdout is a console: one flag for the process, set at startup (`init`) and read by everything that writes escape codes (the
+/// log's colours, `setup_logging`; the reports' colours and bold, `ConsoleRenderer`) and by the ticker, which a redirected stdout doesn't
+/// get at all (`draw_ticker`). Off until `init`, so a process that never calls it, the window's, renders its text without escapes.
+static IS_CONSOLE: AtomicBool = AtomicBool::new(false);
+
+/// Whether stdout is a console (`IS_CONSOLE`). Relaxed: a plain load on x86, and nothing else is ordered by it.
+pub fn is_console() -> bool {
+    IS_CONSOLE.load(Ordering::Relaxed)
+}
+
+/// Sets the flag `init` sets, for a golden's capture (`golden.rs`): on, as on a console, or off, as redirected
+#[cfg(test)]
+pub(crate) fn set_console(console: bool) {
+    IS_CONSOLE.store(console, Ordering::Relaxed);
+}
+
+/// The CLI's two streams
+#[derive(Clone, Copy)]
+pub(crate) enum Stream {
+    Out,
+    Err,
+}
+
+/// Where the CLI writes, stdout or stderr: the one place it does. Each call takes the stream's lock for itself, as `io::Stdout`'s do: a
+/// `write_all` (a whole `print`) or a `writeln!` lands in one piece, and a writer held for a long call (a one-shot command's) never blocks
+/// another thread's. In a unit test build every write goes to the tests instead (`golden::write`): into a golden's capture while one is
+/// on, both streams' into one text.
+pub(crate) struct Writer(Stream);
+
+/// The writer on stdout
+pub(crate) fn stdout() -> Writer {
+    Writer(Stream::Out)
+}
+
+/// The writer on stderr
+pub(crate) fn stderr() -> Writer {
+    Writer(Stream::Err)
+}
+
+impl Write for Writer {
+    #[cfg(not(test))]
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self.0 {
+            Stream::Out => io::stdout().write(buf),
+            Stream::Err => io::stderr().write(buf),
+        }
+    }
+
+    // `io::Stdout`'s own, the whole text under one lock: the default loops on `write`, a lock each, and a console takes a long text in
+    // several
+    #[cfg(not(test))]
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        match self.0 {
+            Stream::Out => io::stdout().write_all(buf),
+            Stream::Err => io::stderr().write_all(buf),
+        }
+    }
+
+    // As `write_all`, the whole line under one lock: the default writes each piece of the format alone
+    #[cfg(not(test))]
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> io::Result<()> {
+        match self.0 {
+            Stream::Out => io::stdout().write_fmt(args),
+            Stream::Err => io::stderr().write_fmt(args),
+        }
+    }
+
+    #[cfg(test)]
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        crate::golden::write(self.0, buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self.0 {
+            Stream::Out => io::stdout().flush(),
+            Stream::Err => io::stderr().flush(),
+        }
+    }
+}
+
+/// Prints `text` on stdout as it is, where no ticker can be up (before the suite and after it, `hold`). A console that can't be written to
+/// loses it, as the ticker's own writes do.
+pub(crate) fn print(text: &str) {
+    write_all(stdout(), text);
+}
+
+/// Prints `text` on stderr as it is, `print`'s other stream
+pub(crate) fn eprint(text: &str) {
+    write_all(stderr(), text);
+}
+
+fn write_all(mut out: Writer, text: &str) {
+    let _ = out.write_all(text.as_bytes());
+    let _ = out.flush();
+}
 
 struct Ticker {
     /// The ticker as last drawn, kept so it can be put back after a print. Empty when there is nothing to put back.
@@ -31,10 +131,11 @@ struct Ticker {
 
 static TICKER: Mutex<Ticker> = Mutex::new(Ticker { text: String::new(), rows: 0, held: false });
 
-/// Lock order is `TICKER`, then stdout. Plain `println!` takes only stdout, so it cannot deadlock against this.
-fn lock() -> (MutexGuard<'static, Ticker>, impl Write) {
+/// Lock order is `TICKER`, then stdout, a write at a time (`Writer`): the ticker's lock keeps a print under it whole, as every write while
+/// the ticker can be up takes it. A plain `print` takes only stdout, so it cannot deadlock against this.
+fn lock() -> (MutexGuard<'static, Ticker>, Writer) {
     let ticker = TICKER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    (ticker, out())
+    (ticker, stdout())
 }
 
 impl Ticker {
@@ -72,9 +173,10 @@ pub fn print_above(text: &str) {
     let _ = out.flush();
 }
 
-/// Replace the ticker with `text`, printing the lines from `above` first. Draws nothing, and does not call `above`, once the console is
-/// held. Returns whether it drew.
-pub fn draw_ticker(text: String, above: impl FnOnce() -> Vec<String>) -> bool {
+/// Replace the ticker with `text`, printing the lines from `above` first. On a stdout that isn't a console, no ticker: only the lines from
+/// `above`, so a redirected capture holds no ticker frames. Once the console is held it writes nothing, calls neither, and returns false;
+/// otherwise true, a draw done.
+pub fn draw_ticker(text: impl FnOnce() -> String, above: impl FnOnce() -> Vec<String>) -> bool {
     let (mut ticker, mut out) = lock();
     if ticker.held {
         return false;
@@ -83,12 +185,14 @@ pub fn draw_ticker(text: String, above: impl FnOnce() -> Vec<String>) -> bool {
     for line in above() {
         let _ = writeln!(out, "{}", line);
     }
-    ticker.draw(&mut out, text);
+    if is_console() {
+        ticker.draw(&mut out, text());
+    }
     let _ = out.flush();
     true
 }
 
-/// Take the ticker down for good, at the end of the suite, so what follows can print with plain `println!`. Other writers can still print
+/// Take the ticker down for good, at the end of the suite, so what follows can print with a plain `print`. Other writers can still print
 /// through `print_above`; they just don't redraw it.
 pub fn hold() {
     let (mut ticker, mut out) = lock();
@@ -125,10 +229,13 @@ impl Write for LogSink {
     }
 }
 
-/// Switch stdout to VT processing, which the ticker's cursor movement and the log colours both need. Windows Terminal always has it on;
-/// classic conhost only for programs that ask. It used to be switched on as a side effect of env_logger writing to stdout, which stopped
-/// when the logger moved to `LogSink`, so it is done explicitly here. A no-op when stdout is not a console.
+/// Whether stdout is a console, into the process's flag (`is_console`), once, at startup (`setup_logging`): std's `is_terminal`, a console
+/// or an MSYS terminal's pipe, as the logger's colours have always been decided. Then a console is switched to VT processing, which the
+/// ticker's cursor movement and the log colours both need. Windows Terminal always has it on; classic conhost only for programs that ask.
+/// It used to be switched on as a side effect of env_logger writing to stdout, which stopped when the logger moved to `LogSink`, so it is
+/// done explicitly here.
 pub fn init() {
+    IS_CONSOLE.store(io::IsTerminal::is_terminal(&io::stdout()), Ordering::Relaxed);
     // SAFETY: no pointer arguments. The handle is the process's own stdout, which we do not own and never close.
     let Ok(handle) = (unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }) else {
         return;
@@ -173,36 +280,6 @@ fn screen_rows(text: &str, width: usize) -> usize {
             columns.div_ceil(width).max(1)
         })
         .sum()
-}
-
-/// Where the console writes: stdout, locked.
-#[cfg(not(test))]
-fn out() -> io::StdoutLock<'static> {
-    io::stdout().lock()
-}
-
-/// A unit test build writes through `print!` instead, which the test harness captures, so the console goldens get these lines too
-/// (`golden.rs`, TODO 29): a locked stdout bypasses it.
-#[cfg(test)]
-fn out() -> PrintOut {
-    PrintOut
-}
-
-/// The console's writer in a unit test build (`out`).
-#[cfg(test)]
-struct PrintOut;
-
-#[cfg(test)]
-impl Write for PrintOut {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        // Every write here is of whole `str`s, so none splits a char
-        print!("{}", String::from_utf8_lossy(buf));
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        io::stdout().flush()
-    }
 }
 
 #[cfg(test)]

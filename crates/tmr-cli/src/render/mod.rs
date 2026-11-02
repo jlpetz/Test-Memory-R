@@ -1,7 +1,7 @@
 //! The CLI's frontend (TODO 29): a session's events as the console has always shown them, its setup's (`setup.rs`) and its run's
 //! (`run.rs`). Each event's text is the print group it replaced, with the same format strings, rendered into a String and written with that
-//! group's primitive before `event` returns, on the engine's thread: plain `print!` before the suite and after it, `console::print_above`
-//! for a line while the ticker can be up, `console::print_block` for a step's report. So the console keeps its bytes, and its order against
+//! group's primitive before `event` returns, on the engine's thread: plain `console::print` before the suite and after it, `print_above`
+//! for a line while the ticker can be up, `print_block` for a step's report. So the console keeps its bytes, and its order against
 //! the log records (`tmr::frontend`). The large-page restart is asked on the console (`prompts.rs`).
 
 mod run;
@@ -46,10 +46,11 @@ impl Frontend for CliFrontend {
 
     /// Asks on the console. A console that can't be written to is no answer, as the input's end is.
     fn large_page_restart(&self) -> RestartChoice {
-        crate::prompts::large_page_restart(&mut std::io::stdin().lock(), &mut std::io::stdout()).unwrap_or(RestartChoice::Continue4K)
+        crate::prompts::large_page_restart(&mut std::io::stdin().lock(), &mut crate::console::stdout()).unwrap_or(RestartChoice::Continue4K)
     }
 
-    /// The ticker, redrawn every 2 seconds. Anything WHEA reported since the last draw is printed above it.
+    /// The ticker, redrawn every 2 seconds. Anything WHEA reported since the last draw is printed above it. On a stdout that isn't a
+    /// console only the WHEA lines print, on the same clock (`console::draw_ticker`).
     fn tick(&self, progress: &ProgressTracker) {
         let mut last_draw = self.last_draw.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         draw_when_due(&mut last_draw, Instant::now(), || {
@@ -59,24 +60,25 @@ impl Frontend for CliFrontend {
             };
             // The WHEA lines name the failing component, which is what tells a marginal DIMM from a marginal NIC. Once the console is held
             // this draws nothing and leaves them queued.
-            crate::console::draw_ticker(ticker::render(&snapshot), || progress.take_whea_descriptions())
+            crate::console::draw_ticker(|| ticker::render(&snapshot), || progress.take_whea_descriptions())
         });
     }
 
     fn ticks_done(&self, progress: &ProgressTracker) {
-        // Take the ticker down for good. Everything from here on prints with plain `print!`.
+        // Take the ticker down for good. Everything from here on prints with a plain `print`.
         crate::console::hold();
 
         // Events the OS queued since the last draw (the monitor polled on this tick), not printed yet. Events already shown live are not
         // reprinted: they are in the log file. No run tally here either: the final summary's `Total WHEA` row prints it a screen later, and
         // saying it twice is noise. The runner flushes anything later still, once monitoring stops.
         let text: String = progress.take_whea_descriptions().iter().map(|event| format!("{event}\n")).collect();
-        print!("{text}");
+        crate::console::print(&text);
     }
 }
 
 /// What the console shows for `event` (TODO 29's transcript, TODO 109), for the log file and the window's Log tab: its text, the ticker's
-/// lines left out (they are live), its colours in it, as the console has them
+/// lines left out (they are live), its colours in it only when stdout is a console (`console::is_console`), so none in the window's, whose
+/// process never sets the flag (`console::init` is the CLI's)
 pub fn transcript(event: &Event) -> String {
     match event {
         Event::Setup(setup) => setup::shown(setup),

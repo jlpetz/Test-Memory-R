@@ -15,9 +15,10 @@ pub fn create_console_reporter() -> Reporter<ConsoleRenderer> {
 }
 
 /// Console renderer for terminal output. It renders into its text, which whoever asked for the report prints (TODO 29): the CLI writes a
-/// report in one piece with the lines around it, so no log line lands inside it.
+/// report in one piece with the lines around it, so no log line lands inside it. Its colours and bold only when stdout is a console
+/// (`console::is_console`): a redirected stdout gets none, nor does the window's transcript (`transcript`), whose process never sets the
+/// flag.
 pub struct ConsoleRenderer {
-    use_colors: bool,
     text: String,
 }
 
@@ -29,7 +30,7 @@ impl Default for ConsoleRenderer {
 
 impl ConsoleRenderer {
     pub fn new() -> Self {
-        Self { use_colors: true, text: String::new() }
+        Self { text: String::new() }
     }
 
     /// What it rendered, as the console shows it
@@ -46,9 +47,9 @@ impl ConsoleRenderer {
         }
     }
 
-    /// Get ANSI color code for different message types
+    /// Get ANSI color code for different message types, none when stdout isn't a console
     fn get_color_code(&self, msg_type: MessageType) -> &'static str {
-        if !self.use_colors {
+        if !crate::console::is_console() {
             return "";
         }
 
@@ -62,7 +63,7 @@ impl ConsoleRenderer {
     }
 
     fn reset_color(&self) -> &'static str {
-        if self.use_colors { "\x1b[0m" } else { "" }
+        if crate::console::is_console() { "\x1b[0m" } else { "" }
     }
 }
 
