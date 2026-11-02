@@ -437,6 +437,11 @@ pub struct TestConfigSnapshot {
     /// Underlying test function's own name. Several registrations share one function (the flush and `_A` variants), so this is not unique —
     /// it says which code path ran.
     pub function: String,
+    /// The test's parameter as its step's Config line shows it (`parameter=`, from the same `format_parameter_context`): a TM5 stride as
+    /// the run's channels resolve it (the config's, or `channels=`), a mirror (`mirror=` sets every mirror test's), or a native test's own;
+    /// `-` for a test with none. Absent in results written before it.
+    #[serde(default)]
+    pub parameter: Option<String>,
     /// Stage-2 per-test working set.
     pub extent_mode: String,
     /// Stage-3 iteration unit within the extent.
@@ -670,6 +675,7 @@ impl TestConfigSnapshot {
         TestConfigSnapshot {
             name: def.display_name.clone(),
             function: def.actual_name.to_string(),
+            parameter: Some(crate::reporting::converters::format_parameter_context(&def.config.parameter_context)),
             extent_mode: formatter.format_extent_mode_with_size(&def.config.extent_mode, cache_info, thread_count),
             chunk_mode: formatter.format_chunk_mode_with_size(&def.config.chunk_mode, cache_info, thread_count),
             verify_reps: def.config.verify_reps,
@@ -955,8 +961,8 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
         diffs.push(RunDifference::new("Rescan", r(b.execution.rescan), r(c.execution.rescan), false));
     }
 
-    // Per-test config, for tests present in both plans. An extent/chunk/flush change explains a single test moving while its neighbours did
-    // not — otherwise easy to misread as a regression.
+    // Per-test config, for tests present in both plans. An extent/chunk/parameter/flush change explains a single test moving while its
+    // neighbours did not — otherwise easy to misread as a regression.
     for cur_test in &c.tests {
         let Some(base_test) = b.tests.iter().find(|t| t.name == cur_test.name) else {
             continue;
@@ -969,6 +975,13 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
         }
         if base_test.chunk_mode != cur_test.chunk_mode {
             note("chunk", base_test.chunk_mode.clone(), cur_test.chunk_mode.clone());
+        }
+        // A TM5 stride is resolved against the run's channels and `mirror=` sets every mirror test's, so one test can differ here between
+        // runs of one plan; results written before the record have none
+        if let (Some(base), Some(cur)) = (&base_test.parameter, &cur_test.parameter)
+            && base != cur
+        {
+            note("parameter", base.clone(), cur.clone());
         }
         if base_test.flush_before_verify != cur_test.flush_before_verify {
             note("flush before verify", base_test.flush_before_verify.to_string(), cur_test.flush_before_verify.to_string());
@@ -1225,6 +1238,56 @@ mod tests {
         );
         assert!(compare_config(&with_test(Some(256)), &with_test(Some(256))).is_empty());
         assert!(compare_config(&with_test(None), &with_test(Some(512))).is_empty());
+    }
+
+    /// TODO 72: each test records its parameter as its step's Config line shows it (`format_parameter_context`): a TM5 stride as the
+    /// run's channels resolve it, so one plan on two channels and on four records two strides; a mirror; a native test's own; `-` for a
+    /// test with none. Results written before it read back with none.
+    #[test]
+    fn each_test_records_its_parameter_as_the_config_line_shows_it() {
+        let cache_info = crate::tests::get_cache_info();
+        let definitions = crate::runner::create_test_definitions(cache_info);
+        let def = |name: &str| definitions.iter().find(|d| d.display_name == name).unwrap_or_else(|| panic!("no {name}")).clone();
+        let capture = |def: &crate::runner::TestDefinition| TestConfigSnapshot::capture(def, cache_info, 1, 64 << 20);
+        let strided = |channels| {
+            let mut sequence = def("Mem-Sequence");
+            sequence.config.parameter_context = Some(crate::config::interpret_tm5_parameter_with_channels("Mem-Sequence", 2, channels));
+            capture(&sequence).parameter
+        };
+        assert_eq!(strided(2).as_deref(), Some("Stride(3cl/192B)"));
+        assert_eq!(strided(4).as_deref(), Some("Stride(7cl/448B)"));
+        for (name, shown) in [("Mem-MirrorV2-256", "subblocks:2"), ("Mem-Stride", "Subdiv(4)"), ("Mem-StuckBit128", "-")] {
+            assert_eq!(capture(&def(name)).parameter.as_deref(), Some(shown), "{name}");
+        }
+
+        let mut json = serde_json::to_value(capture(&def("Mem-Stride"))).unwrap();
+        assert_eq!(json["parameter"], "Subdiv(4)");
+        json.as_object_mut().unwrap().remove("parameter");
+        let older: TestConfigSnapshot = serde_json::from_value(json).unwrap();
+        assert_eq!(older.parameter, None);
+    }
+
+    /// TODO 72: a test whose parameter differs, as a stride on other channels does, isn't like for like; one from results written before
+    /// the parameter was recorded isn't flagged.
+    #[test]
+    fn a_test_with_another_parameter_invalidates_the_comparison() {
+        let with_test = |parameter: Option<&str>| {
+            let mut config = config_with(3.0, 8);
+            let name = "Mem-SimpleV2-256".to_string();
+            config.tests.push(TestConfigSnapshot { name, parameter: parameter.map(str::to_string), ..Default::default() });
+            config
+        };
+        let diffs = compare_config(&with_test(Some("Stride(3cl/192B)")), &with_test(Some("Stride(7cl/448B)")));
+        assert!(
+            diffs.iter().any(|d| d.field == "Mem-SimpleV2-256: parameter"
+                && d.invalidates
+                && d.baseline == "Stride(3cl/192B)"
+                && d.current == "Stride(7cl/448B)"),
+            "{diffs:?}"
+        );
+        assert!(render_differences(&diffs).contains("Stride(3cl/192B)  ->  Stride(7cl/448B)"));
+        assert!(compare_config(&with_test(Some("-")), &with_test(Some("-"))).is_empty());
+        assert!(compare_config(&with_test(None), &with_test(Some("Stride(3cl/192B)"))).is_empty());
     }
 
     #[test]
