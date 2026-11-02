@@ -190,6 +190,8 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  priority=high                       # Worker priority: normal, high (default), realtime")?;
     writeln!(out, "                                      #   realtime is THREAD_PRIORITY_TIME_CRITICAL, the top of the")?;
     writeln!(out, "                                      #   normal range (not the realtime class); leave a core free with it")?;
+    writeln!(out, "  window-priority=high                # The window's thread during a run: normal, high, realtime (default:")?;
+    writeln!(out, "                                      #   the workers', priority='s); the console ignores it")?;
     writeln!(out, "  hugechunk=1GiB                      # First 1GB-page request size, halved on refusal (power of two, >= 1GiB)")?;
     writeln!(out, "  largechunk=128MiB                   # First 2MB-page request size, halved on refusal (default 128MiB)")?;
     writeln!(out, "  largefloor=16MiB                    # Smallest 2MB-page request (16MiB-1GiB)")?;

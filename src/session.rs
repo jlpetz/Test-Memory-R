@@ -18,7 +18,7 @@ use crate::frontend::{
     CacheCalibrationState, Frontend, LargePageQuestion, ParamNote, RestartChoice, SealCalibrationState, Selection, Setup,
 };
 use crate::memory::allocation_strategy::EnhancedMemoryStrategy;
-use crate::runner::{RunStatus, TestSuiteTiming, detect_runtime_capabilities, run_tests_with_layout_and_timing_filtered};
+use crate::runner::{RunStatus, TestSuiteTiming, ThreadPriority, detect_runtime_capabilities, run_tests_with_layout_and_timing_filtered};
 use crate::{ErrorMode, load_config, params};
 
 /// `--ram-latency`: the 6 DRAM latency tests, DRAM-* and DRAMFull-* (TODO 92)
@@ -549,6 +549,10 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         }
     };
 
+    // The workers' priority, and the window's thread's, which the selection carries to the window
+    let (thread_priority, window_priority) =
+        priorities(&validated_params, config_opt.as_ref().and_then(|c| c.system.thread_priority.as_deref()))?;
+
     // Detect SIMD capabilities
     let simd_caps = crate::detect_simd_capabilities();
     fe.event(
@@ -564,6 +568,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
             cycles: suite_timing.global_cycles,
             duration_secs: suite_timing.global_duration_secs,
             simd: simd_caps.clone(),
+            window_priority,
         }))
         .into(),
     );
@@ -650,16 +655,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     runtime_config.cpu_list = Some(cpu_list);
     runtime_config.pin_threads = pinning_config.enable_pinning;
 
-    // The workers' priority (TODO 77): priority= over the config's, else High
-    let priority = if params::has_param(&validated_params, "priority") {
-        Some(params::get_string(&validated_params, "priority", "high"))
-    } else {
-        config_opt.as_ref().and_then(|c| c.system.thread_priority.clone())
-    };
-    runtime_config.thread_priority = match priority {
-        Some(p) => p.parse()?,
-        None => crate::runner::ThreadPriority::default(),
-    };
+    runtime_config.thread_priority = thread_priority;
     if runtime_config.thread_priority == crate::runner::ThreadPriority::Realtime
         && runtime_config.cpu_list.as_ref().is_some_and(|cpus| cpus.len() >= crate::cpu_topology::logical_cpu_ids().len())
     {
@@ -766,6 +762,22 @@ fn calibration_flag_without_calibration(args: &[String]) -> Option<String> {
          --calibrate-seal or --calibrate-all"
         )
     })
+}
+
+/// The workers' priority (TODO 77), `priority=` over the config's `thread_priority` (`config`), else High; and the window's thread's during
+/// a run (`window-priority=`, the owner's, 2026-11-02), else the workers'. Their parsers have checked them, and the config's
+/// `validate_system`.
+fn priorities(validated: &HashMap<String, params::ParamValue>, config: Option<&str>) -> Result<(ThreadPriority, ThreadPriority), String> {
+    let given = |key| params::has_param(validated, key).then(|| params::get_string(validated, key, ""));
+    let workers = match given("priority").as_deref().or(config) {
+        Some(priority) => priority.parse()?,
+        None => ThreadPriority::default(),
+    };
+    let window = match given("window-priority") {
+        Some(priority) => priority.parse()?,
+        None => workers,
+    };
+    Ok((workers, window))
 }
 
 /// The seal's width under `auto`, at startup (TODO 99): this machine's seal calibration (`AppConfig::valid_seal_calibration`), whose width
@@ -933,6 +945,24 @@ mod tests {
             assert!(e.starts_with(flag) && e.contains("--calibrate-all"), "{e}");
         }
         assert!(matches!(Command::parse(&args(&["tmr", "--calibrate-seal", "--yes"])), Some(Command::Calibrate(_))));
+    }
+
+    /// The workers' priority is `priority=`'s, else the config's, else High, and the window's is `window-priority=`'s, else the workers'
+    /// (the owner, 2026-11-02): given, from `priority=`, from the config, and from neither
+    #[test]
+    fn the_window_takes_the_workers_priority_unless_given_its_own() {
+        use ThreadPriority::{High, Normal, Realtime};
+        let resolve = |line: &[&str], config: Option<&str>| {
+            let args: Vec<String> = line.iter().map(|s| s.to_string()).collect();
+            priorities(&params::parse_and_validate_args(&args).unwrap(), config).unwrap()
+        };
+        assert_eq!(resolve(&[], None), (High, High), "neither");
+        assert_eq!(resolve(&["window-priority=normal"], None), (High, Normal), "given");
+        assert_eq!(resolve(&["window-priority=Realtime", "priority=normal"], Some("high")), (Normal, Realtime), "given, over the workers'");
+        assert_eq!(resolve(&["priority=realtime"], None), (Realtime, Realtime), "from priority=");
+        assert_eq!(resolve(&["priority=normal"], Some("realtime")), (Normal, Normal), "from priority=, over the config's");
+        assert_eq!(resolve(&[], Some("normal")), (Normal, Normal), "from the config");
+        assert_eq!(resolve(&["window-priority=high"], Some("normal")), (Normal, High), "given, with the config's workers'");
     }
 
     /// The large-page question: none asked when the check has none; the right granted only when the question offered it and the answer

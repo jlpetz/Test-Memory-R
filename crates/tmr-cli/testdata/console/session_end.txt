@@ -86,6 +86,8 @@ COMMAND LINE PARAMETERS:
   priority=high                       # Worker priority: normal, high (default), realtime
                                       #   realtime is THREAD_PRIORITY_TIME_CRITICAL, the top of the
                                       #   normal range (not the realtime class); leave a core free with it
+  window-priority=high                # The window's thread during a run: normal, high, realtime (default:
+                                      #   the workers', priority='s); the console ignores it
   hugechunk=1GiB                      # First 1GB-page request size, halved on refusal (power of two, >= 1GiB)
   largechunk=128MiB                   # First 2MB-page request size, halved on refusal (default 128MiB)
   largefloor=16MiB                    # Smallest 2MB-page request (16MiB-1GiB)

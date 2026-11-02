@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tmr::commands::ResultsComparison;
-use tmr::frontend::{ColumnAlignment, Event, ProgressSnapshot, ProgressTracker, RestartChoice, Run, TableData};
+use tmr::frontend::{ColumnAlignment, Event, ProgressSnapshot, ProgressTracker, RestartChoice, Run, TableData, ThreadPriority};
 use windows_reactor::*;
 
 use crate::dialogs::{self, Open};
@@ -136,6 +136,8 @@ pub(crate) struct Window {
     dark: bool,
     width: f64,
     palettes: Palettes,
+    /// The priority this thread, the UI's, was last set to (`follow_priority`): normal as it starts
+    priority: ThreadPriority,
 }
 
 /// The window's tabs (TODO 109): Run, the one it opens on, then the log, the console's startup sections, and Compare
@@ -260,13 +262,36 @@ impl Window {
             self.model.ended(Err("the session's thread ended without a result: the log file has why".to_string()));
             ended = true;
         }
+        // Raised at setup's selection, normal again as the session ends: here, as the model changes it, and before the log file closes
+        self.follow_priority();
         if ended {
+            // The lines logged since the waiter took the batch's, the priority's line among them: this run's Log tab's, not the next's
+            let (log, dropped) = feeds.log.take();
+            self.model.logged(log, dropped);
             // The run's log file is done with, and the logger's side waits for the next run (TODO 109)
             tmr::logfile::close();
             self.log = Some(feeds.log);
         } else {
             listen(feeds, self.model.progress().cloned(), context);
         }
+    }
+
+    /// This thread, the UI's, at the priority the model says (`Model::window_priority`), when that changed: the workers run at High, by
+    /// default, on every CPU a run takes, and with every CPU taken a window at Normal gets time only from Windows' starvation boost. Once a
+    /// change, whether it took: a failure goes to the errors list, and is not tried again until the priority changes.
+    fn follow_priority(&mut self) {
+        let wanted = self.model.window_priority();
+        if wanted == self.priority {
+            return;
+        }
+        match wanted.apply() {
+            Ok(()) => log::info!("The window's thread at {wanted} priority ({})", wanted.win32_name()),
+            Err(e) => {
+                log::warn!(target: tmr::logfile::FILE_ONLY_TARGET, "The window's thread at {wanted} priority: {e}");
+                self.model.errors.push(format!("The window's thread at {wanted} priority: {e}"));
+            }
+        }
+        self.priority = wanted;
     }
 
     /// Writes `window.json`, or says in the errors list why it couldn't
@@ -341,7 +366,8 @@ impl Component for Window {
         // Before Start there is no log file to take them, and maybe no console
         model.errors.extend(problems.into_iter().map(|problem| format!("window.json: {problem}")));
         let (width, dark) = (settings.size.map_or(WIDTH, |(width, _)| width), settings.theme == Theme::Dark);
-        let mut window = Self { model, log: None, tab: Tab::Run, about: false, settings, dark, width, palettes };
+        let priority = ThreadPriority::Normal;
+        let mut window = Self { model, log: None, tab: Tab::Run, about: false, settings, dark, width, palettes, priority };
         if start {
             window.start(context);
         }

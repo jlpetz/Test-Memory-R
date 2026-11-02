@@ -4525,7 +4525,8 @@ pub fn set_thread_ideal_processor_ex(_thread_handle: windows::Win32::Foundation:
     Ok(())
 }
 
-/// Scheduling priority of the worker threads, set by each worker on itself at pool creation.
+/// Scheduling priority of the worker threads, set by each worker on itself at pool creation; and of the window's UI thread during a run
+/// (`window-priority=`), which the window sets on it.
 ///
 /// Relative to TMR's process class, which it leaves at `NORMAL_PRIORITY_CLASS`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

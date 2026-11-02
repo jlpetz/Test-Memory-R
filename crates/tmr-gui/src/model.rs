@@ -17,7 +17,7 @@ use std::time::Duration;
 use tmr::commands::ResultsComparison;
 use tmr::frontend::{
     AllocationReport, ErrorCounts, Event, LargePageQuestion, NotRun, ProgressSnapshot, ProgressTracker, RestartChoice, Run, RunOutcome,
-    RunStatus, SealOp, Setup, StepReport, TestConfigurationReport, TestSnapshot,
+    RunStatus, SealOp, Setup, StepReport, TestConfigurationReport, TestSnapshot, ThreadPriority,
 };
 use tmr::session::{SessionEnd, Stopped};
 
@@ -490,6 +490,9 @@ pub struct Model {
     over: bool,
     /// The session's thread has ended: Run again can start another (TODO 109)
     session_over: bool,
+    /// The priority the window's thread takes (`window-priority=`): the selection's from setup's selection until the session ends,
+    /// normal before and after
+    window_priority: ThreadPriority,
 }
 
 impl Model {
@@ -531,6 +534,7 @@ impl Model {
             errors_seen: 0,
             over: false,
             session_over: false,
+            window_priority: ThreadPriority::Normal,
         }
     }
 
@@ -666,6 +670,7 @@ impl Model {
             | Setup::CpuTopology { .. } => {}
             Setup::Selection(selection) => {
                 self.facts.allocation = Some(format!("{} thread{}", selection.threads, plural(selection.threads)));
+                self.window_priority = selection.window_priority;
             }
             Setup::LargePageCheck => self.position = "Checking large pages".to_string(),
             // After the dialog's yes to the grant
@@ -874,6 +879,12 @@ impl Model {
         }
     }
 
+    /// The priority the window's thread is to be at now (`window-priority=`, the owner's, 2026-11-02): the session's, from setup's
+    /// selection until the session ends however it ends, normal otherwise. The window sets it on its thread (`Window::follow_priority`).
+    pub fn window_priority(&self) -> ThreadPriority {
+        self.window_priority
+    }
+
     /// The session's thread has ended, so another run can start: Run again's (TODO 109)
     pub fn session_over(&self) -> bool {
         self.session_over
@@ -887,6 +898,7 @@ impl Model {
     /// The session's thread ended: how the session did, or the error that stopped it
     pub fn ended(&mut self, result: Result<SessionEnd, String>) {
         self.session_over = true;
+        self.window_priority = ThreadPriority::Normal;
         let mut position = "Stopped before testing";
         match &result {
             Err(e) => self.errors.push(format!("Error: {e}")),
@@ -1370,6 +1382,7 @@ mod tests {
             cycles: Some(2),
             duration_secs: None,
             simd: "SSE, AVX2".to_string(),
+            window_priority: ThreadPriority::High,
         }
     }
 
@@ -1496,6 +1509,53 @@ mod tests {
         // The thread's end agrees, and changes nothing
         m.ended(Ok(ran(RunStatus::Failed)));
         assert_eq!((m.status, m.errors.total()), (Status::Failed, 2));
+    }
+
+    /// The window's thread (the owner, 2026-11-02): normal until setup's selection, the selection's then, and normal again once the session
+    /// ends, however it ends, a new run's (Run again's) normal until its own selection
+    #[test]
+    fn the_windows_priority_is_the_sessions_until_it_ends() {
+        let selected = |priority| {
+            let mut m = model();
+            assert_eq!(m.window_priority(), ThreadPriority::Normal, "before Start");
+            m.start();
+            m.apply(Setup::CpuType { cputype: "cores".to_string(), avoid_smt: false }.into());
+            assert_eq!(m.window_priority(), ThreadPriority::Normal, "before the selection");
+            m.apply(Setup::Selection(Box::new(Selection { window_priority: priority, ..selection() })).into());
+            assert_eq!(m.window_priority(), priority, "from the selection");
+            m
+        };
+        // How the session ends, and the suite's end before it when it ran one
+        let suite_ended = |outcome, status| Some(Run::SuiteEnded { outcome, status, errors: Default::default() });
+        let ends = [
+            ("refused in setup", None, Ok(SessionEnd::Stopped(Stopped::Invalid("bad value".to_string())))),
+            ("failed", None, Err("bad config".to_string())),
+            ("the restart chosen", None, Ok(SessionEnd::RestartChosen)),
+            ("the plan only", None, Ok(SessionEnd::Ran { status: RunStatus::Passed, elapsed: Duration::ZERO, plan_only: true })),
+            ("finished", suite_ended(RunOutcome::Completed, RunStatus::Passed), Ok(ran(RunStatus::Passed))),
+            ("stopped", suite_ended(RunOutcome::Interrupted, RunStatus::Interrupted), Ok(ran(RunStatus::Interrupted))),
+        ];
+        for (how, suite, end) in ends {
+            let mut m = selected(ThreadPriority::Realtime);
+            if let Some(suite) = suite {
+                m.apply(suite.into());
+                assert_eq!(m.window_priority(), ThreadPriority::Realtime, "{how}: the suite over, the session not");
+            }
+            m.ended(end);
+            assert_eq!(m.window_priority(), ThreadPriority::Normal, "{how}");
+        }
+        for priority in [ThreadPriority::Normal, ThreadPriority::High] {
+            assert_eq!(selected(priority).window_priority(), priority);
+        }
+
+        // Run again: a new run's, normal until its selection
+        let mut m = selected(ThreadPriority::High);
+        m.ended(Ok(ran(RunStatus::Passed)));
+        let mut next = m.again();
+        assert_eq!(next.window_priority(), ThreadPriority::Normal, "Run again");
+        next.start();
+        next.apply(Setup::Selection(Box::new(selection())).into());
+        assert_eq!(next.window_priority(), ThreadPriority::High, "Run again's selection");
     }
 
     /// Setup's facts (TODO 29): the threads and the plan on the info line until the run's replace them, no large pages, the RAM and the

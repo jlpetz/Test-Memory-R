@@ -41,7 +41,7 @@ pub use crate::reporting::models::{
     TableData, TestConfigurationReport, ThreadPerformance, ThreadTiming, ThreadTimingReport, TopologySummary, TscCalibrationInfo,
 };
 pub use crate::reporting::renderers::Renderer;
-pub use crate::runner::RunStatus;
+pub use crate::runner::{RunStatus, ThreadPriority};
 pub use crate::smbios::MemoryModule;
 pub use crate::tests::Stage;
 pub use crate::thread_pool::SealOp;
@@ -184,6 +184,9 @@ pub struct Selection {
     pub duration_secs: Option<u32>,
     /// The SIMD extensions the CPU has (`simd::detect_simd_capabilities`)
     pub simd: String,
+    /// The window's thread's priority from here until the session ends: `window-priority=`, else the workers' (`priority=`, the config's
+    /// `thread_priority`, else high). The window sets it on its UI thread; the console takes none.
+    pub window_priority: ThreadPriority,
 }
 
 /// The cache calibration at startup (`Setup::CacheCalibration`).

@@ -12,7 +12,7 @@ use tmr::frontend::{
     CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorCounts, ErrorMode, Frontend, LiveFigures, MemoryModule,
     MemoryStatus, NotRun, PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
     PhysicalCorePerformance, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealCalibrationState, SealOp, Selection, Setup,
-    Stage, StepConfigLine, StepReport, TestSnapshot, TestSummary, ThreadPerformance, WheaCounts,
+    Stage, StepConfigLine, StepReport, TestSnapshot, TestSummary, ThreadPerformance, ThreadPriority, WheaCounts,
 };
 use tmr::session::{SessionEnd, Stopped};
 use tmr::test_support::failing_bits;
@@ -364,6 +364,8 @@ fn setup_events_print_as_their_golden() {
             cycles,
             duration_secs,
             simd: "SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2".to_string(),
+            // The window's, which the console doesn't show
+            window_priority: ThreadPriority::Realtime,
         }))
     };
     let large_pages =

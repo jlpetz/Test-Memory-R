@@ -353,6 +353,16 @@ impl ParamRegistry {
             can_override_config: true,
             parser: |v| v.parse::<crate::runner::ThreadPriority>().map(|p| ParamValue::String(p.to_string())),
         });
+        // The window's thread during a run (the owner, 2026-11-02): the workers' values, its default theirs (`session::priorities`)
+        params.insert("window-priority", ParamDef {
+            key: "window-priority",
+            can_override_config: true,
+            parser: |v| {
+                v.parse::<crate::runner::ThreadPriority>()
+                    .map(|p| ParamValue::String(p.to_string()))
+                    .map_err(|_| format!("Invalid window-priority '{v}': normal, high or realtime (default: the workers', priority=)"))
+            },
+        });
 
         params.insert("plan", ParamDef {
             key: "plan",
@@ -491,5 +501,21 @@ mod tests {
             assert!(parse(bad).is_err(), "pattern-mode={bad}");
         }
         assert!(parse("14").unwrap_err().contains("is 30 since"));
+    }
+
+    /// `window-priority=` takes `priority=`'s values, in any case, as their lower-case names, and refuses others, naming itself
+    #[test]
+    fn window_priority_takes_the_workers_values() {
+        let parse = |key: &str, v: &str| super::parse_and_validate_args(&[format!("{key}={v}")]);
+        for (given, name) in [("normal", "normal"), ("High", "high"), ("REALTIME", "realtime")] {
+            for key in ["priority", "window-priority"] {
+                let parsed = parse(key, given).unwrap_or_else(|e| panic!("{key}={given}: {e}"));
+                assert_eq!(super::get_string(&parsed, key, ""), name, "{key}={given}");
+            }
+        }
+        for bad in ["", "turbo", "idle", "15"] {
+            let e = parse("window-priority", bad).unwrap_err();
+            assert!(e.contains(&format!("Invalid window-priority '{bad}'")), "{e}");
+        }
     }
 }

@@ -230,6 +230,8 @@ fn selection_text(text: &mut String, selection: &Selection) {
         cycles,
         duration_secs,
         simd,
+        // The window's: the console's thread stays as it is
+        window_priority: _,
     } = selection;
     text.push_str("  Error Mode: ");
     let _ = match error_mode {
