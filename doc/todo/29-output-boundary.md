@@ -51,8 +51,12 @@ Options to weigh (still not decided):
   stop being cheap to diff.
 - **(c) Two files, cross-referenced.** ✅ **Partly done 2026-09-09**: both filenames are now built
   from one captured instant (`run_context::run_start` / `run_file_stem`), so a run's log and result
-  share a stem, and the log header names its paired result file. A shared run UUID was *not* added —
-  the stem is sufficient today and a UUID would be a second identity to keep in sync.
+  share a stem, and the log header names its paired result file. A shared run ID was *not* added
+  then — the stem seemed sufficient and an ID would be a second identity to keep in sync.
+  **Added 2026-11-02** (the owner: someone renaming files could pair a log and results from
+  different runs): `run_context::run_id`, 32 hex digits made with the start stamp and reset with
+  it, in the log header (`# run id:`) and the results' `metadata.run_id`. The rule, at
+  `run_file_stem`: same stem, then same run ID. Nothing in TMR pairs the two files yet.
 
 **Why this can't be settled independently — two couplings:**
 

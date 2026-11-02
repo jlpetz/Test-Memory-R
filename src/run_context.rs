@@ -25,10 +25,10 @@ use crate::formatting::ByteSize;
 use crate::smbios::MemoryModule;
 
 // ===========================================================================
-// Run instant — the one clock reading that names this run
+// Run instant — the one clock reading that names this run, and the run's ID
 // ===========================================================================
 
-/// The single wall-clock instant identifying this run, captured on first call.
+/// The single wall-clock instant identifying this run, captured on first call, with its ID (`run_id`).
 ///
 /// **Everything that names or stamps a run must read it from here.** The log filename (`main.rs: setup_logging`) and the result filename
 /// (`results.rs: TestRunResult::new`) used to call `Local::now()` and `Utc::now()` *independently*, and not at the same moment: logging is
@@ -40,18 +40,55 @@ use crate::smbios::MemoryModule;
 /// Local, not UTC, because it is the stem of a filename a human browses. Result *files* carry both zones as fields (see
 /// [`crate::results::TestRunMetadata`]); a filename can only pick one.
 pub fn run_start() -> DateTime<Local> {
-    *RUN_START.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(Local::now)
+    run_stamp().start
 }
 
-/// The run's start, at its first use; each run's own, so a session after another names new files (`reset_run_start`, TODO 109)
-static RUN_START: std::sync::Mutex<Option<DateTime<Local>>> = std::sync::Mutex::new(None);
+/// The run's ID, 32 hex digits (128 bits), made with its start: the results file has it (`metadata.run_id`) and the log file's header
+/// (`# run id:`), which pairs the two past their names (`run_file_stem`). Unique, not secret.
+pub fn run_id() -> String {
+    format!("{:032x}", run_stamp().id)
+}
 
-/// A new run's start, for a session after another (`session::reset_run`, TODO 109): its log and results files are named from it
-pub(crate) fn reset_run_start() {
-    *RUN_START.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+/// A run's start and ID, made together at the first use of either
+#[derive(Clone, Copy)]
+struct RunStamp {
+    start: DateTime<Local>,
+    id: u128,
+}
+
+impl RunStamp {
+    /// Now, and an ID from now, this machine's name, this process's ID and the OS's randomness: two of std's `RandomState`s, keyed from the
+    /// OS's random source and each with keys of its own, hash the same inputs, 64 bits each. The machine by its name, not by its
+    /// `AppConfig::generate_machine_id`: that needs the CPU's detection, which logs what it finds once a process, and the CLI opens its log
+    /// file, which takes this stamp, before its logger is set up, so those records would go nowhere.
+    fn new() -> Self {
+        use std::hash::{BuildHasher, RandomState};
+        let start = Local::now();
+        let inputs = (start.timestamp(), start.timestamp_subsec_nanos(), std::env::var_os("COMPUTERNAME"), std::process::id());
+        let half = || u128::from(RandomState::new().hash_one(&inputs));
+        Self { start, id: (half() << 64) | half() }
+    }
+}
+
+/// The run's start and ID, at their first use; each run's own, so a session after another names new files and has a new ID
+/// (`reset_run_stamp`, TODO 109)
+static RUN_STAMP: std::sync::Mutex<Option<RunStamp>> = std::sync::Mutex::new(None);
+
+fn run_stamp() -> RunStamp {
+    *RUN_STAMP.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(RunStamp::new)
+}
+
+/// A new run's start and ID, for a session after another (`session::reset_run`, TODO 109): its log and results files are named from the
+/// start and both carry the ID
+pub(crate) fn reset_run_stamp() {
+    *RUN_STAMP.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
 /// Filename stem shared by this run's log and result files, e.g. `TMR_2026-09-08_14-18-23`.
+///
+/// **Pairing:** a log file and a results file are one run's when they have the same stem, then the same run ID (`run_id`: the log
+/// header's `# run id:`, `logfile::run_id_in`, and the results' `metadata.run_id`). A file can be renamed, so a name alone could pair one
+/// run's log with another's results: a tool checks the name first, then the ID.
 pub fn run_file_stem() -> String {
     format!("TMR_{}", run_start().format("%Y-%m-%d_%H-%M-%S"))
 }

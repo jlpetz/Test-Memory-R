@@ -264,7 +264,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
   - The GUI logger (via `tmr::logfile`) feeds the errors list with the kernels' bad-word lines, plus an 'N lines dropped' line.
   - An args TextBox in the CLI's `key=value` syntax, prefilled from the exe's args minus `--gui`, so both frontends take the same parameters.
   - The panic hook, VEH and CPU gate also show a MessageBoxW in GUI mode (as built, a fault's box comes from the unhandled-exception filter, not the VEH: S6's notes).
-  - The log file opens at Start, so RUN_START (run_context.rs:44-47) names the run.
+  - The log file opens at Start, so RUN_STAMP (run_context.rs) names the run.
 - **One run per process.** These are first-set-wins OnceLocks: simd.rs:158, pattern.rs:607-615 and 684-688, seal.rs:75-81, tests.rs:469-489, cpu_topology.rs:106-138. SHUTDOWN_REQUESTED is never reset; env_logger `.init()` and ctrlc are once per process. So 'Run again' relaunches the exe with the same args.
 - **Closing mid-run:** Reactor 0.100.0 can't veto a close. After `App::run` returns, main calls `request_stop()` and joins the engine thread for up to 30 s, so the current step ends and the final save runs. The cycles already finished are in the per-cycle file anyway.
 

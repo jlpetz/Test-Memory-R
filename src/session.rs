@@ -53,16 +53,17 @@ pub enum Stopped {
 }
 
 /// Readies the process for another session (TODO 109): the run settings the last one set (the seed, the width, the bus beat, the topology's
-/// typing, rescan, `patterns=`, the calibrations, the threads a core), its start stamp, which names its log and results files, and the stop
-/// flag, back to a new process's. A frontend running sessions one after another calls it before each, and before the run's log file opens,
-/// which takes the stamp; the console runs one a process. Only between sessions: the last one's thread has ended.
+/// typing, rescan, `patterns=`, the calibrations, the threads a core), its start stamp, which names its log and results files, and its run
+/// ID, which both carry, and the stop flag, back to a new process's. A frontend running sessions one after another calls it before each,
+/// and before the run's log file opens, which takes the stamp; the console runs one a process. Only between sessions: the last one's thread
+/// has ended.
 pub fn reset_run() {
     crate::pattern::reset_run_settings();
     crate::simd::reset_width();
     crate::seal::reset_calibrated_width();
     crate::cpu_topology::reset_typing();
     crate::tests::reset_run_settings();
-    crate::run_context::reset_run_start();
+    crate::run_context::reset_run_stamp();
     crate::runner::clear_stop();
 }
 

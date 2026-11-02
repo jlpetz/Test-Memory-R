@@ -54,8 +54,8 @@ pub fn create_dir() -> std::io::Result<()> {
     std::fs::create_dir_all(crate::home::logs())
 }
 
-/// The log file's path. Its name is shared with the result filename so a run's log and result can be paired by name; see
-/// `run_context::run_start`. Local time — this file is read on the machine that wrote it.
+/// The log file's path. Its name is shared with the result filename so a run's log and result can be paired by name, then by the run ID
+/// both carry; see `run_context::run_file_stem`. Local time — this file is read on the machine that wrote it.
 pub fn path() -> std::path::PathBuf {
     crate::home::logs().join(format!("{}.log", crate::run_context::run_file_stem()))
 }
@@ -74,15 +74,37 @@ pub fn open(path: &std::path::Path) -> std::io::Result<()> {
         log_file,
         "# TMR {} — run started {} (UTC {}); all timestamps below are local time\n\
          # build: {}\n\
-         # paired result file: results/{}.json",
+         # paired result file: results/{}.json\n\
+         {RUN_ID_LINE}{}",
         crate::BUILD.version,
         started.format("%Y-%m-%d %H:%M:%S %:z"),
         started.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S"),
         crate::BUILD.describe(),
         crate::run_context::run_file_stem(),
+        crate::run_context::run_id(),
     );
     *file() = Some(log_file);
     Ok(())
+}
+
+/// The header's line with the run's ID (`run_context::run_id`), before the ID
+const RUN_ID_LINE: &str = "# run id: ";
+
+/// The run ID in the header of the log file at `path` (`open`'s `# run id:` line), to check against a results file's
+/// (`metadata.run_id`) once their names pair them (`run_context::run_file_stem`). None for a log without one, as written before it.
+pub fn run_id_in(path: &std::path::Path) -> std::io::Result<Option<String>> {
+    use std::io::BufRead;
+    for line in std::io::BufReader::new(std::fs::File::open(path)?).lines() {
+        let line = line?;
+        // The header is the lines that start with `#`, the records after it
+        if !line.starts_with('#') {
+            break;
+        }
+        if let Some(id) = line.strip_prefix(RUN_ID_LINE) {
+            return Ok(Some(id.to_string()));
+        }
+    }
+    Ok(None)
 }
 
 /// Adds `text`, what a frontend showed between the records (TODO 29's transcript, TODO 109), to the log file as it is, without its colours,
@@ -145,5 +167,34 @@ mod tests {
         let shown = "\u{1b}[1;36m📊 Final Test Summary\u{1b}[0m\n  plain, 50% [x]\n";
         assert_eq!(super::without_colours(shown), "📊 Final Test Summary\n  plain, 50% [x]\n");
         assert_eq!(super::without_colours("no colours"), "no colours");
+    }
+
+    /// A run's log file and its results file, as saved, carry the same run ID, 32 hex digits, the log's in its header and the results' in
+    /// their metadata; the next run in the process has another, after `reset_run_stamp` (`session::reset_run`'s, for the window's Run
+    /// again; the whole reset would change settings other tests in the process use). The owner: a renamed file could pair one run's log
+    /// with another's results, so a tool checks the name, then the ID.
+    #[test]
+    fn a_run_s_log_and_results_carry_its_id_and_the_next_run_has_another() {
+        use crate::results::{TempDir, TestRunResult};
+        let dir = TempDir::new("run-id");
+        // The run's log and results files, in the temp directory, and the ID each has
+        let ids = |run: &str| {
+            let log = std::path::PathBuf::from(dir.file(&format!("{run}.log")));
+            super::open(&log).unwrap_or_else(|e| panic!("{}: {e}", log.display()));
+            super::close();
+            let results = dir.file(&format!("{run}.json"));
+            TestRunResult::new(Default::default()).save_atomic(&results).unwrap_or_else(|e| panic!("{e}"));
+            let logged = super::run_id_in(&log).unwrap().expect("the log's header has the run ID");
+            let saved = TestRunResult::load_from_file(&results).unwrap().metadata.run_id.expect("the results have the run ID");
+            (logged, saved)
+        };
+        let (logged, saved) = ids("first");
+        assert_eq!(logged, saved);
+        assert_eq!(logged, crate::run_context::run_id());
+        assert!(logged.len() == 32 && logged.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')), "{logged}");
+        crate::run_context::reset_run_stamp();
+        let (next_logged, next_saved) = ids("next");
+        assert_eq!(next_logged, next_saved);
+        assert_ne!(next_logged, logged, "a new run, a new ID");
     }
 }

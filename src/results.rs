@@ -61,6 +61,10 @@ pub struct TestRunMetadata {
     pub start_time_local: String,
     /// Generated filename. Shares its stem with this run's log file — see [`crate::run_context::run_file_stem`].
     pub filename: String,
+    /// The run's ID (`run_context::run_id`), which its log file's header has too: after the shared stem, what pairs the two (see
+    /// [`crate::run_context::run_file_stem`]). Absent from results written before it.
+    #[serde(default)]
+    pub run_id: Option<String>,
     pub config_name: Option<String>, // If loaded from config
 }
 
@@ -417,6 +421,7 @@ impl TestRunResult {
                 start_time_utc: started.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S UTC").to_string(),
                 start_time_local: started.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
                 filename: filename.clone(),
+                run_id: Some(crate::run_context::run_id()),
                 config_name: run_config.config_name.clone(),
             },
             // Detected here rather than via a setter, for the same reason as `run_config`.
@@ -1118,10 +1123,11 @@ mod tests {
     fn a_results_file_written_before_todo_72_still_loads() {
         let (text, result) = written_before_todo_72();
         // `threads` is a key of the run config's already
-        for field in ["in_progress", "outcome", "status", "build", "partial", "timed_ms", "operations", "tests_left_out"] {
+        for field in ["in_progress", "outcome", "status", "build", "run_id", "partial", "timed_ms", "operations", "tests_left_out"] {
             assert!(!text.contains(&format!("\"{field}\"")), "the fixture is from before {field}");
         }
-        assert_eq!((result.metadata.tmr_version.as_str(), result.metadata.build.as_ref()), ("1.0.0", None));
+        let metadata = &result.metadata;
+        assert_eq!((metadata.tmr_version.as_str(), metadata.build.as_ref(), metadata.run_id.as_deref()), ("1.0.0", None, None));
         let stats = &result.overall_stats;
         assert_eq!((stats.in_progress, stats.outcome.as_deref(), stats.status.as_deref()), (false, None, None));
         assert_eq!((stats.cycles_completed, stats.total_errors, stats.per_step_averages.len()), (2, 5, 3));
