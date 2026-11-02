@@ -68,7 +68,7 @@ pub trait ReportFormatter: Send + Sync {
     fn prepare_test_configuration_table(&self, report: &TestConfigurationReport) -> TableData;
 
     /// Prepare cycle report table
-    #[expect(dead_code, reason = "TODO #29: the per-cycle report is to be revived, not deleted (from TODO #69 F)")]
+    #[expect(dead_code, reason = "the per-cycle report is kept to be revived, not deleted (TODO 69 F)")]
     fn prepare_cycle_report_table(&self, report: &CycleReport) -> TableData;
 
     /// Prepare final test summary tables

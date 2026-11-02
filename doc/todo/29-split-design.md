@@ -692,3 +692,23 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - The per-cycle save cost and file size are estimates until the ignored test runs, and the fallback (compact or aggregates) is a schema choice made after S1 ships.
 - Nothing about the GUI has been run: the detached-console manifest, the delay-load on 20348, ContentDialog from a blocked engine thread, and UI starvation at High worker priority are all unverified.
 - The ordering rule (an event never spans a log call) is enforced by review and one coordinator-only order test, not by the compiler.
+
+## Closed 2026-11-02
+
+- **The console check, the S2/S4/S5 gates' A/B**, run on the dev box (the owner: "go for it"):
+  25ff780 against 7cece3b, and 7cece3b against 727baf3, seven command lines each (the S4 gate's,
+  plus `verify-reps=999`), both streams, captures in `..\ab-29\` (not in git). Clean: the split
+  changed only three startup lines' log label (`tmr::cli` to `tmr_cli` and `tmr::session`); every
+  later difference is an intended change (TODO 104's version, home paths and help lines; TODO 109's
+  error counts and summary rows). No ticker frame is left above the verdict in the raw capture.
+  Found on the way: `cpus=` takes any text (`cpus=lots` ran the whole plan) on all three.
+- **Open for the owner, as closed**: the `tmr::cli` label went with S5; the Ctrl+C wording, bold
+  codes and ticker frames in redirected output, the capture bridge (6593c8b), the window's priority
+  (0df6e48) and the silent large-page grant (97fda82) are done; the log transcript is ea672a7;
+  Run again runs in the same window (547502c); the preview and the CLAUDE.md command lines are past.
+  Moved: 'Skipping first 1 CPU(s)' with skip-cores=0 to TODO 108; pretty or compact JSON to TODO 72;
+  AppConfig's parked keys to TODO 7.
+- **The results/log boundary (#67 item 3)**: (a) and (c). Two files in two folders, `results\` and
+  `logs\`, paired by their shared stem and then their run ID (d282a7f). They are written apart on
+  purpose: the log line by line, flushed as it goes, for a person; the results whole between cycles,
+  for tools.

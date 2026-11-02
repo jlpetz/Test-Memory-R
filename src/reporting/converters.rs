@@ -323,7 +323,7 @@ pub fn create_test_configuration_report_v2(
 }
 
 /// Convert test summaries to cycle report
-#[expect(dead_code, reason = "TODO #29: the per-cycle report is to be revived, not deleted (from TODO #69 F)")]
+#[expect(dead_code, reason = "the per-cycle report is kept to be revived, not deleted (TODO 69 F)")]
 pub fn create_cycle_report(cycle: u32, duration_secs: u32, summaries: &[TestSummary]) -> CycleReport {
     let test_performances = summaries
         .iter()

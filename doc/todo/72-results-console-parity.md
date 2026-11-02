@@ -173,3 +173,30 @@ skipped without a word.
   column. The golden is `testdata/console/comparison.txt`.
 - **Files**: results files from before have no `test` and `label` in their plan and don't load
   (the owner allows it, pre-stable). The pre-TODO 72 fixture gained them, one entry a step.
+
+## 2026-11-02: the owner's decisions
+
+From a read-only assessment of what D and step matching need now the engine is split (four readers,
+each checked by a skeptic), then the owner's answers:
+
+- **The saves between cycles stay as they are.** They run at a cycle's end only, while the tests
+  wait, so they don't touch a test's timing; at most once a minute bounds what a run of short
+  cycles writes. Writing once at the end, and appending a step at a time (JSON Lines), were
+  weighed and not taken.
+- **The file stays a summary.** No step-by-step replay (a step report's parameter text, 8 of the
+  latency table's 14 columns and its sample counts, and the stamp under it aren't saved), and no
+  saved event stream (about 60 payload types would become a file format, and the log already holds
+  the console's text of every event, since ea672a7). An old run in the window would show its
+  summary and its steps' figures, not each step's report.
+- **Saved unrounded** (0d274ef): the file is for tools; a person reads the log or the window.
+  serde_json's `float_roundtrip` isn't on: about 12% of a run's figures read back 1 ulp off, which
+  no printed figure shows (the parity test renders identically).
+- **Each test's parameter** (1c9aad0), `run_config.tests[].parameter`, the Config line's text. It
+  follows the run's `channels=` (or the config's) and `mirror=`, not the hardware: two machines on
+  one plan and one command line record the same.
+- **A run ID** in the results and the log header (d282a7f; `29-output-boundary.md`, option (c)).
+- **Commit headroom dropped.** `ullAvailPageFile` is the commit remaining, not page-file space, and
+  only an `ERROR_COMMITMENT_LIMIT` (1455) failure would need it; none has been seen. Trigger: one.
+- **D**: `--show-results <file>`, on the console: a first line saying how the run ended (finished,
+  stopped, its time limit, halted on errors, or never finished: killed or crashed, figures up to
+  its last saved cycle), then the final summary, as the console printed it.

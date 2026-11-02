@@ -112,7 +112,7 @@ impl<R: Renderer> Reporter<R> {
 
     /// Report cycle completion. Crate-private while nothing calls it, so it stays checked as dead code: a public `Reporter`'s public
     /// methods aren't (TODO 29).
-    #[expect(dead_code, reason = "TODO #29: the per-cycle report is to be revived, not deleted (from TODO #69 F)")]
+    #[expect(dead_code, reason = "the per-cycle report is kept to be revived, not deleted (TODO 69 F)")]
     pub(crate) fn report_cycle(&mut self, report: &CycleReport) -> Result<()> {
         let table = self.formatter.prepare_cycle_report_table(report);
         self.renderer.render_table(&table)?;
