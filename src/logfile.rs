@@ -39,9 +39,9 @@ pub fn level() -> (String, log::LevelFilter) {
 }
 
 /// Whether a command line (the exe's name first) keeps a log file: a session does, and so do the one-shot commands that change the system
-/// (`--setup-large-pages`, the calibrations, which save to tmr-cfg.json). `--help`, `--version`, the topology commands, `--compare-results`
-/// and `--create-demo-configs` don't: a log of every `tmr --version` was a folder of files, and winget's checks run it and fail a package
-/// that leaves files behind.
+/// (`--setup-large-pages`, the calibrations, which save to tmr-cfg.json). `--help`, `--version`, the topology commands,
+/// `--compare-results`, `--show-results` and `--create-demo-configs` don't: a log of every `tmr --version` was a folder of files, and
+/// winget's checks run it and fail a package that leaves files behind.
 pub fn wanted(args: &[String]) -> bool {
     use crate::commands::Command;
     // Without the mode flags, as the session parses it (`session::MODE_FLAGS`): `tmr --quick-test --help` is `--help`

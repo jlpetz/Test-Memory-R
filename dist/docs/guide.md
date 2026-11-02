@@ -100,6 +100,12 @@ compares two results files, by their names in `results\` or by their paths. It m
 runs' tests by name (a TM5 config's by test number too): it lists the tests only one of them ran
 and those that ran with other settings, then how each test both ran changed.
 
+`tmr --show-results <file>` shows a run's end again, from its results file (found the same way):
+a line saying how the run ended (it finished, was stopped, reached its time limit or halted on
+errors, with its verdict; or it never finished, killed or crashed, and its figures go up to its
+last saved cycle), which run it was, then the final summary as the console showed it. A file from
+another version of TMR is shown in this version's layout, and TMR says so above it.
+
 A results file describes the system it came from, so runs can be told apart: the CPU, the BIOS,
 the memory modules (their part numbers and serial numbers) and the motherboard's system UUID.
 Bear that in mind before you post one.

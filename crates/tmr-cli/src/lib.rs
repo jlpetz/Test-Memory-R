@@ -72,10 +72,11 @@ fn finish(end: &SessionEnd, program: &str) -> i32 {
     status.exit_code()
 }
 
-/// A one-shot command on the console, which a calibration asks whether to save what it measured. Its exit status: 0 done, 2 failed.
+/// A one-shot command on the console, which a calibration asks whether to save what it measured, and `--show-results` ends with the final
+/// summary, the text the console showed at the run's end (`transcript`). Its exit status: 0 done, 2 failed.
 fn run_command(command: &tmr::commands::Command) -> i32 {
     let mut confirm = |question: &str| crate::prompts::confirm(&mut stdin().lock(), &mut crate::console::stdout(), question);
-    match tmr::commands::run(command, &mut crate::console::stdout(), &mut confirm) {
+    match tmr::commands::run(command, &mut crate::console::stdout(), &mut confirm, &transcript) {
         Ok(status) => status.exit_code(),
         // The console can't be written to
         Err(e) => {
@@ -184,5 +185,40 @@ fn setup_logging(log_file: bool) {
     log::info!("TMR v{} started - console logging with colors and module info restored", tmr::BUILD.version);
     if log_file {
         log::info!("Log level: {} - detailed logs also saved to {}", log_level, log_filename.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tmr::commands::Command;
+
+    use crate::golden::{capture, check, turn};
+
+    /// TODO 72: `--show-results` on the console, each case after a `## case` line with its exit status: a run that finished, by this build,
+    /// and one that never finished, by another (`tmr::test_support::results_file_*`), each its first lines and then the final summary as
+    /// the console showed it at the run's end (the Reporter's test of the summary saved and loaded shows it the same text); and a file that
+    /// doesn't load, with why. The first lines of every other ending are the engine's golden (`show_results_heads`), as are the usage and
+    /// a file that isn't there (`commands`).
+    #[test]
+    fn show_results_prints_as_its_golden() {
+        // The results files are built with this machine's detections, which log at their first use
+        let _turn = turn();
+        let (finished, never_finished) = (tmr::test_support::results_file_finished(), tmr::test_support::results_file_never_finished());
+        let unreadable = std::env::temp_dir().join(format!("tmr-cli-show-results-{}.json", std::process::id()));
+        std::fs::write(&unreadable, r#"{"metadata": {"tmr_version": "0.1.0"}}"#).expect("a temp file");
+        let unreadable = unreadable.to_str().expect("a UTF-8 temp path").to_string();
+        let cases = [
+            ("a run that finished", &finished.path),
+            ("a run that never finished", &never_finished.path),
+            ("a file that doesn't load", &unreadable),
+        ];
+        let mut text = String::new();
+        for (case, path) in cases {
+            let command = Command::ShowResults(["tmr.exe", "--show-results", path].map(String::from).to_vec());
+            let (status, printed) = capture(|| crate::run_command(&command));
+            text += &format!("## {case}: exit {status}\n{}", printed.replace(path.as_str(), "<file>"));
+        }
+        let _ = std::fs::remove_file(&unreadable);
+        check("show_results", &text);
     }
 }

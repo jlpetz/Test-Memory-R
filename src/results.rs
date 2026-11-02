@@ -83,6 +83,14 @@ impl From<crate::build_info::BuildInfo> for BuildRecord {
     }
 }
 
+impl BuildRecord {
+    /// All but the version, as the log file's header gives it (`BuildInfo::describe`) and `--show-results` a file's build:
+    /// `commit 25ff780… (dirty), rustc 1.101.0-nightly (1a2c4797e 2026-10-21), release`
+    pub(crate) fn describe(&self) -> String {
+        format!("commit {}{}, {}, {}", self.commit, if self.dirty { " (dirty)" } else { "" }, self.rustc, self.profile)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CycleResult {
     pub cycle_number: u32,
@@ -1098,7 +1106,7 @@ impl TestComparison {
 }
 
 /// A directory of a test's own in the system's temp directory, for the results files it writes, removed with what it holds when it drops, a
-/// failed test's too. The test support's too (`test_support::final_summary_saved_and_loaded`).
+/// failed test's too. The test support's too (`test_support::final_summary_saved_and_loaded`, `test_support::ResultsFile`).
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) struct TempDir(std::path::PathBuf);
 

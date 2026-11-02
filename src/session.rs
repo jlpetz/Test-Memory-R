@@ -139,8 +139,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     let known_flags = [
         "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-cache-ext", "--calibrate-seal",
         "--calibrate-all", "--calibration-file", "--output", "--no-calibration", "--yes", "--no-save", "--create-demo-configs",
-        "--compare-results", "--debug-topology", "--show-topology", "--setup-large-pages", "--startup-debug", "--disable-pinning",
-        "--help", "-h", "-?", "--version", "-v",
+        "--compare-results", "--show-results", "--debug-topology", "--show-topology", "--setup-large-pages", "--startup-debug",
+        "--disable-pinning", "--help", "-h", "-?", "--version", "-v",
     ];
 
     let unknown_flags: Vec<String> = args

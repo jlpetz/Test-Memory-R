@@ -199,4 +199,13 @@ each checked by a skeptic), then the owner's answers:
   only an `ERROR_COMMITMENT_LIMIT` (1455) failure would need it; none has been seen. Trigger: one.
 - **D**: `--show-results <file>`, on the console: a first line saying how the run ended (finished,
   stopped, its time limit, halted on errors, or never finished: killed or crashed, figures up to
-  its last saved cycle), then the final summary, as the console printed it.
+  its last saved cycle), then the final summary, as the console printed it. **Done** (2026-11-02):
+  the file found as `--compare-results` finds one; the first line from `in_progress`, `outcome`,
+  `status`, the cycles and a last one `partial` (`✅ The run finished: passed, 3 cycles`, `❌ The run
+  halted on errors (errors=halt): failed, 6 errors (...), 2 cycles, the last cut short`, `⚠️  The
+  run never finished: it was killed or crashed, unless it is still running; its figures are up to
+  its last saved cycle, 2`); a line with the run's stem, start and run ID, and when another build
+  wrote it, that build and that the summary is in this build's layout; then `Run::FinalSummary`'s
+  text, the CLI's (`commands::run` takes it as `text`, `tmr_cli::transcript`). No log file, no
+  `Results saved:` line; exit 0, or 2 with the reason when the file doesn't load. The goldens:
+  `testdata/console/show_results_heads.txt` (every ending) and the CLI's `show_results.txt`.

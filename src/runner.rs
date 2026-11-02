@@ -157,6 +157,11 @@ impl RunStatus {
             RunStatus::Interrupted => "interrupted",
         }
     }
+
+    /// The status whose key `key` is, as a results file gives it (`--show-results`, TODO 72)
+    pub(crate) fn from_key(key: &str) -> Option<Self> {
+        [RunStatus::Passed, RunStatus::Failed, RunStatus::NotRun, RunStatus::Interrupted].into_iter().find(|s| s.key() == key)
+    }
 }
 
 // Global flags for shutdown handling

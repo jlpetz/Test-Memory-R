@@ -81,6 +81,11 @@ impl RunOutcome {
             RunOutcome::Halted => "halted",
         }
     }
+
+    /// The outcome whose key `key` is, as a results file gives it (`--show-results`, TODO 72)
+    pub(crate) fn from_key(key: &str) -> Option<Self> {
+        [RunOutcome::Completed, RunOutcome::TimeLimit, RunOutcome::Interrupted, RunOutcome::Halted].into_iter().find(|o| o.key() == key)
+    }
 }
 
 /// A run's or a step's errors (TODO 109), as every frontend and report words them, one consolidated count with where each came from (the

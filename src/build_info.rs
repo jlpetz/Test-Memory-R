@@ -28,7 +28,7 @@ pub const BUILD: BuildInfo = BuildInfo {
 impl BuildInfo {
     /// All but the version, for the log file's header: `commit 25ff780… (dirty), rustc 1.101.0-nightly (1a2c4797e 2026-10-21), release`.
     pub fn describe(&self) -> String {
-        format!("commit {}{}, {}, {}", self.commit, if self.dirty { " (dirty)" } else { "" }, self.rustc, self.profile)
+        crate::results::BuildRecord::from(*self).describe()
     }
 }
 

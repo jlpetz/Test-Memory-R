@@ -1,10 +1,11 @@
 //! What the CLI's tests drive the engine with (TODO 29). The console's text is the CLI's (`crates/tmr-cli`), and its goldens show it keeps
 //! its bytes; much of what they show is the engine's code at work, which they reach here: a cycle of `execute_test_cycle` on heap regions
-//! (`FakeCycle`), the run's entry point on a fixed layout (`GoldenRun`), the detections that log at their first use, and the reports that
-//! take the engine's code to build, each from a fixed model. A unit test build has it, and a build with the `test-support` feature, which
-//! only tmr-cli's tests turn on (its dev-dependency), so a plain build of tmr.exe or the window has none of it. Cargo builds the engine
-//! once a command, with every feature that command's targets ask for: under `cargo build --all-targets` tmr.exe links it too. Ship,
-//! benchmark and read the asm of a plain build only (`cargo build --release`, `cargo rustc --release -p test-memory-r --bin tmr`).
+//! (`FakeCycle`), the run's entry point on a fixed layout (`GoldenRun`), the detections that log at their first use, the reports that take
+//! the engine's code to build, each from a fixed model, and results files saved from such models (`ResultsFile`, for `--show-results`). A
+//! unit test build has it, and a build with the `test-support` feature, which only tmr-cli's tests turn on (its dev-dependency), so a plain
+//! build of tmr.exe or the window has none of it. Cargo builds the engine once a command, with every feature that command's targets ask
+//! for: under `cargo build --all-targets` tmr.exe links it too. Ship, benchmark and read the asm of a plain build only
+//! (`cargo build --release`, `cargo rustc --release -p test-memory-r --bin tmr`).
 
 use std::path::Path;
 use std::time::Duration;
@@ -15,6 +16,7 @@ use crate::memory::stitched::{Commit, Run, ThreadSpan};
 use crate::progress::TestSummary;
 pub use crate::reporting::converters::create_thread_timing_report;
 use crate::reporting::models::{AllocationReport, ConsolidatedMemoryReport, FinalTestSummaryReport, TestConfigurationReport};
+use crate::results::{TempDir, TestRunResult};
 pub use crate::runner::TestRunOverrides;
 pub use crate::runner::test_support::{FakeCycle, Flip, GoldenRun};
 
@@ -224,8 +226,13 @@ pub(crate) fn summary(step: usize, duration_ms: u128, bytes_processed: u64, seal
 /// The final summary of two sealed cycles: a test run twice a cycle, a latency step, a step's errors and bits in the second cycle, a final
 /// check's error, the seal's work and a step's, and a WHEA event. Every table it has shows.
 pub fn final_summary_report() -> FinalTestSummaryReport {
+    crate::reporting::converters::create_overall_stats_summary_report(&run_with_errors())
+}
+
+/// `final_summary_report`'s run, its overall figures as a save after its second cycle has them
+pub(crate) fn run_with_errors() -> TestRunResult {
     use crate::ops::Op;
-    use crate::results::{CycleSeal, TestRunResult};
+    use crate::results::CycleSeal;
     let bits = |mask: u64, want: u64, actual: u64| {
         let mut b = FailingBits::default();
         b.add_check(mask);
@@ -283,7 +290,7 @@ pub fn final_summary_report() -> FinalTestSummaryReport {
     result.add_cycle(2, 32, vec![step(1, 0, "Mem-StuckBit256_A"), latency(2), bad], Some(seal(1, bits(1 << 40, 0, 1 << 40))), false);
     result.finalize(Duration::from_secs(3725));
     result.set_whea_totals(crate::whea::WheaCounts { total: 1, corrected: 1 }, true);
-    crate::reporting::converters::create_overall_stats_summary_report(&result)
+    result
 }
 
 /// The final summary of a run as the console shows it at the run's end, and as its results file gives it, saved and loaded (TODO 72): the
@@ -292,9 +299,19 @@ pub fn final_summary_report() -> FinalTestSummaryReport {
 /// step between them whose P75 is 72.7496 ns (rounded to 2 dp, 72.75, which shows as 72.8); the seal's work and a step's timed to the
 /// nanosecond; over 63 s, so 30.48 MiB/s in all.
 pub fn final_summary_saved_and_loaded() -> (FinalTestSummaryReport, FinalTestSummaryReport) {
-    use crate::ops::Op;
     use crate::reporting::converters::create_overall_stats_summary_report;
-    use crate::results::{CycleSeal, TempDir, TestRunResult};
+    let result = clean_run();
+    let dir = TempDir::new("summary-saved");
+    let path = dir.file("result.json");
+    result.save_atomic(&path).unwrap_or_else(|e| panic!("{e}"));
+    let loaded = TestRunResult::load_from_file(&path).unwrap_or_else(|e| panic!("{e}"));
+    (create_overall_stats_summary_report(&result), create_overall_stats_summary_report(&loaded))
+}
+
+/// `final_summary_saved_and_loaded`'s run, its overall figures as its final save has them, but for how it ended
+fn clean_run() -> TestRunResult {
+    use crate::ops::Op;
+    use crate::results::CycleSeal;
     let step = |n: usize, test_index: usize, name: &str, bytes: u64, mib_s: f64| TestSummary {
         test_index,
         name: name.to_string(),
@@ -336,9 +353,62 @@ pub fn final_summary_saved_and_loaded() -> (FinalTestSummaryReport, FinalTestSum
     }
     result.finalize(Duration::from_secs(63));
     result.set_whea_totals(crate::whea::WheaCounts::default(), true);
-    let dir = TempDir::new("summary-saved");
-    let path = dir.file("result.json");
-    result.save_atomic(&path).unwrap_or_else(|e| panic!("{e}"));
-    let loaded = TestRunResult::load_from_file(&path).unwrap_or_else(|e| panic!("{e}"));
-    (create_overall_stats_summary_report(&result), create_overall_stats_summary_report(&loaded))
+    result
+}
+
+/// A results file a test wrote (`results_file_finished`, `results_file_never_finished`), in a temp folder of its own, which goes when it
+/// drops
+pub struct ResultsFile {
+    _dir: TempDir,
+    pub path: String,
+}
+
+impl ResultsFile {
+    /// `result` saved as a run saves it, in a temp folder named for `name`
+    fn of(name: &str, result: &TestRunResult) -> Self {
+        let dir = TempDir::new(name);
+        let path = dir.file("TMR_2026-11-02_14-03-07.json");
+        result.save_atomic(&path).unwrap_or_else(|e| panic!("{e}"));
+        ResultsFile { _dir: dir, path }
+    }
+}
+
+/// The results file of a run that finished (TODO 72's `--show-results`): `final_summary_saved_and_loaded`'s two clean cycles, completed
+/// and passed, by this build (`stamped`)
+pub fn results_file_finished() -> ResultsFile {
+    let mut result = clean_run();
+    stamped(&mut result);
+    let (outcome, status) = (crate::progress::RunOutcome::Completed, crate::runner::RunStatus::Passed);
+    (result.overall_stats.outcome, result.overall_stats.status) = (Some(outcome.key().into()), Some(status.key().into()));
+    ResultsFile::of("show-finished", &result)
+}
+
+/// The results file of a run that never finished (TODO 72's `--show-results`): `final_summary_report`'s two cycles, with their errors,
+/// saved after the second with the run going on, and by another build (`another_build`)
+pub fn results_file_never_finished() -> ResultsFile {
+    let mut result = run_with_errors();
+    stamped(&mut result);
+    result.metadata.build = Some(another_build());
+    result.overall_stats.in_progress = true;
+    ResultsFile::of("show-never-finished", &result)
+}
+
+/// `result` as a run started at 2026-11-02 14:03:07 +10:00 saves it: the start, the file's name and the run ID, which the clock and the OS
+/// give a run, fixed for a golden. Its build stays the one it has (`TestRunResult::new` gives this one).
+pub(crate) fn stamped(result: &mut TestRunResult) {
+    let metadata = &mut result.metadata;
+    (metadata.start_time, metadata.start_time_utc) = (1_793_592_187, "2026-11-02 04:03:07 UTC".to_string());
+    metadata.start_time_local = "2026-11-02 14:03:07 +10:00".to_string();
+    metadata.filename = "results/TMR_2026-11-02_14-03-07.json".to_string();
+    metadata.run_id = Some("5f0c3a9e81d24b7c9a6e0d13f2b84c57".to_string());
+}
+
+/// A build that isn't this one, as a results file records it: a commit with changes, by a nightly of 2026-10-21
+pub(crate) fn another_build() -> crate::results::BuildRecord {
+    crate::results::BuildRecord {
+        commit: "0d274ef9b6c1a3d5e7f8091a2b3c4d5e6f708192".to_string(),
+        dirty: true,
+        rustc: "rustc 1.101.0-nightly (1a2c4797e 2026-10-21)".to_string(),
+        profile: "release".to_string(),
+    }
 }

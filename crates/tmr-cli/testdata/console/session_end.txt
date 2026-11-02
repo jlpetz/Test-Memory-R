@@ -39,6 +39,7 @@ USAGE:
   tmr.exe --create-demo-configs              # Create demo configuration files
   tmr.exe --compare-results baseline.json current.json [output.json]
                                           # Compare two test results (here, or in results\)
+  tmr.exe --show-results results.json      # How a run ended, then its final summary (here, or in results\)
   tmr.exe --setup-large-pages              # Configure large pages for optimal performance
   tmr.exe --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt
   tmr.exe --calibrate-cache-ext            #   ...finer, around each tier's edge (preferred when both are saved)
@@ -147,6 +148,7 @@ LOGGING:
 RESULT COMPARISON:
   Test results are automatically saved as JSON files to results\
   Use --compare-results to analyze performance differences
+  Use --show-results to see a run's final summary again, and how the run ended
   Useful for memory overclocking and timing optimization
 
 Quick Usage Examples:

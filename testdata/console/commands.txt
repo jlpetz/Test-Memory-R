@@ -13,6 +13,7 @@ USAGE:
   tmr.exe --create-demo-configs              # Create demo configuration files
   tmr.exe --compare-results baseline.json current.json [output.json]
                                           # Compare two test results (here, or in results\)
+  tmr.exe --show-results results.json      # How a run ended, then its final summary (here, or in results\)
   tmr.exe --setup-large-pages              # Configure large pages for optimal performance
   tmr.exe --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt
   tmr.exe --calibrate-cache-ext            #   ...finer, around each tier's edge (preferred when both are saved)
@@ -121,6 +122,7 @@ LOGGING:
 RESULT COMPARISON:
   Test results are automatically saved as JSON files to results\
   Use --compare-results to analyze performance differences
+  Use --show-results to see a run's final summary again, and how the run ended
   Useful for memory overclocking and timing optimization
 
 Quick Usage Examples:
@@ -167,3 +169,9 @@ Per-Test Performance Changes:
   Step 3. Mem-StuckBit256_A - Duration: +0.0ms (+0.0%) =, Throughput: +0.0 MiB/s (+0.0%) =
 
 ✅ Comparison completed successfully
+## --show-results without its file: NotRun
+❌ Usage: tmr.exe --show-results <results.json>
+## --show-results of two files: NotRun
+❌ Usage: tmr.exe --show-results <results.json>
+## --show-results of a file that isn't there: NotRun
+❌ Couldn't show the results: Test result file does not exist: nowhere.json (looked in the current folder, <home>\results and <home>)

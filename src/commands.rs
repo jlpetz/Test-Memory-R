@@ -1,14 +1,19 @@
-//! The one-shot commands (TODO 29): `--help`, `--version`, `--create-demo-configs`, `--compare-results`, `--debug-topology`,
-//! `--show-topology`, `--setup-large-pages` and the calibrations. A session that is handed one returns it (`session::SessionEnd::Command`),
-//! past the parameters every session reads first (`core-priority=` types the topology the topology commands show); its caller runs it here,
-//! writing to a writer of its own. The CLI does, on the console; the window doesn't offer them.
+//! The one-shot commands (TODO 29): `--help`, `--version`, `--create-demo-configs`, `--compare-results`, `--show-results`,
+//! `--debug-topology`, `--show-topology`, `--setup-large-pages` and the calibrations. A session that is handed one returns it
+//! (`session::SessionEnd::Command`), past the parameters every session reads first (`core-priority=` types the topology the topology
+//! commands show); its caller runs it here, writing to a writer of its own. The CLI does, on the console; the window doesn't offer them.
 //!
 //! A calibration asks whether to save what it measured over what tmr-cfg.json holds. That question is the caller's to put: it passes
 //! `confirm`, which gets the question and says yes or no, unless the command line has answered it already (`--yes`, `--no-save`:
-//! `SaveChoice`).
+//! `SaveChoice`). `--show-results` ends with a run's final summary, a report whose tables the caller renders: it passes `text`, which gives
+//! the text it shows for an event, as for a run's (TODO 72).
 
 use std::io::{self, Write};
 
+use crate::frontend::{Event, Run};
+use crate::progress::{ErrorCounts, RunOutcome};
+use crate::reporting::models::FinalTestSummaryReport;
+use crate::results::{TestRunMetadata, TestRunResult};
 use crate::runner::RunStatus;
 
 /// A one-shot command, as the command line names it after the session's own parameters.
@@ -17,6 +22,8 @@ pub enum Command {
     DemoConfigs,
     /// `--compare-results <baseline.json> <current.json> [output.json]`: the command line, the exe's name first
     Compare(Vec<String>),
+    /// `--show-results <results.json>`: the command line, the exe's name first
+    ShowResults(Vec<String>),
     /// `--debug-topology`: every topology detector, alone and as Auto's cascade
     DebugTopology,
     /// `--show-topology`: each core's type, scheduling class, NUMA node and CPUs
@@ -39,6 +46,7 @@ impl Command {
             match args[1].as_str() {
                 "--create-demo-configs" => return Some(Command::DemoConfigs),
                 "--compare-results" => return Some(Command::Compare(args.to_vec())),
+                "--show-results" => return Some(Command::ShowResults(args.to_vec())),
                 "--debug-topology" => return Some(Command::DebugTopology),
                 "--show-topology" => return Some(Command::ShowTopology),
                 // --cache-latency and --ram-latency are no commands: they pick tests for the run
@@ -57,12 +65,16 @@ impl Command {
     }
 }
 
-/// Runs `command`, writing what it shows to `out`; a calibration asks `confirm` whether to save what it measured. Returns `Passed` when it
-/// did what it was asked, `NotRun` when it failed: exit statuses 0 and 2 (`RunStatus::exit_code`), as `--help` gives them.
-pub fn run(command: &Command, out: &mut dyn Write, confirm: &mut dyn FnMut(&str) -> bool) -> io::Result<RunStatus> {
+/// Runs `command`, writing what it shows to `out`; a calibration asks `confirm` whether to save what it measured, and `--show-results` has
+/// `text` give the final summary's text, the text the caller shows for that event at a run's end (the CLI's `transcript`). Returns
+/// `Passed` when it did what it was asked, `NotRun` when it failed: exit statuses 0 and 2 (`RunStatus::exit_code`), as `--help` gives them.
+pub fn run(
+    command: &Command, out: &mut dyn Write, confirm: &mut dyn FnMut(&str) -> bool, text: &dyn Fn(&Event) -> String,
+) -> io::Result<RunStatus> {
     match command {
         Command::DemoConfigs => return demo_configs(out),
         Command::Compare(args) => return compare(args, out),
+        Command::ShowResults(args) => return show_results(args, out, text),
         Command::DebugTopology => {
             writeln!(out, "🔍 Debugging CPU Topology Detection")?;
             crate::cpu_topology::debug_topology_detection(out)?;
@@ -115,6 +127,7 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  {} --create-demo-configs              # Create demo configuration files", program_name)?;
     writeln!(out, "  {} --compare-results baseline.json current.json [output.json]", program_name)?;
     writeln!(out, "                                          # Compare two test results (here, or in results\\)")?;
+    writeln!(out, "  {} --show-results results.json      # How a run ended, then its final summary (here, or in results\\)", program_name)?;
     writeln!(out, "  {} --setup-large-pages              # Configure large pages for optimal performance", program_name)?;
     writeln!(
         out,
@@ -251,6 +264,7 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "RESULT COMPARISON:")?;
     writeln!(out, "  Test results are automatically saved as JSON files to results\\")?;
     writeln!(out, "  Use --compare-results to analyze performance differences")?;
+    writeln!(out, "  Use --show-results to see a run's final summary again, and how the run ended")?;
     writeln!(out, "  Useful for memory overclocking and timing optimization")?;
     writeln!(out)?;
     usage(out, program_name)
@@ -381,6 +395,126 @@ fn compare(args: &[String], out: &mut dyn Write) -> io::Result<RunStatus> {
 
     writeln!(out, "✅ Comparison completed successfully")?;
     Ok(RunStatus::Passed)
+}
+
+/// A results file as `--show-results` shows it (TODO 72): how its run ended and which run it was, then the final summary the console
+/// showed at the run's end, from the file's figures, for a frontend to render as it renders a run's (`Run::FinalSummary`).
+#[derive(Clone, Debug)]
+pub struct SavedRun {
+    /// The lines before the summary: how the run ended (`ending`), then which run it was (`which_run`)
+    pub head: String,
+    pub summary: FinalTestSummaryReport,
+}
+
+/// The results file `file`, found as `--compare-results` finds one (as given, or by its name in TMR's home's `results\`, `home::find`), as
+/// `--show-results` shows it. Why it couldn't be read, otherwise.
+pub fn saved_run(file: &str) -> Result<SavedRun, String> {
+    let found = crate::home::find(file, &crate::home::results())
+        .map_err(|looked| format!("Test result file does not exist: {file} ({looked})"))?
+        .display()
+        .to_string();
+    let result = TestRunResult::load_from_file(&found).map_err(|e| format!("{found}: {e}"))?;
+    let summary = crate::reporting::converters::create_overall_stats_summary_report(&result);
+    Ok(SavedRun { head: head(&result, &summary), summary })
+}
+
+/// `--show-results`' lines before the summary, `summary` the run's
+fn head(result: &TestRunResult, summary: &FinalTestSummaryReport) -> String {
+    format!("{}\n{}", ending(result, summary.errors()), which_run(&result.metadata))
+}
+
+/// `--show-results <results.json>`, `args` the command line: how the run ended and which run it was, then its final summary, `text`'s text
+/// of it, as a run's end shows it.
+fn show_results(args: &[String], out: &mut dyn Write, text: &dyn Fn(&Event) -> String) -> io::Result<RunStatus> {
+    let [_, _, file] = args else {
+        writeln!(out, "❌ Usage: {} --show-results <results.json>", args[0])?;
+        return Ok(RunStatus::NotRun);
+    };
+    match saved_run(file) {
+        Ok(saved) => {
+            out.write_all(saved.head.as_bytes())?;
+            out.write_all(text(&Run::FinalSummary(Box::new(saved.summary)).into()).as_bytes())?;
+            Ok(RunStatus::Passed)
+        }
+        Err(e) => {
+            writeln!(out, "❌ Couldn't show the results: {e}")?;
+            Ok(RunStatus::NotRun)
+        }
+    }
+}
+
+/// How the run ended, `--show-results`' first line (TODO 72): from its final save, the outcome and the verdict, with `errors` when it
+/// failed or was interrupted, and its cycles, the last one cut short when it stopped partway (`CycleResult::partial`); or, the file still
+/// marked in progress, that it never finished, its figures those of its last saved cycle. A file from before the outcome was saved says
+/// only that it ended, and one whose keys this build doesn't know quotes them.
+fn ending(result: &TestRunResult, errors: ErrorCounts) -> String {
+    let stats = &result.overall_stats;
+    let cut_short = result.cycles.last().is_some_and(|cycle| cycle.partial);
+    let n = stats.cycles_completed;
+    if stats.in_progress {
+        let saved = match n {
+            0 => "no cycle saved".to_string(),
+            n if cut_short => format!("its figures are up to its last saved cycle, {n}, which was cut short"),
+            n => format!("its figures are up to its last saved cycle, {n}"),
+        };
+        return format!("⚠️  The run never finished: it was killed or crashed, unless it is still running; {saved}");
+    }
+    let cycles = match n {
+        0 => "0 cycles".to_string(),
+        1 if cut_short => "1 cycle, cut short".to_string(),
+        n if cut_short => format!("{n} cycles, the last cut short"),
+        1 => "1 cycle".to_string(),
+        n => format!("{n} cycles"),
+    };
+    let (outcome, status) = (stats.outcome.as_deref(), stats.status.as_deref());
+    let (how, verdict) = match (outcome.and_then(RunOutcome::from_key), status.and_then(RunStatus::from_key)) {
+        (Some(how), Some(verdict)) => (how, verdict),
+        _ if outcome.is_none() && status.is_none() => {
+            return format!("ℹ  The run ended, {cycles}: a results file this old doesn't say how, or its verdict");
+        }
+        _ => {
+            let given = |key: Option<&str>| key.map_or("none".to_string(), |key| format!("'{key}'"));
+            return format!(
+                "ℹ  The run ended, {cycles}, but this build can't say how: its file gives outcome {} and verdict {}",
+                given(outcome),
+                given(status)
+            );
+        }
+    };
+    let how = match how {
+        RunOutcome::Completed => "finished",
+        RunOutcome::TimeLimit => "ended at its time limit",
+        RunOutcome::Interrupted => "was stopped (Ctrl+C, or the window's Stop)",
+        RunOutcome::Halted => "halted on errors (errors=halt)",
+    };
+    let (icon, verdict) = match verdict {
+        RunStatus::Passed => ("✅ ", "passed".to_string()),
+        RunStatus::Failed => ("❌ ", format!("failed, {errors}")),
+        RunStatus::NotRun => ("⚠️  ", "no test ran".to_string()),
+        RunStatus::Interrupted => ("⚠️  ", format!("interrupted, {errors}")),
+    };
+    format!("{icon}The run {how}: {verdict}, {cycles}")
+}
+
+/// Which run the file is, `--show-results`' line after the first: its stem, which its log file's name shares, its start, its run ID and
+/// that this build wrote it; or, when another build did, two lines more: that build, and that the summary is laid out as this one lays it
+/// out.
+fn which_run(metadata: &TestRunMetadata) -> String {
+    let stem = std::path::Path::new(&metadata.filename).file_stem().and_then(|stem| stem.to_str()).unwrap_or(&metadata.filename);
+    let id = metadata.run_id.as_deref().map_or("no run ID".to_string(), |id| format!("run ID {id}"));
+    let this_build = crate::results::BuildRecord::from(crate::BUILD);
+    let mut text = format!("📄 {stem}, started {}, {id}", metadata.start_time_local);
+    if metadata.tmr_version == crate::BUILD.version && metadata.build.as_ref() == Some(&this_build) {
+        text += ", by this build\n";
+        return text;
+    }
+    let build = match &metadata.build {
+        Some(build) => build.describe(),
+        None => "from before results files recorded their build".to_string(),
+    };
+    text += &format!("\n⚠️  Not this build: TMR {}, {build}\n", metadata.tmr_version);
+    text += "   The summary below is laid out as this build lays it out, which may not be how that run's console showed it\n";
+    text
 }
 
 /// What a calibration does with what it measured, from its command line: asks (`confirm`), or, without asking, saves (`--yes`) or keeps
@@ -766,8 +900,9 @@ mod tests {
     }
 
     /// The commands that read and change nothing on this machine, as they write, each after a `## case` line with how it ended (TODO 29):
-    /// `--version`, `--help`, and `--compare-results` without its files, of one that isn't there, and of a results file with itself (its
-    /// time masked, and TMR's home, which is the test binary's folder). None asks a question.
+    /// `--version`, `--help`, `--compare-results` without its files, of one that isn't there, and of a results file with itself (its time
+    /// masked, and TMR's home, which is the test binary's folder), and `--show-results` without its file, with two, and of one that isn't
+    /// there (TODO 72; the CLI's golden has one shown). None asks a question, nor has an event rendered.
     #[test]
     fn commands_write_as_their_golden() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("result_files").join("before_todo_72.json");
@@ -781,12 +916,16 @@ mod tests {
                 Command::Compare(args(&["tmr.exe", "--compare-results", "nowhere.json", fixture])),
             ),
             ("--compare-results of a run with itself", Command::Compare(args(&["tmr.exe", "--compare-results", fixture, fixture]))),
+            ("--show-results without its file", Command::ShowResults(args(&["tmr.exe", "--show-results"]))),
+            ("--show-results of two files", Command::ShowResults(args(&["tmr.exe", "--show-results", fixture, fixture]))),
+            ("--show-results of a file that isn't there", Command::ShowResults(args(&["tmr.exe", "--show-results", "nowhere.json"]))),
         ];
         let mut no_question = |question: &str| -> bool { panic!("asked: {question}") };
+        let no_text = |_: &Event| -> String { panic!("an event rendered") };
         let mut text = String::new();
         for (case, command) in cases {
             let mut out = Vec::new();
-            let status = run(&command, &mut out, &mut no_question).unwrap();
+            let status = run(&command, &mut out, &mut no_question, &no_text).unwrap();
             let written = String::from_utf8(out).unwrap().replace(&crate::home::dir().display().to_string(), "<home>");
             let written: String = written
                 .split_inclusive('\n')
@@ -795,6 +934,68 @@ mod tests {
             text += &format!("## {case}: {status:?}\n{written}");
         }
         crate::test_support::check("commands", &text);
+    }
+
+    /// TODO 72: `--show-results`' lines before the summary, each case's after a `## case` line: how the run ended, each outcome with each
+    /// verdict it has, a last cycle cut short, a file saved mid-run, a file older than the outcome's record (the pre-TODO 72 fixture, which
+    /// has no build or run ID either), and keys this build doesn't know; then which run it was, by this build or not.
+    #[test]
+    fn the_first_lines_say_how_the_run_ended() {
+        use RunOutcome::{Completed, Halted, Interrupted, TimeLimit};
+
+        use crate::reporting::converters::create_overall_stats_summary_report;
+        use crate::test_support::{another_build, run_with_errors, stamped, summary};
+        // `cycles` sealed cycles of a clean step each
+        let clean = |cycles: u32| {
+            let mut result = TestRunResult::new(Default::default());
+            for cycle in 1..=cycles {
+                result.add_cycle(cycle, 30, vec![summary(1, 30_000, 30 << 30, 0)], Some(Default::default()), false);
+            }
+            result.finalize(std::time::Duration::from_secs(30 * u64::from(cycles)));
+            result
+        };
+        // `result` by this build, its last cycle cut short or not, saved at its end with how it `ended`, or, with none, mid-run
+        let saved = |mut result: TestRunResult, cut_short: bool, ended: Option<(RunOutcome, RunStatus)>| {
+            stamped(&mut result);
+            if let Some(last) = result.cycles.last_mut() {
+                last.partial = cut_short;
+            }
+            let stats = &mut result.overall_stats;
+            match ended {
+                Some((outcome, status)) => (stats.outcome, stats.status) = (Some(outcome.key().into()), Some(status.key().into())),
+                None => stats.in_progress = true,
+            }
+            result
+        };
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("result_files").join("before_todo_72.json");
+        let older = TestRunResult::load_from_file(fixture.to_str().unwrap()).unwrap();
+        let mut by_another = saved(clean(2), false, None);
+        by_another.metadata.build = Some(another_build());
+        let mut unknown = saved(clean(2), false, None);
+        (unknown.overall_stats.in_progress, unknown.overall_stats.outcome) = (false, Some("aborted".into()));
+        let cases = [
+            ("finished, passed", saved(clean(3), false, Some((Completed, RunStatus::Passed)))),
+            ("finished, failed", saved(run_with_errors(), false, Some((Completed, RunStatus::Failed)))),
+            ("finished, a cycle limit of 0", saved(clean(0), false, Some((Completed, RunStatus::NotRun)))),
+            ("at its time limit, one cycle", saved(clean(1), false, Some((TimeLimit, RunStatus::Passed)))),
+            ("at its time limit, failed", saved(run_with_errors(), false, Some((TimeLimit, RunStatus::Failed)))),
+            ("at a time limit of 0", saved(clean(0), false, Some((TimeLimit, RunStatus::NotRun)))),
+            ("stopped in its fourth cycle", saved(clean(4), true, Some((Interrupted, RunStatus::Interrupted)))),
+            ("stopped in its first cycle", saved(clean(1), true, Some((Interrupted, RunStatus::Interrupted)))),
+            ("stopped, with errors", saved(run_with_errors(), true, Some((Interrupted, RunStatus::Failed)))),
+            ("stopped before a test ran", saved(clean(0), false, Some((Interrupted, RunStatus::NotRun)))),
+            ("halted in its second cycle", saved(run_with_errors(), true, Some((Halted, RunStatus::Failed)))),
+            ("halted by its final seal check", saved(run_with_errors(), false, Some((Halted, RunStatus::Failed)))),
+            ("never finished, by another build", by_another),
+            ("never finished, its last saved cycle cut short", saved(run_with_errors(), true, None)),
+            ("older than the outcome's record", older),
+            ("keys this build doesn't know", unknown),
+        ];
+        let mut text = String::new();
+        for (case, result) in cases {
+            text += &format!("## {case}\n{}", head(&result, &create_overall_stats_summary_report(&result)));
+        }
+        crate::test_support::check("show_results_heads", &text);
     }
 
     /// A command is the first argument: each of its spellings names it, it takes the command line it needs, and anything else (a parameter,
@@ -814,6 +1015,9 @@ mod tests {
         assert!(matches!(parse(&line), Some(Command::Calibrate(given)) if given == args(&line)));
         let line = ["tmr.exe", "--compare-results", "a.json", "b.json"];
         assert!(matches!(parse(&line), Some(Command::Compare(given)) if given == args(&line)));
+        let line = ["tmr.exe", "--show-results", "a.json"];
+        assert!(matches!(parse(&line), Some(Command::ShowResults(given)) if given == args(&line)));
+        assert!(!crate::logfile::wanted(&args(&line)), "--show-results keeps no log file, as --compare-results");
         for none in [&["tmr.exe"][..], &["tmr.exe", "memory=50%", "--help"], &["tmr.exe", "--startup-debug"]] {
             assert!(parse(none).is_none(), "{none:?}");
         }
