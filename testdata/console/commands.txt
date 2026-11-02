@@ -153,6 +153,8 @@ Current:  2026-10-21 23:30:00 UTC (results/TMR_2026-10-22_10-30-00.json)
 
   ⚠️  Memory spec reproducibility  depends on free memory  ->  depends on free memory
 
+Plan Changes: none, the same 3 steps in both
+
 Overall Performance Changes:
   Runtime: +0 seconds (+0.0%)
   Throughput: +0.0 MiB/s (+0.0%)

@@ -142,3 +142,34 @@ however short its cycles. The file itself still grows with every cycle, by 0.17 
 ("pretty stays unless a long run's final file is large"). What counts as large, and the fallback
 if so (compact JSON, 58% smaller; or per-test aggregates instead of the thread rows), is the
 owner's decision (29-split-design.md, "Open for the owner").
+
+## 2026-11-02: `--compare-results` matches steps by test
+
+The owner: the main use is one machine before and after an overclock, machine to machine should
+work too; show what changed in the plan, then compare the matched tests. Before, steps matched by
+`(step, id, name)`: the position after left-out tests and the width-resolved name. A test left out
+on one machine (the 5700X) shifted every later step, a build that added a test to a plan did the
+same on one machine, an `-Auto` test never matched across widths, and what didn't match was
+skipped without a word.
+
+- **The key** (`run_context::compare_plans`): the test as its plan or config names it, before an
+  `-Auto` name resolves (`run_config.tests[].test`, new, required; `Mem-StuckBitAuto`), its config
+  id, and which of that test's runs in the cycle the step is (a TM5 `Test 1 x2`). Not the id
+  alone: ids are unique within one config only, and a TM5 import numbers its tests 0..N. With the
+  id in the key, one of an import's many `Mem-SimpleV2-Auto` tests disabled shifts none of the
+  others. The occurrence is what makes repeated names safe, why TODO 74 matched by position.
+- **The plan is `run_config.tests`**, one entry a step (entry i is step i + 1), which gains `test`,
+  `id` and `label`; a step's figures come from `per_step_averages` by its step in its own run. So a
+  run that stopped before a step still has it in its plan, and the comparison says it wasn't run.
+- **The output**: the run differences (`Config`, `Plan` and `Test filter` rows now, which warn);
+  then the plans' changes: the steps only in the baseline, only in the current (with
+  `tests_left_out`'s reason when that is why), and the settings that differ of the tests both have,
+  once a test, `SIMD width` for an `-Auto` test at two widths; then the overall changes, with a
+  caveat that the totals cover different work when the plans differ; then each matched step, at
+  its step in each run (`Step 4 -> 3`), with both names when they differ, `⛔ settings differ`, or
+  `not run in the current`. The per-test settings moved from `compare_config`'s run differences to
+  the plans' changes: they no longer make the whole comparison "not like for like", only their
+  tests. The window's Compare tab shows the same: the text, then the steps as a table with a note
+  column. The golden is `testdata/console/comparison.txt`.
+- **Files**: results files from before have no `test` and `label` in their plan and don't load
+  (the owner allows it, pre-stable). The pre-TODO 72 fixture gained them, one entry a step.

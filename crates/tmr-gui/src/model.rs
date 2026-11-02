@@ -959,7 +959,8 @@ pub enum Slot {
     Compared,
 }
 
-/// Two results files and what comparing them gave: the engine's comparison (`--compare-results`' text, its steps as a table), or why not
+/// Two results files and what comparing them gave: the engine's comparison (`--compare-results`' text, the plans' changes in it, and the
+/// steps both plans have as a table), or why not
 type Compared = ((PathBuf, PathBuf), Result<ResultsComparison, String>);
 
 /// The Compare tab (TODO 109): its two results files, the baseline first, and their comparison once both are chosen, run on a pool thread

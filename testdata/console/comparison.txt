@@ -1,0 +1,31 @@
+=== TMR Test Result Comparison ===
+Comparison Time: <time>
+Baseline: 2026-11-02 01:00:00 UTC (results/zen5.json)
+Current:  2026-11-02 01:00:00 UTC (results/zen3.json)
+
+⚠️  Run differences worth knowing about (none invalidate the comparison):
+
+  ⚠️  Config  anta777  ->  anta777 v2
+
+Plan Changes:
+  Only in the baseline:
+    Step 3. Mem-StuckBit512 (Test 2) - left out of the current run: width 512 needs AVX-512, which this CPU lacks
+  Only in the current:
+    Step 4. Mem-MovingInv (Test 4)
+  Settings that differ, so those tests' changes aren't like for like:
+    ⛔ Step 2. Mem-SimpleV2-256_A (Test 1): SIMD width  512 bits  ->  256 bits
+    ⛔ Step 3. Mem-SimpleV2-256_A (Test 3): SIMD width  512 bits  ->  256 bits
+
+Overall Performance Changes:
+  ⚠️  The plans differ (Plan Changes, above): these totals cover different work
+  Runtime: -1 seconds (-10.0%)
+  Throughput: +68.3 MiB/s (+11.1%)
+  Data Processed: +0.00 GiB
+  Errors: No change
+
+Per-Test Performance Changes:
+  Step 1. Seal-Check (Test 0) - Duration: +0.0ms (+0.0%) =, Throughput: +0.0 MiB/s (+0.0%) =
+  Step 2. Mem-SimpleV2-512_A (Test 1) -> Mem-SimpleV2-256_A (Test 1) - Duration: +171.0ms (+20.0%) ⬆, Throughput: -200.0 MiB/s (-16.7%) ⬇, ⛔ settings differ
+  Step 4 -> 3. Mem-SimpleV2-512_A (Test 3) -> Mem-SimpleV2-256_A (Test 3) - Duration: +147.0ms (+15.8%) ⬆, Throughput: -150.0 MiB/s (-13.6%) ⬇, ⛔ settings differ
+  Step 5. Seal-Check (Test 0) - Duration: +0.0ms (+0.0%) =, Throughput: +0.0 MiB/s (+0.0%) =
+  Step 6. Mem-SimpleV2-512_A (Test 1) -> Mem-SimpleV2-256_A (Test 1) - not run in the current: it stopped before it

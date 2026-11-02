@@ -319,7 +319,8 @@ fn save_demo_configs() -> Result<(), String> {
 }
 
 /// Two results files compared, for the window's Compare tab (TODO 109): `--compare-results`' text but for its steps' lines, which come as a
-/// table, each step's changes in its time, speed and errors.
+/// table, each step both plans have with its changes in its time, speed and errors. The text has what differs between the runs, the
+/// plans' changes (the steps only one has, the settings that differ of those both have) and the overall changes (TODO 72).
 #[derive(Clone, Debug)]
 pub struct ResultsComparison {
     pub text: String,
@@ -747,17 +748,19 @@ mod tests {
         args.iter().map(|a| a.to_string()).collect()
     }
 
-    /// TODO 109: the window's comparison is the command's text but for its steps' lines, which are a table, a row a step; a file that isn't
-    /// there says so
+    /// TODO 109: the window's comparison is the command's text but for its steps' lines, which are a table, a row a step; the plans'
+    /// changes are in the text (TODO 72); a file that isn't there says so
     #[test]
     fn a_comparison_for_the_window_has_its_steps_as_a_table() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("result_files").join("before_todo_72.json");
         let fixture = fixture.to_str().unwrap();
         let comparison = compare_results(fixture, fixture).expect("a run with itself");
         assert!(comparison.text.starts_with("=== TMR Test Result Comparison ==="), "{}", comparison.text);
+        assert!(comparison.text.contains("\nPlan Changes: none, the same 3 steps in both\n"), "{}", comparison.text);
         assert!(!comparison.text.contains("Per-Test Performance Changes"), "the steps are the table's: {}", comparison.text);
-        assert!(!comparison.per_test.rows.is_empty(), "a row a step");
-        assert!(comparison.per_test.rows.iter().all(|row| row[2] == "+0.0 s" && row[6] == "+0"), "{:?}", comparison.per_test.rows);
+        assert_eq!(comparison.per_test.rows.len(), 3, "a row a step");
+        let unchanged = |row: &Vec<String>| row[2] == "+0.0 s" && row[6] == "+0" && row[7].is_empty();
+        assert!(comparison.per_test.rows.iter().all(unchanged), "{:?}", comparison.per_test.rows);
         let missing = compare_results("nowhere.json", fixture).expect_err("no such file");
         assert!(missing.starts_with("Test result file does not exist: nowhere.json"), "{missing}");
     }

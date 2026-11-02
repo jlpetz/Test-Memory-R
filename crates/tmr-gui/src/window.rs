@@ -1093,7 +1093,8 @@ impl Window {
     }
 
     /// The Compare tab (TODO 109): the baseline and the run to compare with it, each chosen in the Open dialog or the run's own results
-    /// file, both at once, swapped; then their comparison, as `--compare-results` gives it, its steps as a table
+    /// file, both at once, swapped; then their comparison, as `--compare-results` gives it: what differs between the runs, the plans'
+    /// changes (TODO 72: the steps only one has, the settings that differ) and the overall changes, then the steps both have as a table
     fn compare_card(&self, row: i32, context: &ViewContext<Self>) -> View {
         let p = self.palette();
         let tab = &self.model.compare;

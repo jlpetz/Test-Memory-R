@@ -115,7 +115,9 @@
     "calibration": null,
     "tests": [
       {
+        "test": "Mem-StuckBitAuto",
         "name": "Mem-StuckBit256_A",
+        "label": "Mem-StuckBit256_A",
         "function": "Mem-StuckBit256",
         "extent_mode": "",
         "chunk_mode": "",
@@ -132,8 +134,29 @@
         "skip_init": false
       },
       {
+        "test": "Lat-L1-Read",
         "name": "Lat-L1-Read",
+        "label": "Lat-L1-Read",
         "function": "Lat-L1-Read",
+        "extent_mode": "",
+        "chunk_mode": "",
+        "extent_bytes": 0,
+        "chunk_bytes": 0,
+        "chunks": 0,
+        "overlap_bytes": 0,
+        "verify_reps": 0,
+        "test_reps": 0,
+        "write_read_cycles": 0,
+        "pattern_mode": null,
+        "program": null,
+        "flush_before_verify": false,
+        "skip_init": false
+      },
+      {
+        "test": "Mem-StuckBitAuto",
+        "name": "Mem-StuckBit256_A",
+        "label": "Mem-StuckBit256_A",
+        "function": "Mem-StuckBit256",
         "extent_mode": "",
         "chunk_mode": "",
         "extent_bytes": 0,

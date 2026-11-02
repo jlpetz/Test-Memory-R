@@ -364,7 +364,11 @@ pub struct TestComparison {
     pub baseline: TestRunMetadata,
     pub current: TestRunMetadata,
     pub comparison_time: String,
+    /// What differs between the two runs' plans, their steps matched by test (`run_context::compare_plans`): the steps only one has, and
+    /// the settings that differ of the tests both have. When they differ, the overall figures cover different work.
+    pub plan_changes: crate::run_context::PlanChanges,
     pub overall_comparison: OverallComparison,
+    /// The steps both plans have, in the current run's order
     pub per_test_comparisons: Vec<TestComparisonResult>,
     /// Hardware and configuration differences between the two runs (TODO #67). Non-empty means the percentages above are at least partly
     /// explained by something other than a code change; any entry with `invalidates` set means they cannot be attributed at all.
@@ -381,19 +385,107 @@ pub struct OverallComparison {
     pub errors_diff: i64,
 }
 
+/// A step both plans have (`run_context::compare_plans`), and how its figures changed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestComparisonResult {
-    pub step: usize,
+    /// What matched the two steps: the test as the plans name it, its config id, and which of its runs in the cycle this is, from 1
+    pub test: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    pub name: String,
+    pub occurrence: usize,
+    /// The step in each run, and its name there: an `-Auto` test's names the width it ran at
+    pub baseline_step: usize,
+    pub step: usize,
+    pub baseline_label: String,
     pub label: String,
+    /// The test's settings differ between the runs (`TestComparison::plan_changes`), so its changes aren't like for like
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub settings_differ: bool,
+    /// The cycles each run ran it in: 0 in a run that stopped before it ever ran
+    pub baseline_runs: u64,
+    pub runs: u64,
+    /// How its figures changed, when both runs ran it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changes: Option<StepChanges>,
+}
+
+/// How a step's averages changed from the baseline's (`TestComparisonResult::changes`)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepChanges {
     pub duration_diff_ms: i128,
     pub duration_diff_percent: f64,
     pub throughput_diff_mib_s: f64,
     pub throughput_diff_percent: f64,
     pub bytes_diff: i64,
     pub errors_diff: i64,
+}
+
+impl TestComparisonResult {
+    /// Its step in each run, once when they're the same: `3`, or `3 -> 2` after a test one run left out
+    fn steps(&self) -> String {
+        if self.baseline_step == self.step { self.step.to_string() } else { format!("{} -> {}", self.baseline_step, self.step) }
+    }
+
+    /// Its name in each run, once when they're the same: an `-Auto` test at two widths has two
+    fn labels(&self) -> String {
+        if self.baseline_label == self.label { self.label.clone() } else { format!("{} -> {}", self.baseline_label, self.label) }
+    }
+
+    /// Which run didn't run it, when one didn't (`changes` is `None`): it stopped first
+    fn not_run(&self) -> String {
+        match (self.baseline_runs, self.runs) {
+            (0, 0) => "run in neither: both stopped before it".to_string(),
+            (0, _) => "not run in the baseline: it stopped before it".to_string(),
+            _ => "not run in the current: it stopped before it".to_string(),
+        }
+    }
+
+    /// Its line's figures: its time and speed's changes, and its errors' when they changed, with a note when its settings differ; or which
+    /// run didn't run it
+    fn changes_text(&self) -> String {
+        let Some(changes) = &self.changes else { return self.not_run() };
+        let arrow = |change: f64| {
+            if change > 0.0 {
+                "⬆"
+            } else if change < 0.0 {
+                "⬇"
+            } else {
+                "="
+            }
+        };
+        format!(
+            "Duration: {}{:.1}ms ({:+.1}%) {}, Throughput: {:+.1} MiB/s ({:+.1}%) {}{}{}",
+            if changes.duration_diff_ms >= 0 { "+" } else { "" },
+            changes.duration_diff_ms as f64,
+            changes.duration_diff_percent,
+            arrow(changes.duration_diff_ms as f64),
+            changes.throughput_diff_mib_s,
+            changes.throughput_diff_percent,
+            arrow(changes.throughput_diff_mib_s),
+            if changes.errors_diff != 0 { format!(", Errors: {:+}", changes.errors_diff) } else { String::new() },
+            if self.settings_differ { ", ⛔ settings differ" } else { "" }
+        )
+    }
+}
+
+impl StepChanges {
+    /// From the baseline's averages `b` to the current's `c`
+    fn between(b: &TestAverage, c: &TestAverage) -> Self {
+        let duration_diff_ms = c.avg_duration_ms as i128 - b.avg_duration_ms as i128;
+        let throughput_diff_mib_s = c.avg_throughput_mib_s - b.avg_throughput_mib_s;
+        StepChanges {
+            duration_diff_ms,
+            duration_diff_percent: if b.avg_duration_ms > 0 { (duration_diff_ms as f64 / b.avg_duration_ms as f64) * 100.0 } else { 0.0 },
+            throughput_diff_mib_s,
+            throughput_diff_percent: if b.avg_throughput_mib_s > 0.0 {
+                (throughput_diff_mib_s / b.avg_throughput_mib_s) * 100.0
+            } else {
+                0.0
+            },
+            bytes_diff: c.avg_bytes_processed as i64 - b.avg_bytes_processed as i64,
+            errors_diff: c.total_errors as i64 - b.total_errors as i64,
+        }
+    }
 }
 
 impl TestRunResult {
@@ -784,145 +876,105 @@ impl TestRunResult {
     }
 }
 
+/// The results files `baseline_path` and `current_path` compared (`TestComparison::of`), or why they couldn't be read.
 pub fn compare_test_results(baseline_path: &str, current_path: &str) -> Result<TestComparison, String> {
     let baseline = TestRunResult::load_from_file(baseline_path)?;
     let current = TestRunResult::load_from_file(current_path)?;
-
-    let comparison_time = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
-
-    // Overall comparison
-    let runtime_diff_secs = current.overall_stats.total_runtime_secs as i64 - baseline.overall_stats.total_runtime_secs as i64;
-    let runtime_diff_percent = if baseline.overall_stats.total_runtime_secs > 0 {
-        (runtime_diff_secs as f64 / baseline.overall_stats.total_runtime_secs as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    let throughput_diff_mib_s = current.overall_stats.overall_throughput_mib_s - baseline.overall_stats.overall_throughput_mib_s;
-    let throughput_diff_percent = if baseline.overall_stats.overall_throughput_mib_s > 0.0 {
-        (throughput_diff_mib_s / baseline.overall_stats.overall_throughput_mib_s) * 100.0
-    } else {
-        0.0
-    };
-
-    let overall_comparison = OverallComparison {
-        runtime_diff_secs,
-        runtime_diff_percent,
-        throughput_diff_mib_s,
-        throughput_diff_percent,
-        data_processed_diff_gib: current.overall_stats.total_data_processed_gib - baseline.overall_stats.total_data_processed_gib,
-        errors_diff: current.overall_stats.total_errors as i64 - baseline.overall_stats.total_errors as i64,
-    };
-
-    // Per-step comparisons: a step matches the baseline's step at the same position running the same test (TODO 74), so a test that runs
-    // twice is compared twice
-    let mut per_test_comparisons = Vec::new();
-    let baseline_tests: HashMap<(usize, Option<String>, String), &TestAverage> =
-        baseline.overall_stats.per_step_averages.iter().map(|t| ((t.step, t.id.clone(), t.name.clone()), t)).collect();
-
-    for current_test in &current.overall_stats.per_step_averages {
-        if let Some(baseline_test) = baseline_tests.get(&(current_test.step, current_test.id.clone(), current_test.name.clone())) {
-            let duration_diff_ms = current_test.avg_duration_ms as i128 - baseline_test.avg_duration_ms as i128;
-            let duration_diff_percent = if baseline_test.avg_duration_ms > 0 {
-                (duration_diff_ms as f64 / baseline_test.avg_duration_ms as f64) * 100.0
-            } else {
-                0.0
-            };
-
-            let throughput_diff_mib_s = current_test.avg_throughput_mib_s - baseline_test.avg_throughput_mib_s;
-            let throughput_diff_percent = if baseline_test.avg_throughput_mib_s > 0.0 {
-                (throughput_diff_mib_s / baseline_test.avg_throughput_mib_s) * 100.0
-            } else {
-                0.0
-            };
-
-            per_test_comparisons.push(TestComparisonResult {
-                step: current_test.step,
-                id: current_test.id.clone(),
-                name: current_test.name.clone(),
-                label: current_test.label.clone(),
-                duration_diff_ms,
-                duration_diff_percent,
-                throughput_diff_mib_s,
-                throughput_diff_percent,
-                bytes_diff: current_test.avg_bytes_processed as i64 - baseline_test.avg_bytes_processed as i64,
-                errors_diff: current_test.total_errors as i64 - baseline_test.total_errors as i64,
-            });
-        }
-    }
-
-    // A file saved mid-run first (TODO 72): its figures are only the cycles that had finished, of a run that was killed or lost, or is
-    // still going. Then identity, then configuration: a hardware change is the more fundamental explanation, and on a new machine the
-    // config differences are usually downstream of it.
-    let mut run_differences = Vec::new();
-    if baseline.overall_stats.in_progress || current.overall_stats.in_progress {
-        let saved = |stats: &OverallStats| {
-            let state = if stats.in_progress { "saved mid-run" } else { "finished" };
-            let cycles = stats.cycles_completed;
-            format!("{state} after {cycles} cycle{}", if cycles == 1 { "" } else { "s" })
-        };
-        run_differences.push(crate::run_context::RunDifference::new(
-            "Results file",
-            saved(&baseline.overall_stats),
-            saved(&current.overall_stats),
-            false,
-        ));
-    }
-    run_differences.extend(crate::run_context::compare_identity(&baseline.identity, &current.identity));
-    run_differences.extend(crate::run_context::compare_config(&baseline.run_config, &current.run_config));
-
-    Ok(TestComparison {
-        baseline: baseline.metadata,
-        current: current.metadata,
-        comparison_time,
-        overall_comparison,
-        per_test_comparisons,
-        run_differences,
-    })
+    Ok(TestComparison::of(baseline, current))
 }
 
 impl TestComparison {
-    /// `--compare-results`' text: its head (`head_text`), then a line a step
+    /// Two runs compared: what differs between them, their plans' changes, then their overall figures' changes and those of each step both
+    /// plans have, matched by test (`run_context::compare_plans`).
+    pub fn of(baseline: TestRunResult, current: TestRunResult) -> Self {
+        let comparison_time = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+
+        let (b, c) = (&baseline.overall_stats, &current.overall_stats);
+        let runtime_diff_secs = c.total_runtime_secs as i64 - b.total_runtime_secs as i64;
+        let throughput_diff_mib_s = c.overall_throughput_mib_s - b.overall_throughput_mib_s;
+        let overall_comparison = OverallComparison {
+            runtime_diff_secs,
+            runtime_diff_percent: if b.total_runtime_secs > 0 {
+                (runtime_diff_secs as f64 / b.total_runtime_secs as f64) * 100.0
+            } else {
+                0.0
+            },
+            throughput_diff_mib_s,
+            throughput_diff_percent: if b.overall_throughput_mib_s > 0.0 {
+                (throughput_diff_mib_s / b.overall_throughput_mib_s) * 100.0
+            } else {
+                0.0
+            },
+            data_processed_diff_gib: c.total_data_processed_gib - b.total_data_processed_gib,
+            errors_diff: c.total_errors as i64 - b.total_errors as i64,
+        };
+
+        // Each step both plans have, matched by test, with its figures from each run's averages for its step there: a run that stopped
+        // before a step has none for it, or none that ran
+        let (plan_changes, matched) = crate::run_context::compare_plans(&baseline.run_config, &current.run_config);
+        let per_test_comparisons = matched
+            .into_iter()
+            .map(|m| {
+                let was = b.per_step_averages.iter().find(|a| a.step == m.baseline_step);
+                let is = c.per_step_averages.iter().find(|a| a.step == m.step);
+                let (baseline_runs, runs) = (was.map_or(0, |a| a.runs), is.map_or(0, |a| a.runs));
+                TestComparisonResult {
+                    baseline_runs,
+                    runs,
+                    changes: was.zip(is).filter(|_| baseline_runs > 0 && runs > 0).map(|(was, is)| StepChanges::between(was, is)),
+                    test: m.test,
+                    id: m.id,
+                    occurrence: m.occurrence,
+                    baseline_step: m.baseline_step,
+                    step: m.step,
+                    baseline_label: m.baseline_label,
+                    label: m.label,
+                    settings_differ: m.settings_differ,
+                }
+            })
+            .collect();
+
+        // A file saved mid-run first (TODO 72): its figures are only the cycles that had finished, of a run that was killed or lost, or is
+        // still going. Then identity, then configuration: a hardware change is the more fundamental explanation, and on a new machine the
+        // config differences are usually downstream of it.
+        let mut run_differences = Vec::new();
+        if b.in_progress || c.in_progress {
+            let saved = |stats: &OverallStats| {
+                let state = if stats.in_progress { "saved mid-run" } else { "finished" };
+                let cycles = stats.cycles_completed;
+                format!("{state} after {cycles} cycle{}", if cycles == 1 { "" } else { "s" })
+            };
+            run_differences.push(crate::run_context::RunDifference::new("Results file", saved(b), saved(c), false));
+        }
+        run_differences.extend(crate::run_context::compare_identity(&baseline.identity, &current.identity));
+        run_differences.extend(crate::run_context::compare_config(&baseline.run_config, &current.run_config));
+
+        TestComparison {
+            baseline: baseline.metadata,
+            current: current.metadata,
+            comparison_time,
+            plan_changes,
+            overall_comparison,
+            per_test_comparisons,
+            run_differences,
+        }
+    }
+
+    /// `--compare-results`' text: its head (`head_text`), then a line for each step both plans have
     pub fn to_text_report(&self) -> String {
         let mut report = self.head_text();
         if !self.per_test_comparisons.is_empty() {
             report.push_str("Per-Test Performance Changes:\n");
             for test in &self.per_test_comparisons {
-                let duration_symbol = if test.duration_diff_ms < 0 {
-                    "⬇"
-                } else if test.duration_diff_ms > 0 {
-                    "⬆"
-                } else {
-                    "="
-                };
-                let throughput_symbol = if test.throughput_diff_mib_s > 0.0 {
-                    "⬆"
-                } else if test.throughput_diff_mib_s < 0.0 {
-                    "⬇"
-                } else {
-                    "="
-                };
-
-                report.push_str(&format!(
-                    "  Step {}. {} - Duration: {}{:.1}ms ({:+.1}%) {}, Throughput: {:+.1} MiB/s ({:+.1}%) {}{}\n",
-                    test.step,
-                    test.label,
-                    if test.duration_diff_ms >= 0 { "+" } else { "" },
-                    test.duration_diff_ms as f64,
-                    test.duration_diff_percent,
-                    duration_symbol,
-                    test.throughput_diff_mib_s,
-                    test.throughput_diff_percent,
-                    throughput_symbol,
-                    if test.errors_diff != 0 { format!(", Errors: {:+}", test.errors_diff) } else { String::new() }
-                ));
+                report.push_str(&format!("  Step {}. {} - {}\n", test.steps(), test.labels(), test.changes_text()));
             }
         }
 
         report
     }
 
-    /// The comparison's text before its steps' lines: the two runs, what differs between them, and the overall changes
+    /// The comparison's text before its steps' lines: the two runs, what differs between them, their plans' changes, and the overall
+    /// changes
     pub fn head_text(&self) -> String {
         let mut report = String::new();
 
@@ -937,8 +989,12 @@ impl TestComparison {
         // Deliberately placed *before* the numbers: the whole point of TODO #67 was that a reader who sees "+20% faster" first has already
         // drawn a conclusion by the time they reach a caveat at the bottom.
         report.push_str(&crate::run_context::render_differences(&self.run_differences));
+        report.push_str(&self.plan_text());
 
         report.push_str("Overall Performance Changes:\n");
+        if self.plan_changes.differ() {
+            report.push_str("  ⚠️  The plans differ (Plan Changes, above): these totals cover different work\n");
+        }
         report.push_str(&format!(
             "  Runtime: {}{} seconds ({:+.1}%)\n",
             if self.overall_comparison.runtime_diff_secs >= 0 { "+" } else { "" },
@@ -967,7 +1023,40 @@ impl TestComparison {
         report
     }
 
-    /// The steps' changes as a table (TODO 109), the window's form of the text's lines: each step's time and speed, and its errors'
+    /// The plans' changes (`PlanChanges`): the steps only one run has, with what its CPU lacks when the other left one out, and the
+    /// settings that differ of the tests both have; one line when there are none
+    fn plan_text(&self) -> String {
+        let plan = &self.plan_changes;
+        if !plan.differ() {
+            return format!("Plan Changes: none, the same {} step{} in both\n\n", plan.matched, if plan.matched == 1 { "" } else { "s" });
+        }
+        let mut text = String::from("Plan Changes:\n");
+        let only_in = |text: &mut String, run: &str, other: &str, steps: &[crate::run_context::UnmatchedStep]| {
+            if !steps.is_empty() {
+                text.push_str(&format!("  Only in the {run}:\n"));
+            }
+            for step in steps {
+                let why = step.left_out.as_ref().map_or(String::new(), |why| format!(" - left out of the {other} run: {why}"));
+                text.push_str(&format!("    Step {}. {}{why}\n", step.step, step.label));
+            }
+        };
+        only_in(&mut text, "baseline", "current", &plan.only_in_baseline);
+        only_in(&mut text, "current", "baseline", &plan.only_in_current);
+        if !plan.settings.is_empty() {
+            text.push_str("  Settings that differ, so those tests' changes aren't like for like:\n");
+            for change in &plan.settings {
+                text.push_str(&format!(
+                    "    ⛔ Step {}. {}: {}  {}  ->  {}\n",
+                    change.step, change.label, change.setting, change.baseline, change.current
+                ));
+            }
+        }
+        text.push('\n');
+        text
+    }
+
+    /// The steps' changes as a table (TODO 109), the window's form of the text's lines: each step's time and speed, and its errors', with
+    /// a note for a test whose settings differ or one a run didn't run
     pub fn per_test_table(&self) -> crate::reporting::models::TableData {
         use crate::reporting::models::{ColumnAlignment, TableData};
         let table = TableData::new()
@@ -978,17 +1067,26 @@ impl TestComparison {
             .add_header("", ColumnAlignment::Right)
             .add_header("MiB/s", ColumnAlignment::Right)
             .add_header("", ColumnAlignment::Right)
-            .add_header("Errors", ColumnAlignment::Right);
+            .add_header("Errors", ColumnAlignment::Right)
+            .add_header("", ColumnAlignment::Left);
         self.per_test_comparisons.iter().fold(table, |table, test| {
-            table.add_row(vec![
-                test.step.to_string(),
-                test.label.clone(),
-                format!("{:+.1} s", test.duration_diff_ms as f64 / 1000.0),
-                format!("{:+.1}%", test.duration_diff_percent),
-                format!("{:+.0}", test.throughput_diff_mib_s),
-                format!("{:+.1}%", test.throughput_diff_percent),
-                format!("{:+}", test.errors_diff),
-            ])
+            let (steps, labels) = (test.steps(), test.labels());
+            table.add_row(match &test.changes {
+                Some(changes) => vec![
+                    steps,
+                    labels,
+                    format!("{:+.1} s", changes.duration_diff_ms as f64 / 1000.0),
+                    format!("{:+.1}%", changes.duration_diff_percent),
+                    format!("{:+.0}", changes.throughput_diff_mib_s),
+                    format!("{:+.1}%", changes.throughput_diff_percent),
+                    format!("{:+}", changes.errors_diff),
+                    if test.settings_differ { "⛔ settings differ".to_string() } else { String::new() },
+                ],
+                None => {
+                    let none = || "-".to_string();
+                    vec![steps, labels, none(), String::new(), none(), String::new(), none(), test.not_run()]
+                }
+            })
         })
     }
 
@@ -1109,7 +1207,8 @@ mod tests {
 
     /// A results file as TMR wrote it before TODO 72's fields (`testdata/result_files/before_todo_72.json`): two sealed cycles of three
     /// steps, a latency step among them, with errors, failing bits, the seal's work and a WHEA event; its identity and config mostly empty.
-    /// Its text, and as loaded.
+    /// But for its plan: a step's entry there has its test and label since 2026-11-02, which `--compare-results` matches steps by and a
+    /// file must have (the owner: an older file need not load), so the fixture's has them, one entry a step. Its text, and as loaded.
     fn written_before_todo_72() -> (String, TestRunResult) {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("result_files").join("before_todo_72.json");
         let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
@@ -1117,8 +1216,8 @@ mod tests {
         (text, result)
     }
 
-    /// A results file written before TODO 72 still loads, and reads as a finished run of whole cycles by an unknown build, with no thread
-    /// records or operations; the final summary renders from it as from a new one.
+    /// A results file written before TODO 72 (but for its plan's tests, `written_before_todo_72`) still loads, and reads as a finished run
+    /// of whole cycles by an unknown build, with no thread records or operations; the final summary renders from it as from a new one.
     #[test]
     fn a_results_file_written_before_todo_72_still_loads() {
         let (text, result) = written_before_todo_72();
@@ -1260,6 +1359,312 @@ mod tests {
         assert!(report.find("Results file").unwrap() < report.find("Overall Performance Changes").unwrap(), "{report}");
         let both_finished = compare_test_results(&baseline, &baseline).unwrap();
         assert!(both_finished.run_differences.iter().all(|d| d.field != "Results file"));
+    }
+
+    /// A step of a plan, for the comparisons' tests: the test as its plan or config names it, its config id, the name it ran as, the width
+    /// an `-Auto` test took, and its speed in MiB/s
+    #[derive(Clone, Copy)]
+    struct Planned {
+        test: &'static str,
+        id: Option<&'static str>,
+        name: &'static str,
+        width: Option<u32>,
+        mib_s: f64,
+    }
+
+    /// `test`, named for its width or with none, at `mib_s`
+    fn planned(test: &'static str, mib_s: f64) -> Planned {
+        Planned { test, id: None, name: test, width: None, mib_s }
+    }
+
+    /// The `-Auto` test `test`, resolved at `width` to `name`
+    fn auto(test: &'static str, name: &'static str, width: u32, mib_s: f64) -> Planned {
+        Planned { name, width: Some(width), ..planned(test, mib_s) }
+    }
+
+    /// A TM5 import's test `id`, `test` run as `name`
+    fn tm5(test: &'static str, name: &'static str, id: &'static str, mib_s: f64) -> Planned {
+        Planned { name, id: Some(id), ..planned(test, mib_s) }
+    }
+
+    /// A finished run of `file` (`results/<file>.json`): one cycle of `steps`, each 1 GiB at its speed, and its plan, with `left_out` the
+    /// tests it left out, by name and why. Its memory spec is deterministic and its start fixed, so two runs differ only as given.
+    fn run_of(file: &str, steps: &[Planned], left_out: &[(&str, &str)]) -> TestRunResult {
+        use crate::run_context::{LeftOutTest, MemorySnapshot, RunConfigSnapshot, TestConfigSnapshot};
+        let label = |p: &Planned| p.id.map_or(p.name.to_string(), |id| format!("{} (Test {id})", p.name));
+        let tests = steps.iter().map(|p| TestConfigSnapshot {
+            test: p.test.to_string(),
+            id: p.id.map(str::to_string),
+            name: p.name.to_string(),
+            label: label(p),
+            function: p.name.trim_end_matches("_A").to_string(),
+            simd_width_bits: p.width,
+            ..Default::default()
+        });
+        let mut result = TestRunResult::new(RunConfigSnapshot {
+            memory: MemorySnapshot { spec_is_deterministic: true, ..Default::default() },
+            tests: tests.collect(),
+            tests_left_out: left_out.iter().map(|&(name, reason)| LeftOutTest { name: name.into(), reason: reason.into() }).collect(),
+            ..Default::default()
+        });
+        (result.metadata.filename, result.metadata.start_time_utc) = (format!("results/{file}.json"), "2026-11-02 01:00:00 UTC".into());
+        let summaries = steps.iter().enumerate().map(|(at, p)| {
+            let ms = 1024.0 / p.mib_s * 1000.0;
+            TestSummary {
+                id: p.id.map(str::to_string),
+                name: p.name.to_string(),
+                label: label(p),
+                timed_ms: ms,
+                throughput_mib_s: p.mib_s,
+                ..summary(at + 1, ms as u128, 1 << 30, 0)
+            }
+        });
+        result.add_cycle(1, 10, summaries.collect(), None, false);
+        result.finalize(std::time::Duration::from_secs(10));
+        result
+    }
+
+    /// Each matched step of a comparison: its step in each run, and what matched them
+    fn matched(comparison: &TestComparison) -> Vec<(usize, usize, &str, Option<&str>, usize)> {
+        let steps = comparison.per_test_comparisons.iter();
+        steps.map(|t| (t.baseline_step, t.step, t.test.as_str(), t.id.as_deref(), t.occurrence)).collect()
+    }
+
+    /// Each step only one plan has, with why the other left it out
+    fn only_in(steps: &[crate::run_context::UnmatchedStep]) -> Vec<(usize, &str, Option<&str>)> {
+        steps.iter().map(|s| (s.step, s.label.as_str(), s.left_out.as_deref())).collect()
+    }
+
+    /// TODO 72: one machine before and after an overclock runs one plan, so each step matches its own at its own step, and only the
+    /// figures change: no plan changes, and the totals are like for like.
+    #[test]
+    fn a_comparison_of_one_plan_matches_each_step_to_its_own() {
+        let plan = |speed: f64| [planned("Mem-StuckBit256", 1000.0 * speed), planned("Mem-MovingInv", 2000.0 * speed)];
+        let comparison = TestComparison::of(run_of("before", &plan(1.0), &[]), run_of("after", &plan(1.1), &[]));
+        assert!(!comparison.plan_changes.differ(), "{:?}", comparison.plan_changes);
+        assert_eq!(matched(&comparison), [(1, 1, "Mem-StuckBit256", None, 1), (2, 2, "Mem-MovingInv", None, 1)]);
+        assert!(comparison.per_test_comparisons.iter().all(|t| !t.settings_differ && (t.baseline_runs, t.runs) == (1, 1)));
+        let changes = comparison.per_test_comparisons[1].changes.as_ref().expect("both ran it");
+        assert!((changes.throughput_diff_percent - 10.0).abs() < 1e-9, "{changes:?}");
+        let report = comparison.to_text_report();
+        assert!(report.contains("\nPlan Changes: none, the same 2 steps in both\n\nOverall Performance Changes:\n  Runtime"), "{report}");
+        assert!(
+            report.contains("\n  Step 2. Mem-MovingInv - Duration: -47.0ms (-9.2%) ⬇, Throughput: +200.0 MiB/s (+10.0%) ⬆\n"),
+            "{report}"
+        );
+    }
+
+    /// TODO 72: a test one run left out (a CPU without AVX-512) is only in the other's plan, with why, and shifts no other test: the steps
+    /// after it match their own a step earlier, where by position none of them matched, and nothing said so.
+    #[test]
+    fn a_test_one_run_left_out_shifts_no_other() {
+        const LACKS: &str = "width 512 needs AVX-512, which this CPU lacks";
+        let all = [
+            planned("Mem-StuckBit256", 1000.0),
+            planned("Mem-StuckBit512", 1500.0),
+            planned("Mem-MovingInv", 2000.0),
+            planned("Mem-Stride", 900.0),
+        ];
+        let without_512 = [all[0], all[2], all[3]];
+        let comparison = TestComparison::of(run_of("avx512", &all, &[]), run_of("avx2", &without_512, &[("Mem-StuckBit512", LACKS)]));
+        let plan = &comparison.plan_changes;
+        assert_eq!(only_in(&plan.only_in_baseline), [(2, "Mem-StuckBit512", Some(LACKS))]);
+        assert!(plan.only_in_current.is_empty() && plan.settings.is_empty(), "{plan:?}");
+        assert_eq!(matched(&comparison), [
+            (1, 1, "Mem-StuckBit256", None, 1),
+            (3, 2, "Mem-MovingInv", None, 1),
+            (4, 3, "Mem-Stride", None, 1)
+        ]);
+        assert!(comparison.per_test_comparisons.iter().all(|t| t.changes.as_ref().is_some_and(|c| c.throughput_diff_mib_s == 0.0)));
+        let report = comparison.to_text_report();
+        for line in [
+            "\nPlan Changes:\n  Only in the baseline:\n    Step 2. Mem-StuckBit512 - left out of the current run: width 512 needs AVX-512, \
+             which this CPU lacks\n\n",
+            "\nOverall Performance Changes:\n  ⚠️  The plans differ (Plan Changes, above): these totals cover different work\n",
+            "\n  Step 3 -> 2. Mem-MovingInv - Duration: +0.0ms (+0.0%) =, Throughput: +0.0 MiB/s (+0.0%) =\n",
+        ] {
+            assert!(report.contains(line), "{line:?} in:\n{report}");
+        }
+        // The other way round, the reason is the baseline's
+        let swapped = TestComparison::of(run_of("avx2", &without_512, &[("Mem-StuckBit512", LACKS)]), run_of("avx512", &all, &[]));
+        assert_eq!(only_in(&swapped.plan_changes.only_in_current), [(2, "Mem-StuckBit512", Some(LACKS))]);
+        assert!(swapped.to_text_report().contains("    Step 2. Mem-StuckBit512 - left out of the baseline run: width 512"));
+    }
+
+    /// TODO 72: a TM5 import's test a cycle runs twice (`Test 1 ×2`) matches run for run, by its id and which of its runs it is, so another
+    /// of the import's tests on the same function, disabled in one run, shifts neither run of it; a setting of it that differs shows once,
+    /// and marks both its steps.
+    #[test]
+    fn a_test_a_cycle_runs_twice_matches_run_for_run() {
+        let simple = |id, mib_s| tm5("Mem-SimpleV2-Auto", "Mem-SimpleV2-256_A", id, mib_s);
+        let seal = tm5("Seal-Check", "Seal-Check", "0", 5000.0);
+        let mut baseline = run_of("before", &[simple("1", 1000.0), seal, simple("5", 1100.0), simple("1", 1200.0)], &[]);
+        let mut current = run_of("after", &[simple("1", 1010.0), seal, simple("1", 1212.0)], &[]);
+        for (run, stride) in [(&mut baseline, "Stride(3cl/192B)"), (&mut current, "Stride(7cl/448B)")] {
+            run.run_config.tests.iter_mut().filter(|t| t.id.as_deref() == Some("1")).for_each(|t| t.parameter = Some(stride.into()));
+        }
+        let comparison = TestComparison::of(baseline, current);
+        let plan = &comparison.plan_changes;
+        assert_eq!(only_in(&plan.only_in_baseline), [(3, "Mem-SimpleV2-256_A (Test 5)", None)]);
+        assert!(plan.only_in_current.is_empty());
+        let settings: Vec<_> = plan.settings.iter().map(|s| (s.step, s.label.as_str(), s.setting.as_str())).collect();
+        assert_eq!(settings, [(1, "Mem-SimpleV2-256_A (Test 1)", "parameter")]);
+        assert_eq!(matched(&comparison), [
+            (1, 1, "Mem-SimpleV2-Auto", Some("1"), 1),
+            (2, 2, "Seal-Check", Some("0"), 1),
+            (4, 3, "Mem-SimpleV2-Auto", Some("1"), 2)
+        ]);
+        let differ: Vec<bool> = comparison.per_test_comparisons.iter().map(|t| t.settings_differ).collect();
+        assert_eq!(differ, [true, false, true]);
+        // Each run of it against its own: +1% both times
+        let speeds: Vec<f64> =
+            comparison.per_test_comparisons.iter().map(|t| t.changes.as_ref().unwrap().throughput_diff_percent).collect();
+        assert!(speeds.iter().zip([1.0, 0.0, 1.0]).all(|(got, want)| (got - want).abs() < 1e-9), "{speeds:?}");
+        let report = comparison.to_text_report();
+        assert!(
+            report.contains("    ⛔ Step 1. Mem-SimpleV2-256_A (Test 1): parameter  Stride(3cl/192B)  ->  Stride(7cl/448B)\n"),
+            "{report}"
+        );
+        assert_eq!(report.matches("Stride(3cl/192B)").count(), 1, "once a test: {report}");
+        assert!(report.contains("\n  Step 4 -> 3. Mem-SimpleV2-256_A (Test 1) - Duration: "), "{report}");
+        assert!(report.contains("(+1.0%) ⬆, ⛔ settings differ\n"), "{report}");
+    }
+
+    /// TODO 72: machine to machine, an `-Auto` test runs at each one's widest width, under another name each: it matches as its plan names
+    /// it, its width shows as a setting that differs (its implementation, which follows the width, not again), and its changes aren't like
+    /// for like.
+    #[test]
+    fn an_auto_test_matches_at_two_widths() {
+        let at = |width, name, mib_s| [auto("Mem-StuckBitAuto", name, width, mib_s), planned("Mem-MovingInv", 2000.0)];
+        let comparison = TestComparison::of(
+            run_of("zen5", &at(512, "Mem-StuckBit512_A", 1500.0), &[]),
+            run_of("zen3", &at(256, "Mem-StuckBit256_A", 1000.0), &[]),
+        );
+        let plan = &comparison.plan_changes;
+        assert!(plan.only_in_baseline.is_empty() && plan.only_in_current.is_empty(), "{plan:?}");
+        let settings: Vec<_> =
+            plan.settings.iter().map(|s| (s.step, s.label.as_str(), s.setting.as_str(), s.baseline.as_str(), s.current.as_str())).collect();
+        assert_eq!(settings, [(1, "Mem-StuckBit256_A", "SIMD width", "512 bits", "256 bits")]);
+        assert_eq!(matched(&comparison), [(1, 1, "Mem-StuckBitAuto", None, 1), (2, 2, "Mem-MovingInv", None, 1)]);
+        let auto = &comparison.per_test_comparisons[0];
+        assert_eq!(
+            (auto.baseline_label.as_str(), auto.label.as_str(), auto.settings_differ),
+            ("Mem-StuckBit512_A", "Mem-StuckBit256_A", true)
+        );
+        assert!(!comparison.per_test_comparisons[1].settings_differ);
+        let report = comparison.to_text_report();
+        assert!(report.contains("    ⛔ Step 1. Mem-StuckBit256_A: SIMD width  512 bits  ->  256 bits\n"), "{report}");
+        assert!(!report.contains("implementation"), "{report}");
+        assert!(report.contains("\n  Step 1. Mem-StuckBit512_A -> Mem-StuckBit256_A - Duration: "), "{report}");
+        let table = comparison.per_test_table();
+        let row = |r: usize| (table.rows[r][0].as_str(), table.rows[r][1].as_str(), table.rows[r][7].as_str());
+        assert_eq!(row(0), ("1", "Mem-StuckBit512_A -> Mem-StuckBit256_A", "⛔ settings differ"));
+        assert_eq!(row(1), ("2", "Mem-MovingInv", ""));
+    }
+
+    /// TODO 72: two plans (stability, then widths) match the tests both name, wherever each has them, and list the rest as only in one; an
+    /// `-Auto` test and the same family named for a width are two tests. The run differences name the plans.
+    #[test]
+    fn two_plans_match_the_tests_both_have() {
+        let stability = [
+            auto("Mem-StuckBitAuto", "Mem-StuckBit256_A", 256, 1000.0),
+            auto("Mem-SimpleV2-Auto", "Mem-SimpleV2-256_A", 256, 900.0),
+            planned("Mem-MovingInv", 800.0),
+        ];
+        let widths = [
+            planned("Mem-StuckBit128", 700.0),
+            planned("Mem-StuckBit256", 1000.0),
+            stability[0],
+            planned("Mem-SimpleV2-128", 600.0),
+            stability[1],
+        ];
+        let (mut baseline, mut current) = (run_of("stability", &stability, &[]), run_of("widths", &widths, &[]));
+        (baseline.run_config.execution.plan, current.run_config.execution.plan) = (Some("stability".into()), Some("widths".into()));
+        let comparison = TestComparison::of(baseline, current);
+        let plan = &comparison.plan_changes;
+        assert_eq!(only_in(&plan.only_in_baseline), [(3, "Mem-MovingInv", None)]);
+        assert_eq!(only_in(&plan.only_in_current), [
+            (1, "Mem-StuckBit128", None),
+            (2, "Mem-StuckBit256", None),
+            (4, "Mem-SimpleV2-128", None)
+        ]);
+        assert!(plan.settings.is_empty(), "{plan:?}");
+        assert_eq!(matched(&comparison), [(1, 3, "Mem-StuckBitAuto", None, 1), (2, 5, "Mem-SimpleV2-Auto", None, 1)]);
+        let row = comparison.run_differences.iter().find(|d| d.field == "Plan").expect("a Plan row");
+        assert_eq!((row.baseline.as_str(), row.current.as_str(), row.invalidates), ("stability", "widths", false));
+        let report = comparison.to_text_report();
+        assert!(
+            report.contains(
+                "\n  Only in the current:\n    Step 1. Mem-StuckBit128\n    Step 2. Mem-StuckBit256\n    Step 4. Mem-SimpleV2-128\n"
+            ),
+            "{report}"
+        );
+    }
+
+    /// TODO 72: a newer build that added a test to the plan: the new test is only in the current, and the tests after it match their own a
+    /// step later. A step a run stopped before, its first cycle cut short, is in both plans with no figures to compare, and says so.
+    #[test]
+    fn a_test_a_newer_build_added_shifts_no_other() {
+        let old = [planned("Mem-StuckBit256", 1000.0), planned("Mem-MovingInv", 800.0), planned("Mem-Stride", 900.0)];
+        let new = [old[0], planned("Mem-Storm", 500.0), old[1], old[2]];
+        let mut current = run_of("newer", &new, &[]);
+        current.cycles[0].tests.pop();
+        current.finalize(std::time::Duration::from_secs(10));
+        let comparison = TestComparison::of(run_of("older", &old, &[]), current);
+        let plan = &comparison.plan_changes;
+        assert!(plan.only_in_baseline.is_empty() && plan.settings.is_empty(), "{plan:?}");
+        assert_eq!(only_in(&plan.only_in_current), [(2, "Mem-Storm", None)]);
+        assert_eq!(matched(&comparison), [
+            (1, 1, "Mem-StuckBit256", None, 1),
+            (2, 3, "Mem-MovingInv", None, 1),
+            (3, 4, "Mem-Stride", None, 1)
+        ]);
+        let stride = &comparison.per_test_comparisons[2];
+        assert_eq!((stride.baseline_runs, stride.runs, stride.changes.is_none()), (1, 0, true));
+        let report = comparison.to_text_report();
+        assert!(report.contains("\n  Only in the current:\n    Step 2. Mem-Storm\n\n"), "{report}");
+        assert!(report.contains("\n  Step 2 -> 3. Mem-MovingInv - Duration: +0.0ms"), "{report}");
+        assert!(report.contains("\n  Step 3 -> 4. Mem-Stride - not run in the current: it stopped before it\n"), "{report}");
+        let table = comparison.per_test_table();
+        assert_eq!(table.rows[2], ["3 -> 4", "Mem-Stride", "-", "", "-", "", "-", "not run in the current: it stopped before it"]);
+    }
+
+    /// TODO 72: `--compare-results`' text for one TM5 config on two machines, the second without AVX-512 and on a newer version of the
+    /// config, as its golden (`testdata/console/comparison.txt`): the config's row among the run differences; the plan's changes, a test
+    /// left out and why, a test only the newer config has, and each `-Auto` test's width; the totals' caveat; then each step both have,
+    /// a test the cycle runs twice among them, at its step in each run, the second run of it one the current stopped before.
+    #[test]
+    fn a_comparison_writes_as_its_golden() {
+        const LACKS: &str = "width 512 needs AVX-512, which this CPU lacks";
+        let seal = tm5("Seal-Check", "Seal-Check", "0", 5000.0);
+        let simple = |name, width, id, mib_s| Planned { width: Some(width), ..tm5("Mem-SimpleV2-Auto", name, id, mib_s) };
+        let stuck_bit = tm5("Mem-StuckBit512", "Mem-StuckBit512", "2", 1500.0);
+        let zen5 = [
+            seal,
+            simple("Mem-SimpleV2-512_A", 512, "1", 1200.0),
+            stuck_bit,
+            simple("Mem-SimpleV2-512_A", 512, "3", 1100.0),
+            seal,
+            simple("Mem-SimpleV2-512_A", 512, "1", 1250.0),
+        ];
+        let zen3 = [
+            seal,
+            simple("Mem-SimpleV2-256_A", 256, "1", 1000.0),
+            simple("Mem-SimpleV2-256_A", 256, "3", 950.0),
+            tm5("Mem-MovingInv", "Mem-MovingInv", "4", 800.0),
+            seal,
+            simple("Mem-SimpleV2-256_A", 256, "1", 1000.0),
+        ];
+        let (mut baseline, mut current) = (run_of("zen5", &zen5, &[]), run_of("zen3", &zen3, &[("Mem-StuckBit512", LACKS)]));
+        current.cycles[0].tests.pop();
+        current.finalize(std::time::Duration::from_secs(9));
+        (baseline.run_config.config_name, current.run_config.config_name) = (Some("anta777".into()), Some("anta777 v2".into()));
+        let report = TestComparison::of(baseline, current).to_text_report();
+        let report: String = report
+            .split_inclusive('\n')
+            .map(|line| if line.starts_with("Comparison Time: ") { "Comparison Time: <time>\n" } else { line })
+            .collect();
+        crate::test_support::check("comparison", &report);
     }
 
     /// The per-cycle save on a long run (TODO 72): 32 threads, 16 steps (2 of them latency steps) and 50 sealed cycles, every step with its

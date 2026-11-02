@@ -256,9 +256,10 @@ width and where it came from (`execution.simd_width_bits`, `execution.simd_width
 `width=`, `the config's width` or `auto`), and each test that takes it the width it ran at
 (`run_config.tests[].simd_width_bits`): Mem-Sequence 256 under `width=128`, and the Bench pairs,
 whose names carry none. A test named for a width runs at that one and records none.
-`--compare-results` flags a test that ran at another width under the same name. Auto stays the
-default: measured on Intel and AMD, the widest suits the write-and-check tests; `width=` is there
-to compare widths or to step down.
+`--compare-results` matches a test by the name its plan or config gives it
+(`run_config.tests[].test`), so an `-Auto` test matches at any width, and flags a test that ran at
+another width. Auto stays the default: measured on Intel and AMD, the widest suits the
+write-and-check tests; `width=` is there to compare widths or to step down.
 
 ## Parameter Sources
 

@@ -96,7 +96,9 @@ Beside `tmr.exe`, in its folder:
 | `tmr-cfg.json` | what TMR's calibrations (`tmr --calibrate-all`) measured, and of which system |
 
 The run's last lines say where its results file went. `tmr --compare-results <one> <other>`
-compares two results files, by their names in `results\` or by their paths.
+compares two results files, by their names in `results\` or by their paths. It matches the two
+runs' tests by name (a TM5 config's by test number too): it lists the tests only one of them ran
+and those that ran with other settings, then how each test both ran changed.
 
 A results file describes the system it came from, so runs can be told apart: the CPU, the BIOS,
 the memory modules (their part numbers and serial numbers) and the motherboard's system UUID.

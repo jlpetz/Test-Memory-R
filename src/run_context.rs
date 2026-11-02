@@ -16,6 +16,8 @@
 //! The distinction runs through this whole module and is the point of it. A *request* (`memory=60%`) and the *outcome* (`8 × 3.000 GiB on 2
 //! MB pages`) are different facts, and only the outcome explains a throughput number. Where they can diverge, both are stored.
 
+use std::collections::{HashMap, HashSet};
+
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
@@ -257,8 +259,9 @@ pub struct RunConfigSnapshot {
     /// different sizing basis, so worth distinguishing.
     pub calibration: Option<CalibrationSnapshot>,
 
-    /// One entry per test in the resolved plan. Stored at run level rather than repeated inside every cycle's results: this is
-    /// configuration, and it does not change between cycles.
+    /// One entry per step of the resolved plan, in cycle order: entry i is step i + 1, and a test a cycle runs twice has two. Stored at
+    /// run level rather than repeated inside every cycle's results: this is configuration, and it does not change between cycles. What
+    /// `--compare-results` matches the two runs' steps by (`compare_plans`).
     pub tests: Vec<TestConfigSnapshot>,
 
     /// The tests the plan had that this CPU can't run, each once and why (TODO 72; left out by `runner::leave_out_what_the_cpu_lacks`, TODO
@@ -466,11 +469,19 @@ pub struct CalibratedTier {
     pub median_latency_ns: f64,
 }
 
-/// Per-test configuration as resolved for this run.
+/// Per-test configuration as resolved for this run, a step's.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TestConfigSnapshot {
-    /// Registered/display name, with auto-dispatch already resolved (`Mem-StuckBit512_A`), so it matches the name results are keyed by.
+    /// The test as its plan or config names it, before an `-Auto` name resolves to a width (`Mem-StuckBitAuto`): with `id`, what
+    /// `--compare-results` matches a step by, so an `-Auto` test matches at any width (`compare_plans`)
+    pub test: String,
+    /// The test's config id (a TM5 import's test number), unique within its config only
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Registered/display name, with auto-dispatch already resolved (`Mem-StuckBit512_A`), the name the step's results have.
     pub name: String,
+    /// The step's name in reports, as its results have it (`Mem-SimpleV2-512_A (Test 12)`, `TestDefinition::step_label`)
+    pub label: String,
     /// Underlying test function's own name. Several registrations share one function (the flush and `_A` variants), so this is not unique —
     /// it says which code path ran.
     pub function: String,
@@ -557,6 +568,8 @@ pub struct RunConfigInputs<'a> {
     pub config_name: Option<String>,
     /// The resolved plan — after filtering, overrides, and auto-dispatch.
     pub tests: &'a [crate::runner::TestDefinition],
+    /// A TM5 import: its steps' labels name their `.cfg` test numbers (`TestDefinition::step_label`)
+    pub tm5: bool,
     /// The tests left out of it, by name, and why (`runner::leave_out_what_the_cpu_lacks`).
     pub left_out: &'a [(String, String)],
     pub cache_info: &'a crate::cache::CacheInfo,
@@ -590,6 +603,7 @@ impl RunConfigSnapshot {
             channels,
             config_name,
             tests,
+            tm5,
             left_out,
             cache_info,
             seal,
@@ -655,7 +669,7 @@ impl RunConfigSnapshot {
             CalibrationSnapshot { timestamp: cal.timestamp.to_rfc3339(), page_size: cal.page_size.clone(), tiers }
         });
 
-        let tests = tests.iter().map(|def| TestConfigSnapshot::capture(def, cache_info, thread_count, thread_memory_least)).collect();
+        let tests = tests.iter().map(|def| TestConfigSnapshot::capture(def, tm5, cache_info, thread_count, thread_memory_least)).collect();
 
         Self {
             command_line: capture_command_line(command_line),
@@ -698,10 +712,11 @@ impl ExecutionSnapshot {
 }
 
 impl TestConfigSnapshot {
-    /// One test as the run resolved it (`RunConfigSnapshot::capture`), its layout on the thread with the least memory,
-    /// `thread_memory_least`.
+    /// One step's test as the run resolved it (`RunConfigSnapshot::capture`), its layout on the thread with the least memory,
+    /// `thread_memory_least`; `tm5` for a TM5 import's.
     fn capture(
-        def: &crate::runner::TestDefinition, cache_info: &crate::cache::CacheInfo, thread_count: usize, thread_memory_least: usize,
+        def: &crate::runner::TestDefinition, tm5: bool, cache_info: &crate::cache::CacheInfo, thread_count: usize,
+        thread_memory_least: usize,
     ) -> Self {
         // Extent/chunk modes are rendered with the same formatter the console tables use, so the recorded string matches what the user saw
         // — including the resolved byte size for cache specs, which is where the SMT divisor becomes visible.
@@ -710,7 +725,12 @@ impl TestConfigSnapshot {
         let layout = crate::test_memory::resolve_layout(&def.config, def.actual_name, thread_memory_least);
         let (extent, spread) = layout.map_or((0, None), |(extent, spread)| (extent, Some(spread)));
         TestConfigSnapshot {
+            // An `-Auto` test keeps the name it was given in `original_name`; any other has it as `actual_name`, an alias a config gave
+            // among them
+            test: def.original_name.unwrap_or(def.actual_name).to_string(),
+            id: def.id.clone(),
             name: def.display_name.clone(),
+            label: def.step_label(tm5),
             function: def.actual_name.to_string(),
             parameter: Some(crate::reporting::converters::format_parameter_context(&def.config.parameter_context)),
             extent_mode: formatter.format_extent_mode_with_size(&def.config.extent_mode, cache_info, thread_count),
@@ -970,6 +990,19 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
         ));
     }
 
+    // What chose the tests: another config, plan or filter is another set of tests (the comparison's plan changes, `compare_plans`), but
+    // the tests both have compare like for like
+    let named = |name: &Option<String>| name.clone().unwrap_or_else(|| "none".into());
+    if b.config_name != c.config_name {
+        diffs.push(RunDifference::new("Config", named(&b.config_name), named(&c.config_name), false));
+    }
+    if b.execution.plan != c.execution.plan {
+        diffs.push(RunDifference::new("Plan", named(&b.execution.plan), named(&c.execution.plan), false));
+    }
+    if b.execution.test_filter != c.execution.test_filter {
+        diffs.push(RunDifference::new("Test filter", named(&b.execution.test_filter), named(&c.execution.test_filter), false));
+    }
+
     if b.execution.cycles_requested != c.execution.cycles_requested {
         let fmt = |v: Option<u32>| v.map(|n| n.to_string()).unwrap_or_else(|| "unlimited".into());
         diffs.push(RunDifference::new("Cycles requested", fmt(b.execution.cycles_requested), fmt(c.execution.cycles_requested), false));
@@ -998,63 +1031,191 @@ pub fn compare_config(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> Vec<RunDi
         diffs.push(RunDifference::new("Rescan", r(b.execution.rescan), r(c.execution.rescan), false));
     }
 
-    // Per-test config, for tests present in both plans. An extent/chunk/parameter/flush change explains a single test moving while its
-    // neighbours did not — otherwise easy to misread as a regression.
-    for cur_test in &c.tests {
-        let Some(base_test) = b.tests.iter().find(|t| t.name == cur_test.name) else {
-            continue;
-        };
-        let mut note = |field: &str, bv: String, cv: String| {
-            diffs.push(RunDifference::new(&format!("{}: {}", cur_test.name, field), bv, cv, true));
-        };
-        if base_test.extent_mode != cur_test.extent_mode {
-            note("extent", base_test.extent_mode.clone(), cur_test.extent_mode.clone());
-        }
-        if base_test.chunk_mode != cur_test.chunk_mode {
-            note("chunk", base_test.chunk_mode.clone(), cur_test.chunk_mode.clone());
-        }
-        // A TM5 stride is resolved against the run's channels and `mirror=` sets every mirror test's, so one test can differ here between
-        // runs of one plan; results written before the record have none
-        if let (Some(base), Some(cur)) = (&base_test.parameter, &cur_test.parameter)
-            && base != cur
-        {
-            note("parameter", base.clone(), cur.clone());
-        }
-        if base_test.flush_before_verify != cur_test.flush_before_verify {
-            note("flush before verify", base_test.flush_before_verify.to_string(), cur_test.flush_before_verify.to_string());
-        }
-        if base_test.verify_reps != cur_test.verify_reps {
-            note("verify reps", base_test.verify_reps.to_string(), cur_test.verify_reps.to_string());
-        }
-        if base_test.pattern_mode != cur_test.pattern_mode || base_test.program != cur_test.program {
-            let p = |t: &TestConfigSnapshot| match (&t.program, t.pattern_mode) {
-                (Some(program), _) => program.join("+"),
-                (None, Some(mode)) => format!("mode {mode}"),
-                (None, None) => "-".to_string(),
-            };
-            note("pattern", p(base_test), p(cur_test));
-        }
-        if base_test.test_reps != cur_test.test_reps {
-            note("test reps", base_test.test_reps.to_string(), cur_test.test_reps.to_string());
-        }
-        if base_test.write_read_cycles != cur_test.write_read_cycles {
-            note("write/read cycles", base_test.write_read_cycles.to_string(), cur_test.write_read_cycles.to_string());
-        }
-        if base_test.function != cur_test.function {
-            // Same registered name, different implementation — e.g. auto-dispatch resolved to a different SIMD width because the machine
-            // changed.
-            note("implementation", base_test.function.clone(), cur_test.function.clone());
-        }
-        // A test that takes the run's width under one name, as Mem-Sequence and the Bench pairs do (TODO 99); results written before the
-        // record have none
-        if let (Some(b), Some(c)) = (base_test.simd_width_bits, cur_test.simd_width_bits)
-            && b != c
-        {
-            note("SIMD width", format!("{b} bits"), format!("{c} bits"));
-        }
-    }
-
+    // Each test's own settings are the plans' to compare, test by test (`compare_plans`)
     diffs
+}
+
+/// What differs between two runs' plans (`compare_plans`): the steps only one of them has, and the settings that differ of the tests both
+/// have. Steps are matched by test, not by position: by the test as its plan or config names it (`TestConfigSnapshot::test`, before an
+/// `-Auto` name resolves to a width), its config id, and which of that test's runs in the cycle the step is. So a test one run left out,
+/// or a newer build added to a plan, shifts no other test, an `-Auto` test matches at any width, and a test a cycle runs twice (`Test 1
+/// ×2` in a TM5 import) matches run for run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlanChanges {
+    /// The steps the two plans both have
+    pub matched: usize,
+    /// Each plan's steps the other has no match for, in its run's order
+    pub only_in_baseline: Vec<UnmatchedStep>,
+    pub only_in_current: Vec<UnmatchedStep>,
+    /// The settings that differ of the tests both have, a test's once (its runs in a cycle share them), in the current run's order
+    pub settings: Vec<SettingChange>,
+}
+
+impl PlanChanges {
+    /// The two plans don't have the same tests at the same settings: the runs' totals cover different work
+    pub fn differ(&self) -> bool {
+        !(self.only_in_baseline.is_empty() && self.only_in_current.is_empty() && self.settings.is_empty())
+    }
+}
+
+/// A step of one plan that the other has no match for (`PlanChanges`)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnmatchedStep {
+    /// What the steps are matched by (`PlanChanges`): the test, its config id, and which of its runs in the cycle this is, from 1
+    pub test: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub occurrence: usize,
+    /// The step in its run, and its name there
+    pub step: usize,
+    pub label: String,
+    /// Why the other run hasn't it, when that run left it out (`RunConfigSnapshot::tests_left_out`): what its CPU lacks
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_out: Option<String>,
+}
+
+/// A setting that differs of a test both plans have, named as the current run's step names the test (`PlanChanges`)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettingChange {
+    pub step: usize,
+    pub label: String,
+    /// The setting, e.g. `SIMD width`, and its value in each run
+    pub setting: String,
+    pub baseline: String,
+    pub current: String,
+}
+
+/// A step each plan has, as `compare_plans` matched them: what they were matched by (`UnmatchedStep`'s), and the step in each run
+#[derive(Debug, Clone)]
+pub(crate) struct MatchedStep {
+    pub test: String,
+    pub id: Option<String>,
+    pub occurrence: usize,
+    pub baseline_step: usize,
+    pub step: usize,
+    pub baseline_label: String,
+    pub label: String,
+    /// The test's settings differ between the runs (`PlanChanges::settings`), so its figures aren't like for like
+    pub settings_differ: bool,
+}
+
+/// A step's key (`PlanChanges`), its step and its settings
+type KeyedStep<'a> = ((&'a str, Option<&'a str>, usize), usize, &'a TestConfigSnapshot);
+
+/// A plan's steps, each with the key it is matched by (`PlanChanges`): its test, its id, and which of that test's runs in the cycle it is
+fn keyed(tests: &[TestConfigSnapshot]) -> Vec<KeyedStep<'_>> {
+    let mut runs: HashMap<(&str, Option<&str>), usize> = HashMap::new();
+    tests
+        .iter()
+        .enumerate()
+        .map(|(at, test)| {
+            let run = runs.entry((test.test.as_str(), test.id.as_deref())).or_default();
+            *run += 1;
+            ((test.test.as_str(), test.id.as_deref(), *run), at + 1, test)
+        })
+        .collect()
+}
+
+/// Matches the steps of two runs' plans by test (`PlanChanges`): what differs between them, and the steps both have, in the current run's
+/// order.
+pub(crate) fn compare_plans(b: &RunConfigSnapshot, c: &RunConfigSnapshot) -> (PlanChanges, Vec<MatchedStep>) {
+    let (base, cur) = (keyed(&b.tests), keyed(&c.tests));
+    let base_steps: HashMap<_, _> = base.iter().map(|&(key, step, test)| (key, (step, test))).collect();
+    let cur_keys: HashSet<_> = cur.iter().map(|&(key, _, _)| key).collect();
+    // A test is left out by its name (`runner::leave_out_what_the_cpu_lacks`): one named for a width, which is its name in the plan too
+    let unmatched = |&((test, id, occurrence), step, snapshot): &KeyedStep, other: &RunConfigSnapshot| UnmatchedStep {
+        test: test.to_string(),
+        id: id.map(str::to_string),
+        occurrence,
+        step,
+        label: snapshot.label.clone(),
+        left_out: other.tests_left_out.iter().find(|t| t.name == test || t.name == snapshot.name).map(|t| t.reason.clone()),
+    };
+    let mut changes = PlanChanges {
+        only_in_baseline: base.iter().filter(|(key, _, _)| !cur_keys.contains(key)).map(|s| unmatched(s, c)).collect(),
+        only_in_current: cur.iter().filter(|(key, _, _)| !base_steps.contains_key(key)).map(|s| unmatched(s, b)).collect(),
+        ..Default::default()
+    };
+    let mut matched = Vec::new();
+    for &((test, id, occurrence), step, current) in &cur {
+        let Some(&(baseline_step, baseline)) = base_steps.get(&(test, id, occurrence)) else { continue };
+        let settings = setting_changes(baseline, current);
+        // The steps of one id are one test of a config run again (an id is unique in its config), so they share its settings: the first
+        // says what differs, and a run matched has every run before it matched too. Without an id each step is a test of its own (a plan's,
+        // or a config's that runs once in file order, two of them perhaps on one function with other settings), so each says.
+        if occurrence == 1 || id.is_none() {
+            changes.settings.extend(settings.iter().map(|(setting, was, is)| SettingChange {
+                step,
+                label: current.label.clone(),
+                setting: setting.to_string(),
+                baseline: was.clone(),
+                current: is.clone(),
+            }));
+        }
+        matched.push(MatchedStep {
+            test: test.to_string(),
+            id: id.map(str::to_string),
+            occurrence,
+            baseline_step,
+            step,
+            baseline_label: baseline.label.clone(),
+            label: current.label.clone(),
+            settings_differ: !settings.is_empty(),
+        });
+    }
+    changes.matched = matched.len();
+    (changes, matched)
+}
+
+/// What differs in one test's settings between two runs: each setting's name and its value in each. An extent, chunk, parameter or flush
+/// change explains a single test moving while its neighbours did not, otherwise easy to misread as a regression.
+fn setting_changes(b: &TestConfigSnapshot, c: &TestConfigSnapshot) -> Vec<(&'static str, String, String)> {
+    let mut changes = Vec::new();
+    let mut note = |setting: &'static str, was: String, is: String| changes.push((setting, was, is));
+    if b.extent_mode != c.extent_mode {
+        note("extent", b.extent_mode.clone(), c.extent_mode.clone());
+    }
+    if b.chunk_mode != c.chunk_mode {
+        note("chunk", b.chunk_mode.clone(), c.chunk_mode.clone());
+    }
+    // A TM5 stride is resolved against the run's channels and `mirror=` sets every mirror test's, so one test can differ here between runs
+    // of one plan; results written before the record have none
+    if let (Some(was), Some(is)) = (&b.parameter, &c.parameter)
+        && was != is
+    {
+        note("parameter", was.clone(), is.clone());
+    }
+    if b.flush_before_verify != c.flush_before_verify {
+        note("flush before verify", b.flush_before_verify.to_string(), c.flush_before_verify.to_string());
+    }
+    if b.verify_reps != c.verify_reps {
+        note("verify reps", b.verify_reps.to_string(), c.verify_reps.to_string());
+    }
+    if b.pattern_mode != c.pattern_mode || b.program != c.program {
+        let p = |t: &TestConfigSnapshot| match (&t.program, t.pattern_mode) {
+            (Some(program), _) => program.join("+"),
+            (None, Some(mode)) => format!("mode {mode}"),
+            (None, None) => "-".to_string(),
+        };
+        note("pattern", p(b), p(c));
+    }
+    if b.test_reps != c.test_reps {
+        note("test reps", b.test_reps.to_string(), c.test_reps.to_string());
+    }
+    if b.write_read_cycles != c.write_read_cycles {
+        note("write/read cycles", b.write_read_cycles.to_string(), c.write_read_cycles.to_string());
+    }
+    // The code that ran: a test that takes the run's width under one name, an `-Auto` test or Mem-Sequence (TODO 99), at another width,
+    // which its implementation follows (`Mem-StuckBit512` for `Mem-StuckBit256`); or another implementation at one width, as a build that
+    // maps a name elsewhere gives. Results written before the width was recorded have none.
+    if let (Some(was), Some(is)) = (b.simd_width_bits, c.simd_width_bits)
+        && was != is
+    {
+        note("SIMD width", format!("{was} bits"), format!("{is} bits"));
+    } else if b.function != c.function {
+        note("implementation", b.function.clone(), c.function.clone());
+    }
+    changes
 }
 
 /// Render identity + config differences as a block for the comparison report. Empty string when the two runs are equivalent, so callers can
@@ -1241,7 +1402,7 @@ mod tests {
             let definitions = crate::runner::create_test_definitions(cache_info);
             let recorded = |name: &str| {
                 let def = definitions.iter().find(|d| d.display_name == name).unwrap_or_else(|| panic!("no {name}"));
-                TestConfigSnapshot::capture(def, cache_info, 1, 64 << 20).simd_width_bits
+                TestConfigSnapshot::capture(def, false, cache_info, 1, 64 << 20).simd_width_bits
             };
             let sequence = width.max(Width::W256).bits();
             for (name, bits) in [
@@ -1257,24 +1418,65 @@ mod tests {
         }
     }
 
-    /// TODO 99: a test that ran at another width under the same name (Mem-Sequence, a Bench pair) isn't like for like; one from results
-    /// written before the width was recorded isn't flagged.
+    /// One plan of `tests` (`TestConfigSnapshot`s), on the machine `config_with` gives
+    fn plan_of(tests: impl IntoIterator<Item = TestConfigSnapshot>) -> RunConfigSnapshot {
+        RunConfigSnapshot { tests: tests.into_iter().collect(), ..config_with(3.0, 8) }
+    }
+
+    /// The step `test`, named for its width or with none: its name and label are the test's
+    fn step(test: &str) -> TestConfigSnapshot {
+        TestConfigSnapshot { test: test.to_string(), name: test.to_string(), label: test.to_string(), ..Default::default() }
+    }
+
+    /// TODO 99: a test that ran at another width under the same name (Mem-Sequence, a Bench pair) isn't like for like: a setting of it that
+    /// differs (TODO 72: the plans', no longer the run's); one from results written before the width was recorded isn't flagged.
     #[test]
-    fn a_test_at_another_width_invalidates_the_comparison() {
-        let with_test = |width: Option<u32>| {
-            let mut config = config_with(3.0, 8);
-            config.tests.push(TestConfigSnapshot { name: "Mem-Sequence".to_string(), simd_width_bits: width, ..Default::default() });
-            config
-        };
-        let diffs = compare_config(&with_test(Some(512)), &with_test(Some(256)));
-        assert!(
-            diffs
-                .iter()
-                .any(|d| d.field == "Mem-Sequence: SIMD width" && d.invalidates && d.baseline == "512 bits" && d.current == "256 bits"),
-            "{diffs:?}"
-        );
-        assert!(compare_config(&with_test(Some(256)), &with_test(Some(256))).is_empty());
-        assert!(compare_config(&with_test(None), &with_test(Some(512))).is_empty());
+    fn a_test_at_another_width_is_a_setting_that_differs() {
+        let with_test = |width: Option<u32>| plan_of([TestConfigSnapshot { simd_width_bits: width, ..step("Mem-Sequence") }]);
+        let (changes, matched) = compare_plans(&with_test(Some(512)), &with_test(Some(256)));
+        let settings: Vec<_> =
+            changes.settings.iter().map(|s| (s.label.as_str(), s.setting.as_str(), s.baseline.as_str(), s.current.as_str())).collect();
+        assert_eq!(settings, [("Mem-Sequence", "SIMD width", "512 bits", "256 bits")]);
+        assert!(matched[0].settings_differ && changes.differ());
+        assert!(compare_config(&with_test(Some(512)), &with_test(Some(256))).is_empty(), "the plans' to compare, not the run's");
+        assert!(!compare_plans(&with_test(Some(256)), &with_test(Some(256))).0.differ());
+        assert!(!compare_plans(&with_test(None), &with_test(Some(512))).0.differ());
+    }
+
+    /// TODO 72: each step records its test as its plan or config names it, before an `-Auto` name resolves to a width, with its config
+    /// id and its label (a TM5 import's names its `.cfg` test number); a plan's test has no id.
+    #[test]
+    fn each_step_records_its_test_as_its_plan_names_it() {
+        let cache_info = crate::tests::get_cache_info();
+        let definitions = crate::runner::create_test_definitions(cache_info);
+        let def = |name: &str| definitions.iter().find(|d| d.original_name == Some(name) || d.display_name == name).unwrap().clone();
+        let mut auto = def("Mem-StuckBitAuto");
+        let recorded = TestConfigSnapshot::capture(&auto, false, cache_info, 1, 64 << 20);
+        let resolved = auto.display_name.clone();
+        assert_eq!((recorded.test.as_str(), recorded.name.as_str(), recorded.label.as_str()), ("Mem-StuckBitAuto", &*resolved, &*resolved));
+        assert_eq!(recorded.id, None);
+        auto.id = Some("12".to_string());
+        let imported = TestConfigSnapshot::capture(&auto, true, cache_info, 1, 64 << 20);
+        assert_eq!((imported.id.as_deref(), imported.label), (Some("12"), format!("{resolved} (Test 12)")));
+        let named = TestConfigSnapshot::capture(&def("Mem-StuckBit128"), false, cache_info, 1, 64 << 20);
+        assert_eq!((named.test.as_str(), named.name.as_str()), ("Mem-StuckBit128", "Mem-StuckBit128"));
+        assert!(!serde_json::to_string(&named).unwrap().contains("\"id\""), "no id, no key");
+    }
+
+    /// TODO 72: another config, plan or test filter is a run difference, which warns: the tests both runs have still compare like for
+    /// like, and the plans' changes say which differ.
+    #[test]
+    fn another_config_or_plan_is_a_difference_that_warns() {
+        let (mut a, mut b) = (config_with(3.0, 8), config_with(3.0, 8));
+        (a.config_name, b.config_name) = (Some("anta777".into()), Some("1usmus_v3".into()));
+        (a.execution.plan, b.execution.test_filter) = (Some("stability".into()), Some("Mem-StuckBit*".into()));
+        let diffs: Vec<_> = compare_config(&a, &b).into_iter().map(|d| (d.field, d.baseline, d.current, d.invalidates)).collect::<Vec<_>>();
+        let row = |field: &str, was: &str, is: &str| (field.to_string(), was.to_string(), is.to_string(), false);
+        assert_eq!(diffs, [
+            row("Config", "anta777", "1usmus_v3"),
+            row("Plan", "stability", "none"),
+            row("Test filter", "none", "Mem-StuckBit*")
+        ]);
     }
 
     /// TODO 72: each test records its parameter as its step's Config line shows it (`format_parameter_context`): a TM5 stride as the
@@ -1285,7 +1487,7 @@ mod tests {
         let cache_info = crate::tests::get_cache_info();
         let definitions = crate::runner::create_test_definitions(cache_info);
         let def = |name: &str| definitions.iter().find(|d| d.display_name == name).unwrap_or_else(|| panic!("no {name}")).clone();
-        let capture = |def: &crate::runner::TestDefinition| TestConfigSnapshot::capture(def, cache_info, 1, 64 << 20);
+        let capture = |def: &crate::runner::TestDefinition| TestConfigSnapshot::capture(def, false, cache_info, 1, 64 << 20);
         let strided = |channels| {
             let mut sequence = def("Mem-Sequence");
             sequence.config.parameter_context = Some(crate::config::interpret_tm5_parameter_with_channels("Mem-Sequence", 2, channels));
@@ -1304,27 +1506,39 @@ mod tests {
         assert_eq!(older.parameter, None);
     }
 
-    /// TODO 72: a test whose parameter differs, as a stride on other channels does, isn't like for like; one from results written before
-    /// the parameter was recorded isn't flagged.
+    /// TODO 72: a test whose parameter differs, as a stride on other channels does, isn't like for like: a setting of it that differs, by
+    /// the current run's name for its step; one from results written before the parameter was recorded isn't flagged.
     #[test]
-    fn a_test_with_another_parameter_invalidates_the_comparison() {
+    fn a_test_with_another_parameter_is_a_setting_that_differs() {
         let with_test = |parameter: Option<&str>| {
-            let mut config = config_with(3.0, 8);
-            let name = "Mem-SimpleV2-256".to_string();
-            config.tests.push(TestConfigSnapshot { name, parameter: parameter.map(str::to_string), ..Default::default() });
-            config
+            let simple = TestConfigSnapshot { parameter: parameter.map(str::to_string), ..step("Mem-SimpleV2-256") };
+            plan_of([step("Mem-StuckBit256"), simple])
         };
-        let diffs = compare_config(&with_test(Some("Stride(3cl/192B)")), &with_test(Some("Stride(7cl/448B)")));
-        assert!(
-            diffs.iter().any(|d| d.field == "Mem-SimpleV2-256: parameter"
-                && d.invalidates
-                && d.baseline == "Stride(3cl/192B)"
-                && d.current == "Stride(7cl/448B)"),
-            "{diffs:?}"
-        );
-        assert!(render_differences(&diffs).contains("Stride(3cl/192B)  ->  Stride(7cl/448B)"));
-        assert!(compare_config(&with_test(Some("-")), &with_test(Some("-"))).is_empty());
-        assert!(compare_config(&with_test(None), &with_test(Some("Stride(3cl/192B)"))).is_empty());
+        let (changes, matched) = compare_plans(&with_test(Some("Stride(3cl/192B)")), &with_test(Some("Stride(7cl/448B)")));
+        let settings: Vec<_> = changes
+            .settings
+            .iter()
+            .map(|s| (s.step, s.label.as_str(), s.setting.as_str(), s.baseline.as_str(), s.current.as_str()))
+            .collect();
+        assert_eq!(settings, [(2, "Mem-SimpleV2-256", "parameter", "Stride(3cl/192B)", "Stride(7cl/448B)")]);
+        assert_eq!(matched.iter().map(|m| m.settings_differ).collect::<Vec<_>>(), [false, true]);
+        assert!(!compare_plans(&with_test(Some("-")), &with_test(Some("-"))).0.differ());
+        assert!(!compare_plans(&with_test(None), &with_test(Some("Stride(3cl/192B)"))).0.differ());
+    }
+
+    /// TODO 72: a config's two tests on one function without ids, each run once in file order, are two tests with their own settings: the
+    /// second's setting that differs is listed by its own step, not hidden behind the first's (an id's steps share one test's settings).
+    #[test]
+    fn two_tests_on_one_function_without_ids_each_say_what_differs() {
+        let with_tests = |second: &str| {
+            let simple = |parameter: &str| TestConfigSnapshot { parameter: Some(parameter.to_string()), ..step("Mem-SimpleV2-256") };
+            plan_of([simple("Stride(3cl/192B)"), simple(second)])
+        };
+        let (changes, matched) = compare_plans(&with_tests("Stride(5cl/320B)"), &with_tests("Stride(7cl/448B)"));
+        let settings: Vec<_> = changes.settings.iter().map(|s| (s.step, s.setting.as_str(), s.current.as_str())).collect();
+        assert_eq!(settings, [(2, "parameter", "Stride(7cl/448B)")]);
+        assert_eq!(matched.iter().map(|m| (m.occurrence, m.settings_differ)).collect::<Vec<_>>(), [(1, false), (2, true)]);
+        assert!(changes.differ());
     }
 
     #[test]
