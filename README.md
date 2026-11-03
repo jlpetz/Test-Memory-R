@@ -120,7 +120,10 @@ L3, so they reach it.
 - **The Microsoft Visual C++ runtime** (`VCRUNTIME140.dll`), for the console and the window alike.
   `tmr.exe` is built with Microsoft's C++ toolchain, which keeps part of its C runtime in that DLL
   rather than in each program, so without it Windows won't start `tmr.exe` ("VCRUNTIME140.dll was
-  not found"). Most PCs have it already: games and many apps install it. Get it from
+  not found"). `tmr.exe` takes it, as it takes Windows' own DLLs, from Windows' `System32` folder
+  only, where the runtime installs it: a copy beside `tmr.exe` is never used, so no other program
+  can put its own there for an elevated `tmr.exe` to run. Most PCs have it already: games and many
+  apps install it. Get it from
   <https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist>, or:
   `winget install Microsoft.VCRedist.2015+.x64`
 - **The Windows App Runtime 2** (2.4 or later), for the window only: the window's controls (WinUI 3)

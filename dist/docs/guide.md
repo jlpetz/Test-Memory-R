@@ -31,7 +31,9 @@ TMR needs:
 - **A CPU from 2015 or later**: Intel 6th gen Core (Skylake) or AMD Ryzen (Zen) and later. TMR
   checks at startup, and says so on an older one.
 - **The Microsoft Visual C++ Redistributable (x64)**, which most PCs have:
-  `winget install Microsoft.VCRedist.2015+.x64`. Without it Windows won't start `tmr.exe`.
+  `winget install Microsoft.VCRedist.2015+.x64`. Without it Windows won't start `tmr.exe`. TMR
+  takes it from Windows' `System32` folder only, where the Redistributable puts it: a copy of its
+  DLL beside `tmr.exe` isn't used.
 - **The Windows App Runtime 2.4 or later**, for the window only: TMR offers to download it when
   it's missing, or `winget install Microsoft.WindowsAppRuntime.2`.
 

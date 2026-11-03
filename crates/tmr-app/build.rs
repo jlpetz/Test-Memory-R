@@ -2,6 +2,15 @@
 //!
 //! - The icon (TODO 7), in every build: tmr.ico's images as the exe's icon resources, which Explorer, the taskbar and a console window
 //!   show. Written here as a .res, which the linker takes as it takes an object, so the build needs no resource compiler.
+//! - Where the exe's imports load from (TODO 114), in every build: System32 alone. tmr.exe imports vcruntime140.dll, wevtapi.dll and
+//!   bcryptprimitives.dll, none of them a KnownDLL, and for those the loader looks in the exe's folder first. A tmr.exe in a folder its
+//!   user can write (the bare exe in Downloads, as the README allows) would load a DLL of that name that any program of the user's put
+//!   beside it, before `main`, and run as administrator, run it elevated. `/DEPENDENTLOADFLAG:0x800` (LOAD_LIBRARY_SEARCH_SYSTEM32,
+//!   written to the exe's load configuration) has the loader take the exe's static imports from System32 only, from build 14393
+//!   (Windows 10 1607, older than any Windows TMR runs on). So vcruntime140.dll is the Visual C++ Redistributable's, in System32: a copy
+//!   beside tmr.exe is never used. The flag is the load-time imports' only. The delay-load helper's LoadLibraryEx and the Windows App
+//!   Runtime's loads search as before, and don't need it: the delay-loaded DLL is an API set, which the loader maps to the DLL that
+//!   implements it rather than look for a file, and the runtime loads from its package's folder (doc/todo/114-dll-search.md).
 //! - With the window (the `gui` feature, the default), what the CLI-only build (`--no-default-features`) doesn't link; without the
 //!   feature, none of it, so that exe has no delay-import directory and no manifest:
 //!   - The import older Windows lacks. Reactor imports `TryCreatePackageDependency` from `api-ms-win-appmodel-runtime-l1-1-5.dll`, which
@@ -24,6 +33,9 @@ fn main() {
     let res = out.join("tmr.res");
     std::fs::write(&res, icon_res(&ico)).expect("tmr.res written to OUT_DIR");
     println!("cargo::rustc-link-arg-bins={}", res.display());
+
+    // LOAD_LIBRARY_SEARCH_SYSTEM32: the exe's imports from System32, never from its own folder
+    println!("cargo::rustc-link-arg-bins=/DEPENDENTLOADFLAG:0x800");
 
     if std::env::var_os("CARGO_FEATURE_GUI").is_some() {
         println!("cargo::rustc-link-arg-bins=/DELAYLOAD:api-ms-win-appmodel-runtime-l1-1-5.dll");
