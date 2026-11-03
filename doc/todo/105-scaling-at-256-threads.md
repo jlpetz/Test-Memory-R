@@ -83,3 +83,16 @@ in memory and in the JSON: this one is needed. The largest results file so far i
 threads, 239 steps); at 256 threads and 1000 cycles of about 30 steps it would reach gigabytes.
 `doc/todo/29-split-design.md`, "Open for the owner", already asks: per-thread rows for every step
 of every cycle in pretty JSON, compact JSON, or per-test averages only?
+
+## Decided and built (2026-11-04)
+
+The owner's calls: (1) a histogram, once shown against the sort; (2) measured, fix to A/B; (3) built; (4) and (5) left.
+
+**(3), 4675926:** each step logs one `Running` line from the coordinator, the threads that share a layout counted together (`test_scaffolding::step_line`, from each thread's span, as `TestRunner::new` sizes it); each thread's `Running` line and its latency result line went to debug. The console's step result and the results file still carry every figure those lines had. Then (the owner): release builds without INFO logging by default, once a list shows what the INFO lines say that the app's output doesn't.
+
+**(1), shown first:** a comparison build (91b7330, a branch since deleted) logged each latency step's percentiles from the sort and from a histogram filled from the same samples. On the 8500G (6 threads), 18 steps from Lat-L1 to Lat-DRAMFull and the first V2 ones: every percentile within 0.020-0.043% of the sort's (the bound, half a bucket, is 0.049%); the worst in ns, DRAM P75 67.3101 against 67.2812; the same digits at the console's 0.1 ns; at L1, 55 M samples, the fill and merge took 0.046 s against the sort's copies and sort, 0.65-0.70 s.
+
+**(1), built 3434bb6:** `src/latency_histogram.rs`. Each latency test (the three originals and every V2 one) counts its samples in a `Histogram` of its own, 28 octaves of 1024 buckets (2^-4 to 2^24 ns), 224 KiB a thread, with the exact minimum and maximum (P0 and P100). A thread's percentiles come from its own, with no sort inside its clock (that sort read the Lat steps' MiB/s 9-16% low). The coordinator merges every thread's counts (`runner::merged_latencies`) for the step's percentiles, the step summary's and the latency report's: the figure a sort of every sample gives, not an average of the threads' (an average of P99s isn't the P99 of the samples). Calibration keeps its exact sort: one thread, thousands of samples a probe.
+
+- The spill check (`tools/hot_loop_spills.py`, post-LTO, before and after): every latency kernel's loops kept their verdicts, none on the stack; the new loops are the histogram's percentile walks, after a step, clean; the sample lists' growth loops are gone.
+- At 192 threads, the sort's 94 s after each Lat-L1 step becomes the merge: 192 x 28,672 additions, milliseconds (not yet measured on the metal box).
