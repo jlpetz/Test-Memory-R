@@ -215,7 +215,7 @@ pub unsafe fn read_latency_multi(
     result.basic_stats = runner.finish_completed((runner.bytes_processed() / 8) as u64);
 
     // Log per-thread results with all percentiles
-    log::info!(
+    log::debug!(
         "[Thread {}] {} - {} samples | P1={:.1} P5={:.1} P10={:.1} P25={:.1} P50={:.1} P75={:.1} P90={:.1} P95={:.1} P99={:.1} P99.9={:.1} | Spread={:.2}x",
         thread_id,
         test_name,
@@ -336,7 +336,7 @@ pub unsafe fn write_latency_multi(
     result.basic_stats = runner.finish_completed((runner.bytes_processed() / 8) as u64);
 
     // Log per-thread results with all percentiles
-    log::info!(
+    log::debug!(
         "[Thread {}] {} - {} samples | P1={:.1} P5={:.1} P10={:.1} P25={:.1} P50={:.1} P75={:.1} P90={:.1} P95={:.1} P99={:.1} P99.9={:.1} | Spread={:.2}x",
         thread_id,
         test_name,
@@ -464,7 +464,7 @@ pub unsafe fn copy_latency_multi(
     result.basic_stats = runner.finish_completed((runner.bytes_processed() / 16) as u64);
 
     // Log per-thread results with all percentiles
-    log::info!(
+    log::debug!(
         "[Thread {}] {} - {} samples | P1={:.1} P5={:.1} P10={:.1} P25={:.1} P50={:.1} P75={:.1} P90={:.1} P95={:.1} P99={:.1} P99.9={:.1} | Spread={:.2}x",
         thread_id,
         test_name,

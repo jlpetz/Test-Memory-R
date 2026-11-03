@@ -1595,7 +1595,7 @@ fn finalize_stats(
         spread_ratio: spread,
     };
 
-    log::info!(
+    log::debug!(
         "[Thread {}] {} - {} samples | P5={:.2} P50={:.2} P95={:.2} P99={:.2} | Spread={:.2}x",
         thread_id,
         test_name,

@@ -103,6 +103,8 @@ pub struct ThreadPool {
     senders: Vec<Sender<WorkItem>>,
     cpu_assignments: Vec<CpuAssignment>, // (thread_id, logical_cpu, numa_node)
     live: Arc<[TestProgress]>,
+    /// Each thread's span in bytes, by thread_id: what the coordinator sizes a step's line from (TODO 105)
+    span_bytes: Vec<usize>,
 }
 
 impl ThreadPool {
@@ -114,6 +116,7 @@ impl ThreadPool {
         let mut senders = Vec::new();
         let mut workers = Vec::new();
         let mut cpu_assignments = Vec::new();
+        let mut span_bytes = Vec::new();
 
         // Get CPU assignments from provided list or calculate
         let cpu_list_final: Vec<usize> = if let Some(list) = cpu_list { list.to_vec() } else { (0..thread_count).collect() };
@@ -131,6 +134,7 @@ impl ThreadPool {
 
             // Take ownership of this thread's blocks
             let blocks = thread_blocks.remove(&thread_id).unwrap_or_default();
+            span_bytes.push(blocks.iter().map(|b| b.buffer.size()).sum());
 
             let result_sender = result_sender.clone();
             let live = Arc::clone(&live);
@@ -175,11 +179,16 @@ impl ThreadPool {
             workers.push(handle);
         }
 
-        (ThreadPool { workers, senders, cpu_assignments, live }, result_receiver)
+        (ThreadPool { workers, senders, cpu_assignments, live, span_bytes }, result_receiver)
     }
 
     pub fn get_cpu_assignments(&self) -> &[CpuAssignment] {
         &self.cpu_assignments
+    }
+
+    /// Each thread's span in bytes, by thread_id
+    pub fn span_bytes(&self) -> &[usize] {
+        &self.span_bytes
     }
 
     /// The workers' live-progress slots, for the progress ticker. Reset one only while no test is running.

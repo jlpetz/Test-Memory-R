@@ -1392,6 +1392,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
                 break;
             }
         }
+        log::info!("{}", crate::test_scaffolding::step_line(test_display_name, test_name, test_config, thread_pool.span_bytes()));
         let test_start = Instant::now();
         thread_pool.execute_test(test_name, test_func, test_config, error_mode, &step_context);
 

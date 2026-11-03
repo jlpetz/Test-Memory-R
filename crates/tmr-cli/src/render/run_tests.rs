@@ -84,6 +84,8 @@ fn events_come_in_order_with_the_log_records() {
             .lines()
             .filter(|line| line.starts_with('<') || line.contains(" tmr::runner]") || line.contains(" tmr::layout]"))
             .map(|line| line.split_once("\x1b[0m ").map_or(line, |(_, message)| message).to_string())
+            // Each step's own line, which opens it (TODO 105), isn't a record around an event
+            .filter(|message| !message.starts_with("Running "))
             .collect()
     };
     let fake_cycle = |error_mode, flip| {

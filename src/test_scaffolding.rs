@@ -121,6 +121,43 @@ pub struct TestRunner<'a> {
     kept: bool,
 }
 
+/// What a step covers on one thread, for log lines: the bytes, the extent asked for, and the chunks (Mem-Random's are RNG iterations,
+/// not these byte ranges; the page exchange's, tiles)
+fn layout_text(test_name: &str, covered: usize, asked: usize, chunk: usize) -> String {
+    use crate::test_memory::{ChunkSpread, describe_chunks, describe_tiles, size_str};
+    let chunks = if crate::exchange::is_exchange(test_name) {
+        describe_tiles(covered, chunk)
+    } else {
+        describe_chunks(ChunkSpread::new(covered, chunk))
+    };
+    format!("{} (extent {}), {chunks}", size_str(covered), size_str(asked))
+}
+
+/// The step's line (TODO 105): what it covers on each thread, sized as `TestRunner::new` sizes it from the thread's span, the threads
+/// that share a layout counted together: "Running Mem-SimpleV2-Auto on 6 threads, each 2.00 GiB (extent ...), ..."
+pub fn step_line(name: &str, test_name: &str, config: &TestMemoryConfig, span_bytes: &[usize]) -> String {
+    let mut groups: Vec<(String, usize)> = Vec::new();
+    for &memory in span_bytes {
+        let text = match crate::test_memory::resolve_layout(config, test_name, memory) {
+            Some((covered, spread)) => layout_text(test_name, covered, config.calculate_extent_size(test_name, memory), spread.chunk()),
+            None => "no memory".to_string(),
+        };
+        match groups.iter_mut().find(|(t, _)| *t == text) {
+            Some((_, n)) => *n += 1,
+            None => groups.push((text, 1)),
+        }
+    }
+    let threads = span_bytes.len();
+    let (s, each) = if threads == 1 { ("", "") } else { ("s", "each ") };
+    match groups.as_slice() {
+        [(text, _)] => format!("Running {name} on {threads} thread{s}, {each}{text}"),
+        _ => {
+            let parts: Vec<String> = groups.iter().map(|(text, n)| format!("{n} on {text}")).collect();
+            format!("Running {name} on {threads} threads: {}", parts.join("; "))
+        }
+    }
+}
+
 /// The extent a test of this config covers on these blocks: the first bytes of the thread's span (TODO 76), at least one granule when there
 /// is memory. Also the worker's view of what a step that never takes the seal will overwrite (TODO 74).
 pub fn test_extent<'a>(blocks: &'a [AllocationBlock], config: &TestMemoryConfig, test_name: &str) -> (TestBlock<'a>, usize) {
@@ -182,21 +219,13 @@ impl<'a> TestRunner<'a> {
         }
 
         // Log the registration name (carries the `_A` auto-dispatch suffix and distinguishes registrations that share one test fn, e.g.
-        // Mem-StuckBit-Flush128); fall back to the fn's baked-in name. Sizing above still keys off `test_name` — do not swap that. What it
-        // covers, the extent asked for, and the chunks (Mem-Random's chunks are RNG iterations, not these byte ranges).
-        let log_name = config.display_name.as_deref().unwrap_or(test_name);
-        log::info!(
-            "[Thread {}] Running {} on {} (extent {}), {}",
-            thread_id,
-            log_name,
-            crate::test_memory::size_str(total_test_size),
-            crate::test_memory::size_str(extent_size),
-            if crate::exchange::is_exchange(test_name) {
-                crate::test_memory::describe_tiles(total_test_size, chunk)
-            } else {
-                crate::test_memory::describe_chunks(runner.chunks(total_test_size))
-            },
-        );
+        // Mem-StuckBit-Flush128); fall back to the fn's baked-in name. Sizing above still keys off `test_name` — do not swap that. At
+        // debug: the coordinator logs the step's one line from the same sizes (`step_line`, TODO 105: on EC2 each line cost ~1.8 ms,
+        // one after another, which staggered the threads' starts)
+        if log::log_enabled!(log::Level::Debug) {
+            let log_name = config.display_name.as_deref().unwrap_or(test_name);
+            log::debug!("[Thread {}] Running {} on {}", thread_id, log_name, layout_text(test_name, total_test_size, extent_size, chunk));
+        }
         (runner, extent)
     }
 
@@ -524,6 +553,23 @@ impl<'a> TestRunner<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TODO 105: a step logs one line, not one a thread; threads whose spans give the same layout are counted together, in the order they
+    /// come, and a thread with no memory says so
+    #[test]
+    fn a_step_has_one_line_its_threads_counted_by_layout() {
+        use crate::tests::{ChunkMode, ExtentMode};
+        const MIB: usize = 1024 * 1024;
+        let config = TestMemoryConfig::new(ExtentMode::FullAllocation, ChunkMode::Absolute { size_bytes: 4 * MIB });
+        let line = |spans: &[usize]| step_line("Mem-SimpleV2-Auto_A", "Mem-SimpleV2-Auto", &config, spans);
+        assert_eq!(line(&[8 * MIB; 3]), "Running Mem-SimpleV2-Auto_A on 3 threads, each 8 MiB (extent 8 MiB), 2 x 4 MiB chunks, overlap 0");
+        assert_eq!(line(&[8 * MIB]), "Running Mem-SimpleV2-Auto_A on 1 thread, 8 MiB (extent 8 MiB), 2 x 4 MiB chunks, overlap 0");
+        assert_eq!(
+            line(&[8 * MIB, 4 * MIB, 8 * MIB, 0]),
+            "Running Mem-SimpleV2-Auto_A on 4 threads: 2 on 8 MiB (extent 8 MiB), 2 x 4 MiB chunks, overlap 0; 1 on 4 MiB (extent 4 MiB), \
+             1 x 4 MiB chunks, overlap 0; 1 on no memory"
+        );
+    }
 
     /// TODO 109: the chart's speed is the last `RECENT_MS` of the test's own time: the average from the start until the publishes reach
     /// that far back, then the newest window, so a fast first pass shows for its own time and goes, where the average from the start kept
