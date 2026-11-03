@@ -68,7 +68,7 @@ fn sign_out_steps(out: &mut dyn Write) -> io::Result<()> {
 /// The UAC and domain lines under a heading's paragraph, when they apply
 fn uac_and_domain(out: &mut dyn Write, uac: bool, domain: bool) -> io::Result<()> {
     if uac {
-        writeln!(out, "As an administrator under UAC, you get it only in programs run as administrator, as TMR is now.")?;
+        writeln!(out, "After the next sign-in TMR has it in every run, run as administrator or not.")?;
     }
     if domain {
         writeln!(out, "This PC is in a domain: a domain Group Policy that sets this right replaces a local grant.")?;
@@ -208,7 +208,10 @@ fn needs_administrator(
     writeln!(out, "Only TMR run as administrator can set them up: Run as administrator (right-click TMR), or")?;
     writeln!(out, "tmr.exe --setup-large-pages from a console run as administrator.")?;
     if uac {
-        writeln!(out, "You sign in as an administrator under UAC: TMR gets this right only when run as administrator.")?;
+        writeln!(
+            out,
+            "You sign in as an administrator: run TMR as administrator once to grant it; after the next sign-in it has it in every run."
+        )?;
     }
     writeln!(out)?;
     writeln!(out, "Choose your preferred action:")?;

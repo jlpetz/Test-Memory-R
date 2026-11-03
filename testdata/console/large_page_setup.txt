@@ -22,7 +22,7 @@ standard 4 KiB pages.
 ✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\owner, which keeps it until it is removed (tmr.exe --remove-large-pages User:PC\owner)
 
 🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
-   As an administrator under UAC, you get it only in programs run as administrator
+   After it, TMR has it in every run, run as administrator or not
    This PC is in a domain: a domain Group Policy that sets this right replaces a local grant
 
 ⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
@@ -157,7 +157,7 @@ standard 4 KiB pages.
 
 ✅ The security policy gives it to BUILTIN\Administrators, a group PC\owner is in: nothing to grant
 🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
-   As an administrator under UAC, you get it only in programs run as administrator
+   After it, TMR has it in every run, run as administrator or not
    This PC is in a domain: a domain Group Policy that sets this right replaces a local grant
 
 ⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user

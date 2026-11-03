@@ -461,9 +461,9 @@ pub(crate) fn administrator(token: &Token) -> bool {
     })
 }
 
-/// An administrator under UAC, run as administrator: the elevated half of a split token, BUILTIN\Administrators enabled. The right then
-/// reaches only programs run as administrator (Microsoft's "Access Token Changes": a filtered token keeps five privileges, not this
-/// one), whichever account or group it was granted to.
+/// An administrator under UAC, run as administrator: the elevated half of a split token, BUILTIN\Administrators enabled. Told that after
+/// the next sign-in the right reaches every run, elevated or not: the filtered half keeps it (TODO 113, measured on Windows 11 on
+/// 2026-11-04, a right granted to the account; Microsoft's Vista-era "Access Token Changes" says a filtered token keeps five privileges).
 pub(crate) fn uac_elevated(token: &Token) -> bool {
     token.elevation == Elevation::Full && administrator(token)
 }
@@ -494,8 +494,8 @@ pub enum LargePageQuestion {
     /// 4 KiB pages, or TMR quits, granting nothing.
     Grant { candidates: Vec<Candidate>, uac: bool, domain: bool },
     /// TMR can't grant it, not run as administrator (or elevated without the Administrators group): this run takes 4 KiB pages, or TMR
-    /// quits, to be started as administrator. `uac`: an administrator under UAC not run as one, whom the right reaches only in programs
-    /// run as administrator.
+    /// quits, to be started as administrator. `uac`: an administrator under UAC not run as one, who can grant it by running TMR as
+    /// administrator once.
     NeedsAdministrator { account: String, uac: bool },
 }
 
@@ -647,7 +647,7 @@ pub fn enable_large_pages() -> Result<String, String> {
                     );
                     if token.as_ref().is_ok_and(uac_filtered) {
                         messages.push(
-                            "   You sign in as an administrator under UAC: TMR gets this right only when run as administrator".to_string(),
+                            "   You sign in as an administrator: run TMR as administrator once to grant it; after the next sign-in it has it in every run".to_string(),
                         );
                     }
                     messages.push("2. If it was just granted: sign out of Windows and back in, then run TMR again".to_string());

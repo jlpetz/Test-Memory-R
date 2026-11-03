@@ -70,10 +70,8 @@ the groups Windows puts everyone who signs in a certain way in, such as Everyone
 asks again: any program of any of those accounts could then lock memory away from Windows.
 
 Then sign out of Windows and back in, or restart it: a privilege reaches your programs only at
-your next sign-in (Microsoft: a restart isn't needed). If you sign in as an administrator under
-UAC, as Windows sets one up, Windows gives the privilege only to programs run as administrator,
-whichever account or group holds it: run TMR as administrator for large pages. A standard account
-granted it has it in every run. On a PC in a domain, a domain Group Policy that sets this
+your next sign-in (Microsoft: a restart isn't needed). From then on TMR has it in every run, run as
+administrator or not, whether you sign in as an administrator or as a standard account. On a PC in a domain, a domain Group Policy that sets this
 privilege replaces one granted on the PC.
 
 Without it TMR warns and asks first, whenever `maxpage=` allows large pages (as it does unless you

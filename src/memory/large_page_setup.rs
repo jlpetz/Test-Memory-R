@@ -437,11 +437,11 @@ fn target_line(out: &mut dyn Write, account: &Account) -> io::Result<()> {
     writeln!(out, "🎯 Target: {} (a {})", account.name, account.kind.noun())
 }
 
-/// The sign-in it takes, for `me`: the line, the UAC line for an administrator under it, and the domain's
+/// The sign-in it takes, for `me`: the line, for an administrator under UAC that it then reaches every run, and the domain's
 fn sign_in(out: &mut dyn Write, me: &Me) -> io::Result<()> {
     writeln!(out, "🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect")?;
     if me.uac {
-        writeln!(out, "   As an administrator under UAC, you get it only in programs run as administrator")?;
+        writeln!(out, "   After it, TMR has it in every run, run as administrator or not")?;
     }
     if me.domain {
         writeln!(out, "   This PC is in a domain: a domain Group Policy that sets this right replaces a local grant")?;

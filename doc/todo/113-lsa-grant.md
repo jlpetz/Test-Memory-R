@@ -71,22 +71,26 @@ to `regular` for this run); anything else ends the session before allocating, no
 - **Words**: a new sign-in, not a restart ("A restart of the computer isn't required ... effective the next time the owner of the
   account logs on"); on a domain PC one more line, a domain Group Policy that sets the right replaces a local grant.
 
-### UAC (review 1)
+### UAC (review 1; corrected 2026-11-04 by a measurement)
 
-Microsoft Learn, "Access Token Changes" (the Windows Vista UAC developer guide):
-<https://learn.microsoft.com/en-us/previous-versions/dotnet/articles/bb530410(v=msdn.10)>. A token with a restricted RID
-(Administrators and the other operator groups) is filtered to five privileges, and SeLockMemoryPrivilege isn't one of them;
-privileges are filtered by name, so it makes no difference whether the account or Administrators holds the right. So for an
-administrator under UAC the right reaches TMR only when it runs as administrator; a standard user granted it has it in every run.
+**What Windows 11 does (measured 2026-11-04, the 8500G, Windows 11, UAC on):** an administrator's filtered token keeps
+SeLockMemoryPrivilege. Signed in as an administrator granted the right on the account, a normal (not elevated) PowerShell showed
+`SeLockMemoryPrivilege ... Disabled` beside `BUILTIN\Administrators ... Group used for deny only`, and a double-clicked tmr.exe
+(not elevated: `TokenIsElevated` false) enabled it and ran on large pages. So once granted and signed in again, TMR has it in every
+run, elevated or not, for an administrator as for a standard user. Granting it still takes an administrator run as administrator.
 
-- Shown as a line when the token is the elevated half (`TokenElevationTypeFull`) with Administrators enabled (`uac_elevated`), not on
-  Full alone (a non-admin's split can come from a privilege); and to a non-elevated administrator (Limited, Administrators deny-only:
-  `uac_filtered`) in `NeedsAdministrator` and in the diagnostic's hint.
-- README.md and dist/docs/guide.md say so: their "grant once, sign out and back in, double-click TMR" never gave an administrator's
-  double-click large pages.
-- The owner's desktop check confirms it; it didn't gate the build: (1) an elevated `tmr --setup-large-pages`, sign out and in, then
-  `whoami /priv | findstr /i LockMemory` in a normal and an elevated console; (2) the same with `Group:Administrators`, after
-  `tmr --remove-large-pages`; (3) optionally a standard account. Results: not run yet.
+**What review 1 had assumed:** Microsoft Learn, "Access Token Changes" (the Windows Vista UAC developer guide):
+<https://learn.microsoft.com/en-us/previous-versions/dotnet/articles/bb530410(v=msdn.10)> says a token with a restricted RID
+(Administrators and the other operator groups) is filtered to five privileges, SeLockMemoryPrivilege not among them. That page is
+from Vista, and its own lists disagree with today's (its keep-list has SeReserveProcessorPrivilege, today's filtered token
+SeIncreaseWorkingSetPrivilege). Windows 11 doesn't remove this right. The owner's memory that the old flow worked (grant once, sign
+out and in, double-click) was right.
+
+- The text now says so (2026-11-04): the elevated dialogs and prompts (`uac_elevated`), "after the next sign-in TMR has it in every
+  run, run as administrator or not"; `NeedsAdministrator` and the diagnostic's hint for a non-elevated administrator
+  (`uac_filtered`), "run TMR as administrator once to grant it". README.md and dist/docs/guide.md likewise.
+- Not measured: a right held through a group (`Group:Administrators`). The filter works on the token's privileges, which LSA
+  gathers from the account and its groups alike, so it should be the same; the owner's optional desktop check.
 
 ### The commands (`src/memory/large_page_setup.rs`)
 

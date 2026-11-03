@@ -22,10 +22,8 @@ while TMR runs**, as any memory test can: save your work and close other program
 
 Then grant the large-page privilege once, from a console run as administrator:
 `tmr --setup-large-pages` grants it to you (`Group:Administrators`, or another `Group:` or `User:`
-name, to a group or another account), and sign out and back in. If you sign in as an administrator
-under UAC, as Windows sets one up, Windows gives the privilege only to programs run as
-administrator, so run TMR that way for large pages; a standard account granted it has it in every
-run. Double-click TMR for its window, or type `tmr` in a console: on its own it runs the stability
+name, to a group or another account), and sign out and back in. From then on TMR has it in every
+run, run as administrator or not. Double-click TMR for its window, or type `tmr` in a console: on its own it runs the stability
 plan, 3 cycles; `tmr --help` lists every setting, and `config=file.cfg` runs a TM5 config. The
 [user guide](dist/docs/guide.md), which the installer puts in TMR's `docs\` folder, has the rest.
 
@@ -138,8 +136,8 @@ L3, so they reach it.
 - **Optional: the "Lock pages in memory" privilege**, for huge and large pages: run
   `tmr.exe --setup-large-pages` once from an elevated prompt (`Group:Administrators`, or another
   `Group:` or `User:` name, grants it to a group or another account), then sign out of Windows and
-  back in (a privilege reaches your programs at your next sign-in). As an administrator under UAC,
-  TMR gets it only when run as administrator. `tmr.exe --remove-large-pages` takes it away again.
+  back in (a privilege reaches your programs at your next sign-in). From then on TMR has it in every
+  run, run as administrator or not. `tmr.exe --remove-large-pages` takes it away again.
   Without it TMR warns, and asks before running on regular 4 KB pages, which are slower: it runs
   on them only when you say so, or with `minpage=regular maxpage=regular`, and no answer quits.
 

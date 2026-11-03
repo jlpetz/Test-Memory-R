@@ -777,8 +777,7 @@ impl Model {
         const CONTINUE: &str = "Continue on 4 KiB pages this time";
         const QUIT: &str = "Quit";
         let elevated_lines = |uac: bool, domain: bool| {
-            let uac =
-                if uac { " As an administrator under UAC, you get it only in programs run as administrator, as TMR is now." } else { "" };
+            let uac = if uac { " After the next sign-in TMR has it in every run, run as administrator or not." } else { "" };
             let domain =
                 if domain { " This PC is in a domain: a domain Group Policy that sets this right replaces a local grant." } else { "" };
             format!("{uac}{domain}")
@@ -853,7 +852,7 @@ impl Model {
                      --setup-large-pages from a console run as administrator.{}\n\nQuit, to do that, or continue this time on \
                      {FOUR_KIB_PAGES} Closing this dialog quits too.",
                     if *uac {
-                        " You sign in as an administrator under UAC: TMR gets this right only when run as administrator."
+                        " You sign in as an administrator: run TMR as administrator once to grant it; after the next sign-in it has it in every run."
                     } else {
                         ""
                     }
@@ -1959,9 +1958,7 @@ mod tests {
             reply,
         );
         let text = m.large_page_dialog().text;
-        for said in
-            [r"to BUILTIN\Administrators, a group PC\owner is in,", "only in programs run as administrator", "a domain Group Policy"]
-        {
+        for said in [r"to BUILTIN\Administrators, a group PC\owner is in,", "run as administrator or not", "a domain Group Policy"] {
             assert!(text.contains(said), "{said}: {text}");
         }
         m.answer_large_pages(DialogButton::Secondary);
@@ -2089,7 +2086,7 @@ mod tests {
         let mut m = model();
         let (reply, _answer) = std::sync::mpsc::sync_channel(1);
         m.ask_large_pages(grant(true), reply);
-        assert!(m.large_page_dialog().text.contains("As an administrator under UAC"), "the UAC line");
+        assert!(m.large_page_dialog().text.contains("in every run, run as administrator or not"), "the UAC line");
     }
 
     /// TODO 113: TMR not run as administrator: its primary button quits, to run TMR as administrator, as Esc does (it has no close
@@ -2111,7 +2108,7 @@ mod tests {
                 (words.primary, words.secondary, words.close),
                 ("Quit, to run TMR as administrator", "Continue on 4 KiB pages this time", "")
             );
-            for said in ["Run as administrator", "--setup-large-pages", "only when run as administrator", "Closing this dialog quits"] {
+            for said in ["Run as administrator", "--setup-large-pages", "once to grant it", "Closing this dialog quits"] {
                 assert!(words.text.contains(said), "{said}: {}", words.text);
             }
             m.answer_large_pages(button);
