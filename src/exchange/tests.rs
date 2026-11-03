@@ -95,6 +95,37 @@ fn run_step(
     (stats, step, regions)
 }
 
+/// Each span's tiles in a step whose checks need every thread to claim in another's span. Which tiles a thread gets rests on how the
+/// threads' claims interleave: three claiming in turn (the fourth not yet woken from the step's barrier, on a busy box) each take every
+/// third claim. At 4 tiles a span the tests' key put pass 0's claims 5 tiles apart, so a thread's turns were 15 apart, one tile back:
+/// claims 1, 4, 7 and 10 took tiles 3, 2, 1 and 0, all thread 0's, and when they were thread 0's turns it claimed in no other span (pass
+/// 1's, 11 apart, went one tile on). At 16 a thread's cycle is 16 claims over 64 tiles, which seldom keep to its span: its turns would
+/// have to walk neighbouring tiles from the span's edge.
+const CROSSING_TILES: usize = 16;
+
+/// The steps `run_step_until` runs at most
+const ATTEMPTS: u64 = 8;
+
+/// `run_step` until `check` returns that the step met its precondition: a test's check that rests on how the threads' claims interleaved
+/// as well as on the exchange (that every thread claimed in another's span, say). `check` asserts what any step must hold, so a step
+/// that misses the precondition still has its images and its seal checked. Each step after the first takes the next seed, for another
+/// arrangement of the tiles. After `ATTEMPTS` misses it fails: an exchange that can't meet the precondition misses in every step.
+fn run_step_until(
+    what: &str, test: TestFunctionMultiBlock, nodes: &[u32], tiles: usize, config: &TestMemoryConfig,
+    mut check: impl FnMut(&[TestStats], &Step, &mut [Region]) -> bool,
+) {
+    let mut last = Vec::new();
+    for attempt in 0..ATTEMPTS {
+        let epoch = crate::pattern::StepEpoch { seed: config.epoch.seed.wrapping_add(attempt), ..config.epoch };
+        let (stats, step, mut regions) = run_step(test, nodes.to_vec(), tiles, TestMemoryConfig { epoch, ..config.clone() });
+        if check(&stats, &step, &mut regions) {
+            return;
+        }
+        last = (0..step.threads()).map(|t| step.tally(t)).collect();
+    }
+    panic!("{what}: the precondition missed in {ATTEMPTS} steps; the last one's tallies {last:?}");
+}
+
 /// Every word of the kernels' images is the pattern function's, at the tile's line ids from 0; the check finds a changed word; a copy
 /// stores what it read, bad words too; an invert leaves the complement. At each width, family, beat and polarity, both stores.
 #[test]
@@ -211,46 +242,54 @@ fn a_bad_word_under_the_seal_is_a_seal_error() {
     }
 }
 
-/// Four threads on two nodes: every thread claims other threads' tiles and other nodes', and every image checks out; copies cross nodes
+/// Four threads on two nodes: every thread claims other threads' tiles and other nodes', and every image checks out; copies cross nodes.
+/// Every step's images check out, and a step that isn't a copy copies nothing. Whose tiles a thread claimed, and how many of its claims
+/// found their tile busy, rest on how the threads' claims interleaved as well as on the exchange, so a step in which a thread kept to its
+/// span or its node, too few claims worked, or a copy's copies kept to one node, is run again (`run_step_until`): an exchange that doesn't
+/// cross misses in every step.
 #[test]
 fn tiles_cross_threads_and_nodes_and_every_image_checks_out() {
     for (op, test) in OPS {
-        let (stats, step, _) = run_step(test, vec![0, 0, 1, 1], 4, config(6));
-        for (t, s) in stats.iter().enumerate() {
-            assert_eq!((s.error_count, s.seal_errors), (0, 0), "{op:?}, thread {t}");
-            let tally = step.tally(t).expect("each thread's tally");
-            assert!(tally.claims > 0 && tally.others > 0 && tally.other_nodes > 0, "{op:?}, thread {t}: {tally:?}");
-        }
-        // 16 tiles (a copy's 4 held), 4 claims a cycle a thread: about every tile 6 times
-        let claims: u64 = (0..4).map(|t| step.tally(t).map_or(0, |x| x.claims)).sum();
-        assert!(claims >= 12 * 5, "{op:?}: {claims} claims");
-        let (copies, across): (u64, u64) =
-            (0..4).map(|t| step.tally(t).map_or((0, 0), |x| (x.copies, x.copies_across))).fold((0, 0), |a, x| (a.0 + x.0, a.1 + x.1));
-        if op == Op::Copy {
-            assert!(copies > 0 && across > 0, "{copies} copies, {across} across nodes");
-        } else {
-            assert_eq!(copies, 0, "{op:?}");
-        }
+        run_step_until(&format!("{op:?}"), test, &[0, 0, 1, 1], CROSSING_TILES, &config(6), |stats, step, _| {
+            for (t, s) in stats.iter().enumerate() {
+                assert_eq!((s.error_count, s.seal_errors), (0, 0), "{op:?}, thread {t}");
+            }
+            let tallies: Vec<Tally> = (0..4).map(|t| step.tally(t).expect("each thread's tally")).collect();
+            let (copies, across) = tallies.iter().fold((0, 0), |a, x| (a.0 + x.copies, a.1 + x.copies_across));
+            if op != Op::Copy {
+                assert_eq!(copies, 0, "{op:?}");
+            }
+            // 64 tiles (a copy's 4 held), 16 claims a cycle a thread: about every tile 6 times
+            let claims: u64 = tallies.iter().map(|x| x.claims).sum();
+            tallies.iter().all(|x| x.others > 0 && x.other_nodes > 0)
+                && claims >= (4 * CROSSING_TILES as u64 - 4) * 5
+                && (op != Op::Copy || copies > 0 && across > 0)
+        });
     }
 }
 
-/// A sealed step of four threads: first claims check the seal in each other's spans, and every span ends resealed, one cycle or more
+/// A sealed step of four threads: first claims check the seal in each other's spans, and every span ends resealed, one cycle or more.
+/// That every thread claimed in another's span is those checks' precondition, not what they check: it rests on how the threads' claims
+/// interleaved, so a step in which one didn't is run again (`run_step_until`), its seal checked all the same.
 #[test]
 fn a_sealed_step_across_threads_leaves_every_span_resealed() {
     for (op, test) in OPS {
         for cycles in [1, 4] {
-            let (stats, step, mut regions) = run_step(test, vec![0, 0, 1, 1], 4, TestMemoryConfig { seal: sealed(), ..config(cycles) });
-            for (t, s) in stats.iter().enumerate() {
-                assert_eq!((s.error_count, s.seal_errors), (0, 0), "{op:?}, {cycles} cycles, thread {t}");
-                assert!(step.tally(t).is_some_and(|x| x.others > 0), "{op:?}, {cycles} cycles, thread {t}");
-            }
-            let kernel = sealed().kernel;
-            for (t, region) in regions.iter_mut().enumerate() {
-                let words = region.words().len();
-                // SAFETY: the region's words
-                let left = unsafe { kernel.check(region.words().as_mut_ptr(), 0, words, "test") };
-                assert_eq!(left, 0, "{op:?}, {cycles} cycles: span {t} not resealed");
-            }
+            let what = format!("{op:?}, {cycles} cycles");
+            let config = TestMemoryConfig { seal: sealed(), ..config(cycles) };
+            run_step_until(&what, test, &[0, 0, 1, 1], CROSSING_TILES, &config, |stats, step, regions| {
+                for (t, s) in stats.iter().enumerate() {
+                    assert_eq!((s.error_count, s.seal_errors), (0, 0), "{what}, thread {t}");
+                }
+                let kernel = sealed().kernel;
+                for (t, region) in regions.iter_mut().enumerate() {
+                    let words = region.words().len();
+                    // SAFETY: the region's words
+                    let left = unsafe { kernel.check(region.words().as_mut_ptr(), 0, words, "test") };
+                    assert_eq!(left, 0, "{what}: span {t} not resealed");
+                }
+                (0..stats.len()).all(|t| step.tally(t).is_some_and(|x| x.others > 0))
+            });
         }
     }
 }
@@ -274,15 +313,19 @@ fn the_sharing_groups_keep_to_their_nodes() {
     }
 }
 
-/// `cross` on one node is `any`
+/// `cross` on one node is `any`: each thread claims, none on another node, and each in the other's span. That last rests on how the two
+/// threads' claims interleaved, so a step in which one kept to its own span is run again (`run_step_until`).
 #[test]
 fn cross_on_one_node_is_any() {
-    let (stats, step, _) = run_step(page_exchange_rewrite_multi, vec![0, 0], 4, sharing(config(3), Share::Cross));
-    for (t, s) in stats.iter().enumerate() {
-        assert_eq!(s.error_count, 0);
-        let tally = step.tally(t).expect("each thread's tally");
-        assert!(tally.claims > 0 && tally.others > 0 && tally.other_nodes == 0, "thread {t}: {tally:?}");
-    }
+    let config = sharing(config(3), Share::Cross);
+    run_step_until("cross on one node", page_exchange_rewrite_multi, &[0, 0], CROSSING_TILES, &config, |stats, step, _| {
+        for (t, s) in stats.iter().enumerate() {
+            assert_eq!(s.error_count, 0);
+            let tally = step.tally(t).expect("each thread's tally");
+            assert!(tally.claims > 0 && tally.other_nodes == 0, "thread {t}: {tally:?}");
+        }
+        (0..2).all(|t| step.tally(t).is_some_and(|x| x.others > 0))
+    });
 }
 
 /// `exchange_invert` makes that share of a copy's threads invert, spread over them: at 50%, every other thread
