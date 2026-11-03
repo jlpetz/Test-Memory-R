@@ -4,20 +4,23 @@
 // (`test_fn_safety.md` covers them): crate-wide added 30 sites, none a kernel's.
 #![warn(clippy::undocumented_unsafe_blocks)]
 
+use std::collections::HashMap;
 use std::ffi::c_void;
-use std::fs;
-use std::process::Command;
 use std::ptr::null_mut;
 
 use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, LUID, WIN32_ERROR};
 use windows::Win32::Security::{
-    AdjustTokenPrivileges, GetTokenInformation, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES,
-    TOKEN_PRIVILEGES, TOKEN_QUERY, TokenPrivileges,
+    AdjustTokenPrivileges, GetTokenInformation, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED, SID_NAME_USE,
+    SidTypeComputer, SidTypeDeletedAccount, SidTypeDomain, SidTypeInvalid, SidTypeLabel, SidTypeLogonSession, SidTypeUser,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY, TokenPrivileges,
 };
 use windows::Win32::System::Diagnostics::Debug::{FORMAT_MESSAGE_FROM_SYSTEM, FormatMessageW};
 use windows::Win32::System::Memory::{MEM_COMMIT, MEM_LARGE_PAGES, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc, VirtualFree};
+use windows::Win32::System::SystemServices::{SE_GROUP_ENABLED, SE_GROUP_INTEGRITY, SE_GROUP_LOGON_ID, SE_GROUP_USE_FOR_DENY_ONLY};
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::core::PWSTR;
+
+use super::lsa::{Access, Elevation, Named, Policy, Sid, Token, account_name, in_a_domain};
 
 #[derive(Debug, PartialEq)]
 enum PrivilegeState {
@@ -26,7 +29,7 @@ enum PrivilegeState {
     AssignedAndEnabled,
 }
 
-fn format_win32_error(err: WIN32_ERROR) -> String {
+pub(super) fn format_win32_error(err: WIN32_ERROR) -> String {
     let mut buffer = [0u16; 512];
     // SAFETY: `FormatMessageW` writes at most `buffer.len()` UTF-16 units into the stack buffer we hand it, and the length we pass is that
     // array's own length. Without `FORMAT_MESSAGE_ALLOCATE_BUFFER` it never reallocates, so the pointer stays ours.
@@ -293,146 +296,366 @@ pub fn enable_large_page_privilege_enhanced() -> Result<(), String> {
     }
 }
 
-/// What a session asks about large pages before its run (`Frontend::large_page_restart`), when this process is elevated and its token
-/// lacks the right they need, SeLockMemoryPrivilege ('Lock pages in memory'). Either way they take effect only once Windows restarts: a
-/// token takes the rights its account has at its sign-in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LargePageQuestion {
-    /// The security policy assigns the right already, so only the restart is missing. To some account: the check doesn't say which
-    /// (`check_if_privilege_in_policy`).
-    Restart,
-    /// The policy doesn't assign it, and TMR could grant it to `account` (`DOMAIN\user`, the account TMR runs as), which then keeps it
-    /// until it is removed
-    Grant { account: String },
+// ---- Whom the right reaches (TODO 113) ------------------------------------------------------------------------------------------------
+
+/// How far a grant of the right reaches, which orders the candidates and warns of the broad ones: the account TMR runs as, a group it is
+/// in, every account that can sign in to this PC (BUILTIN\Users), every account of a domain (Domain Users), or one of Windows' automatic
+/// groups, which every account that signs in a certain way is in (Everyone, Authenticated Users, INTERACTIVE). By SID, never by name:
+/// names are localized ("VORDEFINIERT\Administratoren", "Jeder").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Reach {
+    You,
+    Group,
+    EveryLocalAccount,
+    EveryDomainAccount,
+    Automatic,
 }
 
-/// The account TMR runs as, `DOMAIN\user`: the one a grant names
-fn account() -> String {
-    let username = std::env::var("USERNAME").unwrap_or_else(|_| "Administrator".to_string());
-    let domain = std::env::var("USERDOMAIN").unwrap_or_else(|_| std::env::var("COMPUTERNAME").unwrap_or_else(|_| "WORKGROUP".to_string()));
-    format!("{}\\{}", domain, username)
+impl Reach {
+    /// What a broad one reaches, the end of its warning ("⚠️  BROAD, likely not what you want: ..."): `None` for the account and a group
+    pub fn warning(self) -> Option<&'static str> {
+        match self {
+            Reach::You | Reach::Group => None,
+            Reach::EveryLocalAccount => Some("every account that can sign in to this PC is in it"),
+            Reach::EveryDomainAccount => Some("every account of its domain is in it"),
+            Reach::Automatic => Some("Windows puts every account that signs in a certain way in it"),
+        }
+    }
+
+    /// Warned of, and a pick of it asked again (`BROAD_RISK`)
+    pub fn is_broad(self) -> bool {
+        self.warning().is_some()
+    }
 }
 
-/// The large-page question this process has for its user (`session::run`), if any: none when its token has the right, or when it isn't
-/// elevated, so it couldn't grant it (the diagnostic says what to do then). Reads the security policy (a `secedit /export`), and changes
-/// nothing.
-pub fn large_page_question() -> Option<LargePageQuestion> {
-    let in_token = check_privilege_state() != PrivilegeState::NotAssigned;
-    // An export that fails reads as no assignment: the question offers the grant, which would then fail as the export did, and say why
-    question_for(in_token, is_elevated(), || check_if_privilege_in_policy().unwrap_or_default(), account)
+/// What a broad grant risks, which the second question after a broad pick states: Microsoft's 'Lock pages in memory' page names it a
+/// denial of service, "could leave little or no RAM for other processes"
+pub const BROAD_RISK: &str = "any program of any of these accounts can then lock RAM away from Windows";
+
+/// Windows' automatic groups, by SID (the TODO 113 review's list): Everyone (S-1-1-0); S-1-2-*, LOCAL and CONSOLE LOGON; NT AUTHORITY's
+/// DIALUP, NETWORK, BATCH, INTERACTIVE, SERVICE, ANONYMOUS LOGON, PROXY, ENTERPRISE DOMAIN CONTROLLERS, Authenticated Users, RESTRICTED,
+/// TERMINAL SERVER USER, REMOTE INTERACTIVE LOGON, This Organization, Local account and its member-of-Administrators part (S-1-5-1 to 15,
+/// 113, 114); NTLM, SChannel and Digest Authentication (S-1-5-64-*); This Organization Certificate (S-1-5-65-1); and the asserted
+/// identities (S-1-18-*)
+pub(crate) fn is_automatic(sid: &Sid) -> bool {
+    matches!(
+        (sid.authority(), sid.sub_authorities()),
+        (1, [0])
+            | (2, [_, ..])
+            | (18, [_, ..])
+            | (5, [1 | 2 | 3 | 4 | 6 | 7 | 8 | 9 | 11 | 12 | 13 | 14 | 15 | 113 | 114])
+            | (5, [64, _, ..])
+            | (5, [65, 1])
+    )
 }
 
-/// `large_page_question`'s choice, from whether this token has the right (`in_token`, enabled or not) and this process is `elevated`:
-/// `in_policy` (the `secedit /export`) is read only when those two leave a question to ask, and `account` named only for the grant
-fn question_for(
-    in_token: bool, elevated: bool, in_policy: impl FnOnce() -> bool, account: impl FnOnce() -> String,
-) -> Option<LargePageQuestion> {
-    if in_token || !elevated {
+/// Service accounts, which fit both `User:` and `Group:` (Windows types them well-known groups) and aren't broad: SYSTEM, LOCAL SERVICE
+/// and NETWORK SERVICE (S-1-5-18, 19, 20), and NT SERVICE\*, IIS APPPOOL\* and NT VIRTUAL MACHINE\* (S-1-5-80-*, 82-*, 83-*)
+pub(crate) fn is_service_account(sid: &Sid) -> bool {
+    matches!((sid.authority(), sid.sub_authorities()), (5, [18..=20]) | (5, [80 | 82 | 83, _, ..]))
+}
+
+/// BUILTIN\Administrators, which is enabled in a token only when it runs as administrator, and which a grant needs
+fn is_administrators(sid: &Sid) -> bool {
+    sid.authority() == 5 && sid.sub_authorities() == [32, 544]
+}
+
+/// What a SID is that the right is never offered to, `None` for the rest: a sign-in's own (the logon SID, S-1-5-5-*), an integrity label
+/// (S-1-16-*), or an app's (S-1-15-*: its package and its capabilities)
+pub(crate) fn never_offered(sid: &Sid) -> Option<&'static str> {
+    match (sid.authority(), sid.sub_authorities()) {
+        (5, [5, ..]) => Some("a sign-in's own SID, which lasts one sign-in"),
+        (16, _) => Some("an integrity label"),
+        (15, _) => Some("an app's SID"),
+        _ => None,
+    }
+}
+
+/// How far a grant to `sid` reaches, by its SID alone: the automatic groups, BUILTIN\Users (S-1-5-32-545), a domain's Domain Users
+/// (S-1-5-21-a-b-c-513, "None" on a PC in no domain), else a group's (an account's too: its reach is the account's own)
+pub(crate) fn breadth(sid: &Sid) -> Reach {
+    match (sid.authority(), sid.sub_authorities()) {
+        _ if is_automatic(sid) => Reach::Automatic,
+        (5, [32, 545]) => Reach::EveryLocalAccount,
+        (5, [21, _, _, _, 513]) => Reach::EveryDomainAccount,
+        _ => Reach::Group,
+    }
+}
+
+/// Whether a group of this token, `sid` with its `attributes` (`SE_GROUP_*`) and its type as Windows named it (`kind`, `None` when it
+/// can't), is offered the right, and how far that reaches (`breadth`). Left out: the logon SID, the integrity labels, a group this token
+/// can't use (deny-only, which still counts as holding it: `held_by`), app SIDs, and what isn't a group (a label, a logon session, a
+/// domain, a computer, a deleted account, a user among the groups). A group Windows can't name is kept: it can still be granted by SID.
+pub(crate) fn reach(sid: &Sid, kind: Option<SID_NAME_USE>, attributes: u32) -> Option<Reach> {
+    let logon_id = SE_GROUP_LOGON_ID as u32;
+    if attributes & logon_id == logon_id || attributes & (SE_GROUP_INTEGRITY | SE_GROUP_USE_FOR_DENY_ONLY) as u32 != 0 {
         return None;
     }
-    Some(if in_policy() { LargePageQuestion::Restart } else { LargePageQuestion::Grant { account: account() } })
+    let not_a_group =
+        [SidTypeLabel, SidTypeLogonSession, SidTypeDomain, SidTypeComputer, SidTypeDeletedAccount, SidTypeInvalid, SidTypeUser];
+    if never_offered(sid).is_some() || kind.is_some_and(|kind| not_a_group.contains(&kind)) {
+        return None;
+    }
+    Some(breadth(sid))
 }
 
-/// Grants `account` the right large pages need, editing the machine's security policy (`grant_privilege_via_secedit`). Called only once
-/// the user has said yes to the question that named `account` (`session::run`), or by `--setup-large-pages` (`setup_large_pages`), the
-/// command being the request. The account keeps the right until it is removed, and it takes effect once Windows restarts.
-pub fn grant_large_pages(account: &str) -> Result<(), String> {
-    if !is_elevated() {
-        return Err("Administrator privileges required".to_string());
+/// Whom a session offers the right to (`LargePageQuestion::Grant`): an account or a group, Windows' name for it (`DOMAIN\name`, its
+/// `S-1-...` string when Windows can't name it) and how far a grant reaches. Its SID is the engine's: the session grants from its own
+/// copy of the question, so a frontend can't change whom.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    pub name: String,
+    pub reach: Reach,
+    sid: Sid,
+}
+
+impl Candidate {
+    pub fn new(name: impl Into<String>, reach: Reach, sid: Sid) -> Self {
+        Candidate { name: name.into(), reach, sid }
     }
 
-    log::info!("Attempting to grant SeLockMemoryPrivilege to: {}", account);
+    pub(crate) fn sid(&self) -> &Sid {
+        &self.sid
+    }
+}
 
-    grant_privilege_via_secedit(account).map_err(|e| {
-        // Provide more specific error context
-        if e.contains("configure failed") && e.contains("privileges") {
-            "Privilege assignment failed - may already be assigned (restart needed)".to_string()
-        } else if e.contains("UTF-8") || e.contains("encoding") {
-            "File encoding issue during policy modification".to_string()
-        } else {
-            format!("Setup failed: {}", e)
-        }
+/// The candidates in the order they are offered: `you` first, the default; then the groups, a real group before every local account
+/// (Users), before every account of a domain, before the automatic groups, each kind A-Z. Sorted rather than in the token's order, so the
+/// list (and its goldens) stay put. A group that is the account itself, or one listed twice, is left out.
+pub(crate) fn order(you: Candidate, groups: Vec<Candidate>) -> Vec<Candidate> {
+    let mut groups: Vec<Candidate> = groups.into_iter().filter(|group| group.sid != you.sid).collect();
+    groups.sort_by_cached_key(|group| (group.reach, group.name.to_lowercase()));
+    groups.dedup_by(|a, b| a.sid == b.sid);
+    std::iter::once(you).chain(groups).collect()
+}
+
+/// Which of this token's SIDs the policy gives the right to (`held_by`)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Holder {
+    /// The account itself
+    You,
+    /// A group it is in, by its name in the list, or when the list left it out by Windows' name for it (its `S-1-...` string if none)
+    Group(String),
+}
+
+/// Whether the right is the token's to have, from the policy's `holders`: given to `you` (preferred), or to one of `groups` (in the
+/// order offered, first), or to another SID of `mine` (the token's every SID, deny-only ones too: a sign-in's privileges come from its
+/// memberships), named from `names`. Holders that aren't the token's don't count: a SQL Server service account holding it made TMR ask
+/// for a restart forever.
+pub(crate) fn held_by(holders: &[Sid], you: &Candidate, groups: &[Candidate], mine: &[Sid], names: &HashMap<Sid, Named>) -> Option<Holder> {
+    if holders.contains(&you.sid) {
+        return Some(Holder::You);
+    }
+    if let Some(group) = groups.iter().find(|group| holders.contains(&group.sid)) {
+        return Some(Holder::Group(group.name.clone()));
+    }
+    let named = |sid: &Sid| names.get(sid).map_or_else(|| sid.to_string(), |named| named.name.clone());
+    mine.iter().find(|sid| **sid != you.sid && holders.contains(sid)).map(|sid| Holder::Group(named(sid)))
+}
+
+/// Whether this token runs as administrator, which granting the right needs: BUILTIN\Administrators enabled in it. TokenIsElevated isn't
+/// enough: an elevated Backup Operator would be offered a grant that fails.
+pub(crate) fn administrator(token: &Token) -> bool {
+    token.groups.iter().any(|(sid, attributes)| {
+        is_administrators(sid) && attributes & SE_GROUP_ENABLED as u32 != 0 && attributes & SE_GROUP_USE_FOR_DENY_ONLY as u32 == 0
     })
 }
 
-/// `--setup-large-pages`: the diagnostic, then, when the right is missing from this token and this process is elevated, the grant, to the
-/// account TMR runs as. It doesn't ask: the command is the request.
-pub fn setup_large_pages() -> String {
-    let mut report = diagnose_large_pages();
-    if check_privilege_state() == PrivilegeState::NotAssigned && is_elevated() {
-        let account = account();
-        let outcome = grant_large_pages(&account);
-        report.push_str(&grant_report(&account, outcome));
-    }
-    report
+/// An administrator under UAC, run as administrator: the elevated half of a split token, BUILTIN\Administrators enabled. The right then
+/// reaches only programs run as administrator (Microsoft's "Access Token Changes": a filtered token keeps five privileges, not this
+/// one), whichever account or group it was granted to.
+pub(crate) fn uac_elevated(token: &Token) -> bool {
+    token.elevation == Elevation::Full && administrator(token)
 }
 
-/// What `--setup-large-pages` says of its grant to `account`, one line each, and the manual steps when it failed
-fn grant_report(account: &str, outcome: Result<(), String>) -> String {
-    let mut messages = Vec::new();
-    match outcome {
-        Ok(()) => {
-            messages.push(format!("✅ Successfully granted SeLockMemoryPrivilege to {}, which keeps it until it is removed", account));
-            messages.push("".to_string());
-            messages.push("🔄 RESTART REQUIRED: Restart Windows (or sign out and back in) for it to take effect".to_string());
-        }
-        Err(grant_error) => {
-            messages.push(format!("❌ Automatic setup failed: {}", grant_error));
-            messages.push("".to_string());
-
-            // Provide context-aware guidance
-            if grant_error.contains("already") || grant_error.contains("assigned") {
-                messages.push("💡 POSSIBLE CAUSE: Privilege already set but restart needed".to_string());
-                messages.push("   If you recently used gpedit.msc or other tools to grant the privilege,".to_string());
-                messages.push("   restart TMR (or log off/log on) to apply the changes.".to_string());
-                messages.push("".to_string());
-                messages.push("🔄 TRY FIRST: Restart TMR and run again".to_string());
-                messages.push("".to_string());
-            }
-
-            messages.push("📖 Manual Setup (if restart doesn't work):".to_string());
-            messages.push("1. Run gpedit.msc as Administrator".to_string());
-            messages.push(
-                "2. Navigate to: Computer Configuration → Windows Settings → Security Settings → Local Policies → User Rights Assignment"
-                    .to_string(),
-            );
-            messages.push("3. Double-click 'Lock pages in memory'".to_string());
-            messages.push("4. Add your user account or 'Administrators' group".to_string());
-            messages.push("5. Restart Windows (or sign out and back in)".to_string());
-        }
-    }
-    messages.join("\n") + "\n"
+/// An administrator under UAC, not run as administrator: the filtered half of a split token, BUILTIN\Administrators deny-only
+pub(crate) fn uac_filtered(token: &Token) -> bool {
+    let deny_only = SE_GROUP_USE_FOR_DENY_ONLY as u32;
+    token.elevation == Elevation::Limited
+        && token.groups.iter().any(|(sid, attributes)| is_administrators(sid) && attributes & deny_only != 0)
 }
 
-/// The large-page check's lines: the account, the right's state in this token, enabling it there when it is disabled, and a test
-/// allocation. It never grants the right (`grant_large_pages` does, asked). The allocator calls it too, before a large-page request
-/// (`WindowsBackend::allocate_with_virtualalloc2`).
+/// The account this token runs as, as every message names it: Windows' `DOMAIN\name`, or its `S-1-...` string when it has none
+pub(crate) fn account_of(token: &Token) -> String {
+    account_name(&token.user).map_or_else(|_| token.user.to_string(), |named| named.name)
+}
+
+/// What a session asks about large pages before its run (`Frontend::ask_large_pages`), when this token lacks the right they need,
+/// SeLockMemoryPrivilege ('Lock pages in memory'), and the run's page range allows them (maxpage= large or huge). A right reaches a
+/// program at its account's next sign-in: no restart is needed. The owner's rule (2026-11-03): a run takes 4 KiB pages only when the
+/// user says so (`LargePageAnswer::Regular`) or gave `minpage=regular maxpage=regular` (then nothing is asked); no answer quits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LargePageQuestion {
+    /// The policy gives it to `account`, the account TMR runs as, or to `via`, a group it is in, but this sign-in began before it did. A
+    /// new sign-in brings it, or this run takes 4 KiB pages.
+    SignIn { account: String, via: Option<String>, uac: bool, domain: bool },
+    /// Neither the account nor a group it is in holds it, and TMR, run as administrator, can grant it: to whom, `candidates[0]` the
+    /// account itself (the default), then its groups, the broad ones last (`Reach`). Granted, it takes a new sign-in; or this run takes
+    /// 4 KiB pages, or TMR quits, granting nothing.
+    Grant { candidates: Vec<Candidate>, uac: bool, domain: bool },
+    /// TMR can't grant it, not run as administrator (or elevated without the Administrators group): this run takes 4 KiB pages, or TMR
+    /// quits, to be started as administrator. `uac`: an administrator under UAC not run as one, whom the right reaches only in programs
+    /// run as administrator.
+    NeedsAdministrator { account: String, uac: bool },
+}
+
+/// What the large-page question for an administrator reads (`question_for`): the account and its groups as candidates (`reach`), every
+/// SID of the token, Windows' names for them and for the holders, the policy's holders, whether it is an administrator under UAC
+/// (`uac_elevated`), and whether this PC is in a domain
+pub(crate) struct Standing {
+    pub(crate) you: Candidate,
+    pub(crate) groups: Vec<Candidate>,
+    pub(crate) mine: Vec<Sid>,
+    pub(crate) names: HashMap<Sid, Named>,
+    pub(crate) holders: Result<Vec<Sid>, String>,
+    pub(crate) uac: bool,
+    pub(crate) domain: bool,
+}
+
+/// The large-page question this process has for its user (`session::run`), if any: none when the run's page range allows nothing above
+/// 4 KiB (`wants_large`: maxpage= large or huge), and none when its token has the right (enabled or not). Reads the token, and the
+/// security policy when TMR runs as administrator; changes nothing.
+pub fn large_page_question(wants_large: bool) -> Option<LargePageQuestion> {
+    if !wants_large || check_privilege_state() != PrivilegeState::NotAssigned {
+        return None;
+    }
+    let token = match Token::read() {
+        Ok(token) => token,
+        Err(e) => {
+            log::warn!("This process's token couldn't be read ({e}): no large-page question");
+            return None;
+        }
+    };
+    question_for(false, wants_large, administrator(&token), || (account_of(&token), uac_filtered(&token)), || standing(&token))
+}
+
+/// `large_page_question`'s choice, from whether this token has the right (`in_token`, enabled or not), whether the run's page range
+/// allows large pages (`wants_large`) and whether TMR runs as `administrator`: none with the right, or with 4 KiB pages the most the run
+/// takes; TMR not run as administrator, 4 KiB pages or quit (the account and `uac` from `unelevated`); run as administrator, the sign-in
+/// when the policy gives the right to the account or one of its groups, else the grant (`standing`, read only then). A policy that can't
+/// be read offers the grant, which then fails as the read did, saying why.
+pub(crate) fn question_for(
+    in_token: bool, wants_large: bool, administrator: bool, unelevated: impl FnOnce() -> (String, bool),
+    standing: impl FnOnce() -> Standing,
+) -> Option<LargePageQuestion> {
+    if in_token || !wants_large {
+        return None;
+    }
+    if !administrator {
+        let (account, uac) = unelevated();
+        return Some(LargePageQuestion::NeedsAdministrator { account, uac });
+    }
+    let Standing { you, groups, mine, names, holders, uac, domain } = standing();
+    let holders = holders.unwrap_or_else(|e| {
+        log::warn!("The security policy couldn't be read ({e}): the grant is offered");
+        Vec::new()
+    });
+    let candidates = order(you, groups);
+    let account = candidates[0].name.clone();
+    Some(match held_by(&holders, &candidates[0], &candidates[1..], &mine, &names) {
+        Some(Holder::You) => LargePageQuestion::SignIn { account, via: None, uac, domain },
+        Some(Holder::Group(group)) => LargePageQuestion::SignIn { account, via: Some(group), uac, domain },
+        None => LargePageQuestion::Grant { candidates, uac, domain },
+    })
+}
+
+/// The names of `sids` (`Policy::names`, one call), by SID: none when the policy couldn't name them
+fn names_of(policy: &Policy, sids: &[Sid]) -> HashMap<Sid, Named> {
+    let names = policy.names(sids).unwrap_or_else(|e| {
+        log::warn!("Windows couldn't name this process's groups ({e}): they are listed by SID");
+        vec![None; sids.len()]
+    });
+    sids.iter().cloned().zip(names).filter_map(|(sid, named)| Some((sid, named?))).collect()
+}
+
+/// The account, its groups as candidates, and their names, with `holders`' too (`names_of`, `policy` the one to ask, none when it couldn't
+/// be opened, and then only the account is named, `LookupAccountSidW`)
+pub(crate) fn who(token: &Token, policy: Option<&Policy>, holders: &[Sid]) -> (Candidate, Vec<Candidate>, HashMap<Sid, Named>) {
+    let mut asked: Vec<Sid> = std::iter::once(token.user.clone()).chain(token.groups.iter().map(|(sid, _)| sid.clone())).collect();
+    let others: Vec<Sid> = holders.iter().filter(|holder| !asked.contains(holder)).cloned().collect();
+    asked.extend(others);
+    let names = policy.map(|policy| names_of(policy, &asked)).unwrap_or_default();
+    let you = names.get(&token.user).map_or_else(|| account_of(token), |named| named.name.clone());
+    let groups = token
+        .groups
+        .iter()
+        .filter_map(|(sid, attributes)| {
+            let named = names.get(sid);
+            let reach = reach(sid, named.map(|named| named.kind), *attributes)?;
+            Some(Candidate::new(named.map_or_else(|| sid.to_string(), |named| named.name.clone()), reach, sid.clone()))
+        })
+        .collect();
+    (Candidate::new(you, Reach::You, token.user.clone()), groups, names)
+}
+
+/// `holders` as the log names them: each by its name and SID, so a holder that isn't this user shows ("NT SERVICE\MSSQLSERVER")
+pub(crate) fn describe_holders(holders: &[Sid], names: &HashMap<Sid, Named>) -> String {
+    if holders.is_empty() {
+        return "no account or group".to_string();
+    }
+    let named = |sid: &Sid| names.get(sid).map_or_else(|| sid.to_string(), |named| format!("{} ({sid})", named.name));
+    holders.iter().map(named).collect::<Vec<_>>().join(", ")
+}
+
+/// What an administrator's question reads: the policy's holders and the names of every SID, on one handle opened to read
+fn standing(token: &Token) -> Standing {
+    let mine: Vec<Sid> = std::iter::once(token.user.clone()).chain(token.groups.iter().map(|(sid, _)| sid.clone())).collect();
+    let policy = Policy::open(Access::Read);
+    let holders = policy.as_ref().map_err(String::clone).and_then(Policy::holders);
+    let (you, groups, names) = who(token, policy.as_ref().ok(), holders.as_deref().unwrap_or_default());
+    if let Ok(holders) = &holders {
+        log::info!("The security policy gives 'Lock pages in memory' to {}", describe_holders(holders, &names));
+    }
+    Standing { you, groups, mine, names, holders, uac: uac_elevated(token), domain: in_a_domain() }
+}
+
+/// Grants `candidate` the right large pages need, in the machine's security policy (`LsaAddAccountRights`, by its SID). Called only once
+/// the user has picked it in the question that offered it (`session::run`); `--setup-large-pages` grants through its own flow
+/// (`large_page_setup`), the command being the request. The account or group keeps the right until it is removed, and it takes effect at
+/// the next sign-in.
+pub fn grant_large_pages(candidate: &Candidate) -> Result<(), String> {
+    log::info!("Granting 'Lock pages in memory' to {} ({})", candidate.name, candidate.sid);
+    Policy::open(Access::Grant)?.add(&candidate.sid)
+}
+
+/// The large-page check's lines: the right's state in this token, enabling it there when it is disabled, and a test allocation; without
+/// it, who can grant it and how. It never grants the right (`grant_large_pages` does, asked). The allocator calls it too, before a
+/// large-page request (`WindowsBackend::allocate_with_virtualalloc2`).
 pub fn enable_large_pages() -> Result<String, String> {
     let mut messages = Vec::new();
-
-    // Show current user
-    if let Ok(username) = std::env::var("USERNAME")
-        && let Ok(domain) = std::env::var("USERDOMAIN")
-    {
-        messages.push(format!("👤 User: {}\\{}", domain, username));
-    }
 
     match check_privilege_state() {
         PrivilegeState::NotAssigned => {
             messages.push("❌ SeLockMemoryPrivilege: NOT in current session token".to_string());
 
-            if is_elevated() {
-                // A session asks first (`large_page_question`), and `--setup-large-pages` grants it next (`setup_large_pages`)
-                messages.push("✅ Running as Administrator: TMR can grant it".to_string());
-            } else {
-                messages.push("❌ Not running as Administrator".to_string());
-                messages.push("".to_string());
-                messages.push("🔧 SOLUTIONS (try in order):".to_string());
-                messages.push(
-                    "1. Restart TMR as Administrator: it asks to grant it (tmr.exe --setup-large-pages grants it at once)".to_string(),
-                );
-                messages.push("2. If recently configured: Restart TMR normally (privilege may need activation)".to_string());
-                messages.push("3. Manual setup via gpedit.msc".to_string());
+            let token = Token::read();
+            match &token {
+                // A session asks first (`large_page_question`), and `--setup-large-pages` grants it at once
+                Ok(token) if administrator(token) => messages.push("✅ Running as Administrator: TMR can grant it".to_string()),
+                _ => {
+                    if is_elevated() {
+                        messages.push("❌ Running elevated, but not as an administrator: only an administrator can grant it".to_string());
+                    } else {
+                        messages.push("❌ Not running as Administrator".to_string());
+                    }
+                    messages.push("".to_string());
+                    messages.push("🔧 SOLUTIONS (try in order):".to_string());
+                    messages.push(
+                        "1. Run TMR as administrator: it uses large pages once granted, and asks to grant them first \
+                         (tmr.exe --setup-large-pages grants them at once)"
+                            .to_string(),
+                    );
+                    if token.as_ref().is_ok_and(uac_filtered) {
+                        messages.push(
+                            "   You sign in as an administrator under UAC: TMR gets this right only when run as administrator".to_string(),
+                        );
+                    }
+                    messages.push("2. If it was just granted: sign out of Windows and back in, then run TMR again".to_string());
+                    messages.push(
+                        "3. Manual setup via gpedit.msc (User Rights Assignment, 'Lock pages in memory'), then sign out and back in"
+                            .to_string(),
+                    );
+                }
             }
         }
         PrivilegeState::AssignedButDisabled => {
@@ -502,6 +725,11 @@ fn check_privilege_state() -> PrivilegeState {
     }
 }
 
+/// Whether this token has the right, enabled or not: `--setup-large-pages`' "this sign-in has it already"
+pub(crate) fn in_token() -> bool {
+    check_privilege_state() != PrivilegeState::NotAssigned
+}
+
 /// Test a small large page allocation
 fn test_large_page_allocation() -> Result<(), String> {
     // SAFETY: a self-contained 2 MB probe. The returned pointer is never dereferenced — only null-checked and, when non-null, released with
@@ -523,7 +751,7 @@ fn test_large_page_allocation() -> Result<(), String> {
 }
 
 /// The large-page check's report (`Setup::LargePageDiagnostic`): elevated or not, the account, and `enable_large_pages`' lines. It never
-/// grants the right: a session asks first (`large_page_question`), and `--setup-large-pages` grants it after this (`setup_large_pages`).
+/// grants the right: a session asks first (`large_page_question`), and `--setup-large-pages` grants it after this.
 pub fn diagnose_large_pages() -> String {
     let mut report = String::new();
 
@@ -537,268 +765,269 @@ pub fn diagnose_large_pages() -> String {
         report.push_str("❌ Not running as Administrator\n");
     }
 
-    // Show current user
-    if let Ok(username) = std::env::var("USERNAME") {
-        if let Ok(domain) = std::env::var("USERDOMAIN") {
-            report.push_str(&format!("👤 User: {}\\{}\n", domain, username));
-        } else {
-            report.push_str(&format!("👤 User: {}\n", username));
-        }
+    // The account, from the token: not %USERDOMAIN%\%USERNAME%, which whoever started TMR sets
+    match Token::read() {
+        Ok(token) => report.push_str(&format!("👤 User: {}\n", account_of(&token))),
+        Err(e) => report.push_str(&format!("👤 User: unknown ({e})\n")),
     }
 
     report.push('\n');
 
     // Enable it in this token, and try it
-    let _setup_successful = match enable_large_pages() {
+    match enable_large_pages() {
         Ok(setup_result) => {
             report.push_str("Auto-Setup Results:\n");
             report.push_str(&setup_result);
             report.push('\n');
-
-            // Check if setup was actually successful
-            setup_result.contains("✅ Large page test allocation successful")
         }
         Err(setup_error) => {
             report.push_str("Auto-Setup Failed:\n");
             report.push_str(&setup_error);
             report.push('\n');
-            false
         }
-    };
+    }
 
-    // Manual instructions are already shown above in the messages, no need to duplicate
     report
-}
-
-/// `secedit`, with no console window of its own. Its output is piped to TMR (`output()`), but a console program started by a process with
-/// no console gets a console window, which flashes on the desktop: the window's, launched with a double-click (TODO 29 S6). Nothing changes
-/// for the CLI, whose console its output never reached.
-///
-/// System32's, by its full path (TODO 104): a bare name is looked for in the exe's folder first, which the user may be able to write to
-/// (Downloads, for a bare tmr.exe, or a per-user install's folder), and TMR runs it elevated, so a secedit.exe put there would run as
-/// admin.
-fn secedit() -> Command {
-    use std::os::windows::process::CommandExt;
-    let mut system = [0u16; 260];
-    // SAFETY: the buffer is writable for its length, which the slice passes; the call writes at most that and returns how much it wrote
-    let len = unsafe { windows::Win32::System::SystemInformation::GetSystemDirectoryW(Some(&mut system)) } as usize;
-    let program = match system.get(..len).filter(|path| !path.is_empty()) {
-        Some(path) => std::path::PathBuf::from(String::from_utf16_lossy(path)).join("secedit.exe"),
-        None => std::path::PathBuf::from("secedit"),
-    };
-    let mut command = Command::new(program);
-    command.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
-    command
-}
-
-fn grant_privilege_via_secedit(username: &str) -> Result<(), String> {
-    // Use absolute paths in TEMP directory to avoid working directory issues
-    let temp_dir = std::env::temp_dir();
-    let temp_config = temp_dir.join("tmr_secpol.inf");
-    let temp_db = temp_dir.join("tmr_secpol.sdb");
-    let temp_config_str = temp_config.to_str().ok_or("Invalid temp path")?;
-    let temp_db_str = temp_db.to_str().ok_or("Invalid temp path")?;
-
-    // Step 1: Export current security policy
-    let output =
-        secedit().args(["/export", "/cfg", temp_config_str]).output().map_err(|e| format!("Failed to run secedit export: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!("secedit export failed: {}", String::from_utf8_lossy(&output.stderr)));
-    }
-
-    // Step 2: Read and modify the policy file
-    let bytes = fs::read(&temp_config).map_err(|e| format!("Failed to read security policy: {}", e))?;
-
-    // Detect encoding - secedit typically exports as UTF-16 LE
-    let is_utf16_le = bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE;
-
-    log::info!("Exported policy file encoding: {}", if is_utf16_le { "UTF-16 LE" } else { "UTF-8/ANSI" });
-
-    let content = if is_utf16_le {
-        // Decode UTF-16 LE (skip 2-byte BOM). `as_chunks::<2>()` yields fixed-size [u8; 2] arrays (no per-index bounds checks); `.0` drops
-        // any odd trailing byte, matching the previous `chunks_exact(2)` behaviour.
-        let utf16_data: Vec<u16> = bytes[2..].as_chunks::<2>().0.iter().map(|chunk| u16::from_le_bytes(*chunk)).collect();
-        String::from_utf16(&utf16_data).map_err(|_| "Invalid UTF-16 data in policy file")?
-    } else {
-        // Assume UTF-8 or ASCII
-        String::from_utf8_lossy(&bytes).into_owned()
-    };
-
-    let modified_content = modify_security_policy(&content, username)?;
-
-    // Step 3: Write modified policy in the SAME encoding as the original
-    if is_utf16_le {
-        // Write as UTF-16 LE with BOM (same as secedit export)
-        // Convert string to UTF-16 code units
-        let utf16_string: Vec<u16> = modified_content.encode_utf16().collect();
-
-        // Create byte array with BOM + UTF-16 LE data
-        let mut file_content = vec![0xFF, 0xFE]; // UTF-16 LE BOM
-        for code_unit in utf16_string {
-            file_content.push((code_unit & 0xFF) as u8); // Low byte
-            file_content.push(((code_unit >> 8) & 0xFF) as u8); // High byte
-        }
-
-        fs::write(&temp_config, file_content).map_err(|e| format!("Failed to write modified policy: {}", e))?;
-
-        log::info!("Wrote policy file as UTF-16 LE to: {}", temp_config_str);
-    } else {
-        // Write as UTF-8 (fallback)
-        fs::write(&temp_config, modified_content.as_bytes()).map_err(|e| format!("Failed to write modified policy: {}", e))?;
-
-        log::info!("Wrote policy file as UTF-8 to: {}", temp_config_str);
-    }
-
-    // Step 4: Import the modified policy
-    let output = secedit()
-        .args(["/configure", "/db", temp_db_str, "/cfg", temp_config_str])
-        .output()
-        .map_err(|e| format!("Failed to run secedit configure: {}", e))?;
-
-    // Clean up temporary files
-    let _ = fs::remove_file(&temp_config);
-    let _ = fs::remove_file(&temp_db);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let exit_code = output.status.code().unwrap_or(-1);
-
-        log::warn!("secedit configure failed with exit code {}", exit_code);
-        log::warn!("stdout: {}", stdout);
-        log::warn!("stderr: {}", stderr);
-
-        return Err(format!(
-            "secedit configure failed (exit code {}). This is normal on Windows Server 2025.\n\
-                           The privilege has been added to the policy file, but requires:\n\
-                           1. Run 'gpupdate /force' as Administrator, OR\n\
-                           2. Restart your session (logoff/logon), OR\n\
-                           3. Restart the system\n\
-                           Then run TMR again.",
-            exit_code
-        ));
-    }
-
-    log::info!("Successfully applied security policy with Large Page privilege");
-    Ok(())
-}
-
-fn modify_security_policy(content: &str, username: &str) -> Result<String, String> {
-    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-    let mut found_privilege_line = false;
-
-    // Look for existing SeLockMemoryPrivilege line
-    for line in &mut lines {
-        if line.starts_with("SeLockMemoryPrivilege") {
-            found_privilege_line = true;
-
-            // Check if user is already in the list
-            if !line.contains(username) {
-                // Add the user to the existing line
-                *line = format!("{},{}", line, username);
-                log::info!("Added {} to existing SeLockMemoryPrivilege line", username);
-            } else {
-                log::info!("User {} already has SeLockMemoryPrivilege", username);
-            }
-            break;
-        }
-    }
-
-    // If no existing line found, add a new one in the [Privilege Rights] section
-    if !found_privilege_line {
-        let mut in_privilege_section = false;
-        let mut privilege_section_found = false;
-
-        for (i, line) in lines.iter().enumerate() {
-            if line.trim() == "[Privilege Rights]" {
-                in_privilege_section = true;
-                privilege_section_found = true;
-                continue;
-            }
-
-            if in_privilege_section && line.starts_with('[') {
-                // End of privilege section, insert here
-                lines.insert(i, format!("SeLockMemoryPrivilege = {}", username));
-                log::info!("Added new SeLockMemoryPrivilege line for {}", username);
-                break;
-            }
-        }
-
-        // If we didn't find [Privilege Rights] section, add it
-        if !privilege_section_found {
-            lines.push(String::new());
-            lines.push("[Privilege Rights]".to_string());
-            lines.push(format!("SeLockMemoryPrivilege = {}", username));
-            log::info!("Created new [Privilege Rights] section with SeLockMemoryPrivilege for {}", username);
-        }
-    }
-
-    Ok(lines.join("\r\n"))
-}
-
-/// Whether the security policy assigns SeLockMemoryPrivilege to any account: a `secedit /export`, read and deleted
-fn check_if_privilege_in_policy() -> Result<bool, String> {
-    // In TEMP, as the grant's export is: not the current folder, which an elevated prompt has as System32 (TODO 104)
-    let export = std::env::temp_dir().join("tmr_quick_check.inf");
-    let output =
-        secedit().arg("/export").arg("/cfg").arg(&export).arg("/quiet").output().map_err(|e| format!("Failed to export policy: {}", e))?;
-
-    if !output.status.success() {
-        return Err("Could not export security policy".to_string());
-    }
-
-    // The export is the whole security policy: gone before anything can return early
-    let bytes = std::fs::read(&export).map_err(|e| format!("Failed to read policy file: {}", e));
-    let _ = std::fs::remove_file(&export);
-    let bytes = bytes?;
-
-    let content = if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
-        // Decode UTF-16 LE (skip 2-byte BOM) — see the note in the other decode site: fixed-size [u8; 2] chunks avoid per-index bounds
-        // checks; `.0` drops an odd trailing byte.
-        let utf16_data: Vec<u16> = bytes[2..].as_chunks::<2>().0.iter().map(|chunk| u16::from_le_bytes(*chunk)).collect();
-        String::from_utf16(&utf16_data).map_err(|_| "Invalid UTF-16 data in policy file".to_string())?
-    } else {
-        // Assume UTF-8 or ASCII
-        String::from_utf8_lossy(&bytes).into_owned()
-    };
-
-    // Simple check: does SeLockMemoryPrivilege line exist with any assignments?
-    let has_privilege = content.lines().any(|line| {
-        line.trim().starts_with("SeLockMemoryPrivilege") && line.contains('=') && !line.split('=').nth(1).unwrap_or("").trim().is_empty()
-    });
-
-    Ok(has_privilege)
 }
 
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
 
+    use windows::Win32::Security::{SidTypeAlias, SidTypeGroup, SidTypeWellKnownGroup};
+
     use super::*;
 
-    /// The large-page question (TODO 29): none when the token has the right, enabled or not, or when TMR isn't elevated, and the policy
-    /// left unread then; elevated without it, the restart when the policy assigns it, else the grant, to the account TMR runs as. Stand-ins
-    /// for the policy and the account: no test reads or changes the security policy.
+    fn sid(text: &str) -> Sid {
+        text.parse().unwrap_or_else(|()| panic!("{text} is a SID"))
+    }
+
+    fn candidate(name: &str, reach: Reach, text: &str) -> Candidate {
+        Candidate::new(name, reach, sid(text))
+    }
+
+    const ENABLED: u32 = (SE_GROUP_ENABLED | windows::Win32::System::SystemServices::SE_GROUP_MANDATORY) as u32;
+
+    /// TODO 113: which of a token's groups are offered the right, and how far each reaches, by SID: the attributes leave out the logon SID,
+    /// the labels and deny-only groups; the types what isn't a group; Users, Domain Users and the automatic groups are broad, service
+    /// accounts aren't; a group Windows can't name is kept
     #[test]
-    fn the_grant_is_offered_only_elevated_and_without_the_right_in_the_policy() {
-        let ask = |in_token, elevated, in_policy: bool| {
-            let read = Cell::new(false);
+    #[rustfmt::skip]
+    fn a_tokens_groups_are_offered_by_sid() {
+        let logon = SE_GROUP_LOGON_ID as u32 | ENABLED;
+        let integrity = (SE_GROUP_INTEGRITY | windows::Win32::System::SystemServices::SE_GROUP_INTEGRITY_ENABLED) as u32;
+        let deny_only = SE_GROUP_USE_FOR_DENY_ONLY as u32;
+        for (text, kind, attributes, expected) in [
+            ("S-1-5-32-544", Some(SidTypeAlias), ENABLED, Some(Reach::Group)),
+            ("S-1-5-32-545", Some(SidTypeAlias), ENABLED, Some(Reach::EveryLocalAccount)),
+            ("S-1-5-21-1-2-3-513", Some(SidTypeGroup), ENABLED, Some(Reach::EveryDomainAccount)),
+            ("S-1-5-21-1-2-3-512", Some(SidTypeGroup), ENABLED, Some(Reach::Group)),
+            ("S-1-5-21-1-2-3-1105", Some(SidTypeAlias), ENABLED, Some(Reach::Group)),
+            ("S-1-1-0", Some(SidTypeWellKnownGroup), ENABLED, Some(Reach::Automatic)),
+            ("S-1-5-11", Some(SidTypeWellKnownGroup), ENABLED, Some(Reach::Automatic)),
+            ("S-1-5-4", Some(SidTypeWellKnownGroup), ENABLED, Some(Reach::Automatic)),
+            ("S-1-2-1", Some(SidTypeWellKnownGroup), ENABLED, Some(Reach::Automatic)),
+            ("S-1-5-114", Some(SidTypeWellKnownGroup), ENABLED, Some(Reach::Automatic)),
+            ("S-1-5-64-10", Some(SidTypeWellKnownGroup), ENABLED, Some(Reach::Automatic)),
+            ("S-1-5-65-1", Some(SidTypeWellKnownGroup), ENABLED, Some(Reach::Automatic)),
+            ("S-1-18-1", Some(SidTypeWellKnownGroup), ENABLED, Some(Reach::Automatic)),
+            ("S-1-5-80-1-2-3-4-5", Some(SidTypeWellKnownGroup), ENABLED, Some(Reach::Group)),
+            ("S-1-5-21-9-9-9-1234", None, ENABLED, Some(Reach::Group)),
+            ("S-1-5-5-0-123456", Some(SidTypeLogonSession), logon, None),
+            ("S-1-5-5-0-123456", None, ENABLED, None),
+            ("S-1-16-12288", Some(SidTypeLabel), integrity, None),
+            ("S-1-16-12288", Some(SidTypeLabel), 0, None),
+            ("S-1-5-32-544", Some(SidTypeAlias), deny_only, None),
+            ("S-1-15-3-1024-1", None, ENABLED, None),
+            ("S-1-5-21-1-2-3", Some(SidTypeDomain), ENABLED, None),
+            ("S-1-5-21-1-2-3-1001", Some(SidTypeComputer), ENABLED, None),
+            ("S-1-5-21-1-2-3-1002", Some(SidTypeDeletedAccount), ENABLED, None),
+            ("S-1-5-21-1-2-3-1003", Some(SidTypeUser), ENABLED, None),
+            ("S-1-5-21-1-2-3-1004", Some(SidTypeInvalid), ENABLED, None),
+        ] {
+            assert_eq!(reach(&sid(text), kind, attributes), expected, "{text} {kind:?} {attributes:#x}");
+        }
+        for service in ["S-1-5-18", "S-1-5-19", "S-1-5-20", "S-1-5-80-1-2-3-4-5", "S-1-5-82-1-2-3-4-5", "S-1-5-83-1-2-3-4-5"] {
+            assert!(is_service_account(&sid(service)) && !breadth(&sid(service)).is_broad(), "{service}");
+        }
+        for not in ["S-1-5-32-544", "S-1-5-21-1-2-3-500", "S-1-5-80", "S-1-5-17"] {
+            assert!(!is_service_account(&sid(not)), "{not}");
+        }
+        assert!(!is_automatic(&sid("S-1-2")) && !is_automatic(&sid("S-1-5-64")) && !is_automatic(&sid("S-1-5-65-2")));
+    }
+
+    /// TODO 113: the warnings, one phrase each, and only on the broad reaches (the review's wording for Users: every account that can
+    /// sign in is in it, Microsoft, Entra and domain accounts too)
+    #[test]
+    fn only_the_broad_reaches_are_warned_of() {
+        assert_eq!(Reach::You.warning(), None);
+        assert_eq!(Reach::Group.warning(), None);
+        assert_eq!(Reach::EveryLocalAccount.warning(), Some("every account that can sign in to this PC is in it"));
+        assert_eq!(Reach::EveryDomainAccount.warning(), Some("every account of its domain is in it"));
+        assert_eq!(Reach::Automatic.warning(), Some("Windows puts every account that signs in a certain way in it"));
+        assert!(Reach::Automatic.is_broad() && !Reach::Group.is_broad());
+    }
+
+    /// TODO 113: the account first, then the real groups A-Z whatever their case, then Users, then Domain Users ("None"), then the
+    /// automatic groups A-Z; a group that is the account itself, and a group listed twice, once
+    #[test]
+    fn the_candidates_come_in_the_order_offered() {
+        let you = candidate(r"PC\owner", Reach::You, "S-1-5-21-1-2-3-1001");
+        let groups = vec![
+            candidate("Everyone", Reach::Automatic, "S-1-1-0"),
+            candidate(r"PC\None", Reach::EveryDomainAccount, "S-1-5-21-1-2-3-513"),
+            candidate(r"BUILTIN\Users", Reach::EveryLocalAccount, "S-1-5-32-545"),
+            candidate(r"PC\testers", Reach::Group, "S-1-5-21-1-2-3-1010"),
+            candidate(r"NT AUTHORITY\Authenticated Users", Reach::Automatic, "S-1-5-11"),
+            candidate(r"BUILTIN\Administrators", Reach::Group, "S-1-5-32-544"),
+            candidate(r"PC\owner", Reach::Group, "S-1-5-21-1-2-3-1001"),
+            candidate(r"CORP\Remote Desktop Users", Reach::Group, "S-1-5-32-555"),
+            candidate(r"BUILTIN\Administrators", Reach::Group, "S-1-5-32-544"),
+        ];
+        let names: Vec<String> = order(you, groups).into_iter().map(|c| c.name).collect();
+        assert_eq!(names, [
+            r"PC\owner", r"BUILTIN\Administrators", r"CORP\Remote Desktop Users", r"PC\testers", r"BUILTIN\Users", r"PC\None", r"Everyone",
+            r"NT AUTHORITY\Authenticated Users",
+        ]);
+    }
+
+    /// TODO 113: the right is the token's to have when the policy gives it to the account (preferred) or to a group of the token, a group
+    /// left out of the list too (by Windows' name for it, its SID when it has none); another account holding it doesn't count, the SQL
+    /// Server case that asked for a restart forever
+    #[test]
+    fn the_right_is_held_only_through_the_tokens_own_sids() {
+        let you = candidate(r"PC\owner", Reach::You, "S-1-5-21-1-2-3-1001");
+        let groups =
+            [candidate(r"BUILTIN\Administrators", Reach::Group, "S-1-5-32-544"), candidate("Everyone", Reach::Automatic, "S-1-1-0")];
+        let mine = ["S-1-5-21-1-2-3-1001", "S-1-5-32-544", "S-1-1-0", "S-1-5-32-551", "S-1-5-21-1-2-3-1107"].map(sid);
+        let names = HashMap::from([(sid("S-1-5-32-551"), Named { name: r"BUILTIN\Backup Operators".to_string(), kind: SidTypeAlias })]);
+        let held = |holders: &[&str]| held_by(&holders.iter().map(|h| sid(h)).collect::<Vec<_>>(), &you, &groups, &mine, &names);
+        assert_eq!(held(&[]), None, "nobody");
+        assert_eq!(held(&["S-1-5-21-1-2-3-1001"]), Some(Holder::You));
+        assert_eq!(held(&["S-1-5-32-544"]), Some(Holder::Group(r"BUILTIN\Administrators".to_string())));
+        assert_eq!(held(&["S-1-5-32-544", "S-1-5-21-1-2-3-1001"]), Some(Holder::You), "both: the account");
+        assert_eq!(held(&["S-1-5-80-1-2-3-4-5"]), None, r"NT SERVICE\MSSQLSERVER, not this token's");
+        assert_eq!(held(&["S-1-5-32-551"]), Some(Holder::Group(r"BUILTIN\Backup Operators".to_string())), "left out of the list: named");
+        assert_eq!(held(&["S-1-5-21-1-2-3-1107"]), Some(Holder::Group("S-1-5-21-1-2-3-1107".to_string())), "and unnamed: its SID");
+        assert_eq!(held(&["S-1-1-0", "S-1-5-32-544"]), Some(Holder::Group(r"BUILTIN\Administrators".to_string())), "the first offered");
+    }
+
+    /// TODO 113: the question, from stand-ins (decision 5a): none with the right in the token, or with maxpage=regular (4 KiB pages the
+    /// most the run takes), nothing read; not run as administrator, 4 KiB pages or quit whatever minpage is, the policy unread; run as
+    /// administrator, the sign-in when the account or a group holds it, else the grant, the account first, also when the policy can't be
+    /// read; `uac` and `domain` carried. No test reads or changes the policy.
+    #[test]
+    fn the_question_follows_the_token_and_the_policy() {
+        let you = || candidate(r"PC\owner", Reach::You, "S-1-5-21-1-2-3-1001");
+        let admins = || candidate(r"BUILTIN\Administrators", Reach::Group, "S-1-5-32-544");
+        let ask = |in_token, wants_large, administrator, holders: Result<Vec<&str>, String>| {
+            let (unelevated_read, standing_read) = (Cell::new(false), Cell::new(false));
             let question = question_for(
                 in_token,
-                elevated,
+                wants_large,
+                administrator,
                 || {
-                    read.set(true);
-                    in_policy
+                    unelevated_read.set(true);
+                    (r"PC\owner".to_string(), true)
                 },
-                || r"PC\owner".to_string(),
+                || {
+                    standing_read.set(true);
+                    Standing {
+                        you: you(),
+                        groups: vec![candidate("Everyone", Reach::Automatic, "S-1-1-0"), admins()],
+                        mine: ["S-1-5-21-1-2-3-1001", "S-1-5-32-544", "S-1-1-0"].map(sid).to_vec(),
+                        names: HashMap::new(),
+                        holders: holders.map(|holders| holders.iter().map(|h| sid(h)).collect()),
+                        uac: true,
+                        domain: false,
+                    }
+                },
             );
-            (question, read.get())
+            (question, unelevated_read.get(), standing_read.get())
         };
-        assert_eq!(ask(true, true, false), (None, false), "the right in the token");
-        assert_eq!(ask(true, false, false), (None, false), "the right in the token, not elevated");
-        assert_eq!(ask(false, false, false), (None, false), "not elevated: the diagnostic says what to do");
-        assert_eq!(ask(false, true, true), (Some(LargePageQuestion::Restart), true), "the right in the policy: only the restart missing");
-        assert_eq!(ask(false, true, false), (Some(LargePageQuestion::Grant { account: r"PC\owner".to_string() }), true), "nowhere");
+        let grant = || {
+            Some(LargePageQuestion::Grant {
+                candidates: vec![you(), admins(), candidate("Everyone", Reach::Automatic, "S-1-1-0")],
+                uac: true,
+                domain: false,
+            })
+        };
+        let sign_in = |via: Option<&str>| {
+            Some(LargePageQuestion::SignIn { account: r"PC\owner".to_string(), via: via.map(str::to_string), uac: true, domain: false })
+        };
+        let needs = Some(LargePageQuestion::NeedsAdministrator { account: r"PC\owner".to_string(), uac: true });
+        assert_eq!(ask(true, true, true, Ok(vec![])), (None, false, false), "the right in the token");
+        assert_eq!(ask(true, true, false, Ok(vec![])), (None, false, false), "the right in the token, not elevated");
+        assert_eq!(ask(false, false, false, Ok(vec![])), (None, false, false), "maxpage=regular, not an administrator: no question");
+        assert_eq!(ask(false, false, true, Ok(vec![])), (None, false, false), "maxpage=regular, an administrator: no question");
+        assert_eq!(
+            ask(false, true, false, Ok(vec![])),
+            (needs, true, false),
+            "not an administrator: 4 KiB pages or quit, the policy unread"
+        );
+        assert_eq!(ask(false, true, true, Ok(vec!["S-1-5-21-1-2-3-1001"])), (sign_in(None), false, true), "held by the account");
+        assert_eq!(ask(false, true, true, Ok(vec!["S-1-5-32-544"])), (sign_in(Some(r"BUILTIN\Administrators")), false, true), "by a group");
+        assert_eq!(ask(false, true, true, Ok(vec!["S-1-5-80-1-2-3-4-5"])), (grant(), false, true), "by another account only");
+        assert_eq!(ask(false, true, true, Ok(vec![])), (grant(), false, true), "by nobody");
+        assert_eq!(ask(false, true, true, Err("LsaOpenPolicy: Access is denied.".to_string())), (grant(), false, true), "unreadable");
+    }
+
+    /// TODO 113: who may grant it, and which UAC half this token is, from stand-in tokens: Administrators enabled is an administrator;
+    /// deny-only (UAC's filtered token) or absent isn't; the elevated half of a split token with it enabled is `uac_elevated`, the
+    /// filtered half with it deny-only `uac_filtered`
+    #[test]
+    fn an_administrator_is_the_administrators_group_enabled() {
+        let token = |elevation, attributes: Option<u32>| Token {
+            user: sid("S-1-5-21-1-2-3-1001"),
+            groups: [Some(("S-1-5-32-545", ENABLED)), attributes.map(|a| ("S-1-5-32-544", a))]
+                .into_iter()
+                .flatten()
+                .map(|(text, attributes)| (sid(text), attributes))
+                .collect(),
+            elevation,
+        };
+        let deny_only = Some(SE_GROUP_USE_FOR_DENY_ONLY as u32);
+        let full = token(Elevation::Full, Some(ENABLED));
+        assert!(administrator(&full) && uac_elevated(&full) && !uac_filtered(&full), "elevated, under UAC");
+        let filtered = token(Elevation::Limited, deny_only);
+        assert!(!administrator(&filtered) && !uac_elevated(&filtered) && uac_filtered(&filtered), "an administrator, not elevated");
+        let uac_off = token(Elevation::Default, Some(ENABLED));
+        assert!(administrator(&uac_off) && !uac_elevated(&uac_off) && !uac_filtered(&uac_off), "UAC off: every run elevated");
+        let standard = token(Elevation::Default, None);
+        assert!(!administrator(&standard) && !uac_elevated(&standard) && !uac_filtered(&standard), "a standard user");
+        let backup_operator = token(Elevation::Full, None);
+        assert!(!administrator(&backup_operator), "elevated without Administrators: a grant would fail");
+    }
+
+    /// TODO 113, run by name, elevated for the policy part: this machine's token and policy, read and changed nowhere (no grant, no
+    /// removal, no handle with GRANT access). The candidates start with the account, and none is a logon SID or a label; each holder
+    /// the policy lists has the right when asked by its own SID (`LsaEnumerateAccountRights`), so the enumeration was asked for the
+    /// right, not every account.
+    #[test]
+    #[ignore = "reads this machine's token and security policy, changes nothing: run it by name, elevated for the policy part"]
+    fn the_token_and_the_policy_read_back() {
+        let token = Token::read().expect("this process's token");
+        println!("account {} ({}), {:?}, administrator {}", account_of(&token), token.user, token.elevation, administrator(&token));
+        let policy = administrator(&token).then(|| Policy::open(Access::Read).expect("the policy, to read"));
+        let holders = policy.as_ref().map(|policy| policy.holders().expect("its holders")).unwrap_or_default();
+        let (you, groups, names) = who(&token, policy.as_ref(), &holders);
+        let candidates = order(you, groups);
+        assert_eq!(candidates[0].reach, Reach::You);
+        for candidate in &candidates {
+            assert!(never_offered(candidate.sid()).is_none(), "{} ({}) offered", candidate.name, candidate.sid());
+            println!("  {:?} {} ({})", candidate.reach, candidate.name, candidate.sid());
+        }
+        let Some(policy) = policy else {
+            println!("not run as administrator: the policy left unread");
+            return;
+        };
+        let unique: std::collections::HashSet<&Sid> = holders.iter().collect();
+        assert_eq!(unique.len(), holders.len(), "no holder twice");
+        println!("held by {}", describe_holders(&holders, &names));
+        for holder in &holders {
+            let rights = policy.rights(holder).expect("its rights");
+            assert!(rights.iter().any(|right| right == "SeLockMemoryPrivilege"), "{holder}: {rights:?}");
+        }
+        println!("in a domain: {}", in_a_domain());
     }
 }

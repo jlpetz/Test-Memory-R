@@ -9,9 +9,10 @@
 //! (`execute_test_cycle`) would then overtake the report.
 //!
 //! A session has two kinds: its setup's (`Setup`, from `session::run`: the parameters, the CPUs chosen, large pages, the machine) and its
-//! run's (`Run`, from the memory plan to the results file). It asks one question, during setup, when large pages need a restart, and the
-//! right they need granted first when TMR could grant it (`Frontend::large_page_restart`); the one-shot commands' question, whether to save
-//! a calibration, is the CLI's alone (the `confirm` that `commands::run` takes).
+//! run's (`Run`, from the memory plan to the results file). It asks one question, during setup, when this sign-in lacks the right large
+//! pages need and maxpage= allows them: a new sign-in when the security policy gives it already, whom to grant it to when TMR can grant
+//! it, or, when it can't, 4 KiB pages or quit (`Frontend::ask_large_pages`); the one-shot commands' question, whether to save a
+//! calibration, is the CLI's alone (the `confirm` that `commands::run` takes).
 //!
 //! The types the events carry that a frontend outside the engine names are re-exported here, and only those: the CLI's (`crates/tmr-cli`)
 //! and the GUI's, their tests' included, and the reports' tables, which a frontend renders through a `Renderer` of its own (the CLI's
@@ -30,7 +31,8 @@ use chrono::{DateTime, Utc};
 pub use crate::ErrorMode;
 use crate::failing_bits::FailingBits;
 pub use crate::memory::allocator::PageSizeLevel;
-pub use crate::memory::privileges::LargePageQuestion;
+pub use crate::memory::lsa::Sid;
+pub use crate::memory::privileges::{BROAD_RISK, Candidate, LargePageQuestion, Reach};
 pub use crate::progress::{ErrorCounts, LiveFigures, ProgressSnapshot, ProgressTracker, RunOutcome, TestSnapshot, TestSummary};
 // The reports as tables, for a frontend to render: the default formatting's, through its renderer
 pub use crate::reporting::Reporter;
@@ -57,23 +59,29 @@ pub trait Frontend: Send + Sync {
     fn tick(&self, _progress: &ProgressTracker) {}
     /// The suite is over: the monitor thread's last call.
     fn ticks_done(&self, _progress: &ProgressTracker) {}
-    /// Large pages take effect only after Windows restarts, and the user decides (`Setup::LargePageCheck` came first). `question` says
-    /// why: the right they need is in the security policy and only the restart is missing, or it is missing and TMR, elevated, could grant
-    /// it to the account it names. Exit ends the session for the restart, after the grant when the question offered one
-    /// (`Setup::LargePageGrant`), unless the grant fails: the session then goes on without the right. Continue4K runs this time on 4 KiB
-    /// pages and changes nothing. Blocks the session's thread, idle then, until answered. A frontend that can't ask answers `Continue4K`,
-    /// as an empty answer does, so nothing is granted.
-    fn large_page_restart(&self, question: &LargePageQuestion) -> RestartChoice;
+    /// This sign-in lacks the right large pages need, the run's maxpage= allows them, and the user decides (`Setup::LargePageCheck` came
+    /// first). `question` says why: the security policy gives it already and a new sign-in brings it (`SignIn`); TMR, run as
+    /// administrator, can grant it, and asks to whom (`Grant`, a broad pick asked again, No the default); or it can't
+    /// (`NeedsAdministrator`). Each answer belongs to one question (`LargePageAnswer`), and the session acts on its own copy of the
+    /// question, so a grant goes only to a candidate it offered. Blocks the session's thread, idle then, until answered. A frontend that
+    /// can't ask answers `Quit`, as an empty answer does (TODO 113, decision 5a): nothing is granted, and nothing runs on 4 KiB pages
+    /// unasked.
+    fn ask_large_pages(&self, question: &LargePageQuestion) -> LargePageAnswer;
 }
 
-/// The answer to `Frontend::large_page_restart`.
+/// The answer to `Frontend::ask_large_pages`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RestartChoice {
-    /// End the session, to restart Windows (`session::SessionEnd::RestartChosen`), the right granted first when the question offered it:
-    /// a grant that fails ends nothing
-    Exit,
-    /// Run on 4 KiB pages: the session sets `minpage=regular`, and grants nothing
-    Continue4K,
+pub enum LargePageAnswer {
+    /// `SignIn`'s yes: end the session, to sign out and back in (`session::SessionEnd::SignOutChosen`)
+    SignOut,
+    /// `Grant`'s yes: grant the right to `candidates[i]`, then end the session for the sign-in it takes (`Setup::LargePageGrant`); a
+    /// grant that fails ends it too, before allocating (`session::Stopped::NeedsLargePages`)
+    Grant(usize),
+    /// Any question's "4 KiB pages this time": the session sets `minpage=regular maxpage=regular` for this run, and changes nothing
+    Regular,
+    /// Any question's quit, and no answer's: end the session before allocating, granting nothing (`session::Stopped::NeedsLargePages`);
+    /// `NeedsAdministrator`'s yes, to start TMR as administrator
+    Quit,
 }
 
 /// What the engine tells a frontend.
@@ -119,11 +127,12 @@ pub enum Setup {
     CpuCount { percent: u32, available: usize, threads: usize },
     /// The CPUs chosen, and the run's error mode, limits and SIMD
     Selection(Box<Selection>),
-    /// Large pages are checked next: `Frontend::large_page_restart` follows when they need a restart or the right granted,
-    /// `LargePageDiagnostic` otherwise
+    /// Large pages are checked next: `Frontend::ask_large_pages` follows when this sign-in lacks the right they need and there is a
+    /// question to ask, `LargePageDiagnostic` otherwise
     LargePageCheck,
-    /// The right large pages need, granted to `account` once the user said yes (`Frontend::large_page_restart`), or why it couldn't be. On
-    /// a grant the session ends next, for Windows to restart (`session::SessionEnd::RestartChosen`); on a failure it goes on without it.
+    /// The right large pages need, granted to `account`, the candidate the user picked (`Frontend::ask_large_pages`), or why it couldn't
+    /// be. On a grant the session ends next, for a new sign-in (`session::SessionEnd::SignOutChosen`); on a failure it ends before
+    /// allocating, as no answer does (`session::Stopped::NeedsLargePages`).
     LargePageGrant { account: String, outcome: Result<(), String> },
     /// What the large-page check found (`memory::diagnose_large_pages`), which never grants the right
     LargePageDiagnostic { report: String },

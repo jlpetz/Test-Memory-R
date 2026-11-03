@@ -4,7 +4,8 @@
 //! one it opens on, has the position with the test's figures beside it and the progress bar, the throughput chart with its error marks,
 //! the results, a row opening its report beside them, and the errors; the chart is never between the results and the errors. The Log tab
 //! has the log's lines; Plan, System, Threads and Memory the console's startup sections; Compare two runs' results files. The large-page
-//! restart question is a dialog over it (TODO 29 S6). The figures are the console's ticker's, word for word (`model.rs`).
+//! question is a dialog over it (TODO 29 S6, TODO 113), a broad pick asked again in a second. The figures are the console's ticker's,
+//! word for word (`model.rs`).
 //!
 //! It draws `Model`, and re-renders only when a message arrives: a batch from the feed (at least every 500 ms while the session runs), a
 //! button, the dialog's answer, a keystroke in the box, a theme change or a resize. Nothing animates.
@@ -15,12 +16,12 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tmr::commands::ResultsComparison;
-use tmr::frontend::{ColumnAlignment, Event, ProgressSnapshot, ProgressTracker, RestartChoice, Run, TableData, ThreadPriority};
+use tmr::frontend::{ColumnAlignment, Event, ProgressSnapshot, ProgressTracker, Run, TableData, ThreadPriority};
 use windows_reactor::*;
 
 use crate::dialogs::{self, Open};
 use crate::logger::{self, LogLine, LogLines};
-use crate::model::{Bar, Model, Opened, Slot, Status, StepRow};
+use crate::model::{Bar, DialogButton, Model, Opened, Slot, Status, StepRow};
 use crate::palette::{Palette, Palettes, brush};
 use crate::report::{Block, Report};
 use crate::settings::{Settings, Theme};
@@ -56,9 +57,14 @@ pub(crate) enum Message {
     Stop,
     /// The parameters box's text, as typed
     Args(String),
-    /// The large-page dialog's answer: its primary button exits, after the grant when it offers one; its close button (and Esc) continues
-    /// on 4 KiB pages
-    Restart(ContentDialogResult),
+    /// The large-page dialog's answer, by the button that closed it (`Model::answer_large_pages`): its primary, its secondary (4 KiB
+    /// pages this time), else its close button, Esc or nothing, which quit
+    LargePages(ContentDialogResult),
+    /// The grant's radio buttons' selection, none when the control has none
+    LargePageTarget(Option<usize>),
+    /// The second dialog's answer, after a broad pick: its secondary button grants; its primary button (the first, and focused) and Esc,
+    /// the default, go back to the first dialog
+    LargePageBroad(ContentDialogResult),
     /// A DIMM chosen in the system panel's selector: its menu item
     Dimm(String),
     /// A results row clicked: its report opens beside the list, or closes when it is open (TODO 109)
@@ -248,7 +254,7 @@ impl Window {
         for item in feed {
             match item {
                 Feed::Event(event) => self.model.apply(event),
-                Feed::Ask { question, reply } => self.model.ask_restart(question, reply),
+                Feed::Ask { question, reply } => self.model.ask_large_pages(question, reply),
                 Feed::Ended(result) => {
                     self.model.ended(result);
                     ended = true;
@@ -400,10 +406,13 @@ impl Component for Window {
                 }
             }
             Message::Args(text) => self.model.args = text,
-            Message::Restart(result) => self.model.answer_restart(match result {
-                ContentDialogResult::Primary => RestartChoice::Exit,
-                _ => RestartChoice::Continue4K,
+            Message::LargePages(result) => self.model.answer_large_pages(match result {
+                ContentDialogResult::Primary => DialogButton::Primary,
+                ContentDialogResult::Secondary => DialogButton::Secondary,
+                _ => DialogButton::Close,
             }),
+            Message::LargePageTarget(chosen) => self.model.choose_target(chosen),
+            Message::LargePageBroad(result) => self.model.confirm_broad(result == ContentDialogResult::Secondary),
             Message::Dimm(choice) => self.model.choose_dimm(&choice),
             Message::Open(which) => self.model.open(which),
             Message::Close => self.model.opened = None,
@@ -532,7 +541,8 @@ impl Component for Window {
                 self.command_bar(1, context),
                 self.tab_bar(2, context),
                 self.tab_view(3, context),
-                self.restart_dialog(context),
+                self.large_page_dialog(context),
+                self.broad_dialog(context),
                 self.about_dialog(context),
             ))
     }
@@ -1041,28 +1051,58 @@ impl Window {
         card(row, p, card_title(format!("Errors · {total}{shown}{dropped}"), p), body)
     }
 
-    /// The large-page question, the console's A/B as a dialog, open while the session's thread waits for its answer: the restart, or the
-    /// grant and then the restart, in the words of the last question asked (`Model::restart_dialog`), which hold as it closes. Esc is the
-    /// close button's: 4 KiB pages, as an empty answer is on the console.
-    fn restart_dialog(&self, context: &ViewContext<Self>) -> View {
-        let words = self.model.restart_dialog();
+    /// The large-page question, the console's as a dialog, open while the session's thread waits for its answer, in the words of the last
+    /// question asked (`Model::large_page_dialog`), which hold as it closes: the sign-in's, the grant's with its candidates as radio
+    /// buttons (every choice and its warning in sight, as on the console; WinUI's dialog scrolls a long list), and the administrator's.
+    /// Its secondary button is 4 KiB pages this time; Esc is the close button's, the quit, as an empty answer is on the console (TODO
+    /// 113); an empty button text leaves the button out. The grant's primary button waits on a choice.
+    fn large_page_dialog(&self, context: &ViewContext<Self>) -> View {
+        let words = self.model.large_page_dialog();
+        let enabled = words.choices.is_empty() || words.chosen.is_some();
+        let text = TextBlock::new().text(words.text).text_wrapping(TextWrapping::Wrap);
         // The text in the dialog's own colours: it follows the system's theme, not the palette's
+        let content: View = if words.choices.is_empty() {
+            text.into()
+        } else {
+            let choices = RadioButtons::new()
+                .items_source(words.choices)
+                .selected_index(words.chosen)
+                .on_selection_changed(context.callback(Message::LargePageTarget));
+            StackPanel::new().spacing(12.0).children((text, choices))
+        };
         ContentDialog::new()
             .title(words.title)
-            .primary_button_text(words.exit)
-            .close_button_text("Continue on 4 KiB pages")
-            .is_open(self.model.restart_asked())
-            .on_closed(context.callback(Message::Restart))
+            .primary_button_text(words.primary)
+            .is_primary_button_enabled(enabled)
+            .secondary_button_text(words.secondary)
+            .close_button_text(words.close)
+            .is_open(self.model.large_pages_asked())
+            .on_closed(context.callback(Message::LargePages))
+            .content(content)
+    }
+
+    /// The second dialog after a broad pick in the first (TODO 113): what the group reaches and risks, its secondary button the grant,
+    /// its primary button No, as Esc is, which goes back to the first. The first button is No because WinUI focuses it when the text has
+    /// nothing to focus, so Enter or Space pressed on, and a double-click's second click, which lands where the first dialog's grant was,
+    /// grant nothing.
+    fn broad_dialog(&self, context: &ViewContext<Self>) -> View {
+        let words = self.model.broad_dialog();
+        ContentDialog::new()
+            .title(words.title)
+            .primary_button_text("Don't grant it: back to the list")
+            .secondary_button_text(words.grant)
+            .is_open(self.model.broad_asked())
+            .on_closed(context.callback(Message::LargePageBroad))
             .content(TextBlock::new().text(words.text).text_wrapping(TextWrapping::Wrap))
     }
 }
 
 impl Window {
     /// About (TODO 109): the logo, what TMR is, its version and build, its licence and its GitHub page. Its content is built only while it
-    /// is open, so the logo isn't decoded at each redraw; and it isn't open while the restart question is, as WinUI opens one dialog at a
-    /// time. In the dialog's own colours, as the restart dialog's.
+    /// is open, so the logo isn't decoded at each redraw; and it isn't open while the large-page question is, as WinUI opens one dialog at
+    /// a time. In the dialog's own colours, as the large-page dialog's.
     fn about_dialog(&self, context: &ViewContext<Self>) -> View {
-        let open = self.about && !self.model.restart_asked();
+        let open = self.about && !self.model.large_pages_pending();
         let dialog = ContentDialog::new()
             .title("About TMR")
             .close_button_text("Close")

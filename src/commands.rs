@@ -1,7 +1,8 @@
 //! The one-shot commands (TODO 29): `--help`, `--version`, `--create-demo-configs`, `--compare-results`, `--show-results`,
-//! `--debug-topology`, `--show-topology`, `--setup-large-pages` and the calibrations. A session that is handed one returns it
-//! (`session::SessionEnd::Command`), past the parameters every session reads first (`core-priority=` types the topology the topology
-//! commands show); its caller runs it here, writing to a writer of its own. The CLI does, on the console; the window doesn't offer them.
+//! `--debug-topology`, `--show-topology`, `--setup-large-pages`, `--remove-large-pages` and the calibrations. A session that is handed one
+//! returns it (`session::SessionEnd::Command`), past the parameters every session reads first (`core-priority=` types the topology the
+//! topology commands show); its caller runs it here, writing to a writer of its own. The CLI does, on the console; the window doesn't offer
+//! them.
 //!
 //! A calibration asks whether to save what it measured over what tmr-cfg.json holds. That question is the caller's to put: it passes
 //! `confirm`, which gets the question and says yes or no, unless the command line has answered it already (`--yes`, `--no-save`:
@@ -28,8 +29,12 @@ pub enum Command {
     DebugTopology,
     /// `--show-topology`: each core's type, scheduling class, NUMA node and CPUs
     ShowTopology,
-    /// `--setup-large-pages`: grant the large-page privilege, and check it
-    SetupLargePages,
+    /// `--setup-large-pages [User:<name> | Group:<name>]`: grant the right large pages need, to the account TMR runs as or the user or
+    /// group named, and check it (TODO 113): the command line, the exe's name first
+    SetupLargePages(Vec<String>),
+    /// `--remove-large-pages [User:<name> | Group:<name>]`: remove that right, from the account TMR runs as or the user or group named:
+    /// the command line, the exe's name first
+    RemoveLargePages(Vec<String>),
     /// `--calibrate-cache`, `--calibrate-cache-ext`, `--calibrate-seal`, `--calibrate-all`: the command line, the exe's name first, then
     /// the command
     Calibrate(Vec<String>),
@@ -50,7 +55,8 @@ impl Command {
                 "--debug-topology" => return Some(Command::DebugTopology),
                 "--show-topology" => return Some(Command::ShowTopology),
                 // --cache-latency and --ram-latency are no commands: they pick tests for the run
-                "--setup-large-pages" => return Some(Command::SetupLargePages),
+                "--setup-large-pages" => return Some(Command::SetupLargePages(args.to_vec())),
+                "--remove-large-pages" => return Some(Command::RemoveLargePages(args.to_vec())),
                 // The calibrations (TODO 99 adds the seal's width): each measures, shows what it found and saves it to tmr-cfg.json after a
                 // prompt
                 "--calibrate-cache" | "--calibrate-cache-ext" | "--calibrate-seal" | "--calibrate-all" => {
@@ -83,26 +89,14 @@ pub fn run(
             writeln!(out, "🔍 Complete CPU Topology Mapping")?;
             crate::cpu_topology::show_complete_topology_mapping(out)?;
         }
-        Command::SetupLargePages => {
-            writeln!(out, "🔧 TMR Large Page Setup Tool")?;
-            writeln!(out, "=============================\n")?;
-
-            // The command is the request: it grants without asking, as a session doesn't (`session::run`)
-            let report = crate::memory::setup_large_pages();
-            writeln!(out, "{}", report)?;
-
-            // Test final state
-            match crate::check_large_page_privilege() {
-                Ok(()) => {
-                    writeln!(out, "\n🎉 SUCCESS: Large pages are now enabled and working!")?;
-                    writeln!(out, "You can now run TMR normally for optimal performance.")?;
-                }
-                Err(e) => {
-                    writeln!(out, "\n⚠️  Large pages are still not available: {}", e)?;
-                    writeln!(out, "TMR will still work but will use standard pages.")?;
-                    writeln!(out, "This may require a system restart if privileges were just granted.")?;
-                }
-            }
+        // The command is the request: it grants (or removes) without asking, as a session doesn't (`session::run`)
+        Command::SetupLargePages(args) => {
+            use crate::memory::large_page_setup::{Change, ThisMachine, run};
+            return run(Change::Grant, args, &mut ThisMachine::new(), out);
+        }
+        Command::RemoveLargePages(args) => {
+            use crate::memory::large_page_setup::{Change, ThisMachine, run};
+            return run(Change::Remove, args, &mut ThisMachine::new(), out);
         }
         Command::Calibrate(args) => return calibrate(args, out, confirm),
         Command::Help(program_name) => help(out, program_name)?,
@@ -128,7 +122,19 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  {} --compare-results baseline.json current.json [output.json]", program_name)?;
     writeln!(out, "                                          # Compare two test results (here, or in results\\)")?;
     writeln!(out, "  {} --show-results results.json      # How a run ended, then its final summary (here, or in results\\)", program_name)?;
-    writeln!(out, "  {} --setup-large-pages              # Configure large pages for optimal performance", program_name)?;
+    writeln!(
+        out,
+        "  {} --setup-large-pages              # Grant 'Lock pages in memory' to you (as administrator), then sign out and in",
+        program_name
+    )?;
+    writeln!(out, "  {} --setup-large-pages Group:Administrators", program_name)?;
+    writeln!(out, "                                          #   ...or to a group or another user: Group:<name>, User:<name>")?;
+    writeln!(out, "                                          #   (DOMAIN\\name, or .\\name for this PC's; quote a name with spaces)")?;
+    writeln!(
+        out,
+        "  {} --remove-large-pages             # Remove it from you, or from the Group:<name> or User:<name> given",
+        program_name
+    )?;
     writeln!(
         out,
         "  {} --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt",
@@ -902,8 +908,9 @@ mod tests {
 
     /// The commands that read and change nothing on this machine, as they write, each after a `## case` line with how it ended (TODO 29):
     /// `--version`, `--help`, `--compare-results` without its files, of one that isn't there, and of a results file with itself (its time
-    /// masked, and TMR's home, which is the test binary's folder), and `--show-results` without its file, with two, and of one that isn't
-    /// there (TODO 72; the CLI's golden has one shown). None asks a question, nor has an event rendered.
+    /// masked, and TMR's home, which is the test binary's folder), `--show-results` without its file, with two, and of one that isn't
+    /// there (TODO 72; the CLI's golden has one shown), and the large-page commands' refusals of their target (TODO 113), which come before
+    /// anything is read. None asks a question, nor has an event rendered.
     #[test]
     fn commands_write_as_their_golden() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("result_files").join("before_todo_72.json");
@@ -920,6 +927,15 @@ mod tests {
             ("--show-results without its file", Command::ShowResults(args(&["tmr.exe", "--show-results"]))),
             ("--show-results of two files", Command::ShowResults(args(&["tmr.exe", "--show-results", fixture, fixture]))),
             ("--show-results of a file that isn't there", Command::ShowResults(args(&["tmr.exe", "--show-results", "nowhere.json"]))),
+            // TODO 113: each refusal before anything is looked up, the target's type missing, unknown or with no name, or two targets
+            ("--setup-large-pages without a type", Command::SetupLargePages(args(&["tmr.exe", "--setup-large-pages", "witches"]))),
+            ("--setup-large-pages with an unknown type", Command::SetupLargePages(args(&["tmr.exe", "--setup-large-pages", "Team:x"]))),
+            ("--setup-large-pages with no name", Command::SetupLargePages(args(&["tmr.exe", "--setup-large-pages", "Group:"]))),
+            (
+                "--setup-large-pages with two targets",
+                Command::SetupLargePages(args(&["tmr.exe", "--setup-large-pages", "Group:Remote", "Desktop Users"])),
+            ),
+            ("--remove-large-pages without a type", Command::RemoveLargePages(args(&["tmr.exe", "--remove-large-pages", "Everyone"]))),
         ];
         let mut no_question = |question: &str| -> bool { panic!("asked: {question}") };
         let no_text = |_: &Event| -> String { panic!("an event rendered") };
@@ -1011,7 +1027,14 @@ mod tests {
         assert!(matches!(parse(&["tmr.exe", "--create-demo-configs"]), Some(Command::DemoConfigs)));
         assert!(matches!(parse(&["tmr.exe", "--debug-topology"]), Some(Command::DebugTopology)));
         assert!(matches!(parse(&["tmr.exe", "--show-topology"]), Some(Command::ShowTopology)));
-        assert!(matches!(parse(&["tmr.exe", "--setup-large-pages"]), Some(Command::SetupLargePages)));
+        let line = ["tmr.exe", "--setup-large-pages"];
+        assert!(matches!(parse(&line), Some(Command::SetupLargePages(given)) if given == args(&line)));
+        let line = ["tmr.exe", "--setup-large-pages", "Group:Administrators"];
+        assert!(matches!(parse(&line), Some(Command::SetupLargePages(given)) if given == args(&line)), "with a target");
+        assert!(crate::logfile::wanted(&args(&line)), "--setup-large-pages keeps a log file");
+        let line = ["tmr.exe", "--remove-large-pages", r"User:.\alex"];
+        assert!(matches!(parse(&line), Some(Command::RemoveLargePages(given)) if given == args(&line)));
+        assert!(crate::logfile::wanted(&args(&line)), "--remove-large-pages keeps a log file");
         let line = ["tmr.exe", "--calibrate-all", "maxpage=regular"];
         assert!(matches!(parse(&line), Some(Command::Calibrate(given)) if given == args(&line)));
         let line = ["tmr.exe", "--compare-results", "a.json", "b.json"];

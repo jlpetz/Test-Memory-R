@@ -214,11 +214,11 @@ which only tmr-cli's tests turn on (TODO 29 S5). The one-shot commands' text is 
 golden, `testdata/console/commands.txt`. `TMR_BLESS=1 cargo test` rewrites both sets (the default
 members; `--workspace` would also build the window and rewrite its `window.example.json`), and
 `git diff crates/tmr-cli/testdata/ testdata/` shows what changed. The rest rests on an A/B of the
-real exe, diffed here: the setup path, which can't run in a test (secedit, `process::exit`); the
-run around the cycle (WHEA, allocation, the seed, the cycle's start, the verdict, the results); the
-line on the tests a CPU can't run, which depends on the CPU; a config's errors; and which stream a
-line goes to, as the goldens take stdout and stderr together. Run the same command line under the
-old binary and the new, each captured, then diff the two here.
+real exe, diffed here: the setup path, which can't run in a test (the security policy,
+`process::exit`); the run around the cycle (WHEA, allocation, the seed, the cycle's start, the
+verdict, the results); the line on the tests a CPU can't run, which depends on the CPU; a config's
+errors; and which stream a line goes to, as the goldens take stdout and stderr together. Run the
+same command line under the old binary and the new, each captured, then diff the two here.
 
 Both captures are read the same way. Ticker frames are dropped (by their erase codes, or by their
 lines when a capture lost the codes) and ANSI escapes stripped: a redirected stdout gets neither

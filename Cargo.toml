@@ -54,6 +54,7 @@ targets = []
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Authentication_Identity", # The large-page right through LSA (TODO 113): LsaAddAccountRights and its lookups
     "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_EventLog", # WHEA monitoring (TODO 63): EvtSubscribe, EvtNext, EvtRender

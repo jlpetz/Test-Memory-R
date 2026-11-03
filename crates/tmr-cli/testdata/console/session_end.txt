@@ -20,7 +20,12 @@
 
 ================================================================================
 ⚠️  Interrupted after 25:01:01: only the tests that finished were checked
-## the restart chosen
+## the sign-out chosen
+## quit at the large-page question
+
+================================================================================
+❌ Stopped before allocating: this sign-in lacks the right large pages need, and TMR runs nothing
+   on 4KB pages unasked (minpage=regular maxpage=regular runs on them without asking)
 ## a command
 ## unknown flags
 ❌ Error: Unknown parameter(s) detected:
@@ -40,7 +45,11 @@ USAGE:
   tmr.exe --compare-results baseline.json current.json [output.json]
                                           # Compare two test results (here, or in results\)
   tmr.exe --show-results results.json      # How a run ended, then its final summary (here, or in results\)
-  tmr.exe --setup-large-pages              # Configure large pages for optimal performance
+  tmr.exe --setup-large-pages              # Grant 'Lock pages in memory' to you (as administrator), then sign out and in
+  tmr.exe --setup-large-pages Group:Administrators
+                                          #   ...or to a group or another user: Group:<name>, User:<name>
+                                          #   (DOMAIN\name, or .\name for this PC's; quote a name with spaces)
+  tmr.exe --remove-large-pages             # Remove it from you, or from the Group:<name> or User:<name> given
   tmr.exe --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt
   tmr.exe --calibrate-cache-ext            #   ...finer, around each tier's edge (preferred when both are saved)
   tmr.exe --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto

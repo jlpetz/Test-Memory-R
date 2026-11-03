@@ -2,7 +2,7 @@
 //! (`run.rs`). Each event's text is the print group it replaced, with the same format strings, rendered into a String and written with that
 //! group's primitive before `event` returns, on the engine's thread: plain `console::print` before the suite and after it, `print_above`
 //! for a line while the ticker can be up, `print_block` for a step's report. So the console keeps its bytes, and its order against
-//! the log records (`tmr::frontend`). The large-page restart is asked on the console (`prompts.rs`).
+//! the log records (`tmr::frontend`). The large-page question is asked on the console (`prompts.rs`).
 
 mod run;
 #[cfg(test)]
@@ -16,7 +16,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 pub(crate) use setup::show_end;
-use tmr::frontend::{Event, Frontend, LargePageQuestion, ProgressTracker, Reporter, RestartChoice};
+use tmr::frontend::{Event, Frontend, LargePageAnswer, LargePageQuestion, ProgressTracker, Reporter};
 
 use crate::renderer::{ConsoleRenderer, create_console_reporter};
 
@@ -44,10 +44,16 @@ impl Frontend for CliFrontend {
         tmr::logfile::write_text(&shown);
     }
 
-    /// Asks on the console. A console that can't be written to is no answer, as the input's end is: 4 KiB pages, nothing granted.
-    fn large_page_restart(&self, question: &LargePageQuestion) -> RestartChoice {
-        crate::prompts::large_page_restart(question, &mut std::io::stdin().lock(), &mut crate::console::stdout())
-            .unwrap_or(RestartChoice::Continue4K)
+    /// Asks on the console, what was typed ahead dropped before each read (`console::flush_input`). A console that can't be written to is
+    /// no answer, as the input's end is: TMR quits, granting nothing and running nothing on 4 KiB pages unasked (TODO 113).
+    fn ask_large_pages(&self, question: &LargePageQuestion) -> LargePageAnswer {
+        let asked = crate::prompts::large_pages(
+            question,
+            &mut std::io::stdin().lock(),
+            &mut crate::console::stdout(),
+            &crate::console::flush_input,
+        );
+        asked.unwrap_or(LargePageAnswer::Quit)
     }
 
     /// The ticker, redrawn every 2 seconds. Anything WHEA reported since the last draw is printed above it. On a stdout that isn't a

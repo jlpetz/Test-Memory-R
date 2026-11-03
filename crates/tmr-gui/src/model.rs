@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use tmr::commands::ResultsComparison;
 use tmr::frontend::{
-    AllocationReport, ErrorCounts, Event, LargePageQuestion, NotRun, ProgressSnapshot, ProgressTracker, RestartChoice, Run, RunOutcome,
-    RunStatus, SealOp, Setup, StepReport, TestConfigurationReport, TestSnapshot, ThreadPriority,
+    AllocationReport, BROAD_RISK, ErrorCounts, Event, LargePageAnswer, LargePageQuestion, NotRun, ProgressSnapshot, ProgressTracker, Run,
+    RunOutcome, RunStatus, SealOp, Setup, StepReport, TestConfigurationReport, TestSnapshot, ThreadPriority,
 };
 use tmr::session::{SessionEnd, Stopped};
 
@@ -36,20 +36,47 @@ pub const ERRORS_KEPT: usize = 10_000;
 /// The log lines the Log tab keeps, the newest (TODO 109): the log file has every line
 pub const LOG_KEPT: usize = 10_000;
 
-/// The large-page dialog's words (`Model::restart_dialog`), as `window.rs` draws them. Its close button (and Esc) is 4 KiB pages either
-/// way.
+/// The large-page dialog's words (`Model::large_page_dialog`), as `window.rs` draws them (TODO 113): its title, its buttons' (the
+/// secondary 4 KiB pages this time; the close button, as Esc, quits, and an empty one has none), its text, and for the grant the
+/// candidates as its radio buttons label them and the one chosen, which mirrors the control: none chosen disables the grant.
 #[derive(Debug, PartialEq, Eq)]
-pub struct RestartDialog {
+pub struct LargePageDialog {
     pub title: &'static str,
-    /// The primary button's, which answers Exit
-    pub exit: &'static str,
+    pub primary: &'static str,
+    pub secondary: &'static str,
+    pub close: &'static str,
+    pub text: String,
+    pub choices: Vec<String>,
+    pub chosen: Option<usize>,
+}
+
+/// Which of a large-page dialog's buttons closed it (`Model::answer_large_pages`), as `window.rs` reads WinUI's result: the primary, the
+/// secondary, or neither (the close button, Esc, or the dialog closed any other way)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DialogButton {
+    Primary,
+    Secondary,
+    Close,
+}
+
+/// The second dialog after a broad pick (`Model::broad_dialog`): its title, its secondary button's (`grant`), the only one that grants,
+/// and its text. Its primary button is No, its default, which goes back to the first: WinUI's dialog has no default button, but it
+/// focuses its first button when its text has nothing to focus, and a double-click on the first dialog's grant lands there too, so the
+/// first button never grants.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BroadDialog {
+    pub title: String,
+    pub grant: String,
     pub text: String,
 }
 
-/// What 4 KiB pages mean, the close button's answer, the end of either question
+/// What 4 KiB pages mean, the end of each question
 const FOUR_KIB_PAGES: &str = "standard 4 KiB pages, about 5-10% slower: every test still runs and every pattern is still checked, but \
                               slower memory traffic is less stress, so marginal errors that only appear at full bandwidth may go \
                               undetected.";
+
+/// What a quit, or the dialog closed, does (TODO 113, decision 5a): the last words of the questions that have a Quit button
+const QUIT_RUNS_NOTHING: &str = "Quit, or this dialog closed, runs nothing: TMR takes 4 KiB pages only when told to.";
 
 /// The step reports kept, the newest steps': as many as the window draws rows (TODO 109), so every row drawn opens one. A report holds a
 /// line for each thread.
@@ -473,9 +500,13 @@ pub struct Model {
     pub log_path: Option<PathBuf>,
     facts: Facts,
     /// The large-page question, while it waits for the dialog's answer: the session's thread waits on the reply
-    restart: Option<SyncSender<RestartChoice>>,
+    reply: Option<SyncSender<LargePageAnswer>>,
     /// What the last large-page question asked, kept after its answer, so the dialog's words hold while it closes
     question: Option<LargePageQuestion>,
+    /// The grant's candidate chosen, as its radio buttons have it (`choose_target`): none chosen disables the grant
+    chosen: Option<usize>,
+    /// A broad candidate picked, its second dialog open, waiting for its answer (`confirm_broad`)
+    confirming: Option<usize>,
     /// The lines the logger's channel dropped, as it last counted them
     log_lines_dropped: u64,
     /// The suite's progress, from its start on
@@ -524,8 +555,10 @@ impl Model {
             program: args.first().cloned().unwrap_or_else(|| "tmr".to_string()),
             log_path: None,
             facts: Facts::default(),
-            restart: None,
+            reply: None,
             question: None,
+            chosen: None,
+            confirming: None,
             log_lines_dropped: 0,
             progress: None,
             cycle: 0,
@@ -673,10 +706,10 @@ impl Model {
                 self.window_priority = selection.window_priority;
             }
             Setup::LargePageCheck => self.position = "Checking large pages".to_string(),
-            // After the dialog's yes to the grant
-            Setup::LargePageGrant { outcome: Ok(()), .. } => self.position = "Exiting, to restart Windows".to_string(),
+            // After the dialog's grant
+            Setup::LargePageGrant { outcome: Ok(()), .. } => self.position = "Exiting, to sign out and back in".to_string(),
             Setup::LargePageGrant { account, outcome: Err(e) } => {
-                self.position = "Setting up, without large pages".to_string();
+                self.position = "Not granted: stopping before allocating".to_string();
                 self.errors.push(format!("Couldn't grant 'Lock pages in memory' to {account}: {e}"));
             }
             Setup::LargePageStatus { usable, .. } => self.facts.no_large_pages = !usable,
@@ -699,72 +732,223 @@ impl Model {
         }
     }
 
-    /// Large pages need Windows restarted, and the right granted first when `question` offers it: the dialog asks whether to exit (after
-    /// the grant) or continue on 4 KiB pages, and `answer_restart` replies on `reply`
-    pub fn ask_restart(&mut self, question: LargePageQuestion, reply: SyncSender<RestartChoice>) {
+    /// This sign-in lacks the right large pages need (TODO 113): the dialog asks, as `question` says, and `answer_large_pages` (and, after
+    /// a broad pick, `confirm_broad`) replies on `reply`. The grant's dialog starts with the account chosen.
+    pub fn ask_large_pages(&mut self, question: LargePageQuestion, reply: SyncSender<LargePageAnswer>) {
         self.position = match question {
-            LargePageQuestion::Restart => "Large pages need Windows restarted",
+            LargePageQuestion::SignIn { .. } => "Large pages need a new sign-in",
             LargePageQuestion::Grant { .. } => "Large pages need a right granted",
+            LargePageQuestion::NeedsAdministrator { .. } => "Large pages need TMR run as administrator",
         }
         .to_string();
-        self.restart = Some(reply);
+        self.chosen = matches!(question, LargePageQuestion::Grant { .. }).then_some(0);
+        self.confirming = None;
+        self.reply = Some(reply);
         self.question = Some(question);
     }
 
-    /// The large-page question is waiting for its answer: the dialog is open
-    pub fn restart_asked(&self) -> bool {
-        self.restart.is_some()
+    /// The large-page question is waiting for its answer, in either dialog: no other dialog opens meanwhile
+    pub fn large_pages_pending(&self) -> bool {
+        self.reply.is_some()
     }
 
-    /// The dialog's words for the last question asked (the restart's before any): the console's question (crates/tmr-cli's `prompts.rs`)
-    /// in a window's
-    pub fn restart_dialog(&self) -> RestartDialog {
+    /// The large-page dialog is open
+    pub fn large_pages_asked(&self) -> bool {
+        self.reply.is_some() && self.confirming.is_none()
+    }
+
+    /// The second dialog, after a broad pick, is open
+    pub fn broad_asked(&self) -> bool {
+        self.reply.is_some() && self.confirming.is_some()
+    }
+
+    /// The grant's radio buttons' selection, mirrored: none (as WinUI's control sends when its items are replaced), or one past the list,
+    /// chooses nothing, which disables the grant
+    pub fn choose_target(&mut self, chosen: Option<usize>) {
+        let candidates = match &self.question {
+            Some(LargePageQuestion::Grant { candidates, .. }) => candidates.len(),
+            _ => 0,
+        };
+        self.chosen = chosen.filter(|&i| i < candidates);
+    }
+
+    /// The dialog's words for the last question asked (none before any): the console's question (crates/tmr-cli's `prompts.rs`) in a
+    /// window's
+    pub fn large_page_dialog(&self) -> LargePageDialog {
+        const CONTINUE: &str = "Continue on 4 KiB pages this time";
+        const QUIT: &str = "Quit";
+        let elevated_lines = |uac: bool, domain: bool| {
+            let uac =
+                if uac { " As an administrator under UAC, you get it only in programs run as administrator, as TMR is now." } else { "" };
+            let domain =
+                if domain { " This PC is in a domain: a domain Group Policy that sets this right replaces a local grant." } else { "" };
+            format!("{uac}{domain}")
+        };
         match &self.question {
-            None | Some(LargePageQuestion::Restart) => RestartDialog {
-                title: "Large pages need Windows restarted",
-                exit: "Exit, to restart Windows",
-                text: format!(
-                    "The large-page privilege is set up, but takes effect only after Windows restarts.\n\n\
-                     Exit TMR and restart Windows: TMR then runs on large pages (recommended for the most memory stress).\n\n\
-                     Or continue on {FOUR_KIB_PAGES}"
-                ),
+            None => LargePageDialog {
+                title: "Large pages",
+                primary: "",
+                secondary: "",
+                close: QUIT,
+                text: String::new(),
+                choices: Vec::new(),
+                chosen: None,
             },
-            Some(LargePageQuestion::Grant { account }) => RestartDialog {
-                title: "Large pages need the 'Lock pages in memory' right",
-                exit: "Grant it, then restart Windows",
+            Some(LargePageQuestion::SignIn { account, via, uac, domain }) => {
+                let holder = match via {
+                    Some(group) => format!("{group}, a group {account} is in"),
+                    None => format!("{account}, the account TMR runs as"),
+                };
+                LargePageDialog {
+                    title: "Large pages need a new sign-in",
+                    primary: "Exit, to sign out and back in",
+                    secondary: CONTINUE,
+                    close: QUIT,
+                    text: format!(
+                        "The security policy gives the right large pages need, 'Lock pages in memory', to {holder}, but this sign-in \
+                         began before it did. Exit TMR, then sign out of Windows and back in (it needn't restart): TMR then runs on \
+                         large pages (recommended for the most memory stress).{}\n\nOr continue this time on {FOUR_KIB_PAGES}\n\n\
+                         {QUIT_RUNS_NOTHING}",
+                        elevated_lines(*uac, *domain)
+                    ),
+                    choices: Vec::new(),
+                    chosen: None,
+                }
+            }
+            Some(LargePageQuestion::Grant { candidates, uac, domain }) => {
+                let account = candidates.first().map_or("", |you| you.name.as_str());
+                let choices = candidates
+                    .iter()
+                    .enumerate()
+                    .map(|(i, candidate)| match candidate.reach.warning() {
+                        _ if i == 0 => format!("{} (you, recommended)", candidate.name),
+                        Some(warning) => format!("{}: ⚠ BROAD, likely not what you want: {warning}", candidate.name),
+                        None => candidate.name.clone(),
+                    })
+                    .collect();
+                LargePageDialog {
+                    title: "Large pages need the 'Lock pages in memory' right",
+                    primary: "Grant it, then exit to sign in again",
+                    secondary: CONTINUE,
+                    close: QUIT,
+                    text: format!(
+                        "TMR runs as {account}, and neither it nor a group it is in has the right large pages need, 'Lock pages in \
+                         memory' (SeLockMemoryPrivilege). As administrator, TMR can grant it to one of these, who keeps it until it is \
+                         removed (tmr.exe --remove-large-pages); it takes effect at the next sign-in, so this session ends once it is \
+                         granted.{}\n\nOr grant nothing, and continue this time on {FOUR_KIB_PAGES}\n\n{QUIT_RUNS_NOTHING}",
+                        elevated_lines(*uac, *domain)
+                    ),
+                    choices,
+                    chosen: self.chosen,
+                }
+            }
+            Some(LargePageQuestion::NeedsAdministrator { account, uac }) => LargePageDialog {
+                title: "Large pages need TMR run as administrator",
+                primary: "Quit, to run TMR as administrator",
+                secondary: CONTINUE,
+                // The primary is the quit, and Esc quits too
+                close: "",
                 text: format!(
-                    "TMR runs as {account}, which doesn't have the right large pages need, 'Lock pages in memory' \
-                     (SeLockMemoryPrivilege). As administrator, TMR can grant it: {account} then keeps it until it is removed \
-                     (gpedit.msc: User Rights Assignment), and it takes effect only after Windows restarts: this session ends once it \
-                     is granted, and after the restart TMR runs on large pages (recommended for the most memory stress).\n\n\
-                     Or grant nothing, and continue this time on {FOUR_KIB_PAGES}"
+                    "TMR runs as {account} without the right large pages need, 'Lock pages in memory' (SeLockMemoryPrivilege). Only \
+                     TMR run as administrator can set them up: right-click it and Run as administrator, or run tmr.exe \
+                     --setup-large-pages from a console run as administrator.{}\n\nQuit, to do that, or continue this time on \
+                     {FOUR_KIB_PAGES} Closing this dialog quits too.",
+                    if *uac {
+                        " You sign in as an administrator under UAC: TMR gets this right only when run as administrator."
+                    } else {
+                        ""
+                    }
                 ),
+                choices: Vec::new(),
+                chosen: None,
             },
         }
     }
 
-    /// The dialog's answer, to the session's thread. On 4 KiB pages, the errors list says so.
-    pub fn answer_restart(&mut self, choice: RestartChoice) {
-        let Some(reply) = self.restart.take() else {
+    /// The second dialog's words, for the broad candidate picked (the last picked, so they hold while it closes)
+    pub fn broad_dialog(&self) -> BroadDialog {
+        let picked = match (&self.question, self.confirming.or(self.chosen)) {
+            (Some(LargePageQuestion::Grant { candidates, .. }), Some(i)) => candidates.get(i),
+            _ => None,
+        };
+        let Some(candidate) = picked else {
+            return BroadDialog { title: String::new(), grant: String::new(), text: String::new() };
+        };
+        let name = &candidate.name;
+        let warning = candidate.reach.warning().unwrap_or("it reaches more than you");
+        BroadDialog {
+            title: format!("Grant 'Lock pages in memory' to {name}?"),
+            grant: format!("Grant it to {name}"),
+            text: format!(
+                "{name} is broad, likely not what you want: {warning}, and {BROAD_RISK}.\n\nGrant it to {name} anyway, or go back to \
+                 the list, granting nothing."
+            ),
+        }
+    }
+
+    /// The dialog's answer, by the button that closed it. The primary: the sign-in's sign-out, the grant to the candidate chosen (a broad
+    /// one only after the second dialog's yes, `confirm_broad`), the administrator's quit; the secondary, 4 KiB pages this time; the close
+    /// button, Esc or nothing quits (TODO 113, decision 5a), as the grant's primary does with none chosen.
+    pub fn answer_large_pages(&mut self, button: DialogButton) {
+        if !self.large_pages_asked() {
+            return;
+        }
+        let broad = |candidates: &[tmr::frontend::Candidate], i: usize| candidates.get(i).is_some_and(|c| c.reach.is_broad());
+        let answer = match (&self.question, button) {
+            (_, DialogButton::Secondary) => LargePageAnswer::Regular,
+            (Some(LargePageQuestion::SignIn { .. }), DialogButton::Primary) => LargePageAnswer::SignOut,
+            (Some(LargePageQuestion::Grant { candidates, .. }), DialogButton::Primary) => match self.chosen {
+                Some(i) if broad(candidates, i) => {
+                    self.confirming = Some(i);
+                    self.position = "Large pages: a broad group picked, asking again".to_string();
+                    return;
+                }
+                Some(i) if i < candidates.len() => LargePageAnswer::Grant(i),
+                _ => LargePageAnswer::Quit,
+            },
+            // The administrator's primary, and every close
+            _ => LargePageAnswer::Quit,
+        };
+        self.send(answer);
+    }
+
+    /// The second dialog's answer, after a broad pick: `yes` grants to it; No, Esc or nothing grants nothing and goes back to the first
+    /// dialog, the pick still chosen, to choose again
+    pub fn confirm_broad(&mut self, yes: bool) {
+        let Some(picked) = self.confirming.take() else {
+            return;
+        };
+        if yes {
+            self.send(LargePageAnswer::Grant(picked));
+        } else {
+            self.position = "Large pages need a right granted".to_string();
+        }
+    }
+
+    /// `answer` to the session's thread, and what it means in the position, and on 4 KiB pages in the errors list
+    fn send(&mut self, answer: LargePageAnswer) {
+        let Some(reply) = self.reply.take() else {
             return;
         };
         // The session's thread waits for it while the window is open
-        let _ = reply.send(choice);
-        let grant = matches!(self.question, Some(LargePageQuestion::Grant { .. }));
-        match choice {
-            RestartChoice::Exit if grant => self.position = "Granting the large-page right".to_string(),
-            RestartChoice::Exit => self.position = "Exiting, to restart Windows".to_string(),
-            RestartChoice::Continue4K => {
-                self.position = "Setting up, on 4 KiB pages".to_string();
-                self.errors.push(if grant {
-                    "Large pages need the 'Lock pages in memory' right, not granted: this run takes 4 KiB pages (minpage=regular)"
-                        .to_string()
-                } else {
-                    "Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)"
-                        .to_string()
-                });
+        let _ = reply.send(answer);
+        let regular = match &self.question {
+            Some(LargePageQuestion::Grant { .. }) | None => "Large pages need the 'Lock pages in memory' right, not granted",
+            Some(LargePageQuestion::SignIn { .. }) => "Large pages take effect at the next sign-in",
+            Some(LargePageQuestion::NeedsAdministrator { .. }) => "Large pages need TMR run as administrator to set them up",
+        };
+        self.position = match (answer, &self.question) {
+            (LargePageAnswer::SignOut, _) => "Exiting, to sign out and back in".to_string(),
+            (LargePageAnswer::Grant(i), Some(LargePageQuestion::Grant { candidates, .. })) => {
+                format!("Granting the large-page right to {}", candidates.get(i).map_or("", |c| c.name.as_str()))
             }
-        }
+            (LargePageAnswer::Grant(_), _) => "Granting the large-page right".to_string(),
+            (LargePageAnswer::Quit, _) => "Stopping before allocating: nothing granted, nothing run".to_string(),
+            (LargePageAnswer::Regular, _) => {
+                self.errors.push(format!("{regular}: this run takes 4 KiB pages (minpage=regular maxpage=regular)"));
+                "Setting up, on 4 KiB pages".to_string()
+            }
+        };
     }
 
     /// The lines logged since the last batch, into the log, the warnings and errors into the errors list too, and how many the logger has
@@ -907,7 +1091,7 @@ impl Model {
                 self.errors
                     .push("A one-shot command (--help, --calibrate-cache, ...) runs on the console: tmr.exe without --gui".to_string());
             }
-            Ok(SessionEnd::RestartChosen) => position = "Restart Windows for large pages, then run again",
+            Ok(SessionEnd::SignOutChosen) => position = "Sign out and back in for large pages, then run again",
             // As the console has it, only a plan that was shown; one stopped before it is Stopped before testing
             Ok(SessionEnd::Ran { plan_only: true, status: RunStatus::Passed, .. }) => {
                 position = "The plan only (--startup-debug): nothing allocated, no test run";
@@ -1047,6 +1231,9 @@ fn stopped(why: &Stopped) -> String {
         // The parser's, its first line without the console's glyph: the second is `--help`'s hint
         Stopped::Invalid(e) => e.trim_start_matches("❌ ").lines().next().unwrap_or_default().to_string(),
         Stopped::CpuSelection(e) => format!("CPU selection error: {e}"),
+        Stopped::NeedsLargePages => "This sign-in lacks the right large pages need, and TMR runs nothing on 4 KiB pages unasked \
+                                     (minpage=regular maxpage=regular runs on them without asking)"
+            .to_string(),
     }
 }
 
@@ -1369,6 +1556,24 @@ mod tests {
     }
 
     /// Setup's choice of 6 threads of 6 available cores
+    /// The sign-in's question, the policy giving the right to the account or `via` a group
+    fn sign_in(via: Option<&str>) -> LargePageQuestion {
+        LargePageQuestion::SignIn { account: r"PC\owner".to_string(), via: via.map(str::to_string), uac: false, domain: false }
+    }
+
+    /// The grant's question: the account, a group, Users and Everyone
+    fn grant(uac: bool) -> LargePageQuestion {
+        use tmr::frontend::{Candidate, Reach, Sid};
+        let candidate = |name: &str, reach, sid: &str| Candidate::new(name, reach, sid.parse::<Sid>().unwrap());
+        let candidates = vec![
+            candidate(r"PC\owner", Reach::You, "S-1-5-21-1-2-3-1001"),
+            candidate(r"BUILTIN\Administrators", Reach::Group, "S-1-5-32-544"),
+            candidate(r"BUILTIN\Users", Reach::EveryLocalAccount, "S-1-5-32-545"),
+            candidate("Everyone", Reach::Automatic, "S-1-1-0"),
+        ];
+        LargePageQuestion::Grant { candidates, uac, domain: false }
+    }
+
     fn selection() -> Selection {
         Selection {
             error_mode: ErrorMode::Log,
@@ -1530,7 +1735,7 @@ mod tests {
         let ends = [
             ("refused in setup", None, Ok(SessionEnd::Stopped(Stopped::Invalid("bad value".to_string())))),
             ("failed", None, Err("bad config".to_string())),
-            ("the restart chosen", None, Ok(SessionEnd::RestartChosen)),
+            ("the sign-out chosen", None, Ok(SessionEnd::SignOutChosen)),
             ("the plan only", None, Ok(SessionEnd::Ran { status: RunStatus::Passed, elapsed: Duration::ZERO, plan_only: true })),
             ("finished", suite_ended(RunOutcome::Completed, RunStatus::Passed), Ok(ran(RunStatus::Passed))),
             ("stopped", suite_ended(RunOutcome::Interrupted, RunStatus::Interrupted), Ok(ran(RunStatus::Interrupted))),
@@ -1575,9 +1780,9 @@ mod tests {
         }
         assert_eq!(m.position, "Checking large pages");
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
-        m.ask_restart(LargePageQuestion::Restart, reply);
-        m.answer_restart(RestartChoice::Continue4K);
-        assert_eq!(answer.try_recv(), Ok(RestartChoice::Continue4K));
+        m.ask_large_pages(sign_in(None), reply);
+        m.answer_large_pages(DialogButton::Secondary);
+        assert_eq!(answer.try_recv(), Ok(LargePageAnswer::Regular));
         for setup in [
             Setup::LargePageStatus { usable: false, min_page: "regular".to_string(), min_needs_large: false },
             Setup::MemoryStatus(Some(status)),
@@ -1604,7 +1809,7 @@ mod tests {
         m.choose_dimm("DIMM_B2 · 16 GiB");
         assert_eq!(chosen(&m).as_deref(), Some("DIMM_B2 · 16 GiB"), "the one chosen");
         assert_eq!(m.errors, [
-            "Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)",
+            "Large pages take effect at the next sign-in: this run takes 4 KiB pages (minpage=regular maxpage=regular)",
             "priority=realtime with a worker on every logical CPU: the window can freeze until the run ends"
         ]);
 
@@ -1620,7 +1825,8 @@ mod tests {
         assert_eq!(m.info_line(), "6 threads · plan stability · 3 steps a cycle · no large pages");
     }
 
-    /// A session setup stopped, or that named a command, is Not run, saying why as the console does; the restart chosen says what to do
+    /// A session setup stopped, or that named a command, is Not run, saying why as the console does, the quit for large pages too; the
+    /// sign-out chosen says what to do
     #[test]
     fn a_session_setup_stopped_says_why() {
         let end = |end: Result<SessionEnd, String>| {
@@ -1648,7 +1854,16 @@ mod tests {
             end(Ok(SessionEnd::Command(tmr::commands::Command::Version))),
             (stopped, "A one-shot command (--help, --calibrate-cache, ...) runs on the console: tmr.exe without --gui".to_string())
         );
-        assert_eq!(end(Ok(SessionEnd::RestartChosen)), ("Restart Windows for large pages, then run again".to_string(), String::new()));
+        assert_eq!(
+            end(Ok(SessionEnd::Stopped(Stopped::NeedsLargePages))),
+            (
+                "Stopped before testing".to_string(),
+                "This sign-in lacks the right large pages need, and TMR runs nothing on 4 KiB pages unasked (minpage=regular \
+                 maxpage=regular runs on them without asking)"
+                    .to_string()
+            )
+        );
+        assert_eq!(end(Ok(SessionEnd::SignOutChosen)), ("Sign out and back in for large pages, then run again".to_string(), String::new()));
     }
 
     /// A session that ends with no suite run is Not run, its reason in the errors: an unsealed run's rows have no seal count
@@ -1688,88 +1903,220 @@ mod tests {
         assert_eq!(m.rows[0].cells()[6], "–");
     }
 
-    /// The restart question (TODO 29 S6): the dialog is open while the question waits, the answer goes to the session's thread once, and
-    /// only 4 KiB pages say so in the errors
+    /// The large-page question (TODO 29 S6, TODO 113): the dialog is open while the question waits, the answer goes to the session's thread
+    /// once, by the button that closed the dialog (the close button and Esc quit, decision 5a), and only 4 KiB pages say so in the errors
     #[test]
-    fn the_restart_question_waits_for_one_answer() {
+    fn the_large_page_question_waits_for_one_answer() {
         let mut m = model();
         m.start();
-        assert!(!m.restart_asked());
-        m.answer_restart(RestartChoice::Exit);
+        assert!(!m.large_pages_asked() && !m.large_pages_pending());
+        m.answer_large_pages(DialogButton::Primary);
         assert_eq!(m.position, "Setting up", "no question, no answer");
+        assert_eq!((m.large_page_dialog().title, m.large_page_dialog().close), ("Large pages", "Quit"), "before any");
 
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
-        m.ask_restart(LargePageQuestion::Restart, reply);
-        assert_eq!((m.restart_asked(), m.position.as_str()), (true, "Large pages need Windows restarted"));
-        m.answer_restart(RestartChoice::Exit);
-        m.answer_restart(RestartChoice::Continue4K);
+        m.ask_large_pages(sign_in(None), reply);
+        assert_eq!((m.large_pages_asked(), m.position.as_str()), (true, "Large pages need a new sign-in"));
+        let words = m.large_page_dialog();
+        assert_eq!(
+            (words.title, words.primary, words.secondary, words.close, words.choices.len()),
+            ("Large pages need a new sign-in", "Exit, to sign out and back in", "Continue on 4 KiB pages this time", "Quit", 0)
+        );
+        for said in [r"to PC\owner, the account TMR runs as, but this sign-in began before it did", "it needn't restart", "runs nothing"] {
+            assert!(words.text.contains(said), "{said}: {}", words.text);
+        }
+        m.answer_large_pages(DialogButton::Primary);
+        m.answer_large_pages(DialogButton::Secondary);
         assert_eq!(
             (answer.try_recv(), answer.try_recv()),
-            (Ok(RestartChoice::Exit), Err(std::sync::mpsc::TryRecvError::Disconnected)),
+            (Ok(LargePageAnswer::SignOut), Err(std::sync::mpsc::TryRecvError::Disconnected)),
             "one answer, then the reply is gone"
         );
-        assert_eq!((m.restart_asked(), m.position.as_str(), m.errors.total()), (false, "Exiting, to restart Windows", 0));
-        m.ended(Ok(SessionEnd::RestartChosen));
-        assert_eq!(m.position, "Restart Windows for large pages, then run again");
+        assert_eq!((m.large_pages_asked(), m.position.as_str(), m.errors.total()), (false, "Exiting, to sign out and back in", 0));
+        assert_eq!(m.large_page_dialog(), words, "the words hold as the dialog closes");
+        m.ended(Ok(SessionEnd::SignOutChosen));
+        assert_eq!(m.position, "Sign out and back in for large pages, then run again");
 
-        // The session's thread stopped waiting (the window closed): the answer goes nowhere
+        // Closed, or Esc: the quit, nothing in the errors until the session's end says why
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        let mut m = model();
+        m.ask_large_pages(sign_in(None), reply);
+        m.answer_large_pages(DialogButton::Close);
+        assert_eq!(answer.try_recv(), Ok(LargePageAnswer::Quit));
+        assert_eq!((m.position.as_str(), m.errors.total()), ("Stopping before allocating: nothing granted, nothing run", 0));
+
+        // Through a group, under UAC on a domain PC; the session's thread stopped waiting (the window closed): the answer goes nowhere
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
         drop(answer);
         let mut m = model();
-        m.ask_restart(LargePageQuestion::Restart, reply);
-        m.answer_restart(RestartChoice::Continue4K);
+        m.ask_large_pages(
+            LargePageQuestion::SignIn {
+                account: r"PC\owner".to_string(),
+                via: Some(r"BUILTIN\Administrators".to_string()),
+                uac: true,
+                domain: true,
+            },
+            reply,
+        );
+        let text = m.large_page_dialog().text;
+        for said in
+            [r"to BUILTIN\Administrators, a group PC\owner is in,", "only in programs run as administrator", "a domain Group Policy"]
+        {
+            assert!(text.contains(said), "{said}: {text}");
+        }
+        m.answer_large_pages(DialogButton::Secondary);
         assert_eq!(m.position, "Setting up, on 4 KiB pages");
-        assert_eq!(m.errors, [
-            "Large pages are set up but take effect after Windows restarts: this run takes 4 KiB pages (minpage=regular)"
-        ]);
+        assert_eq!(m.errors, ["Large pages take effect at the next sign-in: this run takes 4 KiB pages (minpage=regular maxpage=regular)"]);
     }
 
-    /// The grant's question: the dialog names the account, says it keeps the right until it is removed and that it takes a restart, and
-    /// keeps its words as it closes; a yes is the session's to make, which then shows the grant or why it failed, and 4 KiB pages say
-    /// nothing was granted. The restart's words before any question.
+    /// TODO 113: the grant's dialog lists the candidates, the account first and chosen, the broad ones warned of; the choice mirrors the
+    /// radio buttons, none chosen granting nothing; a broad pick asks again, its No the default, which goes back to the list, before
+    /// anything is granted; the words hold as each dialog closes; a yes is the session's to make, which then shows the grant or why it
+    /// failed; 4 KiB pages say nothing was granted, and the close button quits
     #[test]
-    fn the_grant_question_names_the_account_and_says_what_a_yes_does() {
-        let mut m = model();
-        m.start();
-        assert_eq!(m.restart_dialog().title, "Large pages need Windows restarted", "the restart's words before any question");
-        let account = r"PC\owner".to_string();
+    fn the_grant_dialog_grants_to_the_choice_and_asks_again_for_a_broad_one() {
         let ask = |m: &mut Model| {
             let (reply, answer) = std::sync::mpsc::sync_channel(1);
-            m.ask_restart(LargePageQuestion::Grant { account: account.clone() }, reply);
+            m.ask_large_pages(grant(false), reply);
             answer
         };
+        let mut m = model();
+        m.start();
         let answer = ask(&mut m);
-        assert_eq!((m.restart_asked(), m.position.as_str()), (true, "Large pages need a right granted"));
-        let words = m.restart_dialog();
-        assert_eq!((words.title, words.exit), ("Large pages need the 'Lock pages in memory' right", "Grant it, then restart Windows"));
-        for said in [r"TMR runs as PC\owner,", r"PC\owner then keeps it until it is removed", "only after Windows restarts", "4 KiB pages"]
+        assert_eq!((m.large_pages_asked(), m.position.as_str()), (true, "Large pages need a right granted"));
+        let words = m.large_page_dialog();
+        assert_eq!(
+            (words.title, words.primary, words.secondary, words.close),
+            (
+                "Large pages need the 'Lock pages in memory' right",
+                "Grant it, then exit to sign in again",
+                "Continue on 4 KiB pages this time",
+                "Quit"
+            )
+        );
+        assert_eq!(words.choices, [
+            r"PC\owner (you, recommended)",
+            r"BUILTIN\Administrators",
+            r"BUILTIN\Users: ⚠ BROAD, likely not what you want: every account that can sign in to this PC is in it",
+            "Everyone: ⚠ BROAD, likely not what you want: Windows puts every account that signs in a certain way in it",
+        ]);
+        assert_eq!(words.chosen, Some(0), "the account chosen");
+        for said in [r"TMR runs as PC\owner,", "keeps it until it is removed (tmr.exe --remove-large-pages)", "next sign-in", "4 KiB pages"]
         {
             assert!(words.text.contains(said), "{said}: {}", words.text);
         }
-        m.answer_restart(RestartChoice::Exit);
-        assert_eq!(answer.try_recv(), Ok(RestartChoice::Exit));
-        assert_eq!((m.restart_asked(), m.position.as_str()), (false, "Granting the large-page right"));
-        assert_eq!(m.restart_dialog(), words, "the words hold as the dialog closes");
-        m.apply(Setup::LargePageGrant { account: account.clone(), outcome: Ok(()) }.into());
-        assert_eq!((m.position.as_str(), m.errors.total()), ("Exiting, to restart Windows", 0));
-        m.ended(Ok(SessionEnd::RestartChosen));
-        assert_eq!(m.position, "Restart Windows for large pages, then run again");
+        assert!(!words.text.contains("UAC"), "no UAC line unless the token says so");
+        m.choose_target(Some(1));
+        m.choose_target(None);
+        assert_eq!(m.large_page_dialog().chosen, None, "none chosen, as the control has it");
+        m.choose_target(Some(9));
+        assert_eq!(m.large_page_dialog().chosen, None, "one past the list chooses nothing");
+        m.choose_target(Some(1));
+        m.answer_large_pages(DialogButton::Primary);
+        assert_eq!(answer.try_recv(), Ok(LargePageAnswer::Grant(1)));
+        assert_eq!((m.large_pages_asked(), m.position.as_str()), (false, r"Granting the large-page right to BUILTIN\Administrators"));
+        m.apply(Setup::LargePageGrant { account: r"BUILTIN\Administrators".to_string(), outcome: Ok(()) }.into());
+        assert_eq!((m.position.as_str(), m.errors.total()), ("Exiting, to sign out and back in", 0));
 
-        // The grant failed: the session goes on without the right, and the errors say why
-        let mut m = model();
-        let _answer = ask(&mut m);
-        m.answer_restart(RestartChoice::Exit);
-        m.apply(Setup::LargePageGrant { account: account.clone(), outcome: Err("Setup failed: secedit export failed".to_string()) }.into());
-        assert_eq!(m.position, "Setting up, without large pages");
-        assert_eq!(m.errors, [r"Couldn't grant 'Lock pages in memory' to PC\owner: Setup failed: secedit export failed"]);
-
+        // A broad pick: the second dialog, whose No grants nothing and goes back to the list, the pick still chosen, and whose yes grants
         let mut m = model();
         let answer = ask(&mut m);
-        m.answer_restart(RestartChoice::Continue4K);
-        assert_eq!((answer.try_recv(), m.position.as_str()), (Ok(RestartChoice::Continue4K), "Setting up, on 4 KiB pages"));
+        m.choose_target(Some(2));
+        m.answer_large_pages(DialogButton::Primary);
+        assert_eq!(answer.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty), "nothing answered yet");
+        assert!(m.broad_asked() && !m.large_pages_asked() && m.large_pages_pending());
+        let broad = m.broad_dialog();
+        assert_eq!(
+            (broad.title.as_str(), broad.grant.as_str()),
+            (r"Grant 'Lock pages in memory' to BUILTIN\Users?", r"Grant it to BUILTIN\Users")
+        );
+        assert!(broad.text.contains("any program of any of these accounts can then lock RAM away from Windows"), "{}", broad.text);
+        m.answer_large_pages(DialogButton::Primary);
+        assert!(m.broad_asked(), "the first dialog's buttons do nothing while the second is open");
+        m.confirm_broad(false);
+        assert_eq!(answer.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty), "No: nothing answered");
+        assert!(m.large_pages_asked() && !m.broad_asked(), "back to the list");
+        assert_eq!((m.large_page_dialog().chosen, m.position.as_str()), (Some(2), "Large pages need a right granted"));
+        m.confirm_broad(true);
+        assert_eq!(
+            answer.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty),
+            "the second dialog's answer, once it has closed, does nothing"
+        );
+        m.answer_large_pages(DialogButton::Primary);
+        assert!(m.broad_asked(), "asked again");
+        m.confirm_broad(true);
+        assert_eq!(answer.try_recv(), Ok(LargePageAnswer::Grant(2)), "the yes grants it");
+        assert!(!m.large_pages_pending());
+        assert_eq!(m.broad_dialog(), broad, "the words hold as it closes");
+        m.confirm_broad(true);
+        assert_eq!(answer.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected), "answered once");
+
+        // None chosen: the grant waits on a choice, and its button, should it be pressed, grants nothing and quits
+        let mut m = model();
+        let answer = ask(&mut m);
+        m.choose_target(None);
+        m.answer_large_pages(DialogButton::Primary);
+        assert_eq!(answer.try_recv(), Ok(LargePageAnswer::Quit));
+
+        // The grant failed: the session stops before allocating, and the errors say why
+        let mut m = model();
+        let _answer = ask(&mut m);
+        m.answer_large_pages(DialogButton::Primary);
+        let failed = "LsaAddAccountRights: Access is denied. (5, NTSTATUS 0xC0000022)";
+        m.apply(Setup::LargePageGrant { account: r"PC\owner".to_string(), outcome: Err(failed.to_string()) }.into());
+        assert_eq!(m.position, "Not granted: stopping before allocating");
         assert_eq!(m.errors, [
-            "Large pages need the 'Lock pages in memory' right, not granted: this run takes 4 KiB pages (minpage=regular)"
+            r"Couldn't grant 'Lock pages in memory' to PC\owner: LsaAddAccountRights: Access is denied. (5, NTSTATUS 0xC0000022)"
         ]);
+
+        for (button, expected, position) in [
+            (DialogButton::Secondary, LargePageAnswer::Regular, "Setting up, on 4 KiB pages"),
+            (DialogButton::Close, LargePageAnswer::Quit, "Stopping before allocating: nothing granted, nothing run"),
+        ] {
+            let mut m = model();
+            let answer = ask(&mut m);
+            m.answer_large_pages(button);
+            assert_eq!((answer.try_recv(), m.position.as_str()), (Ok(expected), position), "{button:?}");
+        }
+        let mut m = model();
+        let answer = ask(&mut m);
+        m.answer_large_pages(DialogButton::Secondary);
+        assert_eq!(answer.try_recv(), Ok(LargePageAnswer::Regular));
+        assert_eq!(m.errors, [
+            "Large pages need the 'Lock pages in memory' right, not granted: this run takes 4 KiB pages (minpage=regular maxpage=regular)"
+        ]);
+        let mut m = model();
+        let (reply, _answer) = std::sync::mpsc::sync_channel(1);
+        m.ask_large_pages(grant(true), reply);
+        assert!(m.large_page_dialog().text.contains("As an administrator under UAC"), "the UAC line");
+    }
+
+    /// TODO 113: TMR not run as administrator: its primary button quits, to run TMR as administrator, as Esc does (it has no close
+    /// button); its secondary takes 4 KiB pages this time
+    #[test]
+    fn the_administrators_dialog_quits_unless_told_to_continue() {
+        for (button, expected, position) in [
+            (DialogButton::Primary, LargePageAnswer::Quit, "Stopping before allocating: nothing granted, nothing run"),
+            (DialogButton::Secondary, LargePageAnswer::Regular, "Setting up, on 4 KiB pages"),
+            (DialogButton::Close, LargePageAnswer::Quit, "Stopping before allocating: nothing granted, nothing run"),
+        ] {
+            let mut m = model();
+            m.start();
+            let (reply, answer) = std::sync::mpsc::sync_channel(1);
+            m.ask_large_pages(LargePageQuestion::NeedsAdministrator { account: r"PC\owner".to_string(), uac: true }, reply);
+            assert_eq!(m.position, "Large pages need TMR run as administrator");
+            let words = m.large_page_dialog();
+            assert_eq!(
+                (words.primary, words.secondary, words.close),
+                ("Quit, to run TMR as administrator", "Continue on 4 KiB pages this time", "")
+            );
+            for said in ["Run as administrator", "--setup-large-pages", "only when run as administrator", "Closing this dialog quits"] {
+                assert!(words.text.contains(said), "{said}: {}", words.text);
+            }
+            m.answer_large_pages(button);
+            assert_eq!((answer.try_recv(), m.position.as_str()), (Ok(expected), position), "{button:?}");
+        }
     }
 
     /// Every line logged joins the log, the warnings and errors the errors list too, and the logger's drops are one line; the lists keep

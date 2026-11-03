@@ -69,7 +69,7 @@ impl Sections {
             Setup::LargePageDiagnostic { report } => self.memory.push(text(report.trim_end().to_string())),
             Setup::LargePageGrant { account, outcome } => self.memory.push(match outcome {
                 Ok(()) => text(format!(
-                    "Large pages: 'Lock pages in memory' granted to {account}, until it is removed; it takes effect once Windows restarts"
+                    "Large pages: 'Lock pages in memory' granted to {account}, until it is removed; it takes effect at the next sign-in"
                 )),
                 Err(e) => Block::Warning(format!("Large pages: 'Lock pages in memory' couldn't be granted to {account}: {e}")),
             }),

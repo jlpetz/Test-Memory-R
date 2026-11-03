@@ -1,0 +1,503 @@
+## the sign-in, A
+⚠️  LARGE PAGES NEED A NEW SIGN-IN
+=================================
+The security policy gives 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\owner, the account TMR runs as,
+but this sign-in began before it did: a program gets the rights its account had at sign-in, so signing
+out and back in brings it (Windows needn't restart).
+
+Choose your preferred action:
+  A) Exit TMR, then sign out and back in, or restart Windows (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+✅ Sign out and back in (or restart Windows), then run TMR again: it then uses large pages.
+
+To sign out: Start Menu → your account → Sign out
+To restart:
+  • Windows: shutdown /r /t 0
+  • Or use Start Menu → Power → Restart
+
+TMR will exit now.
+
+## the sign-in, B
+⚠️  LARGE PAGES NEED A NEW SIGN-IN
+=================================
+The security policy gives 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\owner, the account TMR runs as,
+but this sign-in began before it did: a program gets the rights its account had at sign-in, so signing
+out and back in brings it (Windows needn't restart).
+
+Choose your preferred action:
+  A) Exit TMR, then sign out and back in, or restart Windows (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+⚠️  Continuing with standard 4KB pages (minpage=regular maxpage=regular for this run).
+   Performance impact: ~5-10% slower than large pages
+   Every test still runs and every pattern is still checked, but slower
+   memory traffic is less stress, so marginal errors that only appear at
+   full bandwidth may go undetected
+
+💡 TIP: Sign out and back in, then run TMR again, for optimal performance
+
+
+## the sign-in, an empty answer
+⚠️  LARGE PAGES NEED A NEW SIGN-IN
+=================================
+The security policy gives 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\owner, the account TMR runs as,
+but this sign-in began before it did: a program gets the rights its account had at sign-in, so signing
+out and back in brings it (Windows needn't restart).
+
+Choose your preferred action:
+  A) Exit TMR, then sign out and back in, or restart Windows (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+❌ Invalid choice. TMR will exit rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+
+## the sign-in, the input's end
+⚠️  LARGE PAGES NEED A NEW SIGN-IN
+=================================
+The security policy gives 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\owner, the account TMR runs as,
+but this sign-in began before it did: a program gets the rights its account had at sign-in, so signing
+out and back in brings it (Windows needn't restart).
+
+Choose your preferred action:
+  A) Exit TMR, then sign out and back in, or restart Windows (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+❌ Invalid choice. TMR will exit rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+
+## the sign-in, junk
+⚠️  LARGE PAGES NEED A NEW SIGN-IN
+=================================
+The security policy gives 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\owner, the account TMR runs as,
+but this sign-in began before it did: a program gets the rights its account had at sign-in, so signing
+out and back in brings it (Windows needn't restart).
+
+Choose your preferred action:
+  A) Exit TMR, then sign out and back in, or restart Windows (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+❌ Invalid choice. TMR will exit rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+
+## the sign-in, an input that isn't text
+⚠️  LARGE PAGES NEED A NEW SIGN-IN
+=================================
+The security policy gives 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\owner, the account TMR runs as,
+but this sign-in began before it did: a program gets the rights its account had at sign-in, so signing
+out and back in brings it (Windows needn't restart).
+
+Choose your preferred action:
+  A) Exit TMR, then sign out and back in, or restart Windows (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+❌ Invalid choice. TMR will exit rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+
+## the sign-in through a group, under UAC on a domain PC, A
+⚠️  LARGE PAGES NEED A NEW SIGN-IN
+=================================
+The security policy gives 'Lock pages in memory' (SeLockMemoryPrivilege) to BUILTIN\Administrators, a group PC\owner is in,
+but this sign-in began before it did: a program gets the rights its account had at sign-in, so signing
+out and back in brings it (Windows needn't restart).
+As an administrator under UAC, you get it only in programs run as administrator, as TMR is now.
+This PC is in a domain: a domain Group Policy that sets this right replaces a local grant.
+
+Choose your preferred action:
+  A) Exit TMR, then sign out and back in, or restart Windows (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+✅ Sign out and back in (or restart Windows), then run TMR again: it then uses large pages.
+
+To sign out: Start Menu → your account → Sign out
+To restart:
+  • Windows: shutdown /r /t 0
+  • Or use Start Menu → Power → Restart
+
+TMR will exit now.
+
+## the grant, A
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+  2) BUILTIN\Users  ⚠️  BROAD, likely not what you want: every account that can sign in to this PC is in it
+  3) Everyone  ⚠️  BROAD, likely not what you want: Windows puts every account that signs in a certain way in it
+
+Enter your choice (A, B, Q or 1-3): 
+🔧 Granting it to PC\owner...
+
+## the grant, 1
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+  2) BUILTIN\Users  ⚠️  BROAD, likely not what you want: every account that can sign in to this PC is in it
+  3) Everyone  ⚠️  BROAD, likely not what you want: Windows puts every account that signs in a certain way in it
+
+Enter your choice (A, B, Q or 1-3): 
+🔧 Granting it to BUILTIN\Administrators...
+
+## the grant, a broad pick, yes
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+  2) BUILTIN\Users  ⚠️  BROAD, likely not what you want: every account that can sign in to this PC is in it
+  3) Everyone  ⚠️  BROAD, likely not what you want: Windows puts every account that signs in a certain way in it
+
+Enter your choice (A, B, Q or 1-3): 
+⚠️  BUILTIN\Users is BROAD: every account that can sign in to this PC is in it, and
+   any program of any of these accounts can then lock RAM away from Windows.
+Grant it to BUILTIN\Users anyway? [y/N]: 
+🔧 Granting it to BUILTIN\Users...
+
+## the grant, a broad pick, no, then A
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+  2) BUILTIN\Users  ⚠️  BROAD, likely not what you want: every account that can sign in to this PC is in it
+  3) Everyone  ⚠️  BROAD, likely not what you want: Windows puts every account that signs in a certain way in it
+
+Enter your choice (A, B, Q or 1-3): 
+⚠️  BUILTIN\Users is BROAD: every account that can sign in to this PC is in it, and
+   any program of any of these accounts can then lock RAM away from Windows.
+Grant it to BUILTIN\Users anyway? [y/N]: 
+Nothing granted to BUILTIN\Users: choose again.
+
+Enter your choice (A, B, Q or 1-3): 
+🔧 Granting it to PC\owner...
+
+## the grant, a broad pick, no answer, then none
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+  2) BUILTIN\Users  ⚠️  BROAD, likely not what you want: every account that can sign in to this PC is in it
+  3) Everyone  ⚠️  BROAD, likely not what you want: Windows puts every account that signs in a certain way in it
+
+Enter your choice (A, B, Q or 1-3): 
+⚠️  Everyone is BROAD: Windows puts every account that signs in a certain way in it, and
+   any program of any of these accounts can then lock RAM away from Windows.
+Grant it to Everyone anyway? [y/N]: 
+Nothing granted to Everyone: choose again.
+
+Enter your choice (A, B, Q or 1-3): 
+❌ Invalid choice. TMR will exit, granting nothing, rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+
+## the grant, a broad pick, the input's end
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+  2) BUILTIN\Users  ⚠️  BROAD, likely not what you want: every account that can sign in to this PC is in it
+  3) Everyone  ⚠️  BROAD, likely not what you want: Windows puts every account that signs in a certain way in it
+
+Enter your choice (A, B, Q or 1-3): 
+⚠️  Everyone is BROAD: Windows puts every account that signs in a certain way in it, and
+   any program of any of these accounts can then lock RAM away from Windows.
+Grant it to Everyone anyway? [y/N]: 
+Nothing granted to Everyone: choose again.
+
+Enter your choice (A, B, Q or 1-3): 
+❌ Invalid choice. TMR will exit, granting nothing, rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+
+## the grant, B
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+  2) BUILTIN\Users  ⚠️  BROAD, likely not what you want: every account that can sign in to this PC is in it
+  3) Everyone  ⚠️  BROAD, likely not what you want: Windows puts every account that signs in a certain way in it
+
+Enter your choice (A, B, Q or 1-3): 
+⚠️  Continuing with standard 4KB pages (minpage=regular maxpage=regular for this run), granting nothing.
+   Performance impact: ~5-10% slower than large pages
+   Every test still runs and every pattern is still checked, but slower
+   memory traffic is less stress, so marginal errors that only appear at
+   full bandwidth may go undetected
+
+💡 TIP: TMR asks again at its next run as Administrator (tmr.exe --setup-large-pages grants it at once)
+
+
+## the grant, Q
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+  2) BUILTIN\Users  ⚠️  BROAD, likely not what you want: every account that can sign in to this PC is in it
+  3) Everyone  ⚠️  BROAD, likely not what you want: Windows puts every account that signs in a certain way in it
+
+Enter your choice (A, B, Q or 1-3): 
+✅ Nothing granted. TMR will exit now.
+
+
+## the grant, an empty answer
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+  2) BUILTIN\Users  ⚠️  BROAD, likely not what you want: every account that can sign in to this PC is in it
+  3) Everyone  ⚠️  BROAD, likely not what you want: Windows puts every account that signs in a certain way in it
+
+Enter your choice (A, B, Q or 1-3): 
+❌ Invalid choice. TMR will exit, granting nothing, rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+
+## the grant, the input's end
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+  2) BUILTIN\Users  ⚠️  BROAD, likely not what you want: every account that can sign in to this PC is in it
+  3) Everyone  ⚠️  BROAD, likely not what you want: Windows puts every account that signs in a certain way in it
+
+Enter your choice (A, B, Q or 1-3): 
+❌ Invalid choice. TMR will exit, granting nothing, rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+
+## the grant, 0
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+  2) BUILTIN\Users  ⚠️  BROAD, likely not what you want: every account that can sign in to this PC is in it
+  3) Everyone  ⚠️  BROAD, likely not what you want: Windows puts every account that signs in a certain way in it
+
+Enter your choice (A, B, Q or 1-3): 
+❌ Invalid choice. TMR will exit, granting nothing, rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+
+## the grant, out of range
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+  2) BUILTIN\Users  ⚠️  BROAD, likely not what you want: every account that can sign in to this PC is in it
+  3) Everyone  ⚠️  BROAD, likely not what you want: Windows puts every account that signs in a certain way in it
+
+Enter your choice (A, B, Q or 1-3): 
+❌ Invalid choice. TMR will exit, granting nothing, rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+
+## the grant, under UAC on a domain PC
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+As an administrator under UAC, you get it only in programs run as administrator, as TMR is now.
+This PC is in a domain: a domain Group Policy that sets this right replaces a local grant.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+Or grant it to a group PC\owner is in, then exit TMR and sign out and back in:
+  1) BUILTIN\Administrators
+
+Enter your choice (A, B, Q or 1): 
+🔧 Granting it to BUILTIN\Administrators...
+
+## the grant, no groups
+⚠️  LARGE PAGES NEED THE 'LOCK PAGES IN MEMORY' RIGHT
+====================================================
+TMR runs as PC\owner, and neither it nor a group it is in has this right (SeLockMemoryPrivilege).
+As Administrator, TMR can grant it: whoever gets it keeps it until it is removed (tmr.exe
+--remove-large-pages), and it takes effect at their next sign-in.
+
+Choose your preferred action:
+  A) Grant it to PC\owner, exit TMR, then sign out and back in (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time, granting nothing (~5-10% slower, so less memory stress)
+  Q) Quit TMR, granting nothing
+
+Enter your choice (A, B or Q): 
+❌ Invalid choice. TMR will exit, granting nothing, rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+
+## the administrator's, A
+⚠️  LARGE PAGES NEED TMR RUN AS ADMINISTRATOR
+============================================
+TMR runs as PC\owner without the right large pages need, 'Lock pages in memory' (SeLockMemoryPrivilege).
+Only TMR run as administrator can set them up: Run as administrator (right-click TMR), or
+tmr.exe --setup-large-pages from a console run as administrator.
+
+Choose your preferred action:
+  A) Exit TMR, to run it as administrator (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+✅ Run TMR as administrator to set up large pages. TMR will exit now.
+
+
+## the administrator's under UAC, B
+⚠️  LARGE PAGES NEED TMR RUN AS ADMINISTRATOR
+============================================
+TMR runs as PC\owner without the right large pages need, 'Lock pages in memory' (SeLockMemoryPrivilege).
+Only TMR run as administrator can set them up: Run as administrator (right-click TMR), or
+tmr.exe --setup-large-pages from a console run as administrator.
+You sign in as an administrator under UAC: TMR gets this right only when run as administrator.
+
+Choose your preferred action:
+  A) Exit TMR, to run it as administrator (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+⚠️  Continuing with standard 4KB pages (minpage=regular maxpage=regular for this run).
+   Performance impact: ~5-10% slower than large pages
+   Every test still runs and every pattern is still checked, but slower
+   memory traffic is less stress, so marginal errors that only appear at
+   full bandwidth may go undetected
+
+💡 TIP: Run TMR as administrator once to set up large pages, for optimal performance
+
+
+## the administrator's, an empty answer
+⚠️  LARGE PAGES NEED TMR RUN AS ADMINISTRATOR
+============================================
+TMR runs as PC\owner without the right large pages need, 'Lock pages in memory' (SeLockMemoryPrivilege).
+Only TMR run as administrator can set them up: Run as administrator (right-click TMR), or
+tmr.exe --setup-large-pages from a console run as administrator.
+
+Choose your preferred action:
+  A) Exit TMR, to run it as administrator (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+❌ Invalid choice. TMR will exit rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+
+## the administrator's, the input's end
+⚠️  LARGE PAGES NEED TMR RUN AS ADMINISTRATOR
+============================================
+TMR runs as PC\owner without the right large pages need, 'Lock pages in memory' (SeLockMemoryPrivilege).
+Only TMR run as administrator can set them up: Run as administrator (right-click TMR), or
+tmr.exe --setup-large-pages from a console run as administrator.
+
+Choose your preferred action:
+  A) Exit TMR, to run it as administrator (RECOMMENDED for optimal performance)
+  B) Continue with standard 4KB pages this time (~5-10% slower, so less memory stress)
+
+Enter your choice (A/B): 
+❌ Invalid choice. TMR will exit rather than run slower unasked.
+   minpage=regular maxpage=regular runs on standard 4KB pages without asking.
+
+

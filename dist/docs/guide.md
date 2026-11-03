@@ -47,9 +47,39 @@ privilege. Grant it once, from a console run as administrator:
 tmr --setup-large-pages
 ```
 
+That grants it to you, the account you're signed in as. To grant it to a group you're in, or to
+another account, name it after `Group:` or `User:`:
+
+```
+tmr --setup-large-pages Group:Administrators
+tmr --setup-large-pages User:.\alex
+tmr --setup-large-pages "Group:Remote Desktop Users"
+```
+
+The prefix says which you mean, as a user and a group can share a name. A name alone is looked
+for on this PC and in the domain it's in; `.\alex` is this PC's own account `alex`, and
+`CORP\witches` names the domain's (`Group:CORP\witches`). Put a name with spaces in quotes. The
+English names of Windows' own groups (`Administrators`, `Users`, `Everyone` and the like) work on
+Windows in any language.
+
+Run as administrator, TMR asks too, when its account doesn't have the privilege: whom to grant it
+to, your account first, then the groups you're in, the broad ones last and warned of (Users, and
+the groups Windows puts everyone who signs in a certain way in, such as Everyone). A broad pick
+asks again: any program of any of those accounts could then lock memory away from Windows.
+
 Then sign out of Windows and back in, or restart it: a privilege reaches your programs only at
-your next sign-in. Without it TMR warns, and asks before it runs on regular 4 KB pages, which are
-slower.
+your next sign-in (Microsoft: a restart isn't needed). If you sign in as an administrator under
+UAC, as Windows sets one up, Windows gives the privilege only to programs run as administrator,
+whichever account or group holds it: run TMR as administrator for large pages. A standard account
+granted it has it in every run. On a PC in a domain, a domain Group Policy that sets this
+privilege replaces one granted on the PC.
+
+Without it TMR warns and asks first, whenever `maxpage=` allows large pages (as it does unless you
+change it): it runs on regular 4 KB pages, which are slower, only when you say so this time, or
+when you give `minpage=regular maxpage=regular`, which asks nothing. Not run as administrator, it
+asks whether to run on them this time or quit, to be started as administrator. No answer (an
+empty line, or the window's question closed) quits, running nothing. `tmr --remove-large-pages`
+takes the privilege away again (from you, or from the `Group:` or `User:` named).
 
 ## Running a test
 

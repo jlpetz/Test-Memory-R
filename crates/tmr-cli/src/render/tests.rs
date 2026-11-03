@@ -2,7 +2,8 @@
 //! (`testdata/console/{cycle,plan_only,not_run}.txt`, `run_tests.rs`), through `CliFrontend::event` as a run sends it, and the ticker; and
 //! the ticker's clock. `Run::Allocated` and `Run::FinalSummary` have none of their own: each shows one report, whose golden is the
 //! Reporter's (`report_allocation_*`, `report_final_summary`). And a session's: every setup event, as a session sends it, and each way a
-//! session ends. A session itself can't run in a test: its setup checks and grants the large-page privilege, and runs secedit.
+//! session ends. A session itself can't run in a test: its setup checks and grants the large-page privilege, and reads the security
+//! policy.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -416,10 +417,10 @@ fn setup_events_print_as_their_golden() {
         ("panicking, time only", selection(ErrorMode::Panic, true, 0, false, None, Some(60))),
         ("no limits", selection(ErrorMode::Log, true, 0, false, None, None)),
         ("large pages are checked", Setup::LargePageCheck),
-        ("the right granted", Setup::LargePageGrant { account: r"PC\owner".to_string(), outcome: Ok(()) }),
+        ("the right granted", Setup::LargePageGrant { account: r"BUILTIN\Administrators".to_string(), outcome: Ok(()) }),
         ("the grant failed", Setup::LargePageGrant {
             account: r"PC\owner".to_string(),
-            outcome: Err("Setup failed: secedit export failed: access denied".to_string()),
+            outcome: Err("LsaAddAccountRights: Access is denied. (5, NTSTATUS 0xC0000022)".to_string()),
         }),
         ("what the check did", Setup::LargePageDiagnostic {
             report: "🔍 Large Page Diagnostic\n  Privilege: assigned and enabled\n  Test allocation: 2 MiB, succeeded".to_string(),
@@ -480,8 +481,8 @@ fn the_seal_calibration_says_which_width_auto_takes() {
 }
 
 /// How a session ends on the console, each after a `## case` line: a run's verdict, `--startup-debug`'s, and why setup stopped one (an
-/// unknown flag shows the help, with tmr.exe's name). The restart chosen and a command show nothing here: the prompt said its piece, and a
-/// command writes its own (`tmr::commands::run`).
+/// unknown flag shows the help, with tmr.exe's name; the large-page question quit, TODO 113, says it ran nothing). The sign-out chosen and
+/// a command show nothing here: the prompt said its piece, and a command writes its own (`tmr::commands::run`).
 #[test]
 fn session_ends_print_as_their_golden() {
     let ran = |status, secs, plan_only| SessionEnd::Ran { status, elapsed: Duration::from_secs(secs), plan_only };
@@ -492,7 +493,8 @@ fn session_ends_print_as_their_golden() {
         ("failed", ran(RunStatus::Failed, 59, false)),
         ("stopped before testing", ran(RunStatus::NotRun, 1, false)),
         ("interrupted", ran(RunStatus::Interrupted, 90061, false)),
-        ("the restart chosen", SessionEnd::RestartChosen),
+        ("the sign-out chosen", SessionEnd::SignOutChosen),
+        ("quit at the large-page question", SessionEnd::Stopped(Stopped::NeedsLargePages)),
         ("a command", SessionEnd::Command(tmr::commands::Command::Version)),
         ("unknown flags", SessionEnd::Stopped(Stopped::UnknownFlags(vec!["--latency-test".to_string(), "-x".to_string()]))),
         (

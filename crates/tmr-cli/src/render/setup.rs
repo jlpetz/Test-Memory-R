@@ -97,15 +97,17 @@ pub(super) fn text(setup: &Setup) -> String {
         Setup::LargePageCheck => {
             let _ = writeln!(text, "Checking Large Page access");
         }
-        // After the question's A, whose answer said it was granting (`prompts::large_page_restart`)
+        // After the question's pick, whose answer said it was granting (`prompts::large_pages`)
         Setup::LargePageGrant { account, outcome: Ok(()) } => {
             let _ = writeln!(
                 text,
                 "✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to {}, which keeps it until it is removed",
                 account
             );
-            let _ = writeln!(text, "🔄 RESTART REQUIRED: restart Windows for it to take effect, then run TMR again");
+            let _ =
+                writeln!(text, "🔄 SIGN-IN REQUIRED: sign out and back in (or restart Windows) for it to take effect, then run TMR again");
             let _ = writeln!(text);
+            let _ = writeln!(text, "To sign out: Start Menu → your account → Sign out");
             let _ = writeln!(text, "To restart:");
             let _ = writeln!(text, "  • Windows: shutdown /r /t 0");
             let _ = writeln!(text, "  • Or use Start Menu → Power → Restart");
@@ -116,14 +118,14 @@ pub(super) fn text(setup: &Setup) -> String {
             let _ = writeln!(text, "❌ Couldn't grant 'Lock pages in memory' (SeLockMemoryPrivilege) to {}: {}", account, e);
             let _ = writeln!(text);
             let _ = writeln!(text, "📖 Manual Setup:");
-            let _ = writeln!(text, "1. Run gpedit.msc as Administrator");
+            let _ = writeln!(text, "1. Run gpedit.msc as Administrator (Windows Pro and up: Home has none)");
             let _ = writeln!(
                 text,
                 "2. Navigate to: Computer Configuration → Windows Settings → Security Settings → Local Policies → User Rights Assignment"
             );
             let _ = writeln!(text, "3. Double-click 'Lock pages in memory'");
-            let _ = writeln!(text, "4. Add {} (or the 'Administrators' group)", account);
-            let _ = writeln!(text, "5. Restart Windows");
+            let _ = writeln!(text, "4. Add {}", account);
+            let _ = writeln!(text, "5. Sign out and back in (or restart Windows)");
             let _ = writeln!(text);
         }
         Setup::LargePageDiagnostic { report } => {
@@ -303,7 +305,7 @@ fn memory_status_text(text: &mut String, status: &MemoryStatus) {
 }
 
 /// How the session ended, as the console says it, `program` the exe's name for the help an unknown flag shows. A command's output is its
-/// own (`tmr::commands::run`), and the large-page restart's text was the prompt's.
+/// own (`tmr::commands::run`), and the large-page sign-out's text was the prompt's.
 pub(crate) fn show_end(end: &SessionEnd, program: &str) {
     match end {
         SessionEnd::Stopped(Stopped::Invalid(e)) => console::eprint(&format!("{}\n", e)),
@@ -353,7 +355,15 @@ fn end_text(end: &SessionEnd, program: &str) -> String {
         }
         // On stderr (`show_end`)
         SessionEnd::Stopped(Stopped::Invalid(_) | Stopped::CpuSelection(_)) => {}
-        SessionEnd::RestartChosen | SessionEnd::Command(_) => {}
+        // The large-page question's quit, no answer to it, or a failed grant (TODO 113): nothing allocated, nothing slower run unasked
+        SessionEnd::Stopped(Stopped::NeedsLargePages) => {
+            let _ = writeln!(text);
+            let _ = writeln!(text, "================================================================================");
+            let _ = writeln!(text, "❌ Stopped before allocating: this sign-in lacks the right large pages need, and TMR runs nothing");
+            let _ = writeln!(text, "   on 4KB pages unasked (minpage=regular maxpage=regular runs on them without asking)");
+        }
+        // Said already: the sign-out by the prompt
+        SessionEnd::SignOutChosen | SessionEnd::Command(_) => {}
     }
     text
 }

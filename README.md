@@ -20,11 +20,14 @@ while TMR runs**, as any memory test can: save your work and close other program
 - **winget**, once TMR's package is accepted there: `winget install Petz.TMR`.
 - **The bare `tmr.exe`** from the same releases, in a folder of its own that you can write to.
 
-Then grant the large-page privilege once, from a console run as administrator,
-`tmr --setup-large-pages`, and sign out and back in. Double-click TMR for its window, or type `tmr`
-in a console: on its own it runs the stability plan, 3 cycles; `tmr --help` lists every setting,
-and `config=file.cfg` runs a TM5 config. The [user guide](dist/docs/guide.md), which the installer
-puts in TMR's `docs\` folder, has the rest.
+Then grant the large-page privilege once, from a console run as administrator:
+`tmr --setup-large-pages` grants it to you (`Group:Administrators`, or another `Group:` or `User:`
+name, to a group or another account), and sign out and back in. If you sign in as an administrator
+under UAC, as Windows sets one up, Windows gives the privilege only to programs run as
+administrator, so run TMR that way for large pages; a standard account granted it has it in every
+run. Double-click TMR for its window, or type `tmr` in a console: on its own it runs the stability
+plan, 3 cycles; `tmr --help` lists every setting, and `config=file.cfg` runs a TM5 config. The
+[user guide](dist/docs/guide.md), which the installer puts in TMR's `docs\` folder, has the rest.
 
 TMR keeps its files beside `tmr.exe`: `configs\`, `results\` (one JSON file a run, saved as it
 goes), `logs\` and `tmr-cfg.json` (its calibrations). `TMR_HOME` puts them in another folder. A
@@ -37,7 +40,7 @@ and serial numbers) and the motherboard's system UUID, so mind that before you p
   tests; TMR gives each thread its own fixed allocation, with native 64-bit addressing.
 - **Huge (1 GB) and large (2 MB) pages**, locked in memory (non-pageable). Both are faster than
   regular 4 KB pages. No driver: TMR runs in user mode, and `tmr.exe --setup-large-pages` (elevated)
-  grants the privilege they need once.
+  grants the privilege they need once, to you, or with `Group:Administrators` to a group.
 - **Wider SIMD:** most tests come in 128-bit, 256-bit (AVX2) and 512-bit (AVX-512) widths,
   the widest the CPU has by default (`width=` picks one). An experimental tile test runs on AMX
   (Intel Xeon); ACE is next to look at.
@@ -130,9 +133,12 @@ L3, so they reach it.
   should keep its one copy up to date (`winget upgrade --all`, or each package by its name above),
   and it keeps `tmr.exe` and this repository small.
 - **Optional: the "Lock pages in memory" privilege**, for huge and large pages: run
-  `tmr.exe --setup-large-pages` once from an elevated prompt, then sign out of Windows and back in
-  (a privilege reaches your programs at your next sign-in). Without it TMR
-  warns, and asks before running on regular 4 KB pages, which are slower.
+  `tmr.exe --setup-large-pages` once from an elevated prompt (`Group:Administrators`, or another
+  `Group:` or `User:` name, grants it to a group or another account), then sign out of Windows and
+  back in (a privilege reaches your programs at your next sign-in). As an administrator under UAC,
+  TMR gets it only when run as administrator. `tmr.exe --remove-large-pages` takes it away again.
+  Without it TMR warns, and asks before running on regular 4 KB pages, which are slower: it runs
+  on them only when you say so, or with `minpage=regular maxpage=regular`, and no answer quits.
 
 **Building from source** takes Rust nightly (`rustup toolchain install nightly`) and Microsoft's
 C++ build tools for the linker (Visual Studio Build Tools, "Desktop development with C++").

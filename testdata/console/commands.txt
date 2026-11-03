@@ -14,7 +14,11 @@ USAGE:
   tmr.exe --compare-results baseline.json current.json [output.json]
                                           # Compare two test results (here, or in results\)
   tmr.exe --show-results results.json      # How a run ended, then its final summary (here, or in results\)
-  tmr.exe --setup-large-pages              # Configure large pages for optimal performance
+  tmr.exe --setup-large-pages              # Grant 'Lock pages in memory' to you (as administrator), then sign out and in
+  tmr.exe --setup-large-pages Group:Administrators
+                                          #   ...or to a group or another user: Group:<name>, User:<name>
+                                          #   (DOMAIN\name, or .\name for this PC's; quote a name with spaces)
+  tmr.exe --remove-large-pages             # Remove it from you, or from the Group:<name> or User:<name> given
   tmr.exe --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt
   tmr.exe --calibrate-cache-ext            #   ...finer, around each tier's edge (preferred when both are saved)
   tmr.exe --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto
@@ -176,3 +180,33 @@ Per-Test Performance Changes:
 ❌ Usage: tmr.exe --show-results <results.json>
 ## --show-results of a file that isn't there: NotRun
 ❌ Couldn't show the results: Test result file does not exist: nowhere.json (looked in the current folder, <home>\results and <home>)
+## --setup-large-pages without a type: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ Usage: tmr.exe --setup-large-pages [User:<name> | Group:<name>]
+❌ Say whether witches is a user or a group: User:witches or Group:witches (a user and a group can share a name)
+## --setup-large-pages with an unknown type: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ Usage: tmr.exe --setup-large-pages [User:<name> | Group:<name>]
+❌ Team:x: the type is User: or Group:
+## --setup-large-pages with no name: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ Usage: tmr.exe --setup-large-pages [User:<name> | Group:<name>]
+❌ Group: names no one: Group:<name>, e.g. Group:Administrators
+## --setup-large-pages with two targets: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ Usage: tmr.exe --setup-large-pages [User:<name> | Group:<name>]
+   A name with spaces goes in quotes: "Group:Remote Desktop Users"
+## --remove-large-pages without a type: NotRun
+🔧 TMR Large Page Removal Tool
+===============================
+
+❌ Usage: tmr.exe --remove-large-pages [User:<name> | Group:<name>]
+❌ Say whether Everyone is a user or a group: User:Everyone or Group:Everyone (a user and a group can share a name)

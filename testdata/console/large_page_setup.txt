@@ -1,0 +1,384 @@
+## granted to the account: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\owner, which keeps it until it is removed (tmr.exe --remove-large-pages User:PC\owner)
+
+🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: diagnostic, me, holders Grant, change Grant S-1-5-21-1-2-3-1001, closing check]
+
+## granted to the account, an administrator under UAC on a domain PC: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\owner, which keeps it until it is removed (tmr.exe --remove-large-pages User:PC\owner)
+
+🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
+   As an administrator under UAC, you get it only in programs run as administrator
+   This PC is in a domain: a domain Group Policy that sets this right replaces a local grant
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: diagnostic, me, holders Grant, change Grant S-1-5-21-1-2-3-1001, closing check]
+
+## granted to a group: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+🎯 Target: BUILTIN\Administrators (a group)
+✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to BUILTIN\Administrators, which keeps it until it is removed (tmr.exe --remove-large-pages Group:BUILTIN\Administrators)
+
+🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: find Administrators, diagnostic, me, holders Grant, change Grant S-1-5-32-544, closing check]
+
+## granted to a broad group: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+🎯 Target: BUILTIN\Users (a group)
+⚠️  BUILTIN\Users is BROAD, likely not what you want: every account that can sign in to this PC is in it. Granting it, as asked.
+✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to BUILTIN\Users, which keeps it until it is removed (tmr.exe --remove-large-pages Group:BUILTIN\Users)
+
+🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: find users, diagnostic, me, holders Grant, change Grant S-1-5-32-545, closing check]
+
+## granted to a group the account isn't in: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+🎯 Target: CORP\witches (a group)
+✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to CORP\witches, which keeps it until it is removed (tmr.exe --remove-large-pages Group:CORP\witches)
+
+🔄 It takes effect at the next sign-in of each account it reaches
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: find CORP\witches, diagnostic, me, holders Grant, change Grant S-1-5-21-7-8-9-1111, closing check]
+
+## granted to a service account, by User:: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+🎯 Target: NT SERVICE\MSSQLSERVER (a user)
+✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to NT SERVICE\MSSQLSERVER, which keeps it until it is removed (tmr.exe --remove-large-pages "User:NT SERVICE\MSSQLSERVER")
+
+🔄 It takes effect at the next sign-in of each account it reaches
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: find NT SERVICE\MSSQLSERVER, diagnostic, me, holders Grant, change Grant S-1-5-80-1-2-3-4-5, closing check]
+
+## granted to a SID Windows can't name: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+🎯 Target: S-1-5-21-9-9-9-1234 (a group)
+✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to S-1-5-21-9-9-9-1234, which keeps it until it is removed (tmr.exe --remove-large-pages Group:S-1-5-21-9-9-9-1234)
+
+🔄 It takes effect at the next sign-in of each account it reaches
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: find S-1-5-21-9-9-9-1234, diagnostic, me, holders Grant, change Grant S-1-5-21-9-9-9-1234, closing check]
+
+## held already by the target: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+🎯 Target: BUILTIN\Administrators (a group)
+✅ BUILTIN\Administrators has it already in the security policy: nothing to grant
+🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: find Administrators, diagnostic, me, holders Grant, closing check]
+
+## held already by the account, no target: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+✅ The security policy gives it to PC\owner: nothing to grant
+🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: diagnostic, me, holders Grant, closing check]
+
+## held already through a group, no target, under UAC on a domain PC: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+✅ The security policy gives it to BUILTIN\Administrators, a group PC\owner is in: nothing to grant
+🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
+   As an administrator under UAC, you get it only in programs run as administrator
+   This PC is in a domain: a domain Group Policy that sets this right replaces a local grant
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: diagnostic, me, holders Grant, closing check]
+
+## in the token already: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+✅ This sign-in has it already: nothing to grant
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: diagnostic, me, holders Grant, closing check]
+
+## not run as administrator: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+❌ Not running as Administrator: run tmr.exe --setup-large-pages from a console run as administrator
+[calls: diagnostic]
+
+## not run as administrator, with a target: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+🎯 Target: PC\owner (a user)
+❌ Not running as Administrator: run tmr.exe --setup-large-pages from a console run as administrator
+[calls: find PC\owner, diagnostic]
+
+## the grant failed: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+🎯 Target: BUILTIN\Administrators (a group)
+❌ Couldn't grant it to BUILTIN\Administrators: LsaAddAccountRights: Access is denied. (5, NTSTATUS 0xC0000022)
+
+📖 Manual Setup:
+1. Run gpedit.msc as Administrator (Windows Pro and up: Home has none)
+2. Navigate to: Computer Configuration → Windows Settings → Security Settings → Local Policies → User Rights Assignment
+3. Double-click 'Lock pages in memory'
+4. Add BUILTIN\Administrators
+5. Sign out and back in (or restart Windows)
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: find Administrators, diagnostic, me, holders Grant, change Grant S-1-5-32-544, closing check]
+
+## no type: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ Usage: tmr.exe --setup-large-pages [User:<name> | Group:<name>]
+❌ Say whether witches is a user or a group: User:witches or Group:witches (a user and a group can share a name)
+[calls: ]
+
+## an unknown type: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ Usage: tmr.exe --setup-large-pages [User:<name> | Group:<name>]
+❌ Team:x: the type is User: or Group:
+[calls: ]
+
+## no name: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ Usage: tmr.exe --setup-large-pages [User:<name> | Group:<name>]
+❌ Group: names no one: Group:<name>, e.g. Group:Administrators
+[calls: ]
+
+## two targets: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ Usage: tmr.exe --setup-large-pages [User:<name> | Group:<name>]
+   A name with spaces goes in quotes: "Group:Remote Desktop Users"
+[calls: ]
+
+## a group, not a user: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ PC\witches is a group, not a user (Group:witches names the group)
+   A name without its domain is looked up on this PC and in its domain: give the domain to name another, e.g. User:CORP\witches
+[calls: find witches]
+
+## a user, not a group, qualified: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ PC\owner is a user, not a group (User:PC\owner names the user)
+[calls: find PC\owner]
+
+## a domain's name: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ PC is a domain, not an account or a group that can hold this right
+   .\pc names this PC's own user pc
+[calls: find pc]
+
+## a domain's name, and a group: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ PC\witches is a group, not a user (Group:witches names the group)
+   A name without its domain is looked up on this PC and in its domain: give the domain to name another, e.g. User:CORP\witches
+[calls: find witches]
+
+## nothing found: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ No user or group is named witches, on this PC or in its domain
+   Give its domain to name another's (Group:CORP\witches), or, last, its SID (Group:S-1-5-21-...)
+[calls: find witches]
+
+## nothing found, local\: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ No user or group is named local\witches, on this PC or in its domain
+   local\ isn't this PC to Windows (a domain may be named LOCAL): .\witches names this PC's own
+   Give its domain to name another's (Group:CORP\witches), or, last, its SID (Group:S-1-5-21-...)
+[calls: find local\witches]
+
+## two found: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ More than one group is named witches: PC\witches and CORP\witches
+   Name the one you mean: Group:PC\witches or Group:CORP\witches
+[calls: find witches]
+
+## one found twice, and a user of the name: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+🎯 Target: PC\witches (a group)
+✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\witches, which keeps it until it is removed (tmr.exe --remove-large-pages Group:PC\witches)
+
+🔄 It takes effect at the next sign-in of each account it reaches
+
+⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
+TMR will still work but will use standard pages.
+Sign out and back in (or restart Windows) if it was just granted.
+[calls: find witches, diagnostic, me, holders Grant, change Grant S-1-5-21-1-2-3-1010, closing check]
+
+## the lookup failed: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ Couldn't look up CORP\testers: LsaLookupNames2: The trust relationship between this workstation and the primary domain failed. (1789, NTSTATUS 0xC000018D)
+[calls: find CORP\testers]
+
+## the lookup failed, not run as administrator: NotRun
+🔧 TMR Large Page Setup Tool
+=============================
+
+❌ Not running as Administrator: run tmr.exe --setup-large-pages from a console run as administrator
+[calls: find CORP\testers]
+
+## removed from the account: Passed
+🔧 TMR Large Page Removal Tool
+===============================
+
+✅ Removed 'Lock pages in memory' (SeLockMemoryPrivilege) from PC\owner
+   A sign-in keeps the rights it began with: it goes at the next sign-in
+[calls: me, holders Remove, change Remove S-1-5-21-1-2-3-1001]
+
+## removed from a broad group: Passed
+🔧 TMR Large Page Removal Tool
+===============================
+
+🎯 Target: Everyone (a group)
+✅ Removed 'Lock pages in memory' (SeLockMemoryPrivilege) from Everyone
+   A sign-in keeps the rights it began with: it goes at the next sign-in
+[calls: find Everyone, me, holders Remove, change Remove S-1-1-0]
+
+## nothing to remove, a group holding it: Passed
+🔧 TMR Large Page Removal Tool
+===============================
+
+✅ PC\owner doesn't have it in the security policy: nothing to remove
+   It comes from BUILTIN\Administrators, a group PC\owner is in: tmr.exe --remove-large-pages Group:BUILTIN\Administrators removes it there
+[calls: me, holders Remove]
+
+## nothing to remove from the target: Passed
+🔧 TMR Large Page Removal Tool
+===============================
+
+🎯 Target: BUILTIN\Administrators (a group)
+✅ BUILTIN\Administrators doesn't have it in the security policy: nothing to remove
+[calls: find Administrators, me, holders Remove]
+
+## the removal failed: NotRun
+🔧 TMR Large Page Removal Tool
+===============================
+
+❌ Couldn't remove it from PC\owner: LsaRemoveAccountRights: Access is denied. (5, NTSTATUS 0xC0000022)
+[calls: me, holders Remove, change Remove S-1-5-21-1-2-3-1001]
+
+## removal, not run as administrator: NotRun
+🔧 TMR Large Page Removal Tool
+===============================
+
+❌ Not running as Administrator: run tmr.exe --remove-large-pages from a console run as administrator
+[calls: ]
+
+## removal, no type: NotRun
+🔧 TMR Large Page Removal Tool
+===============================
+
+❌ Usage: tmr.exe --remove-large-pages [User:<name> | Group:<name>]
+❌ Say whether Everyone is a user or a group: User:Everyone or Group:Everyone (a user and a group can share a name)
+[calls: ]
+

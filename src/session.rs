@@ -1,7 +1,7 @@
 //! A session (TODO 29): a command line's setup, then its run, shown through a frontend. This is what the CLI did before the
 //! engine/presentation split, with an event (`frontend::Setup`) where it printed and an end (`SessionEnd`) where it exited, so the CLI and
-//! the window take the same parameters and the console shows what it did. The question it asks, the large-page restart, the right granted
-//! first when TMR could grant it, is the frontend's to answer (`Frontend::large_page_restart`).
+//! the window take the same parameters and the console shows what it did. The question it asks about large pages (a new sign-in, the right
+//! granted first when TMR can grant it, or 4 KiB pages or quit when it can't) is the frontend's to answer (`Frontend::ask_large_pages`).
 //!
 //! Sessions one after another in a process (TODO 109: the window's Run again), `reset_run` readying it for the next. Within a session the
 //! run settings it sets (the seed, the width, the topology's typing) are first-set-wins, so the command line's hold over a config's.
@@ -15,7 +15,7 @@ use crate::commands::Command;
 use crate::config::{CpuPinningConfig, MemoryAllocationConfig};
 use crate::cpu_topology::{CoreType, get_cpu_topology, is_hybrid_cpu};
 use crate::frontend::{
-    CacheCalibrationState, Frontend, LargePageQuestion, ParamNote, RestartChoice, SealCalibrationState, Selection, Setup,
+    CacheCalibrationState, Candidate, Frontend, LargePageAnswer, LargePageQuestion, ParamNote, SealCalibrationState, Selection, Setup,
 };
 use crate::memory::allocation_strategy::EnhancedMemoryStrategy;
 use crate::runner::{RunStatus, TestSuiteTiming, ThreadPriority, detect_runtime_capabilities, run_tests_with_layout_and_timing_filtered};
@@ -32,8 +32,9 @@ pub(crate) const MODE_FLAGS: [&str; 3] = ["--ram-latency", "--cache-latency", "-
 pub enum SessionEnd {
     /// The run ran, or with `plan_only` (`--startup-debug`) showed its plan: its status, and the time from the end of setup
     Ran { status: RunStatus, elapsed: Duration, plan_only: bool },
-    /// The large-page restart was chosen (`RestartChoice::Exit`), the right granted first when the question offered it: nothing ran
-    RestartChosen,
+    /// The user chose to sign out and back in (or restart Windows) for large pages (`LargePageAnswer::SignOut`), or the right was granted
+    /// to their pick (`LargePageAnswer::Grant`), which a new sign-in brings: nothing ran
+    SignOutChosen,
     /// Setup stopped it before testing
     Stopped(Stopped),
     /// The command line is a one-shot command, for the caller to run (`commands::run`): nothing ran
@@ -48,6 +49,10 @@ pub enum Stopped {
     Invalid(String),
     /// The CPUs asked for can't be selected (`cpu_selection::calculate_thread_allocation`)
     CpuSelection(String),
+    /// This sign-in lacks the right large pages need, the run's maxpage= allows them, and nothing said to take 4 KiB pages this time
+    /// (TODO 113, the owner's rule): the user quit at the large-page question (`LargePageAnswer::Quit`), gave it no answer, or nobody
+    /// could answer it, or the grant they picked failed (`Setup::LargePageGrant` said why). Nothing was allocated.
+    NeedsLargePages,
 }
 
 /// Readies the process for another session (TODO 109): the run settings the last one set (the seed, the width, the bus beat, the topology's
@@ -137,8 +142,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     let known_flags = [
         "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-cache-ext", "--calibrate-seal",
         "--calibrate-all", "--calibration-file", "--output", "--no-calibration", "--yes", "--no-save", "--create-demo-configs",
-        "--compare-results", "--show-results", "--debug-topology", "--show-topology", "--setup-large-pages", "--startup-debug",
-        "--disable-pinning", "--help", "-h", "-?", "--version", "-v",
+        "--compare-results", "--show-results", "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages",
+        "--startup-debug", "--disable-pinning", "--help", "-h", "-?", "--version", "-v",
     ];
 
     let unknown_flags: Vec<String> = args
@@ -567,19 +572,25 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
 
     fe.event(Setup::LargePageCheck.into());
 
-    match settle_large_pages(&*fe, crate::memory::large_page_question(), crate::memory::grant_large_pages) {
+    // Without the privilege, a run whose maxpage= allows large pages (the default) is asked first (TODO 113, the owner's rule): it takes
+    // 4 KiB pages only when told to, or with minpage=regular maxpage=regular, which asks nothing
+    use crate::memory::allocator::PageSizeLevel;
+    let wants_large = PageSizeLevel::from_config_str(&alloc_config.max_page_size) > PageSizeLevel::Regular;
+    match settle_large_pages(&*fe, crate::memory::large_page_question(wants_large), crate::memory::grant_large_pages) {
         LargePages::Unasked => fe.event(Setup::LargePageDiagnostic { report: crate::memory::diagnose_large_pages() }.into()),
-        LargePages::Restart => return Ok(SessionEnd::RestartChosen),
-        // The default minpage needs large pages, so say 4 KB for this run (TODO 88)
-        LargePages::Regular => alloc_config.min_page_size = "regular".to_string(),
-        // As without the right: the status below says what that means for this run's minpage
-        LargePages::NotGranted => {}
+        LargePages::SignOut => return Ok(SessionEnd::SignOutChosen),
+        // 4 KiB pages this time, both ends of the range (decision 5a): the default minpage needs large pages (TODO 88)
+        LargePages::Regular => {
+            alloc_config.min_page_size = "regular".to_string();
+            alloc_config.max_page_size = "regular".to_string();
+        }
+        // Before anything is allocated: the question's answer, or the grant's failure, said why
+        LargePages::Quit => return Ok(SessionEnd::Stopped(Stopped::NeedsLargePages)),
     }
 
     let usable = crate::check_large_page_privilege().is_ok();
-    // Without the privilege, a large minpage (the default) refuses the run at allocation
-    let min_needs_large = crate::memory::allocator::PageSizeLevel::from_config_str(&alloc_config.min_page_size)
-        > crate::memory::allocator::PageSizeLevel::Regular;
+    // Without the privilege, a large minpage refuses the run at allocation
+    let min_needs_large = PageSizeLevel::from_config_str(&alloc_config.min_page_size) > PageSizeLevel::Regular;
     fe.event(Setup::LargePageStatus { usable, min_page: alloc_config.min_page_size.clone(), min_needs_large }.into());
 
     // Get system info for later use (formatted output comes via reporter below)
@@ -884,37 +895,45 @@ fn build_config_from_validated_params(validated: &HashMap<String, params::ParamV
 enum LargePages {
     /// There was none to ask: the diagnostic says how they stand
     Unasked,
-    /// End the session, for Windows to restart: the right is in the policy, from before or granted now
-    Restart,
-    /// This run on 4 KiB pages, the right left as it is
+    /// End the session, for a new sign-in: the right is in the policy, from before or granted now
+    SignOut,
+    /// This run on 4 KiB pages, as the user said, the right left as it is
     Regular,
-    /// The user said yes to the grant, which failed (`Setup::LargePageGrant` says why): the session goes on without the right
-    NotGranted,
+    /// End the session before allocating: the user quit, or didn't answer, or the grant they picked failed (`Setup::LargePageGrant` says
+    /// why), and nothing runs on 4 KiB pages unasked
+    Quit,
 }
 
-/// Puts `question`, the large-page check's (`memory::large_page_question`), to `fe`, and says what the answer decides. `grant` is called,
-/// with the account the question named, only when the question offered the grant and the answer was yes; its outcome goes to `fe`. The
-/// owner's rule on large pages: pause and warn, the user decides on 4 KiB pages, and nothing changes the system unasked.
+/// Puts `question`, the large-page check's (`memory::large_page_question`), to `fe`, and says what the answer decides, from the session's
+/// own copy of the question, so a frontend can't change whom a grant goes to. `grant` is called, with the candidate picked, only when the
+/// question offered the grant and the answer picked one of its candidates; its outcome goes to `fe`, and a failed one quits. An answer
+/// that isn't the question's (a grant to the sign-in's question, an index past the list) changes nothing and quits. The owner's rule on
+/// large pages (2026-09-14, and TODO 113's decision 5a): pause and warn, the user decides on 4 KiB pages, nothing changes the system
+/// unasked, and nothing runs on 4 KiB pages unasked.
 fn settle_large_pages(
-    fe: &dyn Frontend, question: Option<LargePageQuestion>, grant: impl FnOnce(&str) -> Result<(), String>,
+    fe: &dyn Frontend, question: Option<LargePageQuestion>, grant: impl FnOnce(&Candidate) -> Result<(), String>,
 ) -> LargePages {
     let Some(question) = question else {
         return LargePages::Unasked;
     };
-    match (fe.large_page_restart(&question), question) {
-        (RestartChoice::Continue4K, _) => LargePages::Regular,
-        (RestartChoice::Exit, LargePageQuestion::Restart) => LargePages::Restart,
-        (RestartChoice::Exit, LargePageQuestion::Grant { account }) => {
-            let outcome = grant(&account);
+    match (fe.ask_large_pages(&question), question) {
+        (LargePageAnswer::Regular, _) => LargePages::Regular,
+        (LargePageAnswer::Quit, _) => LargePages::Quit,
+        (LargePageAnswer::SignOut, LargePageQuestion::SignIn { .. }) => LargePages::SignOut,
+        (LargePageAnswer::Grant(i), LargePageQuestion::Grant { mut candidates, .. }) if i < candidates.len() => {
+            let candidate = candidates.swap_remove(i);
+            let outcome = grant(&candidate);
             let granted = outcome.is_ok();
-            fe.event(Setup::LargePageGrant { account, outcome }.into());
-            if granted { LargePages::Restart } else { LargePages::NotGranted }
+            fe.event(Setup::LargePageGrant { account: candidate.name, outcome }.into());
+            if granted { LargePages::SignOut } else { LargePages::Quit }
+        }
+        (answer, question) => {
+            log::warn!("The large-page answer {answer:?} isn't one to {question:?}: TMR quits, granting nothing and running nothing");
+            LargePages::Quit
         }
     }
 }
 
-/// The strategy a `memory=` asks for. Its value is one `params::parse_and_validate_args` took: that parser refuses what this
-/// `AllocationMode::parse` can't read, keeping the rest as given, so this one can't fail.
 fn parse_enhanced_memory_parameter(param: &str) -> EnhancedMemoryStrategy {
     let allocation_mode = crate::memory::allocation_strategy::AllocationMode::parse(param).expect("memory= is checked when it is parsed");
     EnhancedMemoryStrategy { allocation_mode }
@@ -955,19 +974,20 @@ mod tests {
         assert_eq!(resolve(&["window-priority=high"], Some("normal")), (Normal, High), "given, with the config's workers'");
     }
 
-    /// The large-page question: none asked when the check has none; the right granted only when the question offered it and the answer
-    /// was yes, to the account it named; a restart's yes ends the session, either question's 4 KiB pages run on them and grant nothing, and
-    /// a grant that failed goes on without the right, its outcome shown either way. The grant here is a stand-in: no test touches the
-    /// security policy.
+    /// The large-page question (TODO 113): none asked when the check has none; the sign-in's yes ends the session, granting nothing; the
+    /// grant made only to the candidate picked, from the session's copy of the question, its outcome shown, a failed one quitting; each
+    /// question's 4 KiB pages taken only when answered so, and its quit quitting; an answer that isn't the question's (a grant to the
+    /// sign-in's, an index past the list, a sign-out to the grant's or the administrator's) changes nothing and quits (decision 5a: nothing
+    /// runs on 4 KiB pages unasked). The grant here is a stand-in: no test touches the security policy.
     #[test]
-    fn large_pages_are_granted_only_when_the_user_says_yes() {
+    fn large_pages_are_granted_only_to_the_candidate_picked() {
         use std::sync::Mutex;
 
-        use crate::frontend::Event;
+        use crate::frontend::{Event, Reach, Sid};
 
         /// Gives `answer`, and keeps the questions and the grants' outcomes it was shown
         struct Answers {
-            answer: RestartChoice,
+            answer: LargePageAnswer,
             asked: Mutex<Vec<LargePageQuestion>>,
             shown: Mutex<Vec<(String, Result<(), String>)>>,
         }
@@ -978,44 +998,65 @@ mod tests {
                 };
                 self.shown.lock().unwrap().push((account, outcome));
             }
-            fn large_page_restart(&self, question: &LargePageQuestion) -> RestartChoice {
+            fn ask_large_pages(&self, question: &LargePageQuestion) -> LargePageAnswer {
                 self.asked.lock().unwrap().push(question.clone());
                 self.answer
             }
         }
-        // What the question settles to, the questions put, the grants made (the stand-in's calls) and the outcomes shown
-        let settle = |question: Option<LargePageQuestion>, answer, outcome: Result<(), String>| {
+        // What the question settles to, the questions put, the grants made (the stand-in's calls, by SID) and the outcomes shown
+        let settle = |question: &LargePageQuestion, answer, outcome: Result<(), String>| {
             let fe = Answers { answer, asked: Mutex::default(), shown: Mutex::default() };
             let mut granted = Vec::new();
-            let decided = settle_large_pages(&fe, question, |account| {
-                granted.push(account.to_string());
+            let decided = settle_large_pages(&fe, Some(question.clone()), |candidate| {
+                granted.push(candidate.sid().to_string());
                 outcome
             });
-            (decided, fe.asked.into_inner().unwrap(), granted, fe.shown.into_inner().unwrap())
+            assert_eq!(fe.asked.into_inner().unwrap(), std::slice::from_ref(question), "asked once, the session's question");
+            (decided, granted, fe.shown.into_inner().unwrap())
         };
-        let account = r"PC\owner".to_string();
-        let grant = LargePageQuestion::Grant { account: account.clone() };
-        let (restart, exit, continue_4k) = (LargePageQuestion::Restart, RestartChoice::Exit, RestartChoice::Continue4K);
+        let candidate = |name: &str, reach, sid: &str| Candidate::new(name, reach, sid.parse::<Sid>().unwrap());
+        let candidates = vec![
+            candidate(r"PC\owner", Reach::You, "S-1-5-21-1-2-3-1001"),
+            candidate(r"BUILTIN\Administrators", Reach::Group, "S-1-5-32-544"),
+            candidate("Everyone", Reach::Automatic, "S-1-1-0"),
+        ];
+        let grant = LargePageQuestion::Grant { candidates, uac: false, domain: false };
+        let sign_in = LargePageQuestion::SignIn { account: r"PC\owner".to_string(), via: None, uac: false, domain: false };
+        let needs = LargePageQuestion::NeedsAdministrator { account: r"PC\owner".to_string(), uac: true };
+        use LargePageAnswer::{Quit, Regular, SignOut};
 
-        assert_eq!(settle(None, exit, Ok(())), (LargePages::Unasked, vec![], vec![], vec![]), "nothing to ask");
-        assert_eq!(settle(Some(restart.clone()), exit, Ok(())), (LargePages::Restart, vec![restart.clone()], vec![], vec![]));
-        assert_eq!(settle(Some(restart.clone()), continue_4k, Ok(())), (LargePages::Regular, vec![restart], vec![], vec![]));
+        let fe = Answers { answer: SignOut, asked: Mutex::default(), shown: Mutex::default() };
+        assert_eq!(settle_large_pages(&fe, None, |_| panic!("granted")), LargePages::Unasked, "nothing to ask");
+        assert!(fe.asked.into_inner().unwrap().is_empty());
+
+        assert_eq!(settle(&sign_in, SignOut, Ok(())), (LargePages::SignOut, vec![], vec![]), "the sign-in's yes");
+        assert_eq!(settle(&sign_in, Regular, Ok(())), (LargePages::Regular, vec![], vec![]));
+        assert_eq!(settle(&sign_in, LargePageAnswer::Grant(0), Ok(())), (LargePages::Quit, vec![], vec![]), "no grant offered");
+        assert_eq!(settle(&sign_in, Quit, Ok(())), (LargePages::Quit, vec![], vec![]), "no answer, or quit");
         assert_eq!(
-            settle(Some(grant.clone()), continue_4k, Ok(())),
-            (LargePages::Regular, vec![grant.clone()], vec![], vec![]),
-            "4 KiB pages grant nothing"
+            settle(&grant, LargePageAnswer::Grant(0), Ok(())),
+            (LargePages::SignOut, vec!["S-1-5-21-1-2-3-1001".to_string()], vec![(r"PC\owner".to_string(), Ok(()))]),
+            "granted to the account"
         );
         assert_eq!(
-            settle(Some(grant.clone()), exit, Ok(())),
-            (LargePages::Restart, vec![grant.clone()], vec![account.clone()], vec![(account.clone(), Ok(()))]),
-            "granted, to the account the question named"
+            settle(&grant, LargePageAnswer::Grant(2), Ok(())),
+            (LargePages::SignOut, vec!["S-1-1-0".to_string()], vec![("Everyone".to_string(), Ok(()))]),
+            "granted to the candidate picked"
         );
-        let refused = Err("Setup failed: secedit export failed".to_string());
+        assert_eq!(settle(&grant, LargePageAnswer::Grant(9), Ok(())), (LargePages::Quit, vec![], vec![]), "past the list");
+        assert_eq!(settle(&grant, SignOut, Ok(())), (LargePages::Quit, vec![], vec![]), "a sign-out, nothing picked");
+        assert_eq!(settle(&grant, Regular, Ok(())), (LargePages::Regular, vec![], vec![]), "4 KiB pages grant nothing");
+        assert_eq!(settle(&grant, Quit, Ok(())), (LargePages::Quit, vec![], vec![]), "quit, granting nothing");
+        let refused = Err("LsaAddAccountRights: Access is denied. (5, NTSTATUS 0xC0000022)".to_string());
         assert_eq!(
-            settle(Some(grant.clone()), exit, refused.clone()),
-            (LargePages::NotGranted, vec![grant], vec![account.clone()], vec![(account, refused)]),
-            "the grant failed"
+            settle(&grant, LargePageAnswer::Grant(1), refused.clone()),
+            (LargePages::Quit, vec!["S-1-5-32-544".to_string()], vec![(r"BUILTIN\Administrators".to_string(), refused)]),
+            "the grant failed: nothing runs on 4 KiB pages unasked"
         );
+        assert_eq!(settle(&needs, Quit, Ok(())), (LargePages::Quit, vec![], vec![]), "quit, to run as administrator");
+        assert_eq!(settle(&needs, Regular, Ok(())), (LargePages::Regular, vec![], vec![]), "4 KiB pages this time");
+        assert_eq!(settle(&needs, SignOut, Ok(())), (LargePages::Quit, vec![], vec![]), "not its answer");
+        assert_eq!(settle(&needs, LargePageAnswer::Grant(0), Ok(())), (LargePages::Quit, vec![], vec![]), "no grant offered");
     }
 
     /// TODO 99: at startup, a seal calibration measured on this machine gives `auto` its width (`set`, `seal::set_calibrated_width` in a

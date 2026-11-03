@@ -19,8 +19,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use windows::Win32::System::Console::{
-    CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetConsoleScreenBufferInfo, GetStdHandle,
-    STD_OUTPUT_HANDLE, SetConsoleMode,
+    CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO, ENABLE_VIRTUAL_TERMINAL_PROCESSING, FlushConsoleInputBuffer, GetConsoleMode,
+    GetConsoleScreenBufferInfo, GetStdHandle, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleMode,
 };
 
 /// Whether stdout is a console: one flag for the process, set at startup (`init`) and read by everything that writes escape codes (the
@@ -246,6 +246,22 @@ pub fn init() {
     if unsafe { GetConsoleMode(handle, &mut mode) }.is_ok() {
         // SAFETY: value arguments only, on the console handle `GetConsoleMode` just accepted.
         let _ = unsafe { SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) };
+    }
+}
+
+/// Drops what was typed ahead on the console's input before a question reads its answer (TODO 113): a key pressed before the question,
+/// or what an unelevated program typed into the same console (sudo's inline mode lets it), isn't taken for the answer. Nothing when stdin
+/// isn't a console. std's own buffer holds no more than the line it last read, which a console in line mode returns alone.
+pub fn flush_input() {
+    // SAFETY: no pointer arguments. The handle is the process's own stdin, which we do not own and never close.
+    let Ok(handle) = (unsafe { GetStdHandle(STD_INPUT_HANDLE) }) else {
+        return;
+    };
+    let mut mode = CONSOLE_MODE::default();
+    // SAFETY: `mode` is a local passed directly as the out-parameter. Fails, harmlessly, when stdin is redirected.
+    if unsafe { GetConsoleMode(handle, &mut mode) }.is_ok() {
+        // SAFETY: a value argument, the console input handle `GetConsoleMode` just accepted.
+        let _ = unsafe { FlushConsoleInputBuffer(handle) };
     }
 }
 

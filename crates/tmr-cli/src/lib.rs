@@ -65,7 +65,7 @@ fn finish(end: &SessionEnd, program: &str) -> i32 {
         SessionEnd::Command(command) => return run_command(command),
         SessionEnd::Ran { status, .. } => *status,
         // Nothing ran, as the user chose
-        SessionEnd::RestartChosen => RunStatus::Passed,
+        SessionEnd::SignOutChosen => RunStatus::Passed,
         SessionEnd::Stopped(_) => RunStatus::NotRun,
     };
     crate::render::show_end(end, program);

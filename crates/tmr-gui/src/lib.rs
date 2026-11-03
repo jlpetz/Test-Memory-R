@@ -1,8 +1,8 @@
 //! TMR's window (TODO 7): a session's events and progress in WinUI 3, through windows-reactor. A double-click opens it, or `tmr --gui ...`
 //! (crates/tmr-app's `launch.rs`, TODO 29 S6). Start runs the session on its own thread with the parameters in the window's box, the exe's
 //! own to begin with, as the CLI runs them (`tmr::session::run`), and the window shows its setup's facts (the info line, the system panel),
-//! the large-page question (the restart, the right granted first when TMR could grant it) as a dialog, and its run. Its log records go to
-//! the log file, and the warnings and errors to the window's errors list too (`logger.rs`). One run a process: the engine's run settings
+//! the large-page question (a new sign-in, whom to grant the right to, or 4 KiB pages or quit) as a dialog, and its run. Its log records go
+//! to the log file, and the warnings and errors to the window's errors list too (`logger.rs`). One run a process: the engine's run settings
 //! are set once (`doc/todo/29-split-design.md`).
 //!
 //! The engine's events cross to the window on a channel (`GuiFrontend`), which a waiter on the thread pool drains every 500 ms, reading the
@@ -37,16 +37,15 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use tmr::frontend::{Event, Frontend, LargePageQuestion, RestartChoice, RunStatus};
+use tmr::frontend::{Event, Frontend, LargePageAnswer, LargePageQuestion, RunStatus};
 use tmr::session::SessionEnd;
 
 /// What the session's thread hands the window.
 enum Feed {
     /// A session's event, as the engine sent it
     Event(Event),
-    /// Large pages need Windows restarted, and the right granted first when the question offers it: the window asks, and answers on the
-    /// reply (`GuiFrontend::large_page_restart`)
-    Ask { question: LargePageQuestion, reply: SyncSender<RestartChoice> },
+    /// This sign-in lacks the right large pages need: the window asks, and answers on the reply (`GuiFrontend::ask_large_pages`)
+    Ask { question: LargePageQuestion, reply: SyncSender<LargePageAnswer> },
     /// The session ended: how, or the error that stopped it
     Ended(Result<SessionEnd, String>),
 }
@@ -59,7 +58,7 @@ struct GuiFrontend {
     transcript: Option<logger::Transcript>,
 }
 
-/// How often the session's thread, waiting for the restart's answer, looks whether the window has closed
+/// How often the session's thread, waiting for the large-page answer, looks whether the window has closed
 const ANSWER_WAIT: Duration = Duration::from_millis(500);
 
 impl Frontend for GuiFrontend {
@@ -76,11 +75,10 @@ impl Frontend for GuiFrontend {
     }
 
     /// The window asks with a dialog, and this thread waits for its answer. Once the window has gone nobody can answer, and the session is
-    /// being stopped (`end_session`). To the restart's question the answer is then Exit: the session ends with nothing allocated, as not
-    /// run (`UNANSWERED`), where 4 KiB pages, the console's answer to an empty line, would allocate the run's memory only for the stop to
-    /// end the run before its first cycle. To the grant's it is 4 KiB pages, as for a frontend that can't ask: Exit would grant the right
-    /// with nobody saying yes.
-    fn large_page_restart(&self, question: &LargePageQuestion) -> RestartChoice {
+    /// being stopped (`end_session`): the answer to every question is then Quit, as for a frontend that can't ask (TODO 113), and the
+    /// session ends with nothing allocated, as not run. A grant would go to someone with nobody picking them, and 4 KiB pages would run
+    /// slower unasked, allocating the run's memory only for the stop to end the run before its first cycle.
+    fn ask_large_pages(&self, question: &LargePageQuestion) -> LargePageAnswer {
         let (reply, answer) = mpsc::sync_channel(1);
         if self.feed.send(Feed::Ask { question: question.clone(), reply }).is_ok() {
             loop {
@@ -92,13 +90,7 @@ impl Frontend for GuiFrontend {
                 }
             }
         }
-        match question {
-            LargePageQuestion::Restart => {
-                UNANSWERED.store(true, Ordering::Relaxed);
-                RestartChoice::Exit
-            }
-            LargePageQuestion::Grant { .. } => RestartChoice::Continue4K,
-        }
+        LargePageAnswer::Quit
     }
 }
 
@@ -106,15 +98,12 @@ impl Frontend for GuiFrontend {
 static SESSION: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 static EXIT_CODE: Mutex<Option<i32>> = Mutex::new(None);
 
-/// Set when the window has opened, for the wording of its error, and when it has closed, for the restart's question
+/// Set when the window has opened, for the wording of its error, and when it has closed, for the large-page question
 static WINDOW_OPENED: AtomicBool = AtomicBool::new(false);
 static WINDOW_CLOSED: AtomicBool = AtomicBool::new(false);
 
 /// The exe's icon, an .ico file's bytes, from `main`: the title bar's (`window::icon_path`)
 static ICON: OnceLock<&'static [u8]> = OnceLock::new();
-
-/// Set when the restart's question went unanswered, the window having gone: the session ended as for a restart, but nobody chose it
-static UNANSWERED: AtomicBool = AtomicBool::new(false);
 
 /// How long a session still running when the window closes has to finish its step and save its results, before it ends with the process
 const CLOSE_GRACE: Duration = Duration::from_secs(30);
@@ -127,22 +116,21 @@ fn window_opened() {
 fn session_started(session: JoinHandle<()>) {
     *SESSION.lock().unwrap_or_else(PoisonError::into_inner) = Some(session);
     *EXIT_CODE.lock().unwrap_or_else(PoisonError::into_inner) = None;
-    UNANSWERED.store(false, Ordering::Relaxed);
 }
 
 fn session_ended(result: &Result<SessionEnd, String>) {
-    let code = exit_status(result, UNANSWERED.load(Ordering::Relaxed)).exit_code();
+    let code = exit_status(result).exit_code();
     *EXIT_CODE.lock().unwrap_or_else(PoisonError::into_inner) = Some(code);
 }
 
-/// The exit status of how the session ended, as the CLI gives it (`RunStatus::exit_code`): its run's; passed (0) when the restart was
-/// chosen, but not run (2) when the question went `unanswered`; not run when setup or an error stopped it, and for a one-shot command,
-/// which the window doesn't run
-fn exit_status(result: &Result<SessionEnd, String>, unanswered: bool) -> RunStatus {
+/// The exit status of how the session ended, as the CLI gives it (`RunStatus::exit_code`): its run's; passed (0) when the sign-out was
+/// chosen; not run (2) when setup or an error stopped it (the large-page question's quit too, and no answer to it), and for a one-shot
+/// command, which the window doesn't run
+fn exit_status(result: &Result<SessionEnd, String>) -> RunStatus {
     match result {
         Ok(SessionEnd::Ran { status, .. }) => *status,
-        Ok(SessionEnd::RestartChosen) if !unanswered => RunStatus::Passed,
-        Ok(SessionEnd::RestartChosen | SessionEnd::Stopped(_) | SessionEnd::Command(_)) | Err(_) => RunStatus::NotRun,
+        Ok(SessionEnd::SignOutChosen) => RunStatus::Passed,
+        Ok(SessionEnd::Stopped(_) | SessionEnd::Command(_)) | Err(_) => RunStatus::NotRun,
     }
 }
 
@@ -210,76 +198,73 @@ fn closed(error: Option<String>, opened: bool, started: bool, exit_code: Option<
 mod tests {
     use super::*;
 
-    /// The large-page question (TODO 29 S6): the session's thread waits for the window's answer, and once nobody can answer (the question
-    /// dropped, no window, or the window closed with it open), the answer to the restart's is Exit, as not run, and to the grant's 4 KiB
-    /// pages, so nothing is granted unasked. The only test that touches the window's flags: closing is last.
+    /// The large-page question (TODO 29 S6, TODO 113): the session's thread waits for the window's answer, and once nobody can answer (the
+    /// question dropped, no window, or the window closed with it open), the answer to every question is Quit, so nothing is granted and
+    /// nothing runs on 4 KiB pages unasked. The only test that touches the window's flags: closing is last.
     #[test]
-    fn the_restart_question_waits_for_the_window_and_gives_up_once_it_has_gone() {
-        let restart = LargePageQuestion::Restart;
-        let grant = LargePageQuestion::Grant { account: r"PC\owner".to_string() };
+    fn the_large_page_question_waits_for_the_window_and_gives_up_once_it_has_gone() {
+        use tmr::frontend::{Candidate, Reach, Sid};
+        let sign_in = LargePageQuestion::SignIn { account: r"PC\owner".to_string(), via: None, uac: false, domain: false };
+        let you = Candidate::new(r"PC\owner", Reach::You, "S-1-5-21-1-2-3-1001".parse::<Sid>().unwrap());
+        let grant = LargePageQuestion::Grant { candidates: vec![you], uac: false, domain: false };
+        let needs = LargePageQuestion::NeedsAdministrator { account: r"PC\owner".to_string(), uac: false };
         let ask = |question: &LargePageQuestion| {
             let (feed, window) = mpsc::channel();
             let sent = question.clone();
-            let asked = std::thread::spawn(move || GuiFrontend { feed, transcript: None }.large_page_restart(&sent));
+            let asked = std::thread::spawn(move || GuiFrontend { feed, transcript: None }.ask_large_pages(&sent));
             let Ok(Feed::Ask { question: shown, reply }) = window.recv() else {
                 panic!("the question wasn't asked");
             };
             assert_eq!(&shown, question, "the window shows the question asked");
             (asked, reply, window)
         };
-        let unanswered = || UNANSWERED.swap(false, Ordering::Relaxed);
+        use LargePageAnswer::{Grant, Quit, Regular, SignOut};
 
         // Answered after a wait or two, the window open: it is still waited for
-        let (asked, reply, _window) = ask(&restart);
+        let (asked, reply, _window) = ask(&sign_in);
         std::thread::sleep(ANSWER_WAIT * 3 / 2);
-        reply.send(RestartChoice::Continue4K).unwrap();
-        assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Continue4K, false));
-        let (asked, reply, _window) = ask(&restart);
-        reply.send(RestartChoice::Exit).unwrap();
-        assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Exit, false), "the restart chosen");
+        reply.send(Regular).unwrap();
+        assert_eq!(asked.join().unwrap(), Regular);
+        let (asked, reply, _window) = ask(&sign_in);
+        reply.send(SignOut).unwrap();
+        assert_eq!(asked.join().unwrap(), SignOut, "the sign-out chosen");
         let (asked, reply, _window) = ask(&grant);
-        reply.send(RestartChoice::Exit).unwrap();
-        assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Exit, false), "the grant chosen");
+        reply.send(Grant(0)).unwrap();
+        assert_eq!(asked.join().unwrap(), Grant(0), "the grant chosen");
 
-        let (asked, reply, _window) = ask(&restart);
-        drop(reply);
-        assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Exit, true), "dropped unanswered");
-        let (asked, reply, _window) = ask(&grant);
-        drop(reply);
-        assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Continue4K, false), "the grant dropped unanswered");
-        let no_window = |question: &LargePageQuestion| {
+        for (question, case) in [(&sign_in, "the sign-in's"), (&grant, "the grant's"), (&needs, "the administrator's")] {
+            let (asked, reply, _window) = ask(question);
+            drop(reply);
+            assert_eq!(asked.join().unwrap(), Quit, "{case} dropped unanswered");
             let (feed, window) = mpsc::channel();
             drop(window);
-            (GuiFrontend { feed, transcript: None }.large_page_restart(question), unanswered())
-        };
-        assert_eq!(no_window(&restart), (RestartChoice::Exit, true), "no window to ask");
-        assert_eq!(no_window(&grant), (RestartChoice::Continue4K, false), "no window to ask for the grant");
+            assert_eq!(GuiFrontend { feed, transcript: None }.ask_large_pages(question), Quit, "{case}, no window to ask");
+        }
 
         // The window closes with the question open, the reply still held: the window's state may hold it after Reactor's loop has ended
-        let (asked, _reply, _window) = ask(&restart);
+        let (asked, _reply, _window) = ask(&sign_in);
         std::thread::sleep(ANSWER_WAIT / 2);
         let closed = Instant::now();
         WINDOW_CLOSED.store(true, Ordering::Relaxed);
-        assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Exit, true), "closed unanswered");
+        assert_eq!(asked.join().unwrap(), Quit, "closed unanswered");
         assert!(closed.elapsed() < 2 * ANSWER_WAIT, "given up after {:?}", closed.elapsed());
         let (asked, _reply, _window) = ask(&grant);
-        assert_eq!((asked.join().unwrap(), unanswered()), (RestartChoice::Continue4K, false), "the grant asked once closed");
+        assert_eq!(asked.join().unwrap(), Quit, "the grant asked once closed");
     }
 
-    /// The exit status is the CLI's for the same end, and the restart is 0 only when it was chosen (TODO 29 S6)
+    /// The exit status is the CLI's for the same end (TODO 29 S6): the sign-out chosen is 0, and the large-page question's quit, or no
+    /// answer to it, not run (TODO 113)
     #[test]
     fn a_session_ends_with_the_clis_exit_status() {
         let ran = |status| Ok(SessionEnd::Ran { status, elapsed: Duration::from_secs(60), plan_only: false });
         for status in [RunStatus::Passed, RunStatus::Failed, RunStatus::NotRun, RunStatus::Interrupted] {
-            assert_eq!(exit_status(&ran(status), false), status);
+            assert_eq!(exit_status(&ran(status)), status);
         }
-        assert_eq!(exit_status(&Ok(SessionEnd::RestartChosen), false), RunStatus::Passed, "the restart chosen");
-        assert_eq!(exit_status(&Ok(SessionEnd::RestartChosen), true), RunStatus::NotRun, "the question unanswered");
+        assert_eq!(exit_status(&Ok(SessionEnd::SignOutChosen)), RunStatus::Passed, "the sign-out chosen");
+        let quit = Ok(SessionEnd::Stopped(tmr::session::Stopped::NeedsLargePages));
+        assert_eq!(exit_status(&quit), RunStatus::NotRun, "the large-page question's quit");
         let stopped = Ok(SessionEnd::Stopped(tmr::session::Stopped::Invalid("bad value".to_string())));
-        assert_eq!(
-            (exit_status(&stopped, false), exit_status(&Err("bad value".to_string()), false)),
-            (RunStatus::NotRun, RunStatus::NotRun)
-        );
+        assert_eq!((exit_status(&stopped), exit_status(&Err("bad value".to_string()))), (RunStatus::NotRun, RunStatus::NotRun));
     }
 
     /// The window's end: the session's status whatever became of the window, interrupted past the grace, not run without Start, and the

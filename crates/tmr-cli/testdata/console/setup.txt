@@ -73,23 +73,24 @@ Startup Mode & Parameters:
 ## large pages are checked
 Checking Large Page access
 ## the right granted
-✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\owner, which keeps it until it is removed
-🔄 RESTART REQUIRED: restart Windows for it to take effect, then run TMR again
+✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to BUILTIN\Administrators, which keeps it until it is removed
+🔄 SIGN-IN REQUIRED: sign out and back in (or restart Windows) for it to take effect, then run TMR again
 
+To sign out: Start Menu → your account → Sign out
 To restart:
   • Windows: shutdown /r /t 0
   • Or use Start Menu → Power → Restart
 
 TMR will exit now.
 ## the grant failed
-❌ Couldn't grant 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\owner: Setup failed: secedit export failed: access denied
+❌ Couldn't grant 'Lock pages in memory' (SeLockMemoryPrivilege) to PC\owner: LsaAddAccountRights: Access is denied. (5, NTSTATUS 0xC0000022)
 
 📖 Manual Setup:
-1. Run gpedit.msc as Administrator
+1. Run gpedit.msc as Administrator (Windows Pro and up: Home has none)
 2. Navigate to: Computer Configuration → Windows Settings → Security Settings → Local Policies → User Rights Assignment
 3. Double-click 'Lock pages in memory'
-4. Add PC\owner (or the 'Administrators' group)
-5. Restart Windows
+4. Add PC\owner
+5. Sign out and back in (or restart Windows)
 
 ## what the check did
 🔍 Large Page Diagnostic
