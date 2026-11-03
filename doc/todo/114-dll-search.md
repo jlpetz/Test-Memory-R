@@ -56,3 +56,8 @@ What the flag doesn't reach, and why that's fine:
 
 The release's check on a clean desktop: the window, and `dumpbin /loadconfig` on the released exe. A CI step that fails a release exe
 without the flag would keep it from being lost.
+
+## Checked on a desktop (2026-11-04)
+The 8500G (Windows 11) started the window from `C:\Users\Public\TMR\tmr.exe` (a5de854, a folder its users can write) with the flag
+in: the Windows App Runtime loaded. Closed. Left as an idea, not a task: a CI step that fails a release exe whose `dumpbin
+/loadconfig` lacks the flag.

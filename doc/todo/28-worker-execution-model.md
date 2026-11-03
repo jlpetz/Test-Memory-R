@@ -352,3 +352,21 @@ an invert gains nothing from NT stores (the load has already brought the line in
 The storm on these two runs one CCD (the 8600G is monolithic, the 5700X one CCD): about 27 ns
 a bump a thread on petz007, 55 ns on daddy-petz. Its point, lines crossing CCDs and nodes, needs
 a multi-CCD machine.
+
+## Hardware acceptance, the campaign, and the plan decision (2026-11-03/04, TODO 107)
+
+The 2026-11-03 campaign (build a5de854; the figures in `..\baselines\2026-11-03\REPORT.md`, beside the repo, not in git):
+- **A, petz007 (8600G, its bit-31 read fault and a stored bit 8/9 pair):** each exchange op ran 11 steps a slot between SimpleV2
+  steps. Bit 31: the NT ops caught it 7 times in 6.1 min (the rewrite 5, the NT copy 2), the cached ops never; SimpleV2, 426 in
+  23.1 min, about 16x the NT ops' rate a minute. Bits 8/9: the exchange's own checks 3 times (rewrite, copy, invert), SimpleV2's
+  0 in 231 steps, the seal 13.
+- **A2, daddy-petz (5700X):** 6 slots of 20 min, 0 errors. NT copy against cached: +44% on petz007 (77.6k against 53.9k MiB/s),
+  +23% on daddy-petz.
+- **B, C, the 2-socket EPYC (192 threads, 2 nodes, 24 L3 groups):** 12 cycles and all 9 op x share combinations, 0 errors.
+  `node` ran 1.5-2.1x `any`, `cross` 0.47-0.56x.
+- Gaps, left: the claims line (a debug run, which needs `-Env` in the campaign's run-tmr.ps1), and B2 as one CCX (`cpu-stride=1`).
+
+**Decided (the owner, 2026-11-04):** plan `stability` (and `quick`) takes `Mem-PageExchange` (the copy) after SimpleNT and
+`-Rewrite` after Random, apart so a fault that comes in bursts meets one or the other; the invert and the storm stay in `all`. The
+copy's stores default to NT (the invert's stay cached). `exchange_share` keeps `any`. Each keeps its 30 s, so a stability cycle
+grows by about 60 s (from about 240 s on every campaign host). Commit d71b823.

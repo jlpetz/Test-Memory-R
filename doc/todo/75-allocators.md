@@ -181,6 +181,14 @@ plan-pagesize-pref, to be re-checked after the test rework (TODO 83).
 Remote nodes are asked `home + 1`, `home + 2`, …, not nearest first; that matters on machines
 with many nodes (EPYC at 4 NUMA nodes per socket).
 
+
+### Re-check on a 2-node box, and the decision (2026-11-03/04, TODO 83)
+On the m8a.metal-48xl (2 sockets, 192 threads, 768 GiB, 2 nodes; build a5de854), `memory=0%-from-available`, Spd-DRAMFull-Read-Auto
+and Mem-SimpleV2-Auto, 3 cycles, 128 MiB against 1 GiB alternated 3 times each: the same page mix (576 GiB on 1 GiB pages, about
+177 GiB on 2 MiB), every thread's target met exactly, speeds +0.23% and +0.16% (noise), 140-142 s for both; 11 commits a thread
+against 4. Both nodes were balanced (short by at most 96 MiB), so the case 128 MiB guards against, a node short by GiBs, didn't
+occur. Decided (the owner, 2026-11-04): keep 128 MiB. Figures: `..\baselines\2026-11-03\REPORT.md` (not in git).
+
 ---
 
 ## Original record (2026-09-28)
