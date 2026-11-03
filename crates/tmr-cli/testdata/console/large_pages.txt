@@ -445,7 +445,8 @@ Enter your choice (A, B or Q):
 ============================================
 TMR runs as PC\owner without the right large pages need, 'Lock pages in memory' (SeLockMemoryPrivilege).
 Only TMR run as administrator can set them up: Run as administrator (right-click TMR), or
-tmr.exe --setup-large-pages from a console run as administrator.
+tmr.exe --setup-large-pages from a console run as administrator. If it was just granted, sign out of Windows
+and back in instead.
 
 Choose your preferred action:
   A) Exit TMR, to run it as administrator (RECOMMENDED for optimal performance)
@@ -460,7 +461,8 @@ Enter your choice (A/B):
 ============================================
 TMR runs as PC\owner without the right large pages need, 'Lock pages in memory' (SeLockMemoryPrivilege).
 Only TMR run as administrator can set them up: Run as administrator (right-click TMR), or
-tmr.exe --setup-large-pages from a console run as administrator.
+tmr.exe --setup-large-pages from a console run as administrator. If it was just granted, sign out of Windows
+and back in instead.
 You sign in as an administrator: run TMR as administrator once to grant it; after the next sign-in it has it in every run.
 
 Choose your preferred action:
@@ -482,7 +484,8 @@ Enter your choice (A/B):
 ============================================
 TMR runs as PC\owner without the right large pages need, 'Lock pages in memory' (SeLockMemoryPrivilege).
 Only TMR run as administrator can set them up: Run as administrator (right-click TMR), or
-tmr.exe --setup-large-pages from a console run as administrator.
+tmr.exe --setup-large-pages from a console run as administrator. If it was just granted, sign out of Windows
+and back in instead.
 
 Choose your preferred action:
   A) Exit TMR, to run it as administrator (RECOMMENDED for optimal performance)
@@ -498,7 +501,8 @@ Enter your choice (A/B):
 ============================================
 TMR runs as PC\owner without the right large pages need, 'Lock pages in memory' (SeLockMemoryPrivilege).
 Only TMR run as administrator can set them up: Run as administrator (right-click TMR), or
-tmr.exe --setup-large-pages from a console run as administrator.
+tmr.exe --setup-large-pages from a console run as administrator. If it was just granted, sign out of Windows
+and back in instead.
 
 Choose your preferred action:
   A) Exit TMR, to run it as administrator (RECOMMENDED for optimal performance)

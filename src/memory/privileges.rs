@@ -523,8 +523,8 @@ pub(crate) struct Standing {
 }
 
 /// The large-page question this process has for its user (`session::run`), if any: none when the run's page range allows nothing above
-/// 4 KiB (`wants_large`: maxpage= large or huge), and none when its token has the right (enabled or not). Reads the token, and the
-/// security policy when TMR runs as administrator; changes nothing.
+/// 4 KiB (`wants_large`: maxpage= large or huge), and none when its token has the right (enabled or not). Reads the token and the
+/// security policy (who holds the right, as far as Windows lets this process see it); changes nothing.
 pub fn large_page_question(wants_large: bool) -> Option<LargePageQuestion> {
     if !wants_large || check_privilege_state() != PrivilegeState::NotAssigned {
         return None;
@@ -541,9 +541,10 @@ pub fn large_page_question(wants_large: bool) -> Option<LargePageQuestion> {
 
 /// `large_page_question`'s choice, from whether this token has the right (`in_token`, enabled or not), whether the run's page range
 /// allows large pages (`wants_large`) and whether TMR runs as `administrator`: none with the right, or with 4 KiB pages the most the run
-/// takes; TMR not run as administrator, 4 KiB pages or quit (the account and `uac` from `unelevated`); run as administrator, the sign-in
-/// when the policy gives the right to the account or one of its groups, else the grant (`standing`, read only then). A policy that can't
-/// be read offers the grant, which then fails as the read did, saying why.
+/// takes; else the sign-in when the policy gives the right to the account or one of its groups (`standing`), elevated or not: an
+/// administrator under UAC keeps the right unelevated (measured 2026-11-04), so a grant then wants only a new sign-in, not TMR run as
+/// administrator; else, run as administrator, the grant, and not, 4 KiB pages or quit (the account and `uac` from `unelevated`). A policy
+/// that can't be read offers an administrator the grant, which then fails as the read did, saying why, and anyone else the quit.
 pub(crate) fn question_for(
     in_token: bool, wants_large: bool, administrator: bool, unelevated: impl FnOnce() -> (String, bool),
     standing: impl FnOnce() -> Standing,
@@ -551,13 +552,12 @@ pub(crate) fn question_for(
     if in_token || !wants_large {
         return None;
     }
-    if !administrator {
-        let (account, uac) = unelevated();
-        return Some(LargePageQuestion::NeedsAdministrator { account, uac });
-    }
     let Standing { you, groups, mine, names, holders, uac, domain } = standing();
     let holders = holders.unwrap_or_else(|e| {
-        log::warn!("The security policy couldn't be read ({e}): the grant is offered");
+        match administrator {
+            true => log::warn!("The security policy couldn't be read ({e}): the grant is offered"),
+            false => log::debug!("The security policy couldn't be read, not run as administrator ({e})"),
+        }
         Vec::new()
     });
     let candidates = order(you, groups);
@@ -565,7 +565,11 @@ pub(crate) fn question_for(
     Some(match held_by(&holders, &candidates[0], &candidates[1..], &mine, &names) {
         Some(Holder::You) => LargePageQuestion::SignIn { account, via: None, uac, domain },
         Some(Holder::Group(group)) => LargePageQuestion::SignIn { account, via: Some(group), uac, domain },
-        None => LargePageQuestion::Grant { candidates, uac, domain },
+        None if administrator => LargePageQuestion::Grant { candidates, uac, domain },
+        None => {
+            let (account, uac) = unelevated();
+            LargePageQuestion::NeedsAdministrator { account, uac }
+        }
     })
 }
 
@@ -923,9 +927,9 @@ mod tests {
     }
 
     /// TODO 113: the question, from stand-ins (decision 5a): none with the right in the token, or with maxpage=regular (4 KiB pages the
-    /// most the run takes), nothing read; not run as administrator, 4 KiB pages or quit whatever minpage is, the policy unread; run as
-    /// administrator, the sign-in when the account or a group holds it, else the grant, the account first, also when the policy can't be
-    /// read; `uac` and `domain` carried. No test reads or changes the policy.
+    /// most the run takes), nothing read; the sign-in when the account or a group holds it, run as administrator or not (2026-11-04: an
+    /// administrator keeps the right unelevated); else, run as administrator, the grant, the account first, also when the policy can't
+    /// be read, and not, 4 KiB pages or quit whatever minpage is; `uac` and `domain` carried. No test reads or changes the policy.
     #[test]
     fn the_question_follows_the_token_and_the_policy() {
         let you = || candidate(r"PC\owner", Reach::You, "S-1-5-21-1-2-3-1001");
@@ -970,10 +974,14 @@ mod tests {
         assert_eq!(ask(true, true, false, Ok(vec![])), (None, false, false), "the right in the token, not elevated");
         assert_eq!(ask(false, false, false, Ok(vec![])), (None, false, false), "maxpage=regular, not an administrator: no question");
         assert_eq!(ask(false, false, true, Ok(vec![])), (None, false, false), "maxpage=regular, an administrator: no question");
+        assert_eq!(ask(false, true, false, Ok(vec![])), (needs.clone(), true, true), "not an administrator, held by nobody: 4 KiB or quit");
+        let unreadable = || Err("LsaOpenPolicy: Access is denied.".to_string());
+        assert_eq!(ask(false, true, false, unreadable()), (needs, true, true), "not an administrator, the policy unreadable");
+        assert_eq!(ask(false, true, false, Ok(vec!["S-1-5-21-1-2-3-1001"])), (sign_in(None), false, true), "not elevated, held: sign in");
         assert_eq!(
-            ask(false, true, false, Ok(vec![])),
-            (needs, true, false),
-            "not an administrator: 4 KiB pages or quit, the policy unread"
+            ask(false, true, false, Ok(vec!["S-1-5-32-544"])),
+            (sign_in(Some(r"BUILTIN\Administrators")), false, true),
+            "not elevated, held by a group: sign in"
         );
         assert_eq!(ask(false, true, true, Ok(vec!["S-1-5-21-1-2-3-1001"])), (sign_in(None), false, true), "held by the account");
         assert_eq!(ask(false, true, true, Ok(vec!["S-1-5-32-544"])), (sign_in(Some(r"BUILTIN\Administrators")), false, true), "by a group");

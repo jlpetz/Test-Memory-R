@@ -892,7 +892,8 @@ impl Model {
                 text: format!(
                     "TMR runs as {account} without the right large pages need, 'Lock pages in memory' (SeLockMemoryPrivilege). Only \
                      TMR run as administrator can set them up: right-click it and Run as administrator, or run tmr.exe \
-                     --setup-large-pages from a console run as administrator.{}\n\nQuit, to do that, or continue this time on \
+                     --setup-large-pages from a console run as administrator. If it was just granted, sign out of Windows and back in \
+                     instead.{}\n\nQuit, to do that, or continue this time on \
                      {FOUR_KIB_PAGES} Closing this dialog quits too.",
                     if *uac {
                         " You sign in as an administrator: run TMR as administrator once to grant it; after the next sign-in it has it in every run."

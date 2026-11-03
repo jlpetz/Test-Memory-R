@@ -209,7 +209,8 @@ fn needs_administrator(
     heading(out, "LARGE PAGES NEED TMR RUN AS ADMINISTRATOR")?;
     writeln!(out, "TMR runs as {account} without the right large pages need, 'Lock pages in memory' (SeLockMemoryPrivilege).")?;
     writeln!(out, "Only TMR run as administrator can set them up: Run as administrator (right-click TMR), or")?;
-    writeln!(out, "tmr.exe --setup-large-pages from a console run as administrator.")?;
+    writeln!(out, "tmr.exe --setup-large-pages from a console run as administrator. If it was just granted, sign out of Windows")?;
+    writeln!(out, "and back in instead.")?;
     if uac {
         writeln!(
             out,
