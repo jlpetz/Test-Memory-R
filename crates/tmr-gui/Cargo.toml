@@ -41,3 +41,5 @@ windows = { version = "0.62", features = [
 [dev-dependencies]
 # The engine's report fixtures (`tmr::test_support`), for the reports the window opens (TODO 109)
 tmr = { workspace = true, features = ["test-support"] }
+# Reactor's recording runtime: its planner, without a screen, for the views a test mounts and updates (TODO 113's dialog)
+windows-reactor = { version = "=0.100.0", features = ["test"] }

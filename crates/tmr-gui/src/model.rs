@@ -60,6 +60,27 @@ pub struct GrantRow {
     pub note: String,
 }
 
+/// The grant's dialog for the window's tests (`window.rs`): the account, a group, and two broad ones, one with a long name
+#[cfg(test)]
+pub(crate) fn grant_dialog_for_tests() -> LargePageDialog {
+    let row = |kind, name: &str, note: &str| GrantRow { kind, name: name.to_string(), note: note.to_string() };
+    let broad = format!("{BROAD_MARK} {BROAD_CAUTION}");
+    LargePageDialog {
+        title: "Large pages need the 'Lock pages in memory' right",
+        primary: "Grant and exit",
+        secondary: "Use 4 KiB pages",
+        close: "Quit",
+        text: "words".to_string(),
+        choices: vec![
+            row("User", r"PC\owner", "You, recommended"),
+            row("Group", r"BUILTIN\Administrators", ""),
+            row("Group", r"NT AUTHORITY\Local account and member of Administrators group", &broad),
+            row("Group", "Everyone", &broad),
+        ],
+        chosen: Some(0),
+    }
+}
+
 /// Which of a large-page dialog's buttons closed it (`Model::answer_large_pages`), as `window.rs` reads WinUI's result: the primary, the
 /// secondary, or neither (the close button, Esc, or the dialog closed any other way)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

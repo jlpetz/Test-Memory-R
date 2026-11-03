@@ -1052,51 +1052,16 @@ impl Window {
     }
 
     /// The large-page question, the console's as a dialog, open while the session's thread waits for its answer, in the words of the last
-    /// question asked (`Model::large_page_dialog`), which hold as it closes: the sign-in's, the grant's with its candidates as radio
-    /// buttons (every choice and its warning in sight, as on the console; WinUI's dialog scrolls a long list), and the administrator's.
+    /// question asked (`Model::large_page_dialog`), which hold as it closes: the sign-in's, the grant's with its candidates as a list
+    /// (every choice and its note in sight, as on the console; WinUI's dialog scrolls a long list), and the administrator's.
     /// Its secondary button is 4 KiB pages this time; Esc is the close button's, the quit, as an empty answer is on the console (TODO
     /// 113); an empty button text leaves the button out. The grant's primary button waits on a choice.
     fn large_page_dialog(&self, context: &ViewContext<Self>) -> View {
         let words = self.model.large_page_dialog();
         let enabled = words.choices.is_empty() || words.chosen.is_some();
-        let text = TextBlock::new().text(words.text).text_wrapping(TextWrapping::Wrap);
+        let text = TextBlock::new().text(words.text.clone()).text_wrapping(TextWrapping::Wrap);
         // The text in the dialog's own colours: it follows the system's theme, not the palette's
-        let content: View = if words.choices.is_empty() {
-            text.into()
-        } else {
-            // A row a candidate, in columns under a header (TODO 113, the owner: radio buttons spread too far apart), fixed widths so the
-            // header lines up with the rows; a long name is trimmed, and its tooltip has it whole. The header sits the list item's padding
-            // in from the left.
-            const COLUMNS: [GridLength; 3] = [GridLength::Pixel(48.0), GridLength::Pixel(230.0), GridLength::Pixel(180.0)];
-            let line = |kind: &str, name: &str, note: &str, bold: bool| {
-                let weight = if bold { FontWeight::SEMI_BOLD } else { FontWeight::NORMAL };
-                Grid::new().columns(COLUMNS).column_spacing(8.0).children((
-                    TextBlock::new().text(kind).font_weight(weight).grid_column(0),
-                    TextBlock::new()
-                        .text(name)
-                        .font_weight(weight)
-                        .text_trimming(TextTrimming::CharacterEllipsis)
-                        .grid_column(1)
-                        .tooltip(name.to_string()),
-                    TextBlock::new().text(note).font_weight(weight).grid_column(2),
-                ))
-            };
-            let header = Border::new().margin(Thickness::new(12.0, 0.0, 0.0, 0.0)).content(line("Type", "Name", "Note", true));
-            let items: Vec<KeyedView> = words
-                .choices
-                .iter()
-                .enumerate()
-                .map(|(i, row)| {
-                    KeyedView::new(i, ListViewItem::new().tag(i.to_string()).content(line(row.kind, &row.name, &row.note, false)))
-                })
-                .collect();
-            let list = ListView::new()
-                .selection_mode(ListViewSelectionMode::Single)
-                .selected_index(words.chosen)
-                .on_selection_changed(context.callback(Message::LargePageTarget))
-                .collection_slot(ListViewSlot::Items, items);
-            StackPanel::new().spacing(8.0).children((text, header, list))
-        };
+        let content = dialog_content(text, &words, context.callback(Message::LargePageTarget));
         ContentDialog::new()
             .title(words.title)
             .primary_button_text(words.primary)
@@ -1442,6 +1407,39 @@ fn progress_bar(bar: &Bar, paused: bool, width: f64, p: &Palette) -> View {
         .tooltip(bar.about)
 }
 
+/// The large-page dialog's content: its text, and for the grant its candidates as a list under a header (TODO 113, the owner: radio
+/// buttons spread too far apart), Type, Name and Note in fixed widths so the header lines up with the rows; a long name wraps. A ListView,
+/// for its keyboard and selection. No tooltip in it: one inside a dialog's content fails reactor 0.100.0's planner (StructureUnsupported,
+/// the window gone), as `a_tooltip_in_a_dialog_still_fails` keeps watch on.
+fn dialog_content(text: TextBlock, words: &crate::model::LargePageDialog, on_select: impl IntoPayloadCallback<Option<usize>>) -> View {
+    if words.choices.is_empty() {
+        return text.into();
+    }
+    const COLUMNS: [GridLength; 3] = [GridLength::Pixel(48.0), GridLength::Pixel(240.0), GridLength::Pixel(170.0)];
+    let line = |kind: &str, name: &str, note: &str, bold: bool| {
+        let weight = if bold { FontWeight::SEMI_BOLD } else { FontWeight::NORMAL };
+        Grid::new().columns(COLUMNS).column_spacing(8.0).children((
+            TextBlock::new().text(kind).font_weight(weight).grid_column(0),
+            TextBlock::new().text(name).font_weight(weight).text_wrapping(TextWrapping::Wrap).grid_column(1),
+            TextBlock::new().text(note).font_weight(weight).text_wrapping(TextWrapping::Wrap).grid_column(2),
+        ))
+    };
+    // A list item's content sits 12 px in, so the header does too
+    let header = Border::new().margin(Thickness::new(12.0, 0.0, 0.0, 0.0)).content(line("Type", "Name", "Note", true));
+    let items: Vec<KeyedView> = words
+        .choices
+        .iter()
+        .enumerate()
+        .map(|(i, row)| KeyedView::new(i, ListViewItem::new().tag(i.to_string()).content(line(row.kind, &row.name, &row.note, false))))
+        .collect();
+    let list = ListView::new()
+        .selection_mode(ListViewSelectionMode::Single)
+        .selected_index(words.chosen)
+        .on_selection_changed(on_select)
+        .collection_slot(ListViewSlot::Items, items);
+    StackPanel::new().spacing(8.0).children((text, header, list))
+}
+
 fn card_title(title: String, p: &Palette) -> TextBlock {
     TextBlock::new().text(title).font_weight(FontWeight::SEMI_BOLD).foreground(brush(p.text_primary))
 }
@@ -1519,7 +1517,44 @@ fn table_row(
 
 #[cfg(test)]
 mod tests {
+    use windows_reactor::test::{Pump, RecordingRuntime};
+    use windows_reactor::*;
+
     use super::largest_png;
+
+    /// A dialog in a window, open or not, as the window draws its large-page dialog
+    fn dialog(open: bool, content: View) -> View {
+        Grid::new().children((TextBlock::new().text("the window"), ContentDialog::new().title("t").is_open(open).content(content)))
+    }
+
+    /// The grant's dialog as a real question gives it, a long name among its candidates
+    fn grant_words(chosen: Option<usize>) -> crate::model::LargePageDialog {
+        let mut words = crate::model::grant_dialog_for_tests();
+        words.chosen = chosen;
+        words
+    }
+
+    /// TODO 113: the grant's list opens, takes another pick and closes through reactor's planner, which failed the window on 2026-11-04
+    /// (StructureUnsupported, from a tooltip in it)
+    #[test]
+    fn the_grant_dialog_opens_and_closes() {
+        let content = |chosen| super::dialog_content(TextBlock::new().text("words"), &grant_words(chosen), |_: Option<usize>| {});
+        let mut pump = Pump::new(RecordingRuntime::default());
+        pump.mount_view(dialog(false, TextBlock::new().text("no question yet").into())).unwrap();
+        for (open, chosen) in [(true, Some(0)), (true, Some(2)), (true, Some(2)), (true, None), (false, None)] {
+            pump.update_view(dialog(open, content(chosen))).unwrap_or_else(|e| panic!("open {open}, chosen {chosen:?}: {e:?}"));
+        }
+    }
+
+    /// Reactor 0.100.0 can't plan a tooltip inside a dialog's content, so the dialogs have none. When this fails, a reactor upgrade
+    /// fixed it, and the grant's long names could have their tooltip back.
+    #[test]
+    fn a_tooltip_in_a_dialog_still_fails() {
+        let mut pump = Pump::new(RecordingRuntime::default());
+        pump.mount_view(dialog(false, TextBlock::new().text("closed").into())).unwrap();
+        let tipped = Grid::new().children((TextBlock::new().text("a long name").tooltip("a long name"),));
+        assert!(pump.update_view(dialog(true, tipped)).is_err());
+    }
 
     /// About's logo is the icon's largest PNG frame (a width of 0 is 256), a larger BMP frame passed over; nothing from a directory that
     /// points past the file's end, or from bytes that aren't an icon
