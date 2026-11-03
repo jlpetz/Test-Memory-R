@@ -30,10 +30,12 @@ Reserve Rounding Diff     +0.00 B           -  Threads × per-thread rounding
   - Mem-StuckBitAuto
   - Mem-SimpleV2-Auto
   - Mem-SimpleNT-Auto
+  - Mem-PageExchange
   - Mem-MovingInv
   - Mem-ModuloX
   - Mem-Sequence
   - Mem-Random
+  - Mem-PageExchange-Rewrite
   - Mem-RefreshAuto
   - Mem-MirrorV2-Auto
   - Mem-Stride
@@ -400,7 +402,9 @@ Reserve Rounding Diff     +0.00 B           -  Threads × per-thread rounding
 [32m[<stamp> INFO tmr::layout][0m   Total planned allocation: 0.02 GiB
 [32m[<stamp> INFO tmr::runner][0m Using the built-in suite, plan stability
 [32m[<stamp> INFO tmr::runner][0m Applying CLI pattern-mode override: 0
+[32m[<stamp> INFO tmr::runner][0m pattern-mode=0 is a numbered mode, and Mem-PageExchange runs native patterns only: it keeps its program
 [32m[<stamp> INFO tmr::runner][0m pattern-mode=0 is a numbered mode, and Mem-Sequence runs native patterns only: it keeps its program
+[32m[<stamp> INFO tmr::runner][0m pattern-mode=0 is a numbered mode, and Mem-PageExchange-Rewrite runs native patterns only: it keeps its program
 [32m[<stamp> INFO tmr::runner][0m Applying CLI test-reps override: 0
 ❌ Config error: Mem-SimpleV2-256_A: test_reps 0 verifies the fill alone, but pattern_mode 0 keys its image by the cycle, which the fill and the verifies don't share; use a native program, or mode 10, 11 or 13
 ## a seal that doesn't parse

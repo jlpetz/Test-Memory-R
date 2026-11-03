@@ -156,7 +156,7 @@ How a claim stores:
 - `nt`: non-temporal, straight to DRAM: a copied line moves twice, and the next claimer reads the
   tile from DRAM (over the links when it is on another node).
 
-- **Default:** `cached` for Mem-PageExchange and -Invert, `nt` for -Rewrite
+- **Default:** `nt` for Mem-PageExchange (since TODO 107) and -Rewrite, `cached` for -Invert
 - **JSON config field:** `"exchange_stores": "nt"`
 
 ### `exchange_invert: Option<u32>`

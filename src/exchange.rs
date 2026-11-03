@@ -32,8 +32,9 @@
 //! claims the tile next can check it from that word alone. A word's value comes from its place in its tile (`kernels`), so a copied
 //! image holds where it lands. A copy moves an image as it is, and an invert flips its polarity.
 //!
-//! **Stores** (`exchange_stores`): cached, as GSAT's copy and invert (the default for both), or non-temporal (the rewrite's default: the
-//! next claimer reads the tile from DRAM, over the links when it's on another node).
+//! **Stores** (`exchange_stores`): cached, as GSAT's copy and invert (the invert's default), or non-temporal (the copy's and the rewrite's
+//! default: the next claimer reads the tile from DRAM, over the links when it's on another node). The copy's went NT with TODO 107: on a
+//! faulty 8600G only the NT ops caught its bit-31 fault, and the NT copy ran 44% faster there (23% on a 5700X).
 //!
 //! **The seal and the end.** In a sealed step a tile's first claim checks the seal (those are seal errors), as does taking a copy's first
 //! held tile. Once every thread has stopped claiming (a barrier), each checks its own tiles' images, and they are resealed
@@ -85,11 +86,11 @@ impl Op {
         }
     }
 
-    /// GSAT's stores for its copy and invert, NT for the rewrite (as built first)
+    /// GSAT's cached stores for the invert; NT for the copy (TODO 107) and the rewrite
     fn default_stores(self) -> Stores {
         match self {
-            Op::Copy | Op::Invert => Stores::Cached,
-            Op::Rewrite => Stores::Nt,
+            Op::Invert => Stores::Cached,
+            Op::Copy | Op::Rewrite => Stores::Nt,
         }
     }
 }

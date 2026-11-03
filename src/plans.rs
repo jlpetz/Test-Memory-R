@@ -22,10 +22,11 @@ pub const DEFAULT: &str = "stability";
 
 /// The stability families at the widest width: a hard-fault screen first, then the full-memory pattern tests, then the access-shape ones.
 /// CacheBust is left out (it works mostly inside the caches), as are the flush variants (at these chunk sizes eviction already reaches
-/// DRAM).
+/// DRAM). The page exchange's copy and rewrite (TODO 107: on hardware they caught both of a faulty 8600G's faults, one of them where
+/// SimpleV2 didn't) sit apart, so a fault that comes in bursts meets one or the other; its invert and the coherence storm stay in `all`.
 const STABILITY: &[&str] = &[
-    "Mem-StuckBitAuto", "Mem-SimpleV2-Auto", "Mem-SimpleNT-Auto", "Mem-MovingInv", "Mem-ModuloX", "Mem-Sequence", "Mem-Random",
-    "Mem-RefreshAuto", "Mem-MirrorV2-Auto", "Mem-Stride", "Mem-BlockMove",
+    "Mem-StuckBitAuto", "Mem-SimpleV2-Auto", "Mem-SimpleNT-Auto", "Mem-PageExchange", "Mem-MovingInv", "Mem-ModuloX", "Mem-Sequence",
+    "Mem-Random", "Mem-PageExchange-Rewrite", "Mem-RefreshAuto", "Mem-MirrorV2-Auto", "Mem-Stride", "Mem-BlockMove",
 ];
 
 /// The families with width variants, every width side by side (128, 256, 512 and Auto; there are no scalar ones since TODO 99): one run, so
