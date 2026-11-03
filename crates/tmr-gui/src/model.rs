@@ -16,9 +16,8 @@ use std::time::Duration;
 
 use tmr::commands::ResultsComparison;
 use tmr::frontend::{
-    AllocationReport, BROAD_CAUTION, BROAD_MARK, BROAD_RISK, ErrorCounts, Event, LargePageAnswer, LargePageQuestion, NotRun,
-    ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealOp, Setup, StepReport, TestConfigurationReport, TestSnapshot,
-    ThreadPriority,
+    AllocationReport, BROAD_MARK, BROAD_RISK, ErrorCounts, Event, LargePageAnswer, LargePageQuestion, NotRun, ProgressSnapshot,
+    ProgressTracker, Run, RunOutcome, RunStatus, SealOp, Setup, StepReport, TestConfigurationReport, TestSnapshot, ThreadPriority,
 };
 use tmr::session::{SessionEnd, Stopped};
 
@@ -39,7 +38,8 @@ pub const LOG_KEPT: usize = 10_000;
 
 /// The large-page dialog's words (`Model::large_page_dialog`), as `window.rs` draws them (TODO 113): its title, its buttons' (the
 /// secondary 4 KiB pages this time; the close button, as Esc, quits, and an empty one has none), its text, and for the grant the
-/// candidates as its list shows them and the one chosen, which mirrors the control: none chosen disables the grant.
+/// candidates as its list shows them and the one chosen, which mirrors the control: none chosen disables the grant; and the broad mark's
+/// legend, under the list, when the list has the mark (as the console has it).
 #[derive(Debug, PartialEq, Eq)]
 pub struct LargePageDialog {
     pub title: &'static str,
@@ -49,10 +49,11 @@ pub struct LargePageDialog {
     pub text: String,
     pub choices: Vec<GrantRow>,
     pub chosen: Option<usize>,
+    pub legend: Option<String>,
 }
 
 /// A candidate's row in the grant's list (TODO 113, the owner: a list, not radio buttons spread apart): User or Group, its name, and a
-/// note, "You, recommended" for the account and the broad mark for a broad group
+/// note, "You, recommended" for the account and the broad mark (its legend under the list) for a broad group
 #[derive(Debug, PartialEq, Eq)]
 pub struct GrantRow {
     pub kind: &'static str,
@@ -64,7 +65,7 @@ pub struct GrantRow {
 #[cfg(test)]
 pub(crate) fn grant_dialog_for_tests() -> LargePageDialog {
     let row = |kind, name: &str, note: &str| GrantRow { kind, name: name.to_string(), note: note.to_string() };
-    let broad = format!("{BROAD_MARK} {BROAD_CAUTION}");
+    let broad = BROAD_MARK;
     LargePageDialog {
         title: "Large pages need the 'Lock pages in memory' right",
         primary: "Grant and exit",
@@ -74,10 +75,11 @@ pub(crate) fn grant_dialog_for_tests() -> LargePageDialog {
         choices: vec![
             row("User", r"PC\owner", "You, recommended"),
             row("Group", r"BUILTIN\Administrators", ""),
-            row("Group", r"NT AUTHORITY\Local account and member of Administrators group", &broad),
-            row("Group", "Everyone", &broad),
+            row("Group", r"NT AUTHORITY\Local account and member of Administrators group", broad),
+            row("Group", "Everyone", broad),
         ],
         chosen: Some(0),
+        legend: Some(format!("{BROAD_MARK} {}", tmr::frontend::broad_legend())),
     }
 }
 
@@ -822,6 +824,7 @@ impl Model {
                 text: String::new(),
                 choices: Vec::new(),
                 chosen: None,
+                legend: None,
             },
             Some(LargePageQuestion::SignIn { account, via, uac, domain }) => {
                 let holder = match via {
@@ -842,6 +845,7 @@ impl Model {
                     ),
                     choices: Vec::new(),
                     chosen: None,
+                    legend: None,
                 }
             }
             Some(LargePageQuestion::Grant { candidates, uac, domain }) => {
@@ -854,7 +858,7 @@ impl Model {
                         name: candidate.name.clone(),
                         note: match candidate.reach.is_broad() {
                             _ if i == 0 => "You, recommended".to_string(),
-                            true => format!("{BROAD_MARK} {BROAD_CAUTION}"),
+                            true => BROAD_MARK.to_string(),
                             false => String::new(),
                         },
                     })
@@ -871,6 +875,10 @@ impl Model {
                          granted.{}\n\nOr grant nothing, and continue this time on {FOUR_KIB_PAGES}\n\n{QUIT_RUNS_NOTHING}",
                         elevated_lines(*uac, *domain)
                     ),
+                    legend: candidates
+                        .iter()
+                        .any(|candidate| candidate.reach.is_broad())
+                        .then(|| format!("{BROAD_MARK} {}", tmr::frontend::broad_legend())),
                     choices,
                     chosen: self.chosen,
                 }
@@ -894,6 +902,7 @@ impl Model {
                 ),
                 choices: Vec::new(),
                 chosen: None,
+                legend: None,
             },
         }
     }
@@ -2025,9 +2034,17 @@ mod tests {
         assert_eq!(rows, [
             ("User", r"PC\owner", "You, recommended"),
             ("Group", r"BUILTIN\Administrators", ""),
-            ("Group", r"BUILTIN\Users", "⚠️ BROAD, use with caution"),
-            ("Group", "Everyone", "⚠️ BROAD, use with caution"),
+            ("Group", r"BUILTIN\Users", "⚠️"),
+            ("Group", "Everyone", "⚠️"),
         ]);
+        assert_eq!(
+            words.legend.as_deref(),
+            Some(
+                "⚠️ BROAD, use with caution: most or all accounts are in it, and any program of any of these \
+            accounts can then lock RAM away from Windows."
+            ),
+            "the mark's legend, once"
+        );
         assert_eq!(words.chosen, Some(0), "the account chosen");
         for said in [r"TMR runs as PC\owner,", "keeps it until it is removed (tmr.exe --remove-large-pages)", "next sign-in", "4 KiB pages"]
         {

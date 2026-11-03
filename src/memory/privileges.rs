@@ -337,6 +337,11 @@ pub const BROAD_RISK: &str = "any program of any of these accounts can then lock
 pub const BROAD_MARK: &str = "⚠️";
 pub const BROAD_CAUTION: &str = "BROAD, use with caution";
 
+/// The mark's legend, said once under a list it marks (after the mark, which each frontend spaces its own way)
+pub fn broad_legend() -> String {
+    format!("{BROAD_CAUTION}: most or all accounts are in it, and {BROAD_RISK}.")
+}
+
 /// Windows' automatic groups, by SID (the TODO 113 review's list): Everyone (S-1-1-0); S-1-2-*, LOCAL and CONSOLE LOGON; NT AUTHORITY's
 /// DIALUP, NETWORK, BATCH, INTERACTIVE, SERVICE, ANONYMOUS LOGON, PROXY, ENTERPRISE DOMAIN CONTROLLERS, Authenticated Users, RESTRICTED,
 /// TERMINAL SERVER USER, REMOTE INTERACTIVE LOGON, This Organization, Local account and its member-of-Administrators part (S-1-5-1 to 15,

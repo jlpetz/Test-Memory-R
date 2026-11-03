@@ -1408,14 +1408,18 @@ fn progress_bar(bar: &Bar, paused: bool, width: f64, p: &Palette) -> View {
 }
 
 /// The large-page dialog's content: its text, and for the grant its candidates as a list under a header (TODO 113, the owner: radio
-/// buttons spread too far apart), Type, Name and Note in fixed widths so the header lines up with the rows; a long name wraps. A ListView,
-/// for its keyboard and selection. No tooltip in it: one inside a dialog's content fails reactor 0.100.0's planner (StructureUnsupported,
+/// buttons spread too far apart), Type, Name and Note in fixed widths so the header lines up with the rows; a long name wraps; then the
+/// broad mark's legend, once, as the console has it. A ListView, for its keyboard and selection, and its own scrolling past a height. No tooltip in it: one inside a dialog's content fails reactor 0.100.0's planner (StructureUnsupported,
 /// the window gone), as `a_tooltip_in_a_dialog_still_fails` keeps watch on.
 fn dialog_content(text: TextBlock, words: &crate::model::LargePageDialog, on_select: impl IntoPayloadCallback<Option<usize>>) -> View {
     if words.choices.is_empty() {
         return text.into();
     }
-    const COLUMNS: [GridLength; 3] = [GridLength::Pixel(48.0), GridLength::Pixel(240.0), GridLength::Pixel(170.0)];
+    // The note is short ("You, recommended", or the broad mark, whose legend sits under the list), so the name takes the room
+    const COLUMNS: [GridLength; 3] = [GridLength::Pixel(48.0), GridLength::Pixel(290.0), GridLength::Pixel(120.0)];
+    // The list's height, past which it scrolls (TODO 113, the owner: a dozen candidates ran past the dialog, the last out of reach): six
+    // rows and part of the next, so it shows there are more
+    const LIST_HEIGHT: f64 = 260.0;
     let line = |kind: &str, name: &str, note: &str, bold: bool| {
         let weight = if bold { FontWeight::SEMI_BOLD } else { FontWeight::NORMAL };
         Grid::new().columns(COLUMNS).column_spacing(8.0).children((
@@ -1436,8 +1440,13 @@ fn dialog_content(text: TextBlock, words: &crate::model::LargePageDialog, on_sel
         .selection_mode(ListViewSelectionMode::Single)
         .selected_index(words.chosen)
         .on_selection_changed(on_select)
+        .max_height(LIST_HEIGHT)
         .collection_slot(ListViewSlot::Items, items);
-    StackPanel::new().spacing(8.0).children((text, header, list))
+    let mut parts: Vec<(u64, View)> = vec![(0, text.into()), (1, header), (2, list)];
+    if let Some(legend) = &words.legend {
+        parts.push((3, TextBlock::new().text(legend.clone()).text_wrapping(TextWrapping::Wrap).into()));
+    }
+    StackPanel::new().spacing(8.0).keyed_children(parts)
 }
 
 fn card_title(title: String, p: &Palette) -> TextBlock {

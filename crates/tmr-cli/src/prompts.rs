@@ -4,7 +4,7 @@
 
 use std::io::{self, BufRead, Write};
 
-use tmr::frontend::{BROAD_CAUTION, BROAD_MARK, BROAD_RISK, Candidate, LargePageAnswer, LargePageQuestion};
+use tmr::frontend::{BROAD_MARK, Candidate, LargePageAnswer, LargePageQuestion, broad_legend};
 
 /// One answer: a line of `input`, trimmed and in capitals, after `flush` has dropped what was typed ahead (`console::flush_input`); empty
 /// for no answer, the input's end, or an input that can't be read
@@ -151,7 +151,7 @@ fn grant(
         }
         // What the mark means, once for every row it marks (the owner, 2026-11-04)
         if groups.iter().any(|group| group.reach.is_broad()) {
-            writeln!(out, "  {BROAD_MARK}  {BROAD_CAUTION}: most or all accounts are in it, and {BROAD_RISK}.")?;
+            writeln!(out, "  {BROAD_MARK}  {}", broad_legend())?;
         }
     }
     let granting = |out: &mut dyn Write, i: usize| -> io::Result<LargePageAnswer> {
