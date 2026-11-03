@@ -69,6 +69,7 @@ mod error_context; // where a worker is in the run, for its error lines (TODO 74
 mod exchange; // the page exchange: tiles that cross threads, CCDs and NUMA nodes, copied, inverted or rewritten (TODO 28)
 mod failing_bits; // which bit positions failed checks, from the verifies' cold path (TODO 97)
 mod formatting;
+mod latency_histogram; // TODO 105 (1): the latency tests' percentiles from a histogram a thread
 mod latency_tests; // Latency measurement tests
 mod latency_tests_v2; // v2 latency tests: Layout A/B reads + NT write saturation PoC
 mod layout;

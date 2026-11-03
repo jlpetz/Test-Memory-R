@@ -6,6 +6,7 @@ use std::arch::x86_64::__rdtscp;
 use std::sync::atomic::{Ordering, fence};
 
 use crate::ErrorMode;
+use crate::latency_histogram::Histogram;
 use crate::runner::AllocationBlock;
 use crate::test_scaffolding::TestRunner;
 use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestStats, TestTiming};
@@ -15,7 +16,8 @@ use crate::tests::{TestAction, TestMemoryConfig, TestProgress, TestStats, TestTi
 #[derive(Debug, Clone)]
 pub struct LatencyTestStats {
     pub basic_stats: TestStats,
-    pub latencies_ns: Vec<f64>,
+    /// The thread's samples as counts (TODO 105): its percentiles' source, and the step's once merged with the other threads'
+    pub histogram: Histogram,
     pub sample_count: usize,
 
     // Full percentile breakdown
@@ -35,11 +37,12 @@ pub struct LatencyTestStats {
 }
 
 impl LatencyTestStats {
-    fn calculate_percentiles(mut latencies: Vec<f64>) -> Self {
-        if latencies.is_empty() {
+    /// The percentiles of `histogram`'s samples, as a sort of them picks them (`Histogram::percentile`)
+    pub(crate) fn from_histogram(histogram: Histogram) -> Self {
+        if histogram.samples() == 0 {
             return Self {
                 basic_stats: TestStats::not_run("", TestAction::Latency, 0, None),
-                latencies_ns: vec![],
+                histogram,
                 sample_count: 0,
                 p1_ns: 0.0,
                 p5_ns: 0.0,
@@ -55,13 +58,8 @@ impl LatencyTestStats {
             };
         }
 
-        latencies.sort_by(f64::total_cmp);
-        let len = latencies.len();
-
-        let percentile = |p: f64| -> f64 {
-            let idx = ((len as f64 - 1.0) * p / 100.0) as usize;
-            latencies[idx.min(len - 1)]
-        };
+        let len = histogram.samples() as usize;
+        let percentile = |p: f64| histogram.percentile(p);
 
         let p1 = percentile(1.0);
         let p5 = percentile(5.0);
@@ -79,7 +77,7 @@ impl LatencyTestStats {
 
         Self {
             basic_stats: TestStats::not_run("", TestAction::Latency, 0, None),
-            latencies_ns: latencies,
+            histogram,
             sample_count: len,
             p1_ns: p1,
             p5_ns: p5,
@@ -137,7 +135,7 @@ pub unsafe fn read_latency_multi(
 
     let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Read);
     if extent.test_size == 0 {
-        return LatencyTestStats { basic_stats: runner.finish_completed(0), ..LatencyTestStats::calculate_percentiles(vec![]) };
+        return LatencyTestStats { basic_stats: runner.finish_completed(0), ..LatencyTestStats::from_histogram(Histogram::new()) };
     }
 
     // The chain covers the extent, which targets the tier (L1/L2/L3/DRAM/DRAM-Full)
@@ -159,7 +157,7 @@ pub unsafe fn read_latency_multi(
     // Start timing AFTER setup - setup time should not count against test duration
     runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
-    let mut latencies_ns = Vec::with_capacity(10000);
+    let mut latencies = Histogram::new();
     // Each sample CONTINUES the chase from where the last one stopped, so it walks the whole working set, not a cached subset
     let mut ptr = base;
 
@@ -186,12 +184,12 @@ pub unsafe fn read_latency_multi(
         let cycles_per_read = delta_cycles as f64 / iterations as f64;
         let latency_ns = cycles_per_read / cpu_ghz;
 
-        if latencies_ns.len() < 10 {
+        if latencies.samples() < 10 {
             log::debug!(
                 "[Thread {}] {} sample #{}: start={} end={} delta={} iter={} cycles/op={:.2} freq={:.3}GHz latency={:.2}ns",
                 thread_id,
                 test_name,
-                latencies_ns.len() + 1,
+                latencies.samples() + 1,
                 start_cycles,
                 end_cycles,
                 delta_cycles,
@@ -202,7 +200,7 @@ pub unsafe fn read_latency_multi(
             );
         }
 
-        latencies_ns.push(latency_ns);
+        latencies.add(latency_ns);
         runner.add_bytes(iterations * 8);
 
         runner.update_progress();
@@ -211,7 +209,7 @@ pub unsafe fn read_latency_multi(
         }
     }
 
-    let mut result = LatencyTestStats::calculate_percentiles(latencies_ns);
+    let mut result = LatencyTestStats::from_histogram(latencies);
     result.basic_stats = runner.finish_completed((runner.bytes_processed() / 8) as u64);
 
     // Log per-thread results with all percentiles
@@ -251,7 +249,7 @@ pub unsafe fn write_latency_multi(
 
     let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Write);
     if extent.test_size == 0 {
-        return LatencyTestStats { basic_stats: runner.finish_completed(0), ..LatencyTestStats::calculate_percentiles(vec![]) };
+        return LatencyTestStats { basic_stats: runner.finish_completed(0), ..LatencyTestStats::from_histogram(Histogram::new()) };
     }
 
     // The extent in two halves: the pointer chain (read only) and the write targets, so the writes don't destroy the chain
@@ -276,7 +274,7 @@ pub unsafe fn write_latency_multi(
     // Start timing AFTER setup - setup time should not count against test duration
     runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
-    let mut latencies_ns = Vec::with_capacity(10000);
+    let mut latencies = Histogram::new();
     // CONTINUE from where the last sample stopped
     let mut chain_ptr = chain_base;
 
@@ -307,12 +305,12 @@ pub unsafe fn write_latency_multi(
         let cycles_per_write = delta_cycles as f64 / iterations as f64;
         let latency_ns = cycles_per_write / cpu_ghz;
 
-        if latencies_ns.len() < 10 {
+        if latencies.samples() < 10 {
             log::debug!(
                 "[Thread {}] {} sample #{}: start={} end={} delta={} iter={} cycles/op={:.2} freq={:.3}GHz latency={:.2}ns",
                 thread_id,
                 test_name,
-                latencies_ns.len() + 1,
+                latencies.samples() + 1,
                 start_cycles,
                 end_cycles,
                 delta_cycles,
@@ -323,7 +321,7 @@ pub unsafe fn write_latency_multi(
             );
         }
 
-        latencies_ns.push(latency_ns);
+        latencies.add(latency_ns);
         runner.add_bytes(iterations * 8);
 
         runner.update_progress();
@@ -332,7 +330,7 @@ pub unsafe fn write_latency_multi(
         }
     }
 
-    let mut result = LatencyTestStats::calculate_percentiles(latencies_ns);
+    let mut result = LatencyTestStats::from_histogram(latencies);
     result.basic_stats = runner.finish_completed((runner.bytes_processed() / 8) as u64);
 
     // Log per-thread results with all percentiles
@@ -372,7 +370,7 @@ pub unsafe fn copy_latency_multi(
 
     let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Copy);
     if extent.test_size == 0 {
-        return LatencyTestStats { basic_stats: runner.finish_completed(0), ..LatencyTestStats::calculate_percentiles(vec![]) };
+        return LatencyTestStats { basic_stats: runner.finish_completed(0), ..LatencyTestStats::from_histogram(Histogram::new()) };
     }
 
     // The extent in two halves: src (pointer chain) + dst (write target), so the total footprint stays within the target tier. Matches
@@ -397,7 +395,7 @@ pub unsafe fn copy_latency_multi(
     // Start timing AFTER setup - setup time should not count against test duration
     runner.setup_done(crate::ops::Op::ChainBuild, 0);
 
-    let mut latencies_ns = Vec::with_capacity(10000);
+    let mut latencies = Histogram::new();
     // CONTINUE from where the last sample stopped; the destination walks forward and wraps
     let mut src_ptr = src_base;
     let mut dst_offset = 0usize;
@@ -435,12 +433,12 @@ pub unsafe fn copy_latency_multi(
         let cycles_per_copy = delta_cycles as f64 / iterations as f64;
         let latency_ns = cycles_per_copy / cpu_ghz;
 
-        if latencies_ns.len() < 10 {
+        if latencies.samples() < 10 {
             log::debug!(
                 "[Thread {}] {} sample #{}: start={} end={} delta={} iter={} cycles/op={:.2} freq={:.3}GHz latency={:.2}ns",
                 thread_id,
                 test_name,
-                latencies_ns.len() + 1,
+                latencies.samples() + 1,
                 start_cycles,
                 end_cycles,
                 delta_cycles,
@@ -451,7 +449,7 @@ pub unsafe fn copy_latency_multi(
             );
         }
 
-        latencies_ns.push(latency_ns);
+        latencies.add(latency_ns);
         runner.add_bytes(iterations * 16);
 
         runner.update_progress();
@@ -460,7 +458,7 @@ pub unsafe fn copy_latency_multi(
         }
     }
 
-    let mut result = LatencyTestStats::calculate_percentiles(latencies_ns);
+    let mut result = LatencyTestStats::from_histogram(latencies);
     result.basic_stats = runner.finish_completed((runner.bytes_processed() / 16) as u64);
 
     // Log per-thread results with all percentiles

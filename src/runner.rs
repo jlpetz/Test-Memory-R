@@ -1538,13 +1538,10 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         ) = if !latency_results.is_empty() {
             // Aggregate latency stats across all threads
             let total_samples: usize = latency_results.iter().map(|(_, _, stats)| stats.sample_count).sum();
-            let all_latencies: Vec<f64> = latency_results.iter().flat_map(|(_, _, stats)| stats.latencies_ns.clone()).collect();
+            let all = merged_latencies(&latency_results);
 
-            if !all_latencies.is_empty() {
-                let mut sorted = all_latencies.clone();
-                sorted.sort_by(f64::total_cmp);
-                let len = sorted.len();
-                let percentile = |p: f64| sorted[((len as f64 - 1.0) * p / 100.0) as usize];
+            if all.samples() > 0 {
+                let percentile = |p: f64| all.percentile(p);
                 let p5 = percentile(5.0);
                 let p95 = percentile(95.0);
                 let spread = if p5 > 0.0 { p95 / p5 } else { 0.0 };
@@ -1610,8 +1607,9 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
 
         // The step's report (TODO 29): its thread timing deviations, a latency step's latencies, and where the suite stood as it ended, its
         // results in
-        let latency = (!latency_results.is_empty())
-            .then(|| LatencyTestSummaryReport { levels_tested: vec![convert_to_latency_level_summary(&latency_results)] });
+        let latency = (!latency_results.is_empty()).then(|| LatencyTestSummaryReport {
+            levels_tested: vec![convert_to_latency_level_summary(&latency_results, &merged_latencies(&latency_results))],
+        });
         fe.event(
             Run::StepFinished(Box::new(StepReport {
                 cycle,
@@ -1740,7 +1738,7 @@ fn thread_step_record(result: &WorkResult, assignment: Option<CpuAssignment>) ->
         operations: result.total_operations,
         cycles: result.cycles_completed,
         latency: result.latency_stats.as_ref().map(|stats| crate::results::ThreadLatency {
-            min_ns: stats.latencies_ns.iter().copied().min_by(f64::total_cmp).unwrap_or(0.0),
+            min_ns: stats.histogram.min(),
             p50_ns: stats.p50_ns,
             p99_ns: stats.p99_ns,
             spread: stats.spread_ratio,
@@ -4594,11 +4592,22 @@ impl std::fmt::Display for ThreadPriority {
     }
 }
 
-/// Convert latency test results to LatencyLevelSummary for reporting
-fn convert_to_latency_level_summary(latency_results: &[(usize, usize, LatencyTestStats)]) -> LatencyLevelSummary {
+/// Every thread's latency counts added up (TODO 105): the step's percentiles, as a sort of every sample gives them
+fn merged_latencies(latency_results: &[(usize, usize, LatencyTestStats)]) -> crate::latency_histogram::Histogram {
+    let mut all = crate::latency_histogram::Histogram::new();
+    for (_, _, stats) in latency_results {
+        all.merge(&stats.histogram);
+    }
+    all
+}
+
+/// Convert latency test results to LatencyLevelSummary for reporting: each thread's percentiles, and the step's from `all`, every thread's
+/// counts merged (`merged_latencies`), not an average of the threads'
+fn convert_to_latency_level_summary(
+    latency_results: &[(usize, usize, LatencyTestStats)], all: &crate::latency_histogram::Histogram,
+) -> LatencyLevelSummary {
     // Collect per-thread results
     let mut per_thread_results = Vec::new();
-    let mut all_latencies = Vec::new();
     let mut total_samples = 0;
 
     for (thread_id, cpu_id, lat_stats) in latency_results {
@@ -4607,7 +4616,7 @@ fn convert_to_latency_level_summary(latency_results: &[(usize, usize, LatencyTes
             cpu_id: *cpu_id,
             sample_count: lat_stats.sample_count,
             percentiles: LatencyPercentiles {
-                min_ns: lat_stats.latencies_ns.iter().copied().min_by(f64::total_cmp).unwrap_or(0.0),
+                min_ns: lat_stats.histogram.min(),
                 p5_ns: lat_stats.p5_ns,
                 p10_ns: lat_stats.p10_ns,
                 p25_ns: lat_stats.p25_ns,
@@ -4621,22 +4630,14 @@ fn convert_to_latency_level_summary(latency_results: &[(usize, usize, LatencyTes
             },
         });
 
-        all_latencies.extend(&lat_stats.latencies_ns);
         total_samples += lat_stats.sample_count;
     }
 
-    // Calculate consolidated percentiles
-    let consolidated = if !all_latencies.is_empty() {
-        all_latencies.sort_by(f64::total_cmp);
-        let len = all_latencies.len();
-
-        let percentile = |p: f64| -> f64 {
-            let idx = ((len as f64 - 1.0) * p / 100.0) as usize;
-            all_latencies[idx.min(len - 1)]
-        };
-
+    // The step's percentiles, from every thread's counts merged
+    let consolidated = if all.samples() > 0 {
+        let percentile = |p: f64| all.percentile(p);
         LatencyPercentiles {
-            min_ns: all_latencies[0],
+            min_ns: all.min(),
             p5_ns: percentile(5.0),
             p10_ns: percentile(10.0),
             p25_ns: percentile(25.0),

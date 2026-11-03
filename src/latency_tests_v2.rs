@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{Ordering, fence};
 
 use crate::ErrorMode;
+use crate::latency_histogram::Histogram;
 use crate::latency_tests::{LatencyTestStats, below};
 use crate::runner::AllocationBlock;
 use crate::test_scaffolding::TestRunner;
@@ -175,7 +176,7 @@ macro_rules! lat_v2_read_impl {
             let (mut runner, extent) =
                 TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Histogram::new());
             }
 
             const ITER: usize = 1000;
@@ -184,7 +185,7 @@ macro_rules! lat_v2_read_impl {
             // Each sample CONTINUES the chase from where the last one stopped
             let mut chain = setup_layout_a(extent.ptr, aligned, thread_id);
 
-            let mut latencies_ns = Vec::with_capacity(10000);
+            let mut latencies = Histogram::new();
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
             runner.setup_done(crate::ops::Op::ChainBuild, 0);
@@ -220,7 +221,7 @@ macro_rules! lat_v2_read_impl {
                 let cycles_per_op = delta as f64 / ops as f64;
                 let ns_per_op = cycles_per_op / cpu_ghz;
 
-                latencies_ns.push(ns_per_op);
+                latencies.add(ns_per_op);
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
@@ -230,7 +231,7 @@ macro_rules! lat_v2_read_impl {
                 }
             }
 
-            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies)
         }
     };
 }
@@ -266,7 +267,7 @@ macro_rules! lat_v2_write_impl {
             let (mut runner, extent) =
                 TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Histogram::new());
             }
 
             const ITER: usize = 1000;
@@ -276,7 +277,7 @@ macro_rules! lat_v2_write_impl {
             // Each sample CONTINUES the chase from where the last one stopped
             let mut chain = setup_layout_a(extent.ptr, aligned, thread_id);
 
-            let mut latencies_ns = Vec::with_capacity(10000);
+            let mut latencies = Histogram::new();
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
             runner.setup_done(crate::ops::Op::ChainBuild, 0);
@@ -305,7 +306,7 @@ macro_rules! lat_v2_write_impl {
                 let cycles_per_op = delta as f64 / ops as f64;
                 let ns_per_op = cycles_per_op / cpu_ghz;
 
-                latencies_ns.push(ns_per_op);
+                latencies.add(ns_per_op);
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
@@ -315,7 +316,7 @@ macro_rules! lat_v2_write_impl {
                 }
             }
 
-            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies)
         }
     };
 }
@@ -353,7 +354,7 @@ macro_rules! lat_v2_copy_impl {
             let (mut runner, extent) =
                 TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Histogram::new());
             }
 
             const ITER: usize = 1000;
@@ -363,7 +364,7 @@ macro_rules! lat_v2_copy_impl {
             // Each sample CONTINUES the chase from where the last one stopped
             let mut chain = setup_layout_a(extent.ptr, aligned, thread_id);
 
-            let mut latencies_ns = Vec::with_capacity(10000);
+            let mut latencies = Histogram::new();
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
             runner.setup_done(crate::ops::Op::ChainBuild, 0);
@@ -392,7 +393,7 @@ macro_rules! lat_v2_copy_impl {
                 let cycles_per_op = delta as f64 / ops as f64;
                 let ns_per_op = cycles_per_op / cpu_ghz;
 
-                latencies_ns.push(ns_per_op);
+                latencies.add(ns_per_op);
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
@@ -402,7 +403,7 @@ macro_rules! lat_v2_copy_impl {
                 }
             }
 
-            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies)
         }
     };
 }
@@ -436,7 +437,7 @@ macro_rules! lat_v2p_read_impl {
             let (mut runner, extent) =
                 TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Histogram::new());
             }
 
             const ITER: usize = 1000;
@@ -445,7 +446,7 @@ macro_rules! lat_v2p_read_impl {
             // Each sample CONTINUES the chase from where the last one stopped
             let mut chain = setup_layout_b(extent.ptr, aligned, thread_id);
 
-            let mut latencies_ns = Vec::with_capacity(10000);
+            let mut latencies = Histogram::new();
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
             runner.setup_done(crate::ops::Op::ChainBuild, 0);
@@ -493,7 +494,7 @@ macro_rules! lat_v2p_read_impl {
                 let cycles_per_op = delta as f64 / ops as f64;
                 let ns_per_op = cycles_per_op / cpu_ghz;
 
-                latencies_ns.push(ns_per_op);
+                latencies.add(ns_per_op);
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
@@ -503,7 +504,7 @@ macro_rules! lat_v2p_read_impl {
                 }
             }
 
-            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies)
         }
     };
 }
@@ -543,7 +544,7 @@ macro_rules! lat_v2p_write_impl {
             let (mut runner, extent) =
                 TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Histogram::new());
             }
 
             const ITER: usize = 1000;
@@ -553,7 +554,7 @@ macro_rules! lat_v2p_write_impl {
             // Each sample CONTINUES the chase from where the last one stopped
             let mut chain = setup_layout_b(extent.ptr, aligned, thread_id);
 
-            let mut latencies_ns = Vec::with_capacity(10000);
+            let mut latencies = Histogram::new();
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
             runner.setup_done(crate::ops::Op::ChainBuild, 0);
@@ -594,7 +595,7 @@ macro_rules! lat_v2p_write_impl {
                 let cycles_per_op = delta as f64 / ops as f64;
                 let ns_per_op = cycles_per_op / cpu_ghz;
 
-                latencies_ns.push(ns_per_op);
+                latencies.add(ns_per_op);
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
@@ -604,7 +605,7 @@ macro_rules! lat_v2p_write_impl {
                 }
             }
 
-            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies)
         }
     };
 }
@@ -649,7 +650,7 @@ macro_rules! lat_v2p_copy_impl {
             let (mut runner, extent) =
                 TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Histogram::new());
             }
 
             const ITER: usize = 1000;
@@ -659,7 +660,7 @@ macro_rules! lat_v2p_copy_impl {
             // Each sample CONTINUES the chase from where the last one stopped
             let mut chain = setup_layout_b(extent.ptr, aligned, thread_id);
 
-            let mut latencies_ns = Vec::with_capacity(10000);
+            let mut latencies = Histogram::new();
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
             runner.setup_done(crate::ops::Op::ChainBuild, 0);
@@ -706,7 +707,7 @@ macro_rules! lat_v2p_copy_impl {
                 let cycles_per_op = delta as f64 / ops as f64;
                 let ns_per_op = cycles_per_op / cpu_ghz;
 
-                latencies_ns.push(ns_per_op);
+                latencies.add(ns_per_op);
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
@@ -716,7 +717,7 @@ macro_rules! lat_v2p_copy_impl {
                 }
             }
 
-            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies)
         }
     };
 }
@@ -760,7 +761,7 @@ macro_rules! lat_v2p_write_full_impl {
             let (mut runner, extent) =
                 TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Histogram::new());
             }
 
             const ITER: usize = 1000;
@@ -770,7 +771,7 @@ macro_rules! lat_v2p_write_full_impl {
             // Each sample CONTINUES the chase from where the last one stopped
             let mut chain = setup_layout_b(extent.ptr, aligned, thread_id);
 
-            let mut latencies_ns = Vec::with_capacity(10000);
+            let mut latencies = Histogram::new();
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
             runner.setup_done(crate::ops::Op::ChainBuild, 0);
@@ -811,7 +812,7 @@ macro_rules! lat_v2p_write_full_impl {
                 let cycles_per_op = delta as f64 / ops as f64;
                 let ns_per_op = cycles_per_op / cpu_ghz;
 
-                latencies_ns.push(ns_per_op);
+                latencies.add(ns_per_op);
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
@@ -821,7 +822,7 @@ macro_rules! lat_v2p_write_full_impl {
                 }
             }
 
-            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies)
         }
     };
 }
@@ -860,7 +861,7 @@ macro_rules! lat_v2p_copy_full_impl {
             let (mut runner, extent) =
                 TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Histogram::new());
             }
 
             const ITER: usize = 1000;
@@ -870,7 +871,7 @@ macro_rules! lat_v2p_copy_full_impl {
             // Each sample CONTINUES the chase from where the last one stopped
             let mut chain = setup_layout_b(extent.ptr, aligned, thread_id);
 
-            let mut latencies_ns = Vec::with_capacity(10000);
+            let mut latencies = Histogram::new();
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
             runner.setup_done(crate::ops::Op::ChainBuild, 0);
@@ -916,7 +917,7 @@ macro_rules! lat_v2p_copy_full_impl {
                 let cycles_per_op = delta as f64 / ops as f64;
                 let ns_per_op = cycles_per_op / cpu_ghz;
 
-                latencies_ns.push(ns_per_op);
+                latencies.add(ns_per_op);
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
@@ -926,7 +927,7 @@ macro_rules! lat_v2p_copy_full_impl {
                 }
             }
 
-            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies)
         }
     };
 }
@@ -1372,7 +1373,7 @@ macro_rules! lat_ntw_write_impl {
             let (mut runner, extent) =
                 TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
             if extent.test_size == 0 {
-                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Histogram::new());
             }
 
             // Stores per sample. Large enough to saturate WCBs and dilute the warmup phase (first ~12 stores fit in empty WCBs and appear
@@ -1388,13 +1389,13 @@ macro_rules! lat_ntw_write_impl {
             // repeated when it has fewer
             let line_count = extent.test_size / CACHE_LINE_BYTES;
             if line_count < 2 {
-                return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
+                return finalize_stats(&mut runner, test_name, thread_id, 0, Histogram::new());
             }
             let lines = random_prefix(line_count, line_count.min(STORES_PER_SAMPLE), thread_id ^ 0xC1);
             let table: Vec<*mut $vec_type> =
                 (0..STORES_PER_SAMPLE).map(|i| extent.ptr.add(lines[i % lines.len()] * CACHE_LINE_BYTES) as *mut $vec_type).collect();
 
-            let mut latencies_ns = Vec::with_capacity(10000);
+            let mut latencies = Histogram::new();
             let mut total_ops = 0u64;
             // Start timing AFTER setup - setup time should not count against test duration
             runner.setup_done(crate::ops::Op::ChainBuild, 0);
@@ -1418,7 +1419,7 @@ macro_rules! lat_ntw_write_impl {
                 let cycles_per_op = delta as f64 / STORES_PER_SAMPLE as f64;
                 let ns_per_op = cycles_per_op / cpu_ghz;
 
-                latencies_ns.push(ns_per_op);
+                latencies.add(ns_per_op);
                 total_ops += STORES_PER_SAMPLE as u64;
                 runner.add_bytes(STORES_PER_SAMPLE as u64 as usize * 8);
 
@@ -1431,7 +1432,7 @@ macro_rules! lat_ntw_write_impl {
             // Suppress unused-vec_size warning; the value is documentary and may be used in future variants that issue multiple stores per
             // cache line.
             let _ = $vec_size;
-            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
+            finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies)
         }
     };
 }
@@ -1455,7 +1456,7 @@ pub unsafe fn lat_ntw_write_scalar_multi(
 
     let (mut runner, extent) = TestRunner::new(blocks, thread_id, error_mode, timing, config, progress, test_name, TestAction::Latency);
     if extent.test_size == 0 {
-        return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
+        return finalize_stats(&mut runner, test_name, thread_id, 0, Histogram::new());
     }
 
     const STORES_PER_SAMPLE: usize = 4096;
@@ -1465,13 +1466,13 @@ pub unsafe fn lat_ntw_write_scalar_multi(
     // it has fewer
     let line_count = extent.test_size / CACHE_LINE_BYTES;
     if line_count < 2 {
-        return finalize_stats(&mut runner, test_name, thread_id, 0, Vec::new());
+        return finalize_stats(&mut runner, test_name, thread_id, 0, Histogram::new());
     }
     let lines = random_prefix(line_count, line_count.min(STORES_PER_SAMPLE), thread_id ^ 0xC1);
     let table: Vec<*mut i64> =
         (0..STORES_PER_SAMPLE).map(|i| extent.ptr.add(lines[i % lines.len()] * CACHE_LINE_BYTES) as *mut i64).collect();
 
-    let mut latencies_ns = Vec::with_capacity(10000);
+    let mut latencies = Histogram::new();
     let mut total_ops = 0u64;
     // Start timing AFTER setup - setup time should not count against test duration
     runner.setup_done(crate::ops::Op::ChainBuild, 0);
@@ -1495,7 +1496,7 @@ pub unsafe fn lat_ntw_write_scalar_multi(
         let cycles_per_op = delta as f64 / STORES_PER_SAMPLE as f64;
         let ns_per_op = cycles_per_op / cpu_ghz;
 
-        latencies_ns.push(ns_per_op);
+        latencies.add(ns_per_op);
         total_ops += STORES_PER_SAMPLE as u64;
         runner.add_bytes(STORES_PER_SAMPLE as u64 as usize * 8);
 
@@ -1505,7 +1506,7 @@ pub unsafe fn lat_ntw_write_scalar_multi(
         }
     }
 
-    finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies_ns)
+    finalize_stats(&mut runner, test_name, thread_id, total_ops, latencies)
 }
 
 lat_ntw_write_impl!(
@@ -1553,47 +1554,10 @@ pub unsafe fn lat_ntw_write_auto_multi(
 
 /// The test's stats: the runner's bytes, time and cycles (one sample per cycle), and the percentiles of the samples.
 fn finalize_stats(
-    runner: &mut TestRunner<'_>, test_name: &'static str, thread_id: usize, total_ops: u64, latencies_ns: Vec<f64>,
+    runner: &mut TestRunner<'_>, test_name: &'static str, thread_id: usize, total_ops: u64, latencies: Histogram,
 ) -> LatencyTestStats {
-    let mut sorted = latencies_ns;
-    sorted.sort_by(f64::total_cmp);
-    let len = sorted.len();
-    let percentile = |slice: &[f64], p: f64| -> f64 {
-        if slice.is_empty() {
-            return 0.0;
-        }
-        let n = slice.len();
-        let idx = ((n as f64 - 1.0) * p / 100.0) as usize;
-        slice[idx.min(n - 1)]
-    };
-    let p1 = percentile(&sorted, 1.0);
-    let p5 = percentile(&sorted, 5.0);
-    let p10 = percentile(&sorted, 10.0);
-    let p25 = percentile(&sorted, 25.0);
-    let p50 = percentile(&sorted, 50.0);
-    let p75 = percentile(&sorted, 75.0);
-    let p90 = percentile(&sorted, 90.0);
-    let p95 = percentile(&sorted, 95.0);
-    let p99 = percentile(&sorted, 99.0);
-    let p99_9 = percentile(&sorted, 99.9);
-    let spread = if p5 > 0.0 { p95 / p5 } else { 0.0 };
-
-    let result = LatencyTestStats {
-        basic_stats: runner.finish_completed(total_ops),
-        latencies_ns: sorted,
-        sample_count: len,
-        p1_ns: p1,
-        p5_ns: p5,
-        p10_ns: p10,
-        p25_ns: p25,
-        p50_ns: p50,
-        p75_ns: p75,
-        p90_ns: p90,
-        p95_ns: p95,
-        p99_ns: p99,
-        p99_9_ns: p99_9,
-        spread_ratio: spread,
-    };
+    // The percentiles from the counts: no sort inside the test's clock (TODO 105: the sort read the Lat steps' MiB/s 9-16% low)
+    let result = LatencyTestStats { basic_stats: runner.finish_completed(total_ops), ..LatencyTestStats::from_histogram(latencies) };
 
     log::debug!(
         "[Thread {}] {} - {} samples | P5={:.2} P50={:.2} P95={:.2} P99={:.2} | Spread={:.2}x",
