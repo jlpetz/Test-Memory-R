@@ -79,6 +79,21 @@ TMR will still work but will use standard pages.
 Sign out and back in (or restart Windows) if it was just granted.
 [calls: find CORP\witches, diagnostic, me, holders Grant, change Grant S-1-5-21-7-8-9-1111, closing check]
 
+## granted to a target, the account holding it in its token and the policy: Passed
+🔧 TMR Large Page Setup Tool
+=============================
+
+<the large-page check's report>
+
+🎯 Target: CORP\witches (a group)
+✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to CORP\witches, which keeps it until it is removed (tmr.exe --remove-large-pages Group:CORP\witches)
+
+🔄 It takes effect at the next sign-in of each account it reaches
+
+🎉 SUCCESS: Large pages are now enabled and working!
+You can now run TMR for optimal performance.
+[calls: find CORP\witches, diagnostic, me, holders Grant, change Grant S-1-5-21-7-8-9-1111, closing check]
+
 ## granted to a service account, by User:: Passed
 🔧 TMR Large Page Setup Tool
 =============================
@@ -164,9 +179,8 @@ Sign out and back in (or restart Windows) if it was just granted.
 
 ✅ This sign-in has it already: nothing to grant
 
-⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+🎉 SUCCESS: Large pages are now enabled and working!
+You can now run TMR for optimal performance.
 [calls: diagnostic, me, holders Grant, closing check]
 
 ## not run as administrator: NotRun
@@ -359,6 +373,14 @@ Sign out and back in (or restart Windows) if it was just granted.
 🎯 Target: BUILTIN\Administrators (a group)
 ✅ BUILTIN\Administrators doesn't have it in the security policy: nothing to remove
 [calls: find Administrators, me, holders Remove]
+
+## nothing to remove from the target, the account holding it: Passed
+🔧 TMR Large Page Removal Tool
+===============================
+
+🎯 Target: CORP\witches (a group)
+✅ CORP\witches doesn't have it in the security policy: nothing to remove
+[calls: find CORP\witches, me, holders Remove]
 
 ## the removal failed: NotRun
 🔧 TMR Large Page Removal Tool

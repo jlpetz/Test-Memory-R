@@ -155,11 +155,28 @@ TM5 grants the same way (`TM5\bin\awe.asm`, `SetIOPLto3`).
   (`the_names_resolve_here`: every `WELL_KNOWN` entry named as in the table but Account and Server Operators, which exist only on a
   domain controller; `Group:Administrators`, `.\Administrators`, `BUILTIN\Administrators`, `Everyone`, a SID, `User:SYSTEM`, the account
   by its full name and by `.\`). Nothing in any test writes the policy.
+- **The shakedown's group step** (dev box, 2026-11-03, `..\lsa-shake\shake.ps1`): `--setup-large-pages Group:tmr-lsa-test` then
+  `--remove-large-pages Group:tmr-lsa-test`, both exit 0. The script logged the grant as not in the policy and the removal as of a
+  right the group didn't hold; neither was TMR's. The script looked for the group's SID in a `secedit /export`, which names a local
+  account or group by its name (`SeLockMemoryPrivilege = Administrator`) and only a well-known one by SID, so it never found it. TMR
+  printed the target and granted to its SID; the removal calls `LsaRemoveAccountRights` only when `LsaEnumerateAccountsWithUserRight`
+  lists the target, so it found the grant; and with the group deleted, a read-only export lists Administrator alone, no orphaned SID.
+  The large-page check before the grant and the closing check after it are the running account's, by design. Steps 2 and 3 (a
+  standard user, a non-built-in administrator) didn't run: `ConvertTo-SecureString` failed to load.
+- **The removal's access**: Microsoft Learn's `LsaRemoveAccountRights`, "The handle must have the POLICY_LOOKUP_NAMES access right";
+  `Access::Read` has it, and the removal above ran on it. `LsaAddAccountRights` needs that and, for an account the policy has no
+  object for, POLICY_CREATE_ACCOUNT: `Access::Grant`. The same page: "If you specify privileges not held by the account, the function
+  ignores them", a success; so the holders read first is what makes "Removed" true.
+- **The goldens since**: a target granted while the account holds the right in its token and the policy, a target's removal it doesn't
+  hold while the account does (no removal called). The stand-in fails a test that changes the policy before reading its holders on
+  the handle opened for that change, or grants to a holder, or removes from one that isn't; its closing check passes when the token
+  has the right, as the real one's does (so "in the token already" ends in SUCCESS now, as it would live).
 
 ## Left for later
 
-- **The shakedown and the desktop check**: a grant and a removal on the dev box with a throwaway group (the owner approved), and the
-  UAC check above; both with the owner's go-ahead, as both write the policy.
+- **The shakedown and the desktop check**: on the dev box (the owner approved) the group step is done (Checked); the standard user and
+  the non-built-in administrator are left, once the script compares secedit's names, not SIDs, and `ConvertTo-SecureString` loads. The
+  UAC check above is the owner's.
 - **Over-the-shoulder elevation and Administrator protection** (review 5): the elevated account may not be the person signed in (the
   admin who typed the password; Administrator protection's hidden system-managed account). The heading shows the full `DOMAIN\name`,
   and `--setup-large-pages User:PC\you` names the desktop account. Offering the session's user too needs wtsapi32, a DLL-planting risk

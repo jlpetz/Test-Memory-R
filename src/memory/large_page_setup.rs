@@ -821,8 +821,10 @@ mod tests {
         }
     }
 
-    /// A stand-in machine: what it finds and reads, the outcome of its change and its closing check, and every call made to it, which the
-    /// golden shows after each case. It changes nothing.
+    /// A stand-in machine: what it finds and reads, the outcome of its change, and every call made to it, which the golden shows after
+    /// each case; its closing check passes when the token has the right, as the real one's does. It changes nothing, and fails the test on
+    /// a change before the holders are read on a handle opened for it, or one the policy has made already: a grant to a holder, a removal
+    /// from one that isn't.
     struct StandIn {
         administrator: bool,
         found: Result<Vec<Found>, String>,
@@ -877,22 +879,35 @@ mod tests {
             Ok(self.holders.iter().map(|h| sid(h)).collect())
         }
         fn change(&mut self, change: Change, sid: &Sid) -> Result<(), String> {
+            // The policy is changed only after its holders are read on the handle opened for the change, and only where it differs from
+            // the change: a grant to a SID it doesn't list, a removal from one it does
+            let read = format!("holders {change:?}");
+            assert!(self.calls.contains(&read), "{change:?} {sid} before the holders were read for it");
+            let held = self.holders.contains(&sid.to_string().as_str());
+            assert_eq!(
+                held,
+                change == Change::Remove,
+                "{change:?} {sid}, which the policy {} lists",
+                if held { "already" } else { "never" }
+            );
             self.calls.push(format!("change {change:?} {sid}"));
             self.change.clone()
         }
         fn closing_check(&mut self) -> Result<(), &'static str> {
             self.calls.push("closing check".to_string());
-            Err("SeLockMemoryPrivilege not assigned to current user")
+            if self.in_token { Ok(()) } else { Err("SeLockMemoryPrivilege not assigned to current user") }
         }
     }
 
     /// TODO 113: both commands' every outcome, from stand-ins, each after a `## case` line with how it ended and then the calls it made:
     /// the grant to the account, to a group, to a broad group (warned, and made), to a service account by User:, to a SID Windows can't
-    /// name; held already by the target, and with no target by the account or a group of it (the sign-in, with the UAC and domain lines);
-    /// in the token already; not run as administrator; a grant that failed; the refusals of the target (no type, an unknown type, no name,
-    /// two targets: nothing called), a type that doesn't fit (qualified and not), a domain's name, nothing found, `local\`, two found, a
-    /// lookup that failed, run as administrator or not; and the removal: from the account, from a group, of nothing (a group of the
-    /// account's holding it named), failed, not run as administrator. No test reads or changes the policy.
+    /// name, to a target while the account holds it (in its token and the policy: the target's grant all the same); held already by the
+    /// target, and with no target by the account or a group of it (the sign-in, with the UAC and domain lines); in the token already; not
+    /// run as administrator; a grant that failed; the refusals of the target (no type, an unknown type, no name, two targets: nothing
+    /// called), a type that doesn't fit (qualified and not), a domain's name, nothing found, `local\`, two found, a lookup that failed, run
+    /// as administrator or not; and the removal: from the account, from a group, of nothing (a group of the account's holding it named;
+    /// a target that doesn't hold it, the account holding it or not: no removal called), failed, not run as administrator. No test reads
+    /// or changes the policy.
     #[test]
     fn the_commands_say_what_they_did() {
         let owner = || found(r"PC\owner", SidTypeUser, "S-1-5-21-1-2-3-1001");
@@ -914,6 +929,8 @@ mod tests {
             ("granted to a broad group", Change::Grant, &["group:users"], StandIn { found: Ok(vec![users()]), ..machine() }),
             ("granted to a group the account isn't in", Change::Grant, &[r"Group:CORP\witches"],
                 StandIn { found: Ok(vec![corp_witches()]), ..machine() }),
+            ("granted to a target, the account holding it in its token and the policy", Change::Grant, &[r"Group:CORP\witches"],
+                StandIn { found: Ok(vec![corp_witches()]), in_token: true, holders: vec!["S-1-5-21-1-2-3-1001"], ..machine() }),
             ("granted to a service account, by User:", Change::Grant, &[r"User:NT SERVICE\MSSQLSERVER"],
                 StandIn { found: Ok(vec![found(r"NT SERVICE\MSSQLSERVER", SidTypeWellKnownGroup, "S-1-5-80-1-2-3-4-5")]), ..machine() }),
             ("granted to a SID Windows can't name", Change::Grant, &["Group:S-1-5-21-9-9-9-1234"],
@@ -956,6 +973,8 @@ mod tests {
             ("nothing to remove, a group holding it", Change::Remove, &[], StandIn { holders: vec!["S-1-5-32-544"], ..machine() }),
             ("nothing to remove from the target", Change::Remove, &["Group:Administrators"],
                 StandIn { found: Ok(vec![admins()]), ..machine() }),
+            ("nothing to remove from the target, the account holding it", Change::Remove, &[r"Group:CORP\witches"],
+                StandIn { found: Ok(vec![corp_witches()]), in_token: true, holders: vec!["S-1-5-21-1-2-3-1001"], ..machine() }),
             ("the removal failed", Change::Remove, &[], StandIn {
                 holders: vec!["S-1-5-21-1-2-3-1001"],
                 change: Err("LsaRemoveAccountRights: Access is denied. (5, NTSTATUS 0xC0000022)".to_string()),
