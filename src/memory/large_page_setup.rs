@@ -452,6 +452,11 @@ fn sign_in(out: &mut dyn Write, me: &Me) -> io::Result<()> {
 /// `--setup-large-pages`: the diagnostic, the target, then, run as administrator, the grant: to the target, or with none to the account
 /// TMR runs as unless the policy gives it to the account or one of its groups already. The closing check as before.
 fn grant(program: &str, target: Option<Account>, machine: &mut dyn Machine, out: &mut dyn Write) -> io::Result<RunStatus> {
+    // With a target, the diagnostic and the closing check are this sign-in's, not the target's: say so (the owner, 2026-11-03)
+    let targeted = target.is_some();
+    if targeted {
+        writeln!(out, "🔎 First, this sign-in's own large pages (the account TMR runs as); the grant to the target follows")?;
+    }
     writeln!(out, "{}", machine.diagnostic())?;
     if let Some(account) = &target {
         target_line(out, account)?;
@@ -496,15 +501,21 @@ fn grant(program: &str, target: Option<Account>, machine: &mut dyn Machine, out:
         },
         Some(account) => grant_to(program, &account, &me, &holders, machine, out)?,
     };
-    match machine.closing_check() {
-        Ok(()) => {
+    match (machine.closing_check(), targeted) {
+        (Ok(()), false) => {
             writeln!(out, "\n🎉 SUCCESS: Large pages are now enabled and working!")?;
             writeln!(out, "You can now run TMR for optimal performance.")?;
         }
-        Err(e) => {
+        (Err(e), false) => {
             writeln!(out, "\n⚠️  Large pages are still not available: {}", e)?;
-            writeln!(out, "TMR will still work but will use standard pages.")?;
-            writeln!(out, "Sign out and back in (or restart Windows) if it was just granted.")?;
+            writeln!(out, "Sign out and back in (or restart Windows) if it was just granted; until then TMR asks before running on")?;
+            writeln!(out, "standard 4 KiB pages.")?;
+        }
+        (Ok(()), true) => {
+            writeln!(out, "\nℹ️  This sign-in (the account TMR runs as) can use large pages; that is about it, not the target")?
+        }
+        (Err(e), true) => {
+            writeln!(out, "\nℹ️  This sign-in (the account TMR runs as) can't use large pages: {e}. That is about it, not the target")?
         }
     }
     Ok(status)

@@ -9,8 +9,8 @@
 🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
 
 ⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+Sign out and back in (or restart Windows) if it was just granted; until then TMR asks before running on
+standard 4 KiB pages.
 [calls: diagnostic, me, holders Grant, change Grant S-1-5-21-1-2-3-1001, closing check]
 
 ## granted to the account, an administrator under UAC on a domain PC: Passed
@@ -26,14 +26,15 @@ Sign out and back in (or restart Windows) if it was just granted.
    This PC is in a domain: a domain Group Policy that sets this right replaces a local grant
 
 ⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+Sign out and back in (or restart Windows) if it was just granted; until then TMR asks before running on
+standard 4 KiB pages.
 [calls: diagnostic, me, holders Grant, change Grant S-1-5-21-1-2-3-1001, closing check]
 
 ## granted to a group: Passed
 🔧 TMR Large Page Setup Tool
 =============================
 
+🔎 First, this sign-in's own large pages (the account TMR runs as); the grant to the target follows
 <the large-page check's report>
 
 🎯 Target: BUILTIN\Administrators (a group)
@@ -41,15 +42,14 @@ Sign out and back in (or restart Windows) if it was just granted.
 
 🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
 
-⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+ℹ️  This sign-in (the account TMR runs as) can't use large pages: SeLockMemoryPrivilege not assigned to current user. That is about it, not the target
 [calls: find Administrators, diagnostic, me, holders Grant, change Grant S-1-5-32-544, closing check]
 
 ## granted to a broad group: Passed
 🔧 TMR Large Page Setup Tool
 =============================
 
+🔎 First, this sign-in's own large pages (the account TMR runs as); the grant to the target follows
 <the large-page check's report>
 
 🎯 Target: BUILTIN\Users (a group)
@@ -58,15 +58,14 @@ Sign out and back in (or restart Windows) if it was just granted.
 
 🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
 
-⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+ℹ️  This sign-in (the account TMR runs as) can't use large pages: SeLockMemoryPrivilege not assigned to current user. That is about it, not the target
 [calls: find users, diagnostic, me, holders Grant, change Grant S-1-5-32-545, closing check]
 
 ## granted to a group the account isn't in: Passed
 🔧 TMR Large Page Setup Tool
 =============================
 
+🔎 First, this sign-in's own large pages (the account TMR runs as); the grant to the target follows
 <the large-page check's report>
 
 🎯 Target: CORP\witches (a group)
@@ -74,15 +73,14 @@ Sign out and back in (or restart Windows) if it was just granted.
 
 🔄 It takes effect at the next sign-in of each account it reaches
 
-⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+ℹ️  This sign-in (the account TMR runs as) can't use large pages: SeLockMemoryPrivilege not assigned to current user. That is about it, not the target
 [calls: find CORP\witches, diagnostic, me, holders Grant, change Grant S-1-5-21-7-8-9-1111, closing check]
 
 ## granted to a target, the account holding it in its token and the policy: Passed
 🔧 TMR Large Page Setup Tool
 =============================
 
+🔎 First, this sign-in's own large pages (the account TMR runs as); the grant to the target follows
 <the large-page check's report>
 
 🎯 Target: CORP\witches (a group)
@@ -90,14 +88,14 @@ Sign out and back in (or restart Windows) if it was just granted.
 
 🔄 It takes effect at the next sign-in of each account it reaches
 
-🎉 SUCCESS: Large pages are now enabled and working!
-You can now run TMR for optimal performance.
+ℹ️  This sign-in (the account TMR runs as) can use large pages; that is about it, not the target
 [calls: find CORP\witches, diagnostic, me, holders Grant, change Grant S-1-5-21-7-8-9-1111, closing check]
 
 ## granted to a service account, by User:: Passed
 🔧 TMR Large Page Setup Tool
 =============================
 
+🔎 First, this sign-in's own large pages (the account TMR runs as); the grant to the target follows
 <the large-page check's report>
 
 🎯 Target: NT SERVICE\MSSQLSERVER (a user)
@@ -105,15 +103,14 @@ You can now run TMR for optimal performance.
 
 🔄 It takes effect at the next sign-in of each account it reaches
 
-⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+ℹ️  This sign-in (the account TMR runs as) can't use large pages: SeLockMemoryPrivilege not assigned to current user. That is about it, not the target
 [calls: find NT SERVICE\MSSQLSERVER, diagnostic, me, holders Grant, change Grant S-1-5-80-1-2-3-4-5, closing check]
 
 ## granted to a SID Windows can't name: Passed
 🔧 TMR Large Page Setup Tool
 =============================
 
+🔎 First, this sign-in's own large pages (the account TMR runs as); the grant to the target follows
 <the large-page check's report>
 
 🎯 Target: S-1-5-21-9-9-9-1234 (a group)
@@ -121,24 +118,21 @@ Sign out and back in (or restart Windows) if it was just granted.
 
 🔄 It takes effect at the next sign-in of each account it reaches
 
-⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+ℹ️  This sign-in (the account TMR runs as) can't use large pages: SeLockMemoryPrivilege not assigned to current user. That is about it, not the target
 [calls: find S-1-5-21-9-9-9-1234, diagnostic, me, holders Grant, change Grant S-1-5-21-9-9-9-1234, closing check]
 
 ## held already by the target: Passed
 🔧 TMR Large Page Setup Tool
 =============================
 
+🔎 First, this sign-in's own large pages (the account TMR runs as); the grant to the target follows
 <the large-page check's report>
 
 🎯 Target: BUILTIN\Administrators (a group)
 ✅ BUILTIN\Administrators has it already in the security policy: nothing to grant
 🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
 
-⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+ℹ️  This sign-in (the account TMR runs as) can't use large pages: SeLockMemoryPrivilege not assigned to current user. That is about it, not the target
 [calls: find Administrators, diagnostic, me, holders Grant, closing check]
 
 ## held already by the account, no target: Passed
@@ -151,8 +145,8 @@ Sign out and back in (or restart Windows) if it was just granted.
 🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect
 
 ⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+Sign out and back in (or restart Windows) if it was just granted; until then TMR asks before running on
+standard 4 KiB pages.
 [calls: diagnostic, me, holders Grant, closing check]
 
 ## held already through a group, no target, under UAC on a domain PC: Passed
@@ -167,8 +161,8 @@ Sign out and back in (or restart Windows) if it was just granted.
    This PC is in a domain: a domain Group Policy that sets this right replaces a local grant
 
 ⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+Sign out and back in (or restart Windows) if it was just granted; until then TMR asks before running on
+standard 4 KiB pages.
 [calls: diagnostic, me, holders Grant, closing check]
 
 ## in the token already: Passed
@@ -196,6 +190,7 @@ You can now run TMR for optimal performance.
 🔧 TMR Large Page Setup Tool
 =============================
 
+🔎 First, this sign-in's own large pages (the account TMR runs as); the grant to the target follows
 <the large-page check's report>
 
 🎯 Target: PC\owner (a user)
@@ -206,6 +201,7 @@ You can now run TMR for optimal performance.
 🔧 TMR Large Page Setup Tool
 =============================
 
+🔎 First, this sign-in's own large pages (the account TMR runs as); the grant to the target follows
 <the large-page check's report>
 
 🎯 Target: BUILTIN\Administrators (a group)
@@ -218,9 +214,7 @@ You can now run TMR for optimal performance.
 4. Add BUILTIN\Administrators
 5. Sign out and back in (or restart Windows)
 
-⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+ℹ️  This sign-in (the account TMR runs as) can't use large pages: SeLockMemoryPrivilege not assigned to current user. That is about it, not the target
 [calls: find Administrators, diagnostic, me, holders Grant, change Grant S-1-5-32-544, closing check]
 
 ## no type: NotRun
@@ -315,6 +309,7 @@ Sign out and back in (or restart Windows) if it was just granted.
 🔧 TMR Large Page Setup Tool
 =============================
 
+🔎 First, this sign-in's own large pages (the account TMR runs as); the grant to the target follows
 <the large-page check's report>
 
 🎯 Target: PC\witches (a group)
@@ -322,9 +317,7 @@ Sign out and back in (or restart Windows) if it was just granted.
 
 🔄 It takes effect at the next sign-in of each account it reaches
 
-⚠️  Large pages are still not available: SeLockMemoryPrivilege not assigned to current user
-TMR will still work but will use standard pages.
-Sign out and back in (or restart Windows) if it was just granted.
+ℹ️  This sign-in (the account TMR runs as) can't use large pages: SeLockMemoryPrivilege not assigned to current user. That is about it, not the target
 [calls: find witches, diagnostic, me, holders Grant, change Grant S-1-5-21-1-2-3-1010, closing check]
 
 ## the lookup failed: NotRun
