@@ -430,7 +430,7 @@ A timeout also returns, which is the window's 2 Hz clock (Reactor 0.100.0 has no
 - **Replaces:** report_final_summary and '💾 Results saved: {path}' (runner.rs:4842), printed once, so bench_ab.py:54 and 76 keep matching
 
 ### SessionEnd (session::run's return value)
-- **Fields:** Ran{status, elapsed, plan_only} | RestartChosen | Stopped(UnknownFlags(Vec<String>) | Invalid(String) | MemoryOverride{spec, error} | CpuSelection(String)) | Command; Err(e) stays the ? path
+- **Fields:** Ran{status, elapsed, plan_only} | RestartChosen | Stopped(UnknownFlags(Vec<String>) | Invalid(String) | CpuSelection(String)) | Command; Err(e) stays the ? path. Stopped's MemoryOverride{spec, error} (a memory= that couldn't override the config's) was removed on 2026-11-03: memory= is refused when the arguments are parsed (31d510c), as Invalid
 - **Emitted at:** S4, where cli.rs exits or returns today: 264, 437, 511, 764, 831, 351-427, 1094-1117
 - **Replaces:** the run-path process::exit sites (cli.rs:124, 264, 356, 363, 373, 437, 511, 764, 1116, 1366, 1393). 113 and 969 stay in the bin/CLI. Each text keeps its stream: stdout at 256-263 and 510; stderr for 'Error: ' plus the FILE_ONLY record (122-123), 436 and 763. The verdict (1096-1112) and exit codes move to the CLI
 

@@ -502,10 +502,6 @@ fn session_ends_print_as_their_golden() {
             )),
         ),
         (
-            "an invalid memory override",
-            SessionEnd::Stopped(Stopped::MemoryOverride { spec: "lots".to_string(), error: "Invalid memory format: lots".to_string() }),
-        ),
-        (
             "CPUs that can't be selected, on stderr",
             SessionEnd::Stopped(Stopped::CpuSelection("cpus=8 asks for 8 threads, but only 6 CPUs are available".to_string())),
         ),

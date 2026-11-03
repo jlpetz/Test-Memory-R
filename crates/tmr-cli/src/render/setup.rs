@@ -351,9 +351,6 @@ fn end_text(end: &SessionEnd, program: &str) -> String {
             let _ = tmr::commands::help(&mut help, program);
             text += &String::from_utf8_lossy(&help);
         }
-        SessionEnd::Stopped(Stopped::MemoryOverride { spec, error }) => {
-            let _ = writeln!(text, "❌ Invalid memory override '{}': {}", spec, error);
-        }
         // On stderr (`show_end`)
         SessionEnd::Stopped(Stopped::Invalid(_) | Stopped::CpuSelection(_)) => {}
         SessionEnd::RestartChosen | SessionEnd::Command(_) => {}

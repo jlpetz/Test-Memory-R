@@ -1046,7 +1046,6 @@ fn stopped(why: &Stopped) -> String {
         Stopped::UnknownFlags(flags) => format!("Unknown parameter(s): {}", flags.join(" ")),
         // The parser's, its first line without the console's glyph: the second is `--help`'s hint
         Stopped::Invalid(e) => e.trim_start_matches("❌ ").lines().next().unwrap_or_default().to_string(),
-        Stopped::MemoryOverride { spec, error } => format!("Invalid memory override '{spec}': {error}"),
         Stopped::CpuSelection(e) => format!("CPU selection error: {e}"),
     }
 }
@@ -1641,8 +1640,6 @@ mod tests {
             end(Ok(SessionEnd::Stopped(Stopped::Invalid(invalid)))),
             (stopped.clone(), "Invalid value for cycles: 'x' (must be a number)".to_string())
         );
-        let memory = Stopped::MemoryOverride { spec: "lots".to_string(), error: "not a size".to_string() };
-        assert_eq!(end(Ok(SessionEnd::Stopped(memory))), (stopped.clone(), "Invalid memory override 'lots': not a size".to_string()));
         assert_eq!(
             end(Ok(SessionEnd::Stopped(Stopped::CpuSelection("8 threads asked, 6 available".to_string())))),
             (stopped.clone(), "CPU selection error: 8 threads asked, 6 available".to_string())

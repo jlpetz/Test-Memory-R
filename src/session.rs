@@ -46,8 +46,6 @@ pub enum Stopped {
     UnknownFlags(Vec<String>),
     /// A parameter it can't take, and why (`params::parse_and_validate_args`)
     Invalid(String),
-    /// A `memory=` that can't override the config's, and why
-    MemoryOverride { spec: String, error: String },
     /// The CPUs asked for can't be selected (`cpu_selection::calculate_thread_allocation`)
     CpuSelection(String),
 }
@@ -278,7 +276,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     } else {
         // Build config from validated command-line parameters
         let (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config) =
-            build_config_from_validated_params(&validated_params, fe.as_ref())?;
+            build_config_from_validated_params(&validated_params, fe.as_ref());
         (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config, None)
     };
 
@@ -321,15 +319,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
                 }
                 "memory" => {
                     if let params::ParamValue::String(memory_str) = value {
-                        match parse_enhanced_memory_parameter(memory_str) {
-                            Ok(strategy) => {
-                                enhanced_memory_strategy = strategy;
-                                log::debug!("CLI override: enhanced_memory_strategy");
-                            }
-                            Err(e) => {
-                                return Ok(SessionEnd::Stopped(Stopped::MemoryOverride { spec: memory_str.clone(), error: e }));
-                            }
-                        }
+                        enhanced_memory_strategy = parse_enhanced_memory_parameter(memory_str);
+                        log::debug!("CLI override: enhanced_memory_strategy");
                     }
                 }
                 "cpus" => {
@@ -804,9 +795,7 @@ type ParsedRunConfig = (EnhancedMemoryStrategy, ErrorMode, TestSuiteTiming, Stri
 
 /// Build configuration from validated parameters (using centralized registry). What the allocation and pinning parameters set goes to `fe`,
 /// once they are read.
-fn build_config_from_validated_params(
-    validated: &HashMap<String, params::ParamValue>, fe: &dyn Frontend,
-) -> Result<ParsedRunConfig, String> {
+fn build_config_from_validated_params(validated: &HashMap<String, params::ParamValue>, fe: &dyn Frontend) -> ParsedRunConfig {
     // Extract basic string parameters with defaults
     let cputype = params::get_string(validated, "cputype", "threads");
     let cpus = params::get_string(validated, "cpus", "100%");
@@ -831,7 +820,7 @@ fn build_config_from_validated_params(
 
     // Build memory strategy (requires special parsing)
     let enhanced_memory_strategy = if let Some(params::ParamValue::String(memory_str)) = validated.get("memory") {
-        parse_enhanced_memory_parameter(memory_str)?
+        parse_enhanced_memory_parameter(memory_str)
     } else {
         EnhancedMemoryStrategy::default()
     };
@@ -887,7 +876,7 @@ fn build_config_from_validated_params(
         fe.event(Setup::ParamNotes(notes).into());
     }
 
-    Ok((enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config))
+    (enhanced_memory_strategy, error_mode, suite_timing, cputype, cpus, pinning_config, alloc_config)
 }
 
 /// What the large-page question decided (`settle_large_pages`).
@@ -924,11 +913,11 @@ fn settle_large_pages(
     }
 }
 
-/// Parse enhanced memory parameter with clear reserve semantics
-fn parse_enhanced_memory_parameter(param: &str) -> Result<crate::memory::allocation_strategy::EnhancedMemoryStrategy, String> {
-    use crate::memory::allocation_strategy::{AllocationMode, EnhancedMemoryStrategy};
-
-    Ok(EnhancedMemoryStrategy { allocation_mode: AllocationMode::parse(param)? })
+/// The strategy a `memory=` asks for. Its value is one `params::parse_and_validate_args` took: that parser refuses what this
+/// `AllocationMode::parse` can't read, keeping the rest as given, so this one can't fail.
+fn parse_enhanced_memory_parameter(param: &str) -> EnhancedMemoryStrategy {
+    let allocation_mode = crate::memory::allocation_strategy::AllocationMode::parse(param).expect("memory= is checked when it is parsed");
+    EnhancedMemoryStrategy { allocation_mode }
 }
 
 #[cfg(test)]

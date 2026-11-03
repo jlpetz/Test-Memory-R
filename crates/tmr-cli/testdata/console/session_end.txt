@@ -171,7 +171,5 @@ Quick Usage Examples:
 ## an invalid parameter, on stderr
 ❌ Unknown parameter: colour
 💡 Run with --help to see all valid parameters
-## an invalid memory override
-❌ Invalid memory override 'lots': Invalid memory format: lots
 ## CPUs that can't be selected, on stderr
 ❌ CPU selection error: cpus=8 asks for 8 threads, but only 6 CPUs are available
