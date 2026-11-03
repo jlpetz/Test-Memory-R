@@ -142,3 +142,10 @@ sets list every CPU and a core's CPUs share their L3 group and priority.
 
 Still to check on hardware: that Windows on the m8a.4xlarge reports its two L3 groups (the start-up table's L3 Group
 column, `--startup-debug` shows it without a run), and the desktops' order against their priorities.
+
+## 2026-11-03: checked on hardware, closed
+
+The start-up CPU table of every host in the campaign (a5de854) matched its priorities: the 8600G (3 2 1 4 0 4) put threads
+on cores 3, 5, 0, 1, 2, 4; the 5700X (1 6 3 5 6 2 0 4) on 1, 4, 3, 7, 2, 5, 0, 6; the 8500G (1 0 0 0 1 0) on its Zen 4
+cores 0 and 4 first. The 2-socket EPYC (m8a.metal-48xl: 192 cores, 2 nodes, 24 L3 groups, all priorities 0) put its first
+24 threads one in each L3 group, alternating the nodes, 96 a node.

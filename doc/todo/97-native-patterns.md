@@ -453,3 +453,18 @@ and 54% (5700X) of the forward ones: nearly every access opens a row.
   nothing on the command line sets `skip_init` (the review of 2026-10-16).
 - **The SIMD Refresh** still flushes only on request. Whether its verify reads cache needs a
   measurement first (the plan's research list).
+
+## 2026-11-03: the long run, closed
+
+On petz007 (8600G, DDR5-6000), a5de854, six 20-minute slots from 16:56, this build in slots 1, 3, 4 and 6 (forward,
+reverse, reverse, forward step order) and the 10-11 build (r3, il.json) in 2 and 5, all `memory=50% cputype=cores cpus=100%
+skip-cores=0`:
+- **Bit 31, the read fault:** 437 checks, all in this build's slots 1 and 4, in two bursts (2.7-9.7 min and 75.6-85.2 min
+  into the session), never stored wrong (every reread right after a flush). r3 found no bit 31 (4 checks on bit 39, unaddressed).
+  So no regression: this build found it where r3 didn't.
+- **By family:** switch, quiet and m30 found 79% of the checks with about 25% of the step time; header, which led on 10-16,
+  found almost none. The ranking flips between sessions, so no family is dropped.
+- **A second fault, stored:** a bit 8/9 pair at one physical place (the same offset in a 1 GiB page as on 10-11), both bits
+  wrong at once in opposite directions, still wrong after a flush, in slots 3, 4 and 6: caught by the seal and the page
+  exchange's own checks, not by SimpleV2's.
+- **The control:** daddy-petz (5700X, DDR4), six slots of the same configs, 0 errors.
