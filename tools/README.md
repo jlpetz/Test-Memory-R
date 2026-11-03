@@ -5,7 +5,26 @@ made a test faster, and whether a change meant to move code left the kernels' in
 console's text as they were. The first two came out of TODO 99, and the rules they check are Rule 6
 of `doc/simd_codegen_rules.md`; the last two came with TODO 29's engine/presentation split. Keep
 them working when the code they read changes (a new test module, a new results field, a new line on
-the console), and add to them when a round finds a new trap.
+the console), and add to them when a round finds a new trap. `ci_local.py` is the other kind: CI's
+own checks, run here first.
+
+## `ci_local.py`: CI's steps, here, before a push
+
+Runs the steps of `.github/workflows/Rust-nightly-build.yml` with its own commands, read from the
+file in its order, so a failure shows here before CI's (the owner, 2026-11-03: like for like). A step
+whose `run:` is one `cargo` command runs; the rest (the checkout, the toolchain, the cache, the tool
+installs, PowerShell blocks) are listed as skipped. It stops at the first failure, as CI does.
+
+```
+python tools/ci_local.py              # fmt, clippy x3, the release build, nextest, audit
+python tools/ci_local.py --release    # release.yml's build job: --locked, the publish dry run
+python tools/ci_local.py --list       # what each would run
+```
+
+It needs CI's tools: `cargo install --locked cargo-nextest cargo-audit` (and cargo-about, for
+release.yml's notices, which it doesn't run). nextest runs each test in a process of its own, where
+`cargo test` runs a crate's tests as threads of one process, so a test that leans on another's
+process state passes one way only: the like-for-like run is nextest's.
 
 ## `hot_loop_spills.py`: what the hot loops do that they shouldn't
 
