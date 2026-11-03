@@ -209,3 +209,16 @@ each checked by a skeptic), then the owner's answers:
   text, the CLI's (`commands::run` takes it as `text`, `tmr_cli::transcript`). No log file, no
   `Results saved:` line; exit 0, or 2 with the reason when the file doesn't load. The goldens:
   `testdata/console/show_results_heads.txt` (every ending) and the CLI's `show_results.txt`.
+
+## 2026-11-03: checked live, closed
+
+On the dev box (the owner's go-ahead), the release exe of a9e70aa, `--quick-test cycles=2 memory=50% cputype=cores cpus=100%
+skip-cores=0`, `TMR_HOME` a scratch folder:
+
+- **Run 1, to its end (8:21).** After cycle 1 its file read `in_progress` true, no outcome, cycles 1; `metadata.run_id` equal to the
+  log header's `# run id:`; the build a9e70aa, clean, release; 11 plan entries with `test`, `label` and `parameter`; unrounded figures
+  (43432.859... MiB/s); thread records with CPU, core and node. At the end: `in_progress` false, completed, passed, 2 cycles.
+- **`--show-results` on it**: "The run finished: passed, 2 cycles", then the final summary identical to the console's, 46 lines.
+- **Run 2, killed** (`taskkill /F`) after its first save: "The run never finished: it was killed or crashed, unless it is still
+  running; its figures are up to its last saved cycle, 1".
+- **`--compare-results` of the two**: "Plan Changes: none, the same 11 steps in both", the mid-run save flagged, each step matched.
