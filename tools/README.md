@@ -13,12 +13,15 @@ own checks, run here first.
 Runs the steps of `.github/workflows/Rust-nightly-build.yml` with its own commands, read from the
 file in its order, so a failure shows here before CI's (the owner, 2026-11-03: like for like). A step
 whose `run:` is one `cargo` command runs; the rest (the checkout, the toolchain, the cache, the tool
-installs, PowerShell blocks) are listed as skipped. It stops at the first failure, as CI does.
+installs, PowerShell blocks) are listed as skipped. It stops at the first failure, as CI does. A full run that
+passes keeps its release exe in `../builds/<commit>/`, for live checks and deploys (the owner,
+2026-11-03: build once a batch).
 
 ```
 python tools/ci_local.py              # fmt, clippy x3, the release build, nextest, audit
 python tools/ci_local.py --release    # release.yml's build job: --locked, the publish dry run
 python tools/ci_local.py --list       # what each would run
+python tools/ci_local.py --quick      # a change's check: fmt, clippy x3, nextest (about a minute)
 ```
 
 It needs CI's tools: `cargo install --locked cargo-nextest cargo-audit` (and cargo-about, for
