@@ -28,7 +28,7 @@ So ordering by it costs nothing on uniform parts and puts the 8500G's Zen 4 core
 core mislabelled E. The boost order is fixed for a boot (the owner, 2026-10-28), so it doesn't move
 between runs of one boot.
 
-## How CPUs are picked today (`src/cpu_selection.rs`, `src/session.rs:426-533`)
+## How CPUs were picked before the build (`src/cpu_selection.rs`, `src/session.rs:426-533` at 428b234)
 
 - The list is per physical core, in Windows' record order; each core's CPUs ascend (`cpu_topology.rs`
   sorts by group*64+bit). `cputype=cores` takes each core's first CPU; `cputype=threads` takes the
@@ -78,9 +78,67 @@ different cores.
    the selection (`cpu_selection.rs`) and the start-up table (`cpu_topology.rs:660-705`). One
    ordered list should replace them.
 
-## To find out first
+## Core 0 and Windows: measured (2026-11-03)
 
-Core 0 and Windows: does CPU 0 take most of the interrupt and DPC work on these desktops? If it
-does, leaving core 0 free may matter more than leaving the weakest core free, and step 4 would keep
-the skip at core 0. Per-CPU interrupt and DPC time while idle and under a TMR run (perfmon's
-Processor counters, or `xperf`) answers it.
+The question that decided step 4: does CPU 0 take most of Windows' interrupt and DPC work? Measured on the three
+desktops, idle, with perfmon's per-CPU `% Interrupt Time`, `% DPC Time` and `Interrupts/sec` over 30 s: it doesn't,
+on any of them.
+
+| Host | CPU | What carries the interrupts |
+|---|---|---|
+| petz007 | 8600G | CPU 10 the busiest, about 1,150/s; CPU 0 149/s |
+| daddy-petz | 5700X | spread over all 16 CPUs, 600-1,150/s each |
+| desktop-v6v7goc | 8500G | CPUs 1 and 9 the busiest |
+
+So `skip-cores=N` and `N%` drop the weakest cores from the end of the ranked order, as planned, not core 0.
+
+## What was built (2026-11-03)
+
+One ordered list (`cpu_selection.rs`) replaces the three copies of the skip order (bug 6): `choose` ranks the cores,
+leaves the skip out, counts what's left, and picks the threads; the session's count, the selection and the start-up
+table (`startup_topology`) all read its `Choice`. Pure functions over `Core`s (`cores` builds them from the topology),
+tested on made-up topologies (`synthetic`).
+
+- **The order** (`rank`): by core type first (performance, then efficiency, the higher class first, then unknown),
+  then within each L3 group by priority, highest first, ties by core number, the groups interleaved. The groups take
+  their turns by their lowest core, alternating NUMA nodes (each node's first group, then each node's second), so a
+  count short of a whole round still splits evenly over the nodes (30 threads on the 48xlarge: 15 and 15). That last
+  part is the build's choice: the plan said only "interleave the groups".
+- **The signals**: `CpuTopologyInfo` gains `priority` (SchedulingClass) and `l3` ((processor group,
+  LastLevelCacheIndex), as the index is group-relative), both from one `GetSystemCpuSetInformation` read in
+  `detect_cpu_topology`; `core_priorities` reads the field. A core's priority is the highest of its CPUs', its L3 its
+  first CPU's.
+- **Core types**: the type comes before the priority. On the 8500G `core-priority=hybrid` types by priority, so the
+  order and the choice are the same with it or without (tested): it only labels. That holds on a part with one L3, as
+  the Phoenix 2 parts it is for have; on one with several (a 7950X given it by mistake), each type takes its own turns,
+  so the top-priority cores come first instead of the L3s alternating from the start. With types from the efficiency
+  class or AMD's CPUID, performance cores first as before, and a Zen 5 + Zen 5c part's two L3s don't interleave the
+  types. The 8500G's warning is an info line now (`detect_cpu_topology_auto`).
+- **`skip-cores=`** (`SkipSpec`, also the parameter's parser): `N` and `N%` from the end of the order, `N%` of the
+  cores under either cputype (bug 2), never every core; `A-B` core numbers. A count of at least the cores, or a range
+  over all of them, stops the run with an error (bug 1).
+- **`cpus=`** (`thread_count`): in u128, so `cpus=4294967295%` doesn't overflow; `0` and `0%` one thread, over 100%
+  all, as before.
+- **`cpu-stride=`**: given, the pool is what the skip leaves, by core number, spaced as before; unset (the config's
+  `stride_spec` is an `Option` now) the ranked order. With core types it applies the same way (bug 3), one code path
+  for both: the type order gives way to core numbers once a stride is asked for. The skip is the ranked order's
+  under a stride too, so `skip-cores=1 cpu-stride=2` leaves out the weakest core, not the last by number.
+- **Threads a core** (bug 5): the most the choice put on one core, so `cputype=threads cpus=50%` on SMT doesn't halve
+  the cache-sized extents.
+- **The start-up screen** (bug 4): `ParamNote::SkipCores` carries the value as given; the selection's line names the
+  cores left out ("Skipping core 5, the last in the core order (skip-cores=1), ..."), so `Setup::CpuFilter` went; the
+  table marks a range's cores Skipped, and gains OS Priority and L3 Group columns (numbered from the lowest core up)
+  and a last line saying how the threads were ordered, one row a CPU as before. The window's Threads tab shows the
+  same table.
+- Docs: `--help`, `doc/test_parameters.md` (a CPU selection section), `dist/docs/guide.md`; the remote-memory warning
+  no longer says to spread the threads with `cpu-stride=even`.
+
+Tests (`cpu_selection::tests`): the desktops' priority vectors, the all-zero server, the m8a.4xlarge (2 L3 groups in
+one node: `cpus=50%` 4 + 4), the m8a.48xlarge (2 nodes of 12 groups of 8: 4 a group, 48 a node), SMT on and off,
+every skip and `cpus=` form, `cpu-stride=`, core types, each bug as a regression test, and the count, choice and table
+agreeing over a matrix of machines and settings. The CLI's goldens render the table from the selection's own code
+(`test_support::hybrid_cpu_topology_report`, `two_l3_cpu_topology_report`). On the machine running the tests, the CPU
+sets list every CPU and a core's CPUs share their L3 group and priority.
+
+Still to check on hardware: that Windows on the m8a.4xlarge reports its two L3 groups (the start-up table's L3 Group
+column, `--startup-debug` shows it without a run), and the desktops' order against their priorities.

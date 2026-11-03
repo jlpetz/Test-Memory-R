@@ -1,0 +1,24 @@
+[1m📊 CPU Topology and Thread Assignment[0m
+-----------------------------------------------------------------------------------------------------------------------------
+Logical CPU  Physical Core     Type     OS Priority    L3 Group   Threads     NUMA Node     SMT        Status     Thread ID  
+-----------------------------------------------------------------------------------------------------------------------------
+          0              0    P-core              0           0      1                0      No       Assigned            0  
+          1              1    P-core              0           0      1                0      No       Assigned            2  
+          2              2    P-core              0           0      1                0      No       Assigned            4  
+          3              3    P-core              0           0      1                0      No       Assigned            6  
+          4              4    P-core              0           0      1                0      No      Available            -  
+          5              5    P-core              0           0      1                0      No      Available            -  
+          6              6    P-core              0           0      1                0      No      Available            -  
+          7              7    P-core              0           0      1                0      No      Available            -  
+          8              8    P-core              0           1      1                0      No       Assigned            1  
+          9              9    P-core              0           1      1                0      No       Assigned            3  
+         10             10    P-core              0           1      1                0      No       Assigned            5  
+         11             11    P-core              0           1      1                0      No       Assigned            7  
+         12             12    P-core              0           1      1                0      No      Available            -  
+         13             13    P-core              0           1      1                0      No      Available            -  
+         14             14    P-core              0           1      1                0      No      Available            -  
+         15             15    P-core              0           1      1                0      No       Skipped             -  
+-----------------------------------------------------------------------------------------------------------------------------
+Total: 16 logical CPUs, 16 physical cores
+Assigned: 8, Available: 7, Skipped: 1
+Thread order: by OS Priority (highest first, then core number) within an L3 Group, the groups in turn

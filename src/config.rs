@@ -97,29 +97,25 @@ pub struct SystemConfig {
     pub thread_priority: Option<String>,
 }
 
-// Define CpuPinningConfig in config.rs
-//
-// CPU selection is a two-stage pipeline:
-//   Stage 1 FILTER  — `skip_spec` decides which cores are *eligible* (Skipped vs Available)
-//   Stage 2 SPACING — `cpus=` count + `stride_spec` decide which eligible cores get *Assigned*
-// `cpus=` percentages are relative to the post-filter Available pool, so any value <= 100%
-// is always valid — that keeps configs portable across 4/6/8/16-core machines.
+// The CPU selection's settings (`cpu_selection`, TODO 108): the cores ranked, `skip_spec` leaving some out, then `cpus=` (the
+// `cpu_config`'s share) from the front of the rest, or by core number at `stride_spec`'s spacing when it is given. `cpus=` percentages
+// are relative to the cores left, so any value <= 100% is always valid: that keeps configs portable across 4/6/8/16-core machines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CpuPinningConfig {
     pub enable_pinning: bool,
-    /// Resolved count of leading cores to skip. Kept for back-compat with existing JSON configs and the topology display; derived from
-    /// `skip_spec` when that is set.
+    /// Read by nothing: `skip_spec` decides (TODO 108). Kept so the JSON configs that have it still load.
     #[serde(default = "default_cpus_to_skip")]
     pub cpus_to_skip: usize,
     #[serde(default = "default_avoid_smt_doubling")]
     pub avoid_smt_doubling: bool,
-    /// Stage 1 filter spec: "N" | "N%" | "A-B" (inclusive core-id range to exclude).
+    /// `skip-cores=`: "N" (the last N cores in the order) | "N%" (a share of the cores, from the end) | "A-B" (the cores numbered A-B).
     #[serde(default = "default_skip_spec")]
     pub skip_spec: String,
-    /// Stage 2 spacing spec: "1" (packed) | "N" (every Nth) | "even" (spread across pool).
-    #[serde(default = "default_stride_spec")]
-    pub stride_spec: String,
+    /// `cpu-stride=`, when given: the cores by number, spaced "1" (packed) | "N" (every Nth) | "even" (spread over them); unset, the
+    /// ranked order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stride_spec: Option<String>,
 }
 
 fn default_cpus_to_skip() -> usize {
@@ -129,9 +125,6 @@ fn default_avoid_smt_doubling() -> bool {
     false
 }
 fn default_skip_spec() -> String {
-    "1".to_string()
-}
-fn default_stride_spec() -> String {
     "1".to_string()
 }
 
@@ -250,13 +243,7 @@ impl MemoryAllocationConfig {
 
 impl Default for CpuPinningConfig {
     fn default() -> Self {
-        Self {
-            enable_pinning: true,
-            cpus_to_skip: 1,
-            avoid_smt_doubling: false,
-            skip_spec: default_skip_spec(),
-            stride_spec: default_stride_spec(),
-        }
+        Self { enable_pinning: true, cpus_to_skip: 1, avoid_smt_doubling: false, skip_spec: default_skip_spec(), stride_spec: None }
     }
 }
 
@@ -917,7 +904,7 @@ impl ModernConfig {
             ("minpage", "memory_allocation.min_page_size", sys.memory_allocation.min_page_size.as_str()),
             ("maxpage", "memory_allocation.max_page_size", sys.memory_allocation.max_page_size.as_str()),
             ("skip-cores", "cpu_pinning.skip_spec", sys.cpu_pinning.skip_spec.as_str()),
-            ("cpu-stride", "cpu_pinning.stride_spec", sys.cpu_pinning.stride_spec.as_str()),
+            ("cpu-stride", "cpu_pinning.stride_spec", sys.cpu_pinning.stride_spec.as_deref().unwrap_or("1")),
             ("seal", "seal", sys.seal.as_deref().unwrap_or("tmr")),
             ("seal-width", "seal_width", sys.seal_width.as_deref().unwrap_or("auto")),
             ("width", "width", sys.width.as_deref().unwrap_or("auto")),

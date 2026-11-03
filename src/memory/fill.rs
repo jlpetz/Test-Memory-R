@@ -416,7 +416,7 @@ pub(crate) fn warn_remote(who: &str, remote: &RemoteMemory) {
     log::warn!(
         "⚠️ {who}: {:.2} GiB of large-page memory is on another node ({}): those threads' own \
          nodes ran short, and they reach it over the socket link, slower. To keep it local, \
-         spread the threads (cpu-stride=even) or lower memory=",
+         lower memory=, or leave out cpu-stride= for the core order, which spreads the threads over the nodes",
         total as f64 / HUGE_PAGE_SIZE_USIZE as f64,
         pairs.join("; ")
     );

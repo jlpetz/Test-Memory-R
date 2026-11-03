@@ -4,7 +4,9 @@
 
 use std::fmt::Write as _;
 
-use tmr::frontend::{CacheCalibrationState, ErrorMode, MemoryStatus, ParamNote, RunStatus, SealCalibrationState, Selection, Setup};
+use tmr::frontend::{
+    CacheCalibrationState, ErrorMode, MemoryStatus, ParamNote, RunStatus, SealCalibrationState, Selection, Setup, core_list,
+};
 use tmr::session::{SessionEnd, Stopped};
 
 use super::{rendered, report_text};
@@ -55,7 +57,7 @@ pub(super) fn text(setup: &Setup) -> String {
                     ParamNote::MaxPage(page_str) => writeln!(text, "  Maximum Page Size: {}", page_str),
                     ParamNote::Block(key, v) => writeln!(text, "  {}: {}", key, v),
                     ParamNote::Topology(method) => writeln!(text, "  Topology Detection: {}", method),
-                    ParamNote::SkipCores(cpus_to_skip) => writeln!(text, "  CPU Pinning: Skipping first {} CPU(s)", cpus_to_skip),
+                    ParamNote::SkipCores(spec) => writeln!(text, "  CPU Pinning: skip-cores={}", spec),
                     ParamNote::PinningOff => writeln!(text, "  CPU Pinning: Disabled"),
                 };
             }
@@ -86,9 +88,6 @@ pub(super) fn text(setup: &Setup) -> String {
             } else {
                 let _ = writeln!(text, "  CPU Type: {}", cputype);
             }
-        }
-        Setup::CpuFilter { lo, hi } => {
-            let _ = writeln!(text, "  CPU Filter: excluding core id range {}-{} (Stage 1)", lo, hi);
         }
         Setup::CpuCount { percent, available, threads } => {
             let _ = writeln!(text, "  CPU Count: {}% of {} available = {} thread(s)", percent, available, threads);
@@ -227,7 +226,8 @@ fn selection_text(text: &mut String, selection: &Selection) {
         cputype,
         cpu_list,
         pinned,
-        cpus_to_skip,
+        skip,
+        skipped,
         avoid_smt_doubling,
         cycles,
         duration_secs,
@@ -248,8 +248,16 @@ fn selection_text(text: &mut String, selection: &Selection) {
     } else {
         let _ = writeln!(text, "  CPU Assignment: {:?} ⚠️ NUMA placement only, pinning is off", cpu_list);
     }
-    if *cpus_to_skip > 0 {
-        let _ = writeln!(text, "  Skipping first {} CPU(s) for system responsiveness", cpus_to_skip);
+    // The cores skip-cores= left out: from the end of the core order, or a range of core numbers (TODO 108)
+    if !skipped.is_empty() && skip.from_the_end() {
+        let _ = writeln!(
+            text,
+            "  Skipping {}, the last in the core order (skip-cores={}), for system responsiveness",
+            core_list(skipped),
+            skip
+        );
+    } else if !skipped.is_empty() {
+        let _ = writeln!(text, "  Skipping {} (skip-cores={})", core_list(skipped), skip);
     }
     if *avoid_smt_doubling {
         let _ = writeln!(text, "  Avoiding SMT doubling (using physical cores only)");

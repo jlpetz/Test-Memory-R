@@ -620,7 +620,7 @@ CLI (`params.rs`), all overridable from JSON:
 | `blkroundtarget=1GiB`, `blkround=up` | 1 | Round each thread's share to a multiple of this: `up` (default), `down` or `nearest`. Never past the reference figure: a smaller step instead, down to `largefloor`. A multiple of `largefloor`, no bigger than `hugechunk` / `largechunk` |
 | `largefloor=16MiB` | 1 | Smallest 2 MiB-page request (16 MiB–1 GiB): a refusal this small means the node is out of 2 MiB pages |
 | `hugechunk=1GiB`, `largechunk=128MiB` | 1 | First size of each 1 GiB / 2 MiB-page request, halved on refusal. Bigger means fewer OS calls on large machines and a coarser split. The commits merge, so the smaller 2 MiB default only costs calls, and spreads a node's 2 MiB shortfall over all its threads |
-| `cpus=50%`, `cputype=`, `skip-cores=`, `cpu-stride=` | 1 | Thread count → the divisor for `per_thread_target`. `cpu-stride=even` also spreads across CCDs/memory domains |
+| `cpus=50%`, `cputype=`, `skip-cores=`, `cpu-stride=` | 1 | Thread count → the divisor for `per_thread_target`. The core order spreads the threads across the L3s (CCDs, memory domains) and NUMA nodes (TODO 108); `cpu-stride=` takes them by core number instead |
 | `extent_mode` (JSON per test) | 2 | `full` / `cache` / `cache_total` / `absolute` |
 | `chunk_mode` (JSON per test) | 3 | `auto` / `whole` / `cache` / `cache_total` / `absolute` / `tm5_block` |
 | `channels=` (JSON `system.channels`) | test | Stride formula, same role as TM5 `Channels` |

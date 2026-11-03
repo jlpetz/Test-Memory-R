@@ -7,6 +7,7 @@
 
 use tmr::frontend::{
     CacheCalibrationState, ColumnAlignment, ErrorMode, MemoryModule, MemoryStatus, Run, SealCalibrationState, Selection, Setup, TableData,
+    core_list,
 };
 
 use crate::report::{Block, blocks};
@@ -31,7 +32,6 @@ impl Sections {
                 let smt = if *avoid_smt { ", physical cores only (avoiding SMT doubling)" } else { "" };
                 self.threads.push(text(format!("CPU type: {cputype}{smt}")));
             }
-            Setup::CpuFilter { lo, hi } => self.threads.push(text(format!("CPU filter: excluding cores {lo}-{hi}"))),
             Setup::CpuCount { percent, available, threads } => {
                 self.threads.push(text(format!("CPU count: {percent}% of {available} available = {threads} thread(s)")));
             }
@@ -124,8 +124,14 @@ fn selection_lines(s: &Selection) -> Vec<String> {
     let mut lines = vec![format!("Using {}/{} {} for testing", s.threads, s.available, s.cputype)];
     let unpinned = if s.pinned { "" } else { " (NUMA placement only: pinning is off)" };
     lines.push(format!("CPUs: {}{unpinned}", s.cpu_list.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")));
-    if s.cpus_to_skip > 0 {
-        lines.push(format!("Skipping the first {} CPU(s), for the system's responsiveness", s.cpus_to_skip));
+    if !s.skipped.is_empty() && s.skip.from_the_end() {
+        lines.push(format!(
+            "Skipping {}, the last in the core order (skip-cores={}), for the system's responsiveness",
+            core_list(&s.skipped),
+            s.skip
+        ));
+    } else if !s.skipped.is_empty() {
+        lines.push(format!("Skipping {} (skip-cores={})", core_list(&s.skipped), s.skip));
     }
     if s.avoid_smt_doubling {
         lines.push("Physical cores only (avoiding SMT doubling)".to_string());

@@ -151,6 +151,8 @@ pub struct CpuTopologyReport {
     pub summary: TopologySummary,
     /// See [`PerformanceByThreadReport::pinned`].
     pub pinned: bool,
+    /// `cpu-stride=`, which takes the cores by number; without it the threads take them in their ranked order (TODO 108)
+    pub stride: Option<String>,
 }
 
 /// Individual CPU topology entry
@@ -159,6 +161,10 @@ pub struct CpuTopologyEntry {
     pub logical_cpu: usize,
     pub physical_core: usize,
     pub core_type: String,
+    /// Windows' priority for the core, the CPU set's SchedulingClass, which ranks it (TODO 108)
+    pub priority: u8,
+    /// The cores sharing its L3, numbered from the lowest core up
+    pub l3_group: usize,
     pub threads_on_core: usize,
     pub numa_node: u32,
     pub is_hyperthreaded: bool,

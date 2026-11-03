@@ -13,7 +13,7 @@ use tmr::frontend::{
     CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorCounts, ErrorMode, Frontend, LiveFigures, MemoryModule,
     MemoryStatus, NotRun, PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
     PhysicalCorePerformance, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealCalibrationState, SealOp, Selection, Setup,
-    Stage, StepConfigLine, StepReport, TestSnapshot, TestSummary, ThreadPerformance, ThreadPriority, WheaCounts,
+    SkipSpec, Stage, StepConfigLine, StepReport, TestSnapshot, TestSummary, ThreadPerformance, ThreadPriority, WheaCounts,
 };
 use tmr::session::{SessionEnd, Stopped};
 use tmr::test_support::failing_bits;
@@ -352,15 +352,17 @@ fn setup_events_print_as_their_golden() {
     let fe = CliFrontend::new();
     let at = |day| chrono::Utc.with_ymd_and_hms(2026, 10, day, 9, 5, 0).unwrap();
     let args = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
-    let selection = |error_mode, pinned, cpus_to_skip, avoid_smt_doubling, cycles, duration_secs| {
+    let selection = |error_mode, pinned, skip, skipped: &[usize], avoid_smt_doubling, cycles, duration_secs| {
         Setup::Selection(Box::new(Selection {
             error_mode,
             threads: 3,
-            available: 6,
+            // A 6-core box with SMT: CPUs 2, 4 and 6 are cores 1-3, and the cores skipped aren't available
+            available: 6 - skipped.len(),
             cputype: "cores".to_string(),
             cpu_list: vec![2, 4, 6],
             pinned,
-            cpus_to_skip,
+            skip,
+            skipped: skipped.to_vec(),
             avoid_smt_doubling,
             cycles,
             duration_secs,
@@ -387,7 +389,7 @@ fn setup_events_print_as_their_golden() {
                 ParamNote::Block("hugechunk", "2GiB".to_string()),
                 ParamNote::Block("blkround", "down".to_string()),
                 ParamNote::Topology("windowsv2"),
-                ParamNote::SkipCores(1),
+                ParamNote::SkipCores("0".to_string()),
                 ParamNote::PinningOff,
             ]),
         ),
@@ -410,12 +412,14 @@ fn setup_events_print_as_their_golden() {
         }),
         ("cores", Setup::CpuType { cputype: "cores".to_string(), avoid_smt: true }),
         ("threads", Setup::CpuType { cputype: "threads".to_string(), avoid_smt: false }),
-        ("a core range left out", Setup::CpuFilter { lo: 0, hi: 7 }),
         ("a share of the CPUs", Setup::CpuCount { percent: 50, available: 6, threads: 3 }),
-        ("pinned, a CPU skipped, SMT doubling avoided, both limits", selection(ErrorMode::Log, true, 1, true, Some(3), Some(600))),
-        ("unpinned, halting, cycles only", selection(ErrorMode::Halt, false, 0, false, Some(1), None)),
-        ("panicking, time only", selection(ErrorMode::Panic, true, 0, false, None, Some(60))),
-        ("no limits", selection(ErrorMode::Log, true, 0, false, None, None)),
+        (
+            "pinned, a core skipped, SMT doubling avoided, both limits",
+            selection(ErrorMode::Log, true, SkipSpec::Count(1), &[5], true, Some(3), Some(600)),
+        ),
+        ("unpinned, halting, cycles only", selection(ErrorMode::Halt, false, SkipSpec::Count(0), &[], false, Some(1), None)),
+        ("panicking, time only, a share skipped", selection(ErrorMode::Panic, true, SkipSpec::Percent(25), &[0, 5], false, None, Some(60))),
+        ("no limits, a core range left out", selection(ErrorMode::Log, true, SkipSpec::Range(4, 5), &[4, 5], false, None, None)),
         ("large pages are checked", Setup::LargePageCheck),
         ("the right granted", Setup::LargePageGrant { account: r"BUILTIN\Administrators".to_string(), outcome: Ok(()) }),
         ("the grant failed", Setup::LargePageGrant {

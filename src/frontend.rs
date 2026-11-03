@@ -29,6 +29,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 pub use crate::ErrorMode;
+// `Selection`'s skip, and the words for its cores, which both frontends' skip lines use
+pub use crate::cpu_selection::{SkipSpec, core_list};
 use crate::failing_bits::FailingBits;
 pub use crate::memory::allocator::PageSizeLevel;
 pub use crate::memory::lsa::Sid;
@@ -121,8 +123,6 @@ pub enum Setup {
     StartupParams { rust_log: String, rust_backtrace: Option<String>, explicit: Vec<String>, defaults: Vec<String> },
     /// Whether the run counts logical CPUs or physical cores (`cputype=`), avoiding SMT for cores
     CpuType { cputype: String, avoid_smt: bool },
-    /// `skip-cores=` as a range: the core ids left out
-    CpuFilter { lo: usize, hi: usize },
     /// `cpus=` as a share: of how many available, and the threads it gives
     CpuCount { percent: u32, available: usize, threads: usize },
     /// The CPUs chosen, and the run's error mode, limits and SIMD
@@ -144,8 +144,8 @@ pub enum Setup {
     /// The seal calibration `seal-width=auto` takes. Its own event, because checking it against this machine logs
     /// (`AppConfig::valid_seal_calibration`).
     SealCalibration(SealCalibrationState),
-    /// The CPUs and the threads assigned them; on a hybrid CPU, how many of its P-cores have SMT (`None` on one that isn't), and whether
-    /// skip-cores= skipped E-cores first
+    /// The CPUs and the threads assigned them, with each core's priority and L3 group, which order them (TODO 108); on a hybrid CPU, how
+    /// many of its P-cores have SMT (`None` on one that isn't), and whether skip-cores= skipped E-cores first
     CpuTopology { report: Box<CpuTopologyReport>, smt_p_cores: Option<usize>, e_cores_skipped_first: bool },
     /// The system's memory now, `None` when Windows doesn't say
     MemoryStatus(Option<MemoryStatus>),
@@ -168,9 +168,8 @@ pub enum ParamNote {
     Block(&'static str, String),
     /// `topology=`: the detector it names
     Topology(&'static str),
-    /// `skip-cores=` was given: the skip count as it stands before the spec is resolved against the
-    /// cores (later, in setup), so the default's
-    SkipCores(usize),
+    /// `skip-cores=` was given: its value, which setup resolves against the cores later (`Selection::skipped`)
+    SkipCores(String),
     /// `--disable-pinning`
     PinningOff,
 }
@@ -186,7 +185,9 @@ pub struct Selection {
     pub cpu_list: Vec<usize>,
     /// Pinned to them; otherwise the list only places each thread's memory (its NUMA node)
     pub pinned: bool,
-    pub cpus_to_skip: usize,
+    /// `skip-cores=`, and the cores it left out, ascending: the last in the core order for a count or share, else a range's (TODO 108)
+    pub skip: SkipSpec,
+    pub skipped: Vec<usize>,
     pub avoid_smt_doubling: bool,
     /// The suite's limits: cycles, seconds
     pub cycles: Option<u32>,

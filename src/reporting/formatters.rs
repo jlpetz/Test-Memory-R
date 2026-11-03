@@ -747,6 +747,8 @@ impl ReportFormatter for DefaultFormatter {
             .add_header("Logical CPU", ColumnAlignment::Right)
             .add_header("Physical Core", ColumnAlignment::Right)
             .add_header("Type", ColumnAlignment::Center)
+            .add_header("OS Priority", ColumnAlignment::Right)
+            .add_header("L3 Group", ColumnAlignment::Right)
             .add_header("Threads", ColumnAlignment::Center)
             .add_header("NUMA Node", ColumnAlignment::Right)
             .add_header("SMT", ColumnAlignment::Center)
@@ -758,6 +760,8 @@ impl ReportFormatter for DefaultFormatter {
                 format!("{}", cpu.logical_cpu),
                 format!("{}", cpu.physical_core),
                 cpu.core_type.clone(),
+                format!("{}", cpu.priority),
+                format!("{}", cpu.l3_group),
                 format!("{}", cpu.threads_on_core),
                 format!("{}", cpu.numa_node),
                 if cpu.is_hyperthreaded { "Yes" } else { "No" }.to_string(),
@@ -798,6 +802,15 @@ impl ReportFormatter for DefaultFormatter {
                 report.summary.assigned_count, report.summary.available_count, report.summary.skipped_count
             ));
         }
+        // The order the Thread IDs follow, and why (TODO 108)
+        summary_parts.push(match &report.stride {
+            Some(stride) => format!("Thread order: by core number, spaced by cpu-stride={stride}"),
+            None if report.summary.is_hybrid => {
+                "Thread order: P-cores, then E-cores, each by OS Priority (highest first) within an L3 Group, the groups in turn"
+                    .to_string()
+            }
+            None => "Thread order: by OS Priority (highest first, then core number) within an L3 Group, the groups in turn".to_string(),
+        });
         if !report.pinned {
             summary_parts.push(UNPINNED_CPU_NOTE.to_string());
         }

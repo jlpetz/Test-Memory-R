@@ -94,41 +94,18 @@ impl ParamRegistry {
             },
         });
 
-        // Stage 1 of CPU selection — FILTER which cores are eligible.
-        // Accepts: `N` (skip first N), `N%` (skip first N% of cores), or `A-B` (exclude the inclusive core-id range, e.g. skip-cores=0-7
-        // tests only cores 8+). Ranges are the diagnostic tool for multi-CCD/NUMA-domain machines.
+        // `skip-cores=`: `N` (the last N cores in the core order, the weakest), `N%` (a share of the cores, from the end too), or `A-B`
+        // (the cores numbered A to B, e.g. skip-cores=0-7 tests only cores 8+, to isolate a memory domain). Kept as a string;
+        // `cpu_selection::SkipSpec` reads it, here to check it and in the session to use it (TODO 108).
         params.insert("skip-cores", ParamDef {
             key: "skip-cores",
             can_override_config: true,
-            parser: |v| {
-                // Keep as a string so the resolver can handle N / N% / A-B uniformly.
-                // Validate the shape here so bad input fails at parse time.
-                let s = v.trim();
-                if let Some((a, b)) = s.split_once('-') {
-                    let a = a.trim().parse::<usize>().map_err(|_| format!("Invalid skip-cores range start '{}' in '{}'", a, s))?;
-                    let b = b.trim().parse::<usize>().map_err(|_| format!("Invalid skip-cores range end '{}' in '{}'", b, s))?;
-                    if a > b {
-                        return Err(format!("Invalid skip-cores range '{}': start {} > end {}", s, a, b));
-                    }
-                    Ok(ParamValue::String(s.to_string()))
-                } else if let Some(pct) = s.strip_suffix('%') {
-                    let p = pct.trim().parse::<u32>().map_err(|_| format!("Invalid skip-cores percentage '{}'", s))?;
-                    if p > 100 {
-                        return Err(format!("Invalid skip-cores '{}': percentage must be <= 100", s));
-                    }
-                    Ok(ParamValue::String(s.to_string()))
-                } else {
-                    s.parse::<usize>()
-                        .map(|_| ParamValue::String(s.to_string()))
-                        .map_err(|_| format!("Invalid skip-cores value '{}' (expected N, N%, or A-B)", s))
-                }
-            },
+            parser: |v| crate::cpu_selection::SkipSpec::parse(v).map(|_| ParamValue::String(v.trim().to_string())),
         });
 
-        // Stage 2 of CPU selection — SPACING within the post-filter (available) pool. `1` = densely packed (default, current behaviour).
-        // `N` = take every Nth core. `even` = spread the requested count evenly across the whole available pool.
-        // Errors (never silently adjusts) if count × stride overflows the pool — use the
-        // `cpus=` percentage to right-size instead.
+        // `cpu-stride=`, when given: the cores by number instead of their ranked order, the picks spaced by it. `1` = packed, `N` = every
+        // Nth core, `even` = the requested count spread over all of them. Errors (never silently adjusts) if count × stride overflows
+        // them: use the `cpus=` percentage to right-size instead.
         params.insert("cpu-stride", ParamDef {
             key: "cpu-stride",
             can_override_config: true,

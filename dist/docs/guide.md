@@ -101,6 +101,8 @@ takes the privilege away again (from you, or from the `Group:` or `User:` named)
   | `plan=quick` | the stability tests once; `plan=all` runs every test (`tmr --help` lists the plans) |
   | `cycles=10`, `duration=3600` | stop after 10 cycles, or after an hour |
   | `memory=10%-from-available` | leave 10% of the free memory for Windows, and test the rest (the default) |
+  | `cpus=50%` | test on half the CPUs: the cores Windows prefers first, spread evenly over the CPU's L3 caches |
+  | `skip-cores=1` | leave the core Windows ranks lowest free, for Windows (the default; `skip-cores=0` uses every core) |
   | `config=my_tm5.cfg` | run a TM5 config, or a TMR `.json` one |
   | `errors=halt` | stop at the first error |
 

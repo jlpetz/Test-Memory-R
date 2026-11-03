@@ -261,6 +261,37 @@ whose names carry none. A test named for a width runs at that one and records no
 another width. Auto stays the default: measured on Intel and AMD, the widest suits the
 write-and-check tests; `width=` is there to compare widths or to step down.
 
+## CPU selection (`cpus=`, `skip-cores=`, `cpu-stride=`, TODO 108)
+
+| Where | Field | Meaning |
+|---|---|---|
+| command line | `cpus=50%`, `cpus=4` | The threads: a share of what `skip-cores=` leaves (rounded to the nearest) or a count, at least 1 and at most all: `0` and `0%` are one thread, over 100% every one. A share of the logical CPUs, or under `cputype=cores` of the cores |
+| `system.cpu_config` | `"usage_percent": 100` | The same share, from a config |
+| command line | `skip-cores=1` (the default), `skip-cores=25%`, `skip-cores=0-7` | The cores left out: the last N in the core order (the weakest), a share of the cores from the end too (rounded, never every core; of the cores under either `cputype=`), or the cores numbered A to B wherever they rank. A count that leaves no core, or a range over them all, stops the run |
+| `system.cpu_pinning` | `"skip_spec": "1"` | The same |
+| command line | `cpu-stride=2`, `cpu-stride=even`, `cpu-stride=1` | Given, the cores by number instead of the core order, spaced by position as before TODO 108: every Nth, the count spread over them (`cores / threads` apart, in whole steps), or packed. With core types too. A count the stride can't place stops the run |
+| `system.cpu_pinning` | `"stride_spec": "2"` | The same; unset (the default), the core order |
+
+**The core order.** Each core's Windows priority is its CPU set's SchedulingClass (higher is preferred): on a
+desktop Ryzen it is AMD's preferred-core ranking (an 8600G's cores read 3 2 1 4 0 4, a 5700X's 1 6 3 5 6 2 0 4),
+on a Ryzen 8500G its core types (1 0 0 0 1 0: Zen 4 and Zen 4c), on a server or VM 0 everywhere. Its L3 group is
+the CPU set's LastLevelCacheIndex, which is relative to its processor group, so the two together name it. Within
+each L3 group the cores rank by priority, highest first, ties by core number; the groups take turns, the best core
+of each, then the second of each, and so on, each NUMA node's first group, then each node's second. So `cpus=` from
+the front is balanced over the L3s (an m8a.4xlarge's 16 cores are two L3 groups of 8, two ~40 GB/s memory domains
+in one NUMA node: `cpus=50%` puts 4 threads in each, which `cpu-stride=even` was for, TODO 30) and strongest first
+within each, and `skip-cores=N` leaves out the weakest. With core types (Intel's efficiency class, AMD's Zen 5c
+CPUID, `core-priority=hybrid`), the performance cores come first, then the efficiency cores, each ranked so.
+`core-priority=hybrid` only labels: it makes an 8500G's higher-priority cores P-cores and the rest E-cores, and the
+order is the same. Under `cputype=threads` every chosen core's first CPU comes before any core's second, so a run
+on half the CPUs of a 2-way SMT part puts one thread a core, and its cache-sized extents then aren't halved.
+
+The skip is from the end, not core 0, on a measurement (2026-11-03, the three desktops idle, per-CPU interrupt
+and DPC time over 30 s): CPU 0 doesn't carry Windows' interrupt or DPC work on any of them.
+
+At startup the CPU topology table shows each CPU's core, type, OS Priority, L3 Group and status, and its Thread
+ID is the order the threads took; its last line says how they were ordered.
+
 ## Parameter Sources
 
 | Source | How parameters are set |

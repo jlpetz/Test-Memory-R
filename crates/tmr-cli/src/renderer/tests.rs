@@ -1,13 +1,12 @@
 //! Goldens of the Reporter's methods, each from a fixed model (TODO 29): the bytes the console gets, the console renderer's text, so the
 //! split's move of the renderer can be shown to keep them. The models that take the engine's code to build are the engine's fixtures
-//! (`tmr::test_support`): the memory plan, the test plan, the allocation report and the final summary. `report_cycle` has none: nothing
-//! calls it (it is kept to be revived, TODO 69 F).
+//! (`tmr::test_support`): the CPU topology, the memory plan, the test plan, the allocation report and the final summary. `report_cycle`
+//! has none: nothing calls it (it is kept to be revived, TODO 69 F).
 
 use tmr::frontend::{
-    CacheInfo, CpuInfo, CpuPerformance, CpuTopologyEntry, CpuTopologyReport, LatencyLevelSummary, LatencyPercentiles,
-    LatencyTestSummaryReport, LatencyThreadResult, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
-    PhysicalCorePerformance, Reporter, SystemInfoReport, ThreadPerformance, ThreadTiming, ThreadTimingReport, TopologySummary,
-    TscCalibrationInfo, WheaCounts,
+    CacheInfo, CpuInfo, CpuPerformance, CpuTopologyReport, LatencyLevelSummary, LatencyPercentiles, LatencyTestSummaryReport,
+    LatencyThreadResult, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport, PhysicalCorePerformance,
+    Reporter, SystemInfoReport, ThreadPerformance, ThreadTiming, ThreadTimingReport, TscCalibrationInfo, WheaCounts,
 };
 use tmr::test_support;
 
@@ -156,7 +155,8 @@ fn performance_by_physical_core() {
     check("report_performance_by_physical_core", &text);
 }
 
-/// A hybrid box under `cputype=cores` and `skip-cores=1`: a skipped core, SMT siblings left out, one E-core free.
+/// A Ryzen 5 8500G under core-priority=hybrid, `cputype=cores skip-cores=1 cpus=60%` (`tmr::test_support`, the selection's own code): a
+/// Zen 4c core skipped, the last in the core order, SMT siblings left out, two cores free.
 #[test]
 fn cpu_topology() {
     let (result, text) = rendered(|reporter| reporter.report_cpu_topology(&cpu_topology_report()));
@@ -164,44 +164,18 @@ fn cpu_topology() {
     check("report_cpu_topology", &text);
 }
 
-/// `cpu_topology`'s: a hybrid box under `cputype=cores` and `skip-cores=1`. Setup's event has it too (`render`'s goldens).
+/// An m8a.4xlarge, 16 cores in two L3 groups, every priority 0, under `skip-cores=1 cpus=50%`: the groups take turns, 4 threads in each
+/// (TODO 108).
+#[test]
+fn cpu_topology_two_l3_groups() {
+    let (result, text) = rendered(|reporter| reporter.report_cpu_topology(&test_support::two_l3_cpu_topology_report()));
+    result.unwrap();
+    check("report_cpu_topology_two_l3_groups", &text);
+}
+
+/// `cpu_topology`'s: the 8500G's. Setup's event has it too (`render`'s goldens).
 pub(crate) fn cpu_topology_report() -> CpuTopologyReport {
-    let cpu = |logical_cpu: usize, core_type: &str, status: &str, thread_id| CpuTopologyEntry {
-        logical_cpu,
-        physical_core: logical_cpu / 2,
-        core_type: core_type.to_string(),
-        threads_on_core: 2,
-        numa_node: 0,
-        is_hyperthreaded: true,
-        status: status.to_string(),
-        thread_id,
-    };
-    CpuTopologyReport {
-        cpus: vec![
-            cpu(0, "P-core", "Skipped", None),
-            cpu(1, "P-core", "Skipped", None),
-            cpu(2, "P-core", "Assigned", Some(0)),
-            cpu(3, "P-core", "SMT Excluded", None),
-            cpu(4, "E-core", "Assigned", Some(1)),
-            cpu(5, "E-core", "SMT Excluded", None),
-            cpu(6, "E-core", "Available", None),
-            cpu(7, "E-core", "SMT Excluded", None),
-        ],
-        summary: TopologySummary {
-            is_hybrid: true,
-            total_logical: 8,
-            total_physical: 4,
-            performance_cores: 2,
-            efficiency_cores: 2,
-            performance_logical: 4,
-            efficiency_logical: 4,
-            assigned_count: 2,
-            available_count: 1,
-            skipped_count: 2,
-            smt_excluded_count: 3,
-        },
-        pinned: true,
-    }
+    test_support::hybrid_cpu_topology_report()
 }
 
 /// `memory=50%` on a 32 GiB box, six threads, each share rounded up to whole GiB

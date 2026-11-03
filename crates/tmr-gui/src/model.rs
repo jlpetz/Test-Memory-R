@@ -695,7 +695,6 @@ impl Model {
             | Setup::StartupHeader { .. }
             | Setup::StartupParams { .. }
             | Setup::CpuType { .. }
-            | Setup::CpuFilter { .. }
             | Setup::CpuCount { .. }
             | Setup::LargePageDiagnostic { .. }
             | Setup::CacheCalibration(_)
@@ -1441,8 +1440,8 @@ pub fn args_of(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use tmr::frontend::{
-        AllocationThread, CacheInfo, CpuInfo, ErrorMode, LiveFigures, MemoryModule, MemoryStatus, Selection, Stage, StepConfigLine,
-        SystemInfoReport, TestSnapshot, TestSummary, ThreadTimingReport, TscCalibrationInfo, WheaCounts,
+        AllocationThread, CacheInfo, CpuInfo, ErrorMode, LiveFigures, MemoryModule, MemoryStatus, Selection, SkipSpec, Stage,
+        StepConfigLine, SystemInfoReport, TestSnapshot, TestSummary, ThreadTimingReport, TscCalibrationInfo, WheaCounts,
     };
 
     use super::*;
@@ -1582,7 +1581,8 @@ mod tests {
             cputype: "cores".to_string(),
             cpu_list: vec![0, 2, 4, 6, 8, 10],
             pinned: true,
-            cpus_to_skip: 0,
+            skip: SkipSpec::Count(0),
+            skipped: Vec::new(),
             avoid_smt_doubling: false,
             cycles: Some(2),
             duration_secs: None,

@@ -15,7 +15,7 @@
   hugechunk: 2GiB
   blkround: down
   Topology Detection: windowsv2
-  CPU Pinning: Skipping first 1 CPU(s)
+  CPU Pinning: skip-cores=0
   CPU Pinning: Disabled
 ## the header of a release build
 Startup Mode & Parameters:
@@ -36,15 +36,13 @@ Startup Mode & Parameters:
   CPU Type: cores (avoiding SMT/Hyperthreading)
 ## threads
   CPU Type: threads
-## a core range left out
-  CPU Filter: excluding core id range 0-7 (Stage 1)
 ## a share of the CPUs
   CPU Count: 50% of 6 available = 3 thread(s)
-## pinned, a CPU skipped, SMT doubling avoided, both limits
+## pinned, a core skipped, SMT doubling avoided, both limits
   Error Mode: Log and continue
-  Using 3/6 cores for testing
+  Using 3/5 cores for testing
   CPU Assignment: [2, 4, 6]
-  Skipping first 1 CPU(s) for system responsiveness
+  Skipping core 5, the last in the core order (skip-cores=1), for system responsiveness
   Avoiding SMT doubling (using physical cores only)
   Test Suite Timing: 3 cycles or 600s max (whichever first)
   SIMD Support: SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2
@@ -56,17 +54,19 @@ Startup Mode & Parameters:
   Test Suite Timing: 1 cycles (no time limit)
   SIMD Support: SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2
 
-## panicking, time only
+## panicking, time only, a share skipped
   Error Mode: Panic on error (debug mode)
-  Using 3/6 cores for testing
+  Using 3/4 cores for testing
   CPU Assignment: [2, 4, 6]
+  Skipping cores 0 and 5, the last in the core order (skip-cores=25%), for system responsiveness
   Test Suite Timing: 60s duration (unlimited cycles)
   SIMD Support: SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2
 
-## no limits
+## no limits, a core range left out
   Error Mode: Log and continue
-  Using 3/6 cores for testing
+  Using 3/4 cores for testing
   CPU Assignment: [2, 4, 6]
+  Skipping cores 4 and 5 (skip-cores=4-5)
   Test Suite Timing: Unlimited cycles and duration
   SIMD Support: SSE, SSE2, SSE3, SSE4.1, SSE4.2, AVX, AVX2
 
@@ -132,62 +132,77 @@ TMR will exit now.
   Seal calibration: None (run --calibrate-seal to calibrate)
 ## a hybrid's topology, E-cores skipped first
 [1m📊 CPU Topology and Thread Assignment[0m
-------------------------------------------------------------------------------------------------------
-Logical CPU  Physical Core     Type      Threads     NUMA Node     SMT         Status      Thread ID  
-------------------------------------------------------------------------------------------------------
-          0              0    P-core        2                0     Yes        Skipped              -  
-          1              0    P-core        2                0     Yes        Skipped              -  
-          2              1    P-core        2                0     Yes        Assigned             0  
-          3              1    P-core        2                0     Yes      SMT Excluded           -  
-          4              2    E-core        2                0     Yes        Assigned             1  
-          5              2    E-core        2                0     Yes      SMT Excluded           -  
-          6              3    E-core        2                0     Yes       Available             -  
-          7              3    E-core        2                0     Yes      SMT Excluded           -  
-------------------------------------------------------------------------------------------------------
-Total: 8 logical CPUs, 4 physical cores
+-------------------------------------------------------------------------------------------------------------------------------
+Logical CPU  Physical Core     Type     OS Priority    L3 Group   Threads     NUMA Node     SMT         Status      Thread ID  
+-------------------------------------------------------------------------------------------------------------------------------
+          0              0    P-core              1           0      2                0     Yes        Assigned             0  
+          1              0    P-core              1           0      2                0     Yes      SMT Excluded           -  
+          2              1    E-core              0           0      2                0     Yes        Assigned             2  
+          3              1    E-core              0           0      2                0     Yes      SMT Excluded           -  
+          4              2    E-core              0           0      2                0     Yes       Available             -  
+          5              2    E-core              0           0      2                0     Yes       Available             -  
+          6              3    E-core              0           0      2                0     Yes       Available             -  
+          7              3    E-core              0           0      2                0     Yes       Available             -  
+          8              4    P-core              1           0      2                0     Yes        Assigned             1  
+          9              4    P-core              1           0      2                0     Yes      SMT Excluded           -  
+         10              5    E-core              0           0      2                0     Yes        Skipped              -  
+         11              5    E-core              0           0      2                0     Yes        Skipped              -  
+-------------------------------------------------------------------------------------------------------------------------------
+Total: 12 logical CPUs, 6 physical cores
 Hybrid CPU Architecture Detected!
-P-cores: 2 (4 logical), E-cores: 2 (4 logical)
-Assigned: 2, Available: 1, SMT Excluded: 3, Skipped: 2
+P-cores: 2 (4 logical), E-cores: 4 (8 logical)
+Assigned: 3, Available: 4, SMT Excluded: 3, Skipped: 2
+Thread order: P-cores, then E-cores, each by OS Priority (highest first) within an L3 Group, the groups in turn
   SMT/Hyperthreading: Enabled on 2 P-cores
     Note: E-cores were prioritized for skipping
 
 ## a hybrid's topology, no P-core with SMT
 [1m📊 CPU Topology and Thread Assignment[0m
-------------------------------------------------------------------------------------------------------
-Logical CPU  Physical Core     Type      Threads     NUMA Node     SMT         Status      Thread ID  
-------------------------------------------------------------------------------------------------------
-          0              0    P-core        2                0     Yes        Skipped              -  
-          1              0    P-core        2                0     Yes        Skipped              -  
-          2              1    P-core        2                0     Yes        Assigned             0  
-          3              1    P-core        2                0     Yes      SMT Excluded           -  
-          4              2    E-core        2                0     Yes        Assigned             1  
-          5              2    E-core        2                0     Yes      SMT Excluded           -  
-          6              3    E-core        2                0     Yes       Available             -  
-          7              3    E-core        2                0     Yes      SMT Excluded           -  
-------------------------------------------------------------------------------------------------------
-Total: 8 logical CPUs, 4 physical cores
+-------------------------------------------------------------------------------------------------------------------------------
+Logical CPU  Physical Core     Type     OS Priority    L3 Group   Threads     NUMA Node     SMT         Status      Thread ID  
+-------------------------------------------------------------------------------------------------------------------------------
+          0              0    P-core              1           0      2                0     Yes        Assigned             0  
+          1              0    P-core              1           0      2                0     Yes      SMT Excluded           -  
+          2              1    E-core              0           0      2                0     Yes        Assigned             2  
+          3              1    E-core              0           0      2                0     Yes      SMT Excluded           -  
+          4              2    E-core              0           0      2                0     Yes       Available             -  
+          5              2    E-core              0           0      2                0     Yes       Available             -  
+          6              3    E-core              0           0      2                0     Yes       Available             -  
+          7              3    E-core              0           0      2                0     Yes       Available             -  
+          8              4    P-core              1           0      2                0     Yes        Assigned             1  
+          9              4    P-core              1           0      2                0     Yes      SMT Excluded           -  
+         10              5    E-core              0           0      2                0     Yes        Skipped              -  
+         11              5    E-core              0           0      2                0     Yes        Skipped              -  
+-------------------------------------------------------------------------------------------------------------------------------
+Total: 12 logical CPUs, 6 physical cores
 Hybrid CPU Architecture Detected!
-P-cores: 2 (4 logical), E-cores: 2 (4 logical)
-Assigned: 2, Available: 1, SMT Excluded: 3, Skipped: 2
+P-cores: 2 (4 logical), E-cores: 4 (8 logical)
+Assigned: 3, Available: 4, SMT Excluded: 3, Skipped: 2
+Thread order: P-cores, then E-cores, each by OS Priority (highest first) within an L3 Group, the groups in turn
 
 ## a topology with no hybrid notes
 [1m📊 CPU Topology and Thread Assignment[0m
-------------------------------------------------------------------------------------------------------
-Logical CPU  Physical Core     Type      Threads     NUMA Node     SMT         Status      Thread ID  
-------------------------------------------------------------------------------------------------------
-          0              0    P-core        2                0     Yes        Skipped              -  
-          1              0    P-core        2                0     Yes        Skipped              -  
-          2              1    P-core        2                0     Yes        Assigned             0  
-          3              1    P-core        2                0     Yes      SMT Excluded           -  
-          4              2    E-core        2                0     Yes        Assigned             1  
-          5              2    E-core        2                0     Yes      SMT Excluded           -  
-          6              3    E-core        2                0     Yes       Available             -  
-          7              3    E-core        2                0     Yes      SMT Excluded           -  
-------------------------------------------------------------------------------------------------------
-Total: 8 logical CPUs, 4 physical cores
+-------------------------------------------------------------------------------------------------------------------------------
+Logical CPU  Physical Core     Type     OS Priority    L3 Group   Threads     NUMA Node     SMT         Status      Thread ID  
+-------------------------------------------------------------------------------------------------------------------------------
+          0              0    P-core              1           0      2                0     Yes        Assigned             0  
+          1              0    P-core              1           0      2                0     Yes      SMT Excluded           -  
+          2              1    E-core              0           0      2                0     Yes        Assigned             2  
+          3              1    E-core              0           0      2                0     Yes      SMT Excluded           -  
+          4              2    E-core              0           0      2                0     Yes       Available             -  
+          5              2    E-core              0           0      2                0     Yes       Available             -  
+          6              3    E-core              0           0      2                0     Yes       Available             -  
+          7              3    E-core              0           0      2                0     Yes       Available             -  
+          8              4    P-core              1           0      2                0     Yes        Assigned             1  
+          9              4    P-core              1           0      2                0     Yes      SMT Excluded           -  
+         10              5    E-core              0           0      2                0     Yes        Skipped              -  
+         11              5    E-core              0           0      2                0     Yes        Skipped              -  
+-------------------------------------------------------------------------------------------------------------------------------
+Total: 12 logical CPUs, 6 physical cores
 Hybrid CPU Architecture Detected!
-P-cores: 2 (4 logical), E-cores: 2 (4 logical)
-Assigned: 2, Available: 1, SMT Excluded: 3, Skipped: 2
+P-cores: 2 (4 logical), E-cores: 4 (8 logical)
+Assigned: 3, Available: 4, SMT Excluded: 3, Skipped: 2
+Thread order: P-cores, then E-cores, each by OS Priority (highest first) within an L3 Group, the groups in turn
 
 ## the memory status
 📊 Current System Memory Status:

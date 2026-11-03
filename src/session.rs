@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crate::commands::Command;
 use crate::config::{CpuPinningConfig, MemoryAllocationConfig};
-use crate::cpu_topology::{CoreType, get_cpu_topology, is_hybrid_cpu};
+use crate::cpu_topology::{get_cpu_topology, is_hybrid_cpu};
 use crate::frontend::{
     CacheCalibrationState, Candidate, Frontend, LargePageAnswer, LargePageQuestion, ParamNote, SealCalibrationState, Selection, Setup,
 };
@@ -47,7 +47,7 @@ pub enum Stopped {
     UnknownFlags(Vec<String>),
     /// A parameter it can't take, and why (`params::parse_and_validate_args`)
     Invalid(String),
-    /// The CPUs asked for can't be selected (`cpu_selection::calculate_thread_allocation`)
+    /// The CPUs asked for can't be selected (`cpu_selection::choose`)
     CpuSelection(String),
     /// This sign-in lacks the right large pages need, the run's maxpage= allows them, and nothing said to take 4 KiB pages this time
     /// (TODO 113, the owner's rule): the user quit at the large-page question (`LargePageAnswer::Quit`), gave it no answer, or nobody
@@ -337,14 +337,13 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
                     log::debug!("CLI override: cputype = {}", cputype);
                 }
                 "skip-cores" => {
-                    // Stage 1 filter spec; resolved later against the real core count.
+                    // Resolved later against the cores (`cpu_selection::choose`)
                     pinning_config.skip_spec = params::get_string(&validated_params, "skip-cores", "1");
                     log::debug!("CLI override: skip_spec = {}", pinning_config.skip_spec);
                 }
                 "cpu-stride" => {
-                    // Stage 2 spacing spec.
-                    pinning_config.stride_spec = params::get_string(&validated_params, "cpu-stride", "1");
-                    log::debug!("CLI override: stride_spec = {}", pinning_config.stride_spec);
+                    pinning_config.stride_spec = Some(params::get_string(&validated_params, "cpu-stride", "1"));
+                    log::debug!("CLI override: stride_spec = {:?}", pinning_config.stride_spec);
                 }
                 "--disable-pinning" => {
                     pinning_config.enable_pinning = false;
@@ -437,114 +436,45 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
 
     fe.event(Setup::StartupParams { rust_log, rust_backtrace, explicit: explicit_params, defaults: default_params }.into());
 
-    // Calculate CPU/thread count
-    // From TMR's topology, which covers every processor group (num_cpus sees only one: 64 CPUs)
-    let total_cpus = match cputype.as_str() {
-        "cores" => crate::cpu_topology::physical_core_count(),
-        _ => crate::cpu_topology::logical_cpu_ids().len(),
-    };
-
-    // When using cores mode, we should automatically avoid SMT doubling
+    // The CPUs the threads take (TODO 108, `cpu_selection`): the cores ranked by Windows' priority within each L3 group, the groups in
+    // turn; skip-cores= leaving out the end of that order (or a range of core numbers), cpus= taking from the front of the rest, or by
+    // core number at cpu-stride='s spacing. Selected even when pinning is off: the list also decides which NUMA node each thread's
+    // memory comes from, so a pinned/unpinned A/B differs in scheduling alone. The pool skips only the affinity call
+    // (`RuntimeConfig.pin_threads`).
     let avoid_smt = cputype == "cores";
     fe.event(Setup::CpuType { cputype: cputype.clone(), avoid_smt }.into());
-
-    // Stage 1 FILTER: resolve the skip-cores spec ("N" | "N%" | "A-B") into a leading-skip count and/or an excluded core-id range. The
-    // range form is how you isolate one memory domain on a multi-CCD part (e.g. skip-cores=0-7 tests only cores 8+).
-    let (resolved_skip, skip_excluded_range) = crate::cpu_selection::resolve_skip_spec(&pinning_config.skip_spec, total_cpus);
-    pinning_config.cpus_to_skip = resolved_skip;
-    if let Some((lo, hi)) = skip_excluded_range {
-        fe.event(Setup::CpuFilter { lo, hi }.into());
+    let skip = match crate::cpu_selection::SkipSpec::parse(&pinning_config.skip_spec) {
+        Ok(skip) => skip,
+        Err(e) => return Ok(SessionEnd::Stopped(Stopped::Invalid(e))),
+    };
+    let request = crate::cpu_selection::Request {
+        skip,
+        cpus: &cpus,
+        stride: pinning_config.stride_spec.as_deref(),
+        count_cores: avoid_smt,
+        one_per_core: pinning_config.avoid_smt_doubling || avoid_smt,
+    };
+    let topology = get_cpu_topology();
+    let cores = crate::cpu_selection::cores(topology);
+    let choice = match crate::cpu_selection::choose(&cores, &request) {
+        Ok(choice) => choice,
+        // Never silently right-size the request: tell the user and stop
+        Err(e) => return Ok(SessionEnd::Stopped(Stopped::CpuSelection(e))),
+    };
+    let (order, skipped) = (&choice.order, &choice.skipped);
+    match request.stride {
+        None => log::info!("Core order: {order:?}, the threads from the front; skip-cores={skip} leaves out {skipped:?}"),
+        Some(stride) => {
+            log::info!("Core order: {order:?}; skip-cores={skip} leaves out {skipped:?}, cpu-stride={stride} takes the rest by core number")
+        }
     }
-    // Cores removed by an excluded range shrink the available pool too.
-    let range_excluded_count = skip_excluded_range
-        .map(|(lo, hi)| {
-            let topo = get_cpu_topology();
-            if avoid_smt {
-                // cores mode: count distinct physical cores in the excluded range
-                topo.iter()
-                    .filter(|c| c.physical_core_id >= lo && c.physical_core_id <= hi)
-                    .map(|c| c.physical_core_id)
-                    .collect::<std::collections::HashSet<_>>()
-                    .len()
-            } else {
-                // threads mode: count logical CPUs on those cores
-                topo.iter().filter(|c| c.physical_core_id >= lo && c.physical_core_id <= hi).count()
-            }
-        })
-        .unwrap_or(0);
-
-    // Calculate available CPUs after accounting for skipped cores
-    let available_cpus_before_range = if pinning_config.cpus_to_skip > 0 {
-        // Get topology to count logical CPUs on skipped physical cores
-        let topology = get_cpu_topology();
-        let mut cores_by_id: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-        for cpu in topology {
-            *cores_by_id.entry(cpu.physical_core_id).or_insert(0) += 1;
-        }
-        // Sort core IDs to determine which cores get skipped (E-cores first for hybrid)
-        let is_hybrid = is_hybrid_cpu(get_cpu_topology());
-        let mut sorted_cores: Vec<_> = cores_by_id.iter().collect();
-        if is_hybrid {
-            // For hybrid, E-cores are skipped first - sort by core type then ID
-            let topo = get_cpu_topology();
-            sorted_cores.sort_by(|a, b| {
-                let a_type = topo.iter().find(|c| c.physical_core_id == *a.0).map(|c| c.core_type);
-                let b_type = topo.iter().find(|c| c.physical_core_id == *b.0).map(|c| c.core_type);
-                // E-cores (Efficiency) should come first for skipping
-                match (a_type, b_type) {
-                    (Some(CoreType::Efficiency(_)), Some(CoreType::Performance(_))) => std::cmp::Ordering::Less,
-                    (Some(CoreType::Performance(_)), Some(CoreType::Efficiency(_))) => std::cmp::Ordering::Greater,
-                    _ => a.0.cmp(b.0),
-                }
-            });
-        } else {
-            sorted_cores.sort_by_key(|(id, _)| *id);
-        }
-        // Count logical CPUs on skipped physical cores
-        let skipped_logical: usize = sorted_cores.iter().take(pinning_config.cpus_to_skip).map(|(_, count)| *count).sum();
-        let available = if avoid_smt {
-            // For cores mode, available = physical cores - skipped
-            total_cpus.saturating_sub(pinning_config.cpus_to_skip)
-        } else {
-            // For threads mode, available = logical threads - skipped logical
-            total_cpus.saturating_sub(skipped_logical)
-        };
-        available.max(1)
-    } else {
-        total_cpus
-    };
-
-    // Subtract cores removed by an excluded id-range to get the true Available pool.
-    let available_cpus = available_cpus_before_range.saturating_sub(range_excluded_count).max(1);
-
-    // `cpus=` is RELATIVE to the post-filter Available pool: any value <= 100% is therefore
-    // always valid, which keeps configs portable across 4/6/8/16-core machines.
-    let threads = if cpus.ends_with('%') {
-        // Percentage of available CPUs
-        let percent = cpus.trim_end_matches('%').parse::<u32>().unwrap_or(100);
-        // Round to nearest instead of truncating: +50 before dividing by 100
-        let n = ((available_cpus as u32 * percent + 50) / 100).max(1).min(available_cpus as u32) as usize;
-        // Make the relative math explicit so `cpus=50%` after a skip isn't a surprise.
-        fe.event(Setup::CpuCount { percent, available: available_cpus, threads: n }.into());
-        n
-    } else {
-        // Absolute count
-        cpus.parse::<usize>().unwrap_or(available_cpus).min(available_cpus).max(1)
-    };
-
-    // Selected even when pinning is off: the list also decides which NUMA node each thread's memory comes from, so a pinned/unpinned A/B
-    // differs in scheduling alone. The pool skips only the affinity call (`RuntimeConfig.pin_threads`).
-    // Override avoid_smt_doubling if cputype=cores
-    let effective_avoid_smt = pinning_config.avoid_smt_doubling || avoid_smt;
-    let (actual_threads, cpu_list) = match crate::cpu_selection::calculate_thread_allocation(
-        threads, pinning_config.cpus_to_skip, effective_avoid_smt, skip_excluded_range, &pinning_config.stride_spec,
-    ) {
-        Ok(result) => result,
-        Err(e) => {
-            // Never silently right-size the request — tell the user and stop.
-            return Ok(SessionEnd::Stopped(Stopped::CpuSelection(e)));
-        }
-    };
+    // `cpus=` is relative to the cores left: any value <= 100% is always valid, which keeps configs portable across 4/6/8/16-core
+    // machines. The relative math made explicit, so `cpus=50%` after a skip isn't a surprise.
+    if let Some(percent) = choice.percent {
+        fe.event(Setup::CpuCount { percent, available: choice.available, threads: choice.threads }.into());
+    }
+    let cpu_list = choice.cpu_list.clone();
+    let actual_threads = cpu_list.len();
 
     // The workers' priority, and the window's thread's, which the selection carries to the window
     let (thread_priority, window_priority) =
@@ -556,11 +486,12 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         Setup::Selection(Box::new(Selection {
             error_mode,
             threads: actual_threads,
-            available: available_cpus,
+            available: choice.available,
             cputype: cputype.clone(),
             cpu_list: cpu_list.clone(),
             pinned: pinning_config.enable_pinning,
-            cpus_to_skip: pinning_config.cpus_to_skip,
+            skip,
+            skipped: choice.skipped.clone(),
             avoid_smt_doubling: pinning_config.avoid_smt_doubling,
             cycles: suite_timing.global_cycles,
             duration_secs: suite_timing.global_duration_secs,
@@ -597,9 +528,9 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     let system_info = crate::tests::get_system_info();
     let cache_info = system_info.get_cache_info();
 
-    // Set SMT sharing factor: 2 if hyperthreading AND using threads mode, 1 otherwise
-    let smt_threads = if system_info.has_hyperthreading && !avoid_smt { 2 } else { 1 };
-    crate::set_active_threads_per_core(smt_threads);
+    // The threads that share a core's caches: the most the selection put on one core, so cputype=threads with one thread a core
+    // (cpus=50% on 2-way SMT) doesn't halve the cache-sized extents (TODO 108)
+    crate::set_active_threads_per_core(choice.threads_per_core);
 
     // Detect SMBIOS data for identity validation
     let smbios = crate::smbios::get_smbios();
@@ -634,7 +565,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
 
     // Display CPU topology right after system information
     let (report, smt_p_cores, e_cores_skipped_first) =
-        crate::cpu_topology::startup_topology(&cpu_list, pinning_config.cpus_to_skip, avoid_smt, pinning_config.enable_pinning);
+        crate::cpu_selection::startup_topology(&cores, &request, &choice, pinning_config.enable_pinning, is_hybrid_cpu(topology));
     fe.event(Setup::CpuTopology { report: Box::new(report), smt_p_cores, e_cores_skipped_first }.into());
 
     // Show memory stats
@@ -836,11 +767,10 @@ fn build_config_from_validated_params(validated: &HashMap<String, params::ParamV
         EnhancedMemoryStrategy::default()
     };
 
-    // Build CPU pinning config. skip_spec/stride_spec are the two-stage selection specs; cpus_to_skip is resolved from skip_spec later
-    // (needs the real core count).
+    // Build CPU pinning config: skip_spec/stride_spec, which the selection resolves against the cores (`cpu_selection::choose`)
     let mut pinning_config = CpuPinningConfig {
         skip_spec: params::get_string(validated, "skip-cores", "1"),
-        stride_spec: params::get_string(validated, "cpu-stride", "1"),
+        stride_spec: params::has_param(validated, "cpu-stride").then(|| params::get_string(validated, "cpu-stride", "1")),
         ..Default::default()
     };
     if params::get_bool(validated, "--disable-pinning", false) {
@@ -876,9 +806,9 @@ fn build_config_from_validated_params(validated: &HashMap<String, params::ParamV
         notes.push(ParamNote::Topology(method.name()));
     }
 
-    // Note skip-cores if specified
+    // Note skip-cores if specified: as given, which the selection resolves later (TODO 108: the count it noted was the default's)
     if params::has_param(validated, "skip-cores") {
-        notes.push(ParamNote::SkipCores(pinning_config.cpus_to_skip));
+        notes.push(ParamNote::SkipCores(pinning_config.skip_spec.clone()));
     }
     if !pinning_config.enable_pinning {
         notes.push(ParamNote::PinningOff);
@@ -972,6 +902,41 @@ mod tests {
         assert_eq!(resolve(&["priority=normal"], Some("realtime")), (Normal, Normal), "from priority=, over the config's");
         assert_eq!(resolve(&[], Some("normal")), (Normal, Normal), "from the config");
         assert_eq!(resolve(&["window-priority=high"], Some("normal")), (Normal, High), "given, with the config's workers'");
+    }
+
+    /// Bug 4 (TODO 108): a given skip-cores= is noted as given (the note showed the count before it was resolved, the default's: "Skipping
+    /// first 1 CPU(s)" for skip-cores=0), and the selection resolves it. cpu-stride= is the selection's only when given: without it the
+    /// ranked order stands.
+    #[test]
+    fn skip_cores_is_noted_as_given_and_a_stride_only_when_given() {
+        use std::sync::Mutex;
+
+        use crate::frontend::Event;
+
+        /// Keeps the skip-cores= notes it was shown
+        struct Notes(Mutex<Vec<String>>);
+        impl Frontend for Notes {
+            fn event(&self, event: Event) {
+                if let Event::Setup(Setup::ParamNotes(notes)) = event {
+                    let skips = notes.into_iter().filter_map(|note| if let ParamNote::SkipCores(spec) = note { Some(spec) } else { None });
+                    self.0.lock().unwrap().extend(skips);
+                }
+            }
+            fn ask_large_pages(&self, _: &LargePageQuestion) -> LargePageAnswer {
+                LargePageAnswer::Quit
+            }
+        }
+        let pinning = |line: &[&str]| {
+            let args: Vec<String> = line.iter().map(|s| s.to_string()).collect();
+            let fe = Notes(Mutex::default());
+            let (.., pinning, _) = build_config_from_validated_params(&params::parse_and_validate_args(&args).unwrap(), &fe);
+            (pinning.skip_spec, pinning.stride_spec, fe.0.into_inner().unwrap())
+        };
+        for spec in ["0", "25%", "0-7"] {
+            assert_eq!(pinning(&[&format!("skip-cores={spec}")]), (spec.to_string(), None, vec![spec.to_string()]));
+        }
+        assert_eq!(pinning(&[]), ("1".to_string(), None, vec![]), "the default, not noted");
+        assert_eq!(pinning(&["cpu-stride=1"]).1.as_deref(), Some("1"), "given, by core number");
     }
 
     /// The large-page question (TODO 113): none asked when the check has none; the sign-in's yes ends the session, granting nothing; the

@@ -15,7 +15,9 @@ use crate::memory::allocator::PageSizeLevel::{self, Huge, Large};
 use crate::memory::stitched::{Commit, Run, ThreadSpan};
 use crate::progress::TestSummary;
 pub use crate::reporting::converters::create_thread_timing_report;
-use crate::reporting::models::{AllocationReport, ConsolidatedMemoryReport, FinalTestSummaryReport, TestConfigurationReport};
+use crate::reporting::models::{
+    AllocationReport, ConsolidatedMemoryReport, CpuTopologyReport, FinalTestSummaryReport, TestConfigurationReport,
+};
 use crate::results::{TempDir, TestRunResult};
 pub use crate::runner::TestRunOverrides;
 pub use crate::runner::test_support::{FakeCycle, Flip, GoldenRun};
@@ -75,6 +77,34 @@ pub fn check_golden(dir: &Path, name: &str, text: &str) {
 #[cfg(test)]
 pub(crate) fn check(name: &str, text: &str) {
     check_golden(&Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata").join("console"), name, text);
+}
+
+/// The start-up table (TODO 108) of `cores` under `request`, through the selection's own code (`cpu_selection::choose`)
+fn startup_topology(cores: &[crate::cpu_selection::Core], request: &crate::cpu_selection::Request, hybrid: bool) -> CpuTopologyReport {
+    let choice = crate::cpu_selection::choose(cores, request).expect("the fixture's request fits its cores");
+    crate::cpu_selection::startup_topology(cores, request, &choice, true, hybrid).0
+}
+
+/// A Ryzen 5 8500G (2 Zen 4 cores, 0 and 4, and 4 Zen 4c, SMT, one L3; Windows' priorities 1 0 0 0 1 0) under core-priority=hybrid and
+/// `cputype=cores skip-cores=1 cpus=60%`: Zen 4c core 5 skipped, the last in the core order; cores 0, 4 and 1 assigned, their siblings
+/// left out; cores 2 and 3 free.
+pub fn hybrid_cpu_topology_report() -> CpuTopologyReport {
+    use crate::cpu_selection::{Request, SkipSpec, synthetic};
+    use crate::cpu_topology::CoreType::{Efficiency, Performance};
+    let mut cores = synthetic(&[1, 0, 0, 0, 1, 0], 64, 64, true);
+    for core in &mut cores {
+        core.core_type = if core.priority == 1 { Performance(0) } else { Efficiency(0) };
+    }
+    let request = Request { skip: SkipSpec::Count(1), cpus: "60%", stride: None, count_cores: true, one_per_core: true };
+    startup_topology(&cores, &request, true)
+}
+
+/// An m8a.4xlarge (16 cores without SMT in two L3 groups of 8, one NUMA node, every priority 0) under `skip-cores=1 cpus=50%`: the
+/// groups take turns, 4 threads in each, and core 15 is skipped, the last in the order.
+pub fn two_l3_cpu_topology_report() -> CpuTopologyReport {
+    use crate::cpu_selection::{Request, SkipSpec, synthetic};
+    let request = Request { skip: SkipSpec::Count(1), cpus: "50%", stride: None, count_cores: false, one_per_core: false };
+    startup_topology(&synthetic(&[0; 16], 8, 16, false), &request, false)
 }
 
 /// `memory=50%` on a 32 GiB box, six threads, each share rounded up to whole GiB.
