@@ -312,7 +312,7 @@ pub enum Reach {
 }
 
 impl Reach {
-    /// What a broad one reaches, the end of its warning ("⚠️  BROAD, likely not what you want: ..."): `None` for the account and a group
+    /// What a broad one reaches, said once when it is picked: `None` for the account and a group
     pub fn warning(self) -> Option<&'static str> {
         match self {
             Reach::You | Reach::Group => None,
@@ -331,6 +331,11 @@ impl Reach {
 /// What a broad grant risks, which the second question after a broad pick states: Microsoft's 'Lock pages in memory' page names it a
 /// denial of service, "could leave little or no RAM for other processes"
 pub const BROAD_RISK: &str = "any program of any of these accounts can then lock RAM away from Windows";
+
+/// A broad candidate's mark, and what it means (the owner, 2026-11-04: short, said once): the console marks the row and says the words once
+/// under the list; the window's list has them in its Note column
+pub const BROAD_MARK: &str = "⚠️";
+pub const BROAD_CAUTION: &str = "BROAD, use with caution";
 
 /// Windows' automatic groups, by SID (the TODO 113 review's list): Everyone (S-1-1-0); S-1-2-*, LOCAL and CONSOLE LOGON; NT AUTHORITY's
 /// DIALUP, NETWORK, BATCH, INTERACTIVE, SERVICE, ANONYMOUS LOGON, PROXY, ENTERPRISE DOMAIN CONTROLLERS, Authenticated Users, RESTRICTED,

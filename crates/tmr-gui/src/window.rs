@@ -1064,11 +1064,38 @@ impl Window {
         let content: View = if words.choices.is_empty() {
             text.into()
         } else {
-            let choices = RadioButtons::new()
-                .items_source(words.choices)
+            // A row a candidate, in columns under a header (TODO 113, the owner: radio buttons spread too far apart), fixed widths so the
+            // header lines up with the rows; a long name is trimmed, and its tooltip has it whole. The header sits the list item's padding
+            // in from the left.
+            const COLUMNS: [GridLength; 3] = [GridLength::Pixel(48.0), GridLength::Pixel(230.0), GridLength::Pixel(180.0)];
+            let line = |kind: &str, name: &str, note: &str, bold: bool| {
+                let weight = if bold { FontWeight::SEMI_BOLD } else { FontWeight::NORMAL };
+                Grid::new().columns(COLUMNS).column_spacing(8.0).children((
+                    TextBlock::new().text(kind).font_weight(weight).grid_column(0),
+                    TextBlock::new()
+                        .text(name)
+                        .font_weight(weight)
+                        .text_trimming(TextTrimming::CharacterEllipsis)
+                        .grid_column(1)
+                        .tooltip(name.to_string()),
+                    TextBlock::new().text(note).font_weight(weight).grid_column(2),
+                ))
+            };
+            let header = Border::new().margin(Thickness::new(12.0, 0.0, 0.0, 0.0)).content(line("Type", "Name", "Note", true));
+            let items: Vec<KeyedView> = words
+                .choices
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    KeyedView::new(i, ListViewItem::new().tag(i.to_string()).content(line(row.kind, &row.name, &row.note, false)))
+                })
+                .collect();
+            let list = ListView::new()
+                .selection_mode(ListViewSelectionMode::Single)
                 .selected_index(words.chosen)
-                .on_selection_changed(context.callback(Message::LargePageTarget));
-            StackPanel::new().spacing(12.0).children((text, choices))
+                .on_selection_changed(context.callback(Message::LargePageTarget))
+                .collection_slot(ListViewSlot::Items, items);
+            StackPanel::new().spacing(8.0).children((text, header, list))
         };
         ContentDialog::new()
             .title(words.title)

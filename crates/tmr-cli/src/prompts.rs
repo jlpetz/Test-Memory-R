@@ -4,7 +4,7 @@
 
 use std::io::{self, BufRead, Write};
 
-use tmr::frontend::{BROAD_RISK, Candidate, LargePageAnswer, LargePageQuestion};
+use tmr::frontend::{BROAD_CAUTION, BROAD_MARK, BROAD_RISK, Candidate, LargePageAnswer, LargePageQuestion};
 
 /// One answer: a line of `input`, trimmed and in capitals, after `flush` has dropped what was typed ahead (`console::flush_input`); empty
 /// for no answer, the input's end, or an input that can't be read
@@ -144,10 +144,14 @@ fn grant(
     if !groups.is_empty() {
         writeln!(out, "Or grant it to a group {} is in, then exit TMR and sign out and back in:", you.name)?;
         for (number, group) in (1..).zip(groups) {
-            match group.reach.warning() {
-                Some(warning) => writeln!(out, "  {number}) {}  ⚠️  BROAD, likely not what you want: {warning}", group.name)?,
-                None => writeln!(out, "  {number}) {}", group.name)?,
+            match group.reach.is_broad() {
+                true => writeln!(out, "  {number}) {}  {BROAD_MARK}", group.name)?,
+                false => writeln!(out, "  {number}) {}", group.name)?,
             }
+        }
+        // What the mark means, once for every row it marks (the owner, 2026-11-04)
+        if groups.iter().any(|group| group.reach.is_broad()) {
+            writeln!(out, "  {BROAD_MARK}  {BROAD_CAUTION}: most or all accounts are in it, and {BROAD_RISK}.")?;
         }
     }
     let granting = |out: &mut dyn Write, i: usize| -> io::Result<LargePageAnswer> {
@@ -187,8 +191,7 @@ fn grant(
         };
         let name = &candidates[picked].name;
         writeln!(out)?;
-        writeln!(out, "⚠️  {name} is BROAD: {warning}, and")?;
-        writeln!(out, "   {BROAD_RISK}.")?;
+        writeln!(out, "{BROAD_MARK}  {name} is BROAD: {warning}.")?;
         write!(out, "Grant it to {name} anyway? [y/N]: ")?;
         out.flush()?;
         if matches!(answer(input, flush).as_str(), "Y" | "YES") {

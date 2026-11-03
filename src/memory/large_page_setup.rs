@@ -461,7 +461,7 @@ fn grant(program: &str, target: Option<Account>, machine: &mut dyn Machine, out:
     if let Some(account) = &target {
         target_line(out, account)?;
         if let Some(warning) = account.reach.warning() {
-            writeln!(out, "⚠️  {} is BROAD, likely not what you want: {warning}. Granting it, as asked.", account.name)?;
+            writeln!(out, "⚠️  {} is BROAD (use with caution): {warning}. Granting it, as asked.", account.name)?;
         }
     }
     if !machine.administrator() {

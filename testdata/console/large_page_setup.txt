@@ -53,7 +53,7 @@ standard 4 KiB pages.
 <the large-page check's report>
 
 🎯 Target: BUILTIN\Users (a group)
-⚠️  BUILTIN\Users is BROAD, likely not what you want: every account that can sign in to this PC is in it. Granting it, as asked.
+⚠️  BUILTIN\Users is BROAD (use with caution): every account that can sign in to this PC is in it. Granting it, as asked.
 ✅ Granted 'Lock pages in memory' (SeLockMemoryPrivilege) to BUILTIN\Users, which keeps it until it is removed (tmr.exe --remove-large-pages Group:BUILTIN\Users)
 
 🔄 SIGN-IN REQUIRED: sign out of Windows and back in (or restart it) for it to take effect

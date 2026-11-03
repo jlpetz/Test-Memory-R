@@ -16,8 +16,9 @@ use std::time::Duration;
 
 use tmr::commands::ResultsComparison;
 use tmr::frontend::{
-    AllocationReport, BROAD_RISK, ErrorCounts, Event, LargePageAnswer, LargePageQuestion, NotRun, ProgressSnapshot, ProgressTracker, Run,
-    RunOutcome, RunStatus, SealOp, Setup, StepReport, TestConfigurationReport, TestSnapshot, ThreadPriority,
+    AllocationReport, BROAD_CAUTION, BROAD_MARK, BROAD_RISK, ErrorCounts, Event, LargePageAnswer, LargePageQuestion, NotRun,
+    ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealOp, Setup, StepReport, TestConfigurationReport, TestSnapshot,
+    ThreadPriority,
 };
 use tmr::session::{SessionEnd, Stopped};
 
@@ -38,7 +39,7 @@ pub const LOG_KEPT: usize = 10_000;
 
 /// The large-page dialog's words (`Model::large_page_dialog`), as `window.rs` draws them (TODO 113): its title, its buttons' (the
 /// secondary 4 KiB pages this time; the close button, as Esc, quits, and an empty one has none), its text, and for the grant the
-/// candidates as its radio buttons label them and the one chosen, which mirrors the control: none chosen disables the grant.
+/// candidates as its list shows them and the one chosen, which mirrors the control: none chosen disables the grant.
 #[derive(Debug, PartialEq, Eq)]
 pub struct LargePageDialog {
     pub title: &'static str,
@@ -46,8 +47,17 @@ pub struct LargePageDialog {
     pub secondary: &'static str,
     pub close: &'static str,
     pub text: String,
-    pub choices: Vec<String>,
+    pub choices: Vec<GrantRow>,
     pub chosen: Option<usize>,
+}
+
+/// A candidate's row in the grant's list (TODO 113, the owner: a list, not radio buttons spread apart): User or Group, its name, and a
+/// note, "You, recommended" for the account and the broad mark for a broad group
+#[derive(Debug, PartialEq, Eq)]
+pub struct GrantRow {
+    pub kind: &'static str,
+    pub name: String,
+    pub note: String,
 }
 
 /// Which of a large-page dialog's buttons closed it (`Model::answer_large_pages`), as `window.rs` reads WinUI's result: the primary, the
@@ -774,7 +784,7 @@ impl Model {
     /// The dialog's words for the last question asked (none before any): the console's question (crates/tmr-cli's `prompts.rs`) in a
     /// window's
     pub fn large_page_dialog(&self) -> LargePageDialog {
-        const CONTINUE: &str = "Continue on 4 KiB pages this time";
+        const CONTINUE: &str = "Use 4 KiB pages";
         const QUIT: &str = "Quit";
         let elevated_lines = |uac: bool, domain: bool| {
             let uac = if uac { " After the next sign-in TMR has it in every run, run as administrator or not." } else { "" };
@@ -799,7 +809,7 @@ impl Model {
                 };
                 LargePageDialog {
                     title: "Large pages need a new sign-in",
-                    primary: "Exit, to sign out and back in",
+                    primary: "Exit to sign out",
                     secondary: CONTINUE,
                     close: QUIT,
                     text: format!(
@@ -818,15 +828,19 @@ impl Model {
                 let choices = candidates
                     .iter()
                     .enumerate()
-                    .map(|(i, candidate)| match candidate.reach.warning() {
-                        _ if i == 0 => format!("{} (you, recommended)", candidate.name),
-                        Some(warning) => format!("{}: ⚠ BROAD, likely not what you want: {warning}", candidate.name),
-                        None => candidate.name.clone(),
+                    .map(|(i, candidate)| GrantRow {
+                        kind: if i == 0 { "User" } else { "Group" },
+                        name: candidate.name.clone(),
+                        note: match candidate.reach.is_broad() {
+                            _ if i == 0 => "You, recommended".to_string(),
+                            true => format!("{BROAD_MARK} {BROAD_CAUTION}"),
+                            false => String::new(),
+                        },
                     })
                     .collect();
                 LargePageDialog {
                     title: "Large pages need the 'Lock pages in memory' right",
-                    primary: "Grant it, then exit to sign in again",
+                    primary: "Grant and exit",
                     secondary: CONTINUE,
                     close: QUIT,
                     text: format!(
@@ -842,7 +856,7 @@ impl Model {
             }
             Some(LargePageQuestion::NeedsAdministrator { account, uac }) => LargePageDialog {
                 title: "Large pages need TMR run as administrator",
-                primary: "Quit, to run TMR as administrator",
+                primary: "Quit",
                 secondary: CONTINUE,
                 // The primary is the quit, and Esc quits too
                 close: "",
@@ -878,7 +892,7 @@ impl Model {
             title: format!("Grant 'Lock pages in memory' to {name}?"),
             grant: format!("Grant it to {name}"),
             text: format!(
-                "{name} is broad, likely not what you want: {warning}, and {BROAD_RISK}.\n\nGrant it to {name} anyway, or go back to \
+                "{name} is BROAD: {warning}, and {BROAD_RISK}.\n\nGrant it to {name} anyway, or go back to \
                  the list, granting nothing."
             ),
         }
@@ -1919,7 +1933,7 @@ mod tests {
         let words = m.large_page_dialog();
         assert_eq!(
             (words.title, words.primary, words.secondary, words.close, words.choices.len()),
-            ("Large pages need a new sign-in", "Exit, to sign out and back in", "Continue on 4 KiB pages this time", "Quit", 0)
+            ("Large pages need a new sign-in", "Exit to sign out", "Use 4 KiB pages", "Quit", 0)
         );
         for said in [r"to PC\owner, the account TMR runs as, but this sign-in began before it did", "it needn't restart", "runs nothing"] {
             assert!(words.text.contains(said), "{said}: {}", words.text);
@@ -1984,18 +1998,14 @@ mod tests {
         let words = m.large_page_dialog();
         assert_eq!(
             (words.title, words.primary, words.secondary, words.close),
-            (
-                "Large pages need the 'Lock pages in memory' right",
-                "Grant it, then exit to sign in again",
-                "Continue on 4 KiB pages this time",
-                "Quit"
-            )
+            ("Large pages need the 'Lock pages in memory' right", "Grant and exit", "Use 4 KiB pages", "Quit")
         );
-        assert_eq!(words.choices, [
-            r"PC\owner (you, recommended)",
-            r"BUILTIN\Administrators",
-            r"BUILTIN\Users: ⚠ BROAD, likely not what you want: every account that can sign in to this PC is in it",
-            "Everyone: ⚠ BROAD, likely not what you want: Windows puts every account that signs in a certain way in it",
+        let rows: Vec<(&str, &str, &str)> = words.choices.iter().map(|r| (r.kind, r.name.as_str(), r.note.as_str())).collect();
+        assert_eq!(rows, [
+            ("User", r"PC\owner", "You, recommended"),
+            ("Group", r"BUILTIN\Administrators", ""),
+            ("Group", r"BUILTIN\Users", "⚠️ BROAD, use with caution"),
+            ("Group", "Everyone", "⚠️ BROAD, use with caution"),
         ]);
         assert_eq!(words.chosen, Some(0), "the account chosen");
         for said in [r"TMR runs as PC\owner,", "keeps it until it is removed (tmr.exe --remove-large-pages)", "next sign-in", "4 KiB pages"]
@@ -2104,10 +2114,7 @@ mod tests {
             m.ask_large_pages(LargePageQuestion::NeedsAdministrator { account: r"PC\owner".to_string(), uac: true }, reply);
             assert_eq!(m.position, "Large pages need TMR run as administrator");
             let words = m.large_page_dialog();
-            assert_eq!(
-                (words.primary, words.secondary, words.close),
-                ("Quit, to run TMR as administrator", "Continue on 4 KiB pages this time", "")
-            );
+            assert_eq!((words.primary, words.secondary, words.close), ("Quit", "Use 4 KiB pages", ""));
             for said in ["Run as administrator", "--setup-large-pages", "once to grant it", "Closing this dialog quits"] {
                 assert!(words.text.contains(said), "{said}: {}", words.text);
             }
