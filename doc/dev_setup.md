@@ -55,6 +55,9 @@ a lost machine loses them unless they are kept somewhere else:
   `doc\todo\`, in git);
 - `..\TM5\` and `..\TM5_Source\`, the reference TM5 sources and configs, and the probe crates
   `..\*-test*\`;
+- `..\baselines\<date>\`, the hardware campaigns' results and logs, kept to compare a later build against (they
+  carry machine IDs, so they stay out of git), with `..\hw-pass\`, the kit that runs a campaign (its `README.md`:
+  "Comparing a later run"), and `..\builds\<commit>\`, the exe and pdb of each passing `tools/ci_local.py` run;
 - the agents' memory, in the user profile (`%USERPROFILE%\.claude\projects\<the repository's path>\memory\`).
 
 No secret is in the repository: the release's tokens are GitHub secrets.
