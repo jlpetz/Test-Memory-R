@@ -140,7 +140,9 @@ C++ build tools for the linker (Visual Studio Build Tools, "Desktop development 
 each release is; `--no-default-features` leaves the window out. A built `tmr.exe` keeps its
 configs, results and logs beside itself, in `target\release\`, which `cargo clean` empties: set
 `TMR_HOME` to another folder to keep them there (`$env:TMR_HOME = "$PWD"` in the repository keeps
-them in its `results\` and `logs\`, which git ignores).
+them in its `results\` and `logs\`, which git ignores). A development machine, with the tests and
+checks as CI runs them: [doc/dev_setup.md](doc/dev_setup.md) (`tools\setup_dev.ps1` installs what's
+missing).
 
 ## License
 

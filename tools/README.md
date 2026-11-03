@@ -22,7 +22,8 @@ python tools/ci_local.py --list       # what each would run
 ```
 
 It needs CI's tools: `cargo install --locked cargo-nextest cargo-audit` (and cargo-about, for
-release.yml's notices, which it doesn't run). nextest runs each test in a process of its own, where
+release.yml's notices, which it doesn't run). `setup_dev.ps1` installs them and the rest of a
+development machine, what's missing only (`-Check` reports; `doc/dev_setup.md`). nextest runs each test in a process of its own, where
 `cargo test` runs a crate's tests as threads of one process, so a test that leans on another's
 process state passes one way only: the like-for-like run is nextest's.
 
