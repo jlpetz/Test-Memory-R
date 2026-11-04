@@ -203,12 +203,9 @@ pub unsafe fn read_latency_multi(
         latencies.add(latency_ns);
         runner.add_bytes(iterations * 8);
 
-        // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-        if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-            runner.update_progress();
-            if runner.shutdown_requested() || !runner.should_continue() {
-                break;
-            }
+        // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+        if runner.check_due() && runner.check() {
+            break;
         }
     }
 
@@ -327,12 +324,9 @@ pub unsafe fn write_latency_multi(
         latencies.add(latency_ns);
         runner.add_bytes(iterations * 8);
 
-        // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-        if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-            runner.update_progress();
-            if runner.shutdown_requested() || !runner.should_continue() {
-                break;
-            }
+        // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+        if runner.check_due() && runner.check() {
+            break;
         }
     }
 
@@ -458,12 +452,9 @@ pub unsafe fn copy_latency_multi(
         latencies.add(latency_ns);
         runner.add_bytes(iterations * 16);
 
-        // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-        if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-            runner.update_progress();
-            if runner.shutdown_requested() || !runner.should_continue() {
-                break;
-            }
+        // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+        if runner.check_due() && runner.check() {
+            break;
         }
     }
 

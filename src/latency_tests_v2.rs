@@ -225,12 +225,9 @@ macro_rules! lat_v2_read_impl {
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
-                // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-                if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-                    runner.update_progress();
-                    if runner.shutdown_requested() || !runner.should_continue() {
-                        break;
-                    }
+                // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+                if runner.check_due() && runner.check() {
+                    break;
                 }
             }
 
@@ -313,12 +310,9 @@ macro_rules! lat_v2_write_impl {
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
-                // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-                if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-                    runner.update_progress();
-                    if runner.shutdown_requested() || !runner.should_continue() {
-                        break;
-                    }
+                // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+                if runner.check_due() && runner.check() {
+                    break;
                 }
             }
 
@@ -403,12 +397,9 @@ macro_rules! lat_v2_copy_impl {
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
-                // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-                if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-                    runner.update_progress();
-                    if runner.shutdown_requested() || !runner.should_continue() {
-                        break;
-                    }
+                // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+                if runner.check_due() && runner.check() {
+                    break;
                 }
             }
 
@@ -507,12 +498,9 @@ macro_rules! lat_v2p_read_impl {
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
-                // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-                if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-                    runner.update_progress();
-                    if runner.shutdown_requested() || !runner.should_continue() {
-                        break;
-                    }
+                // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+                if runner.check_due() && runner.check() {
+                    break;
                 }
             }
 
@@ -611,12 +599,9 @@ macro_rules! lat_v2p_write_impl {
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
-                // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-                if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-                    runner.update_progress();
-                    if runner.shutdown_requested() || !runner.should_continue() {
-                        break;
-                    }
+                // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+                if runner.check_due() && runner.check() {
+                    break;
                 }
             }
 
@@ -726,12 +711,9 @@ macro_rules! lat_v2p_copy_impl {
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
-                // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-                if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-                    runner.update_progress();
-                    if runner.shutdown_requested() || !runner.should_continue() {
-                        break;
-                    }
+                // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+                if runner.check_due() && runner.check() {
+                    break;
                 }
             }
 
@@ -834,12 +816,9 @@ macro_rules! lat_v2p_write_full_impl {
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
-                // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-                if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-                    runner.update_progress();
-                    if runner.shutdown_requested() || !runner.should_continue() {
-                        break;
-                    }
+                // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+                if runner.check_due() && runner.check() {
+                    break;
                 }
             }
 
@@ -942,12 +921,9 @@ macro_rules! lat_v2p_copy_full_impl {
                 total_ops += ops;
                 runner.add_bytes(ops as usize * 8);
 
-                // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-                if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-                    runner.update_progress();
-                    if runner.shutdown_requested() || !runner.should_continue() {
-                        break;
-                    }
+                // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+                if runner.check_due() && runner.check() {
+                    break;
                 }
             }
 
@@ -1447,12 +1423,9 @@ macro_rules! lat_ntw_write_impl {
                 total_ops += STORES_PER_SAMPLE as u64;
                 runner.add_bytes(STORES_PER_SAMPLE as u64 as usize * 8);
 
-                // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-                if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-                    runner.update_progress();
-                    if runner.shutdown_requested() || !runner.should_continue() {
-                        break;
-                    }
+                // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+                if runner.check_due() && runner.check() {
+                    break;
                 }
             }
 
@@ -1527,12 +1500,9 @@ pub unsafe fn lat_ntw_write_scalar_multi(
         total_ops += STORES_PER_SAMPLE as u64;
         runner.add_bytes(STORES_PER_SAMPLE as u64 as usize * 8);
 
-        // Every 64 samples (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
-        if runner.check_due(crate::test_scaffolding::SAMPLES_PER_CHECK) {
-            runner.update_progress();
-            if runner.shutdown_requested() || !runner.should_continue() {
-                break;
-            }
+        // About every 10 ms (TODO 105 (2)): the clock twice a sample was 5-7% of an L1 step, outside its timed loads but inside its clock
+        if runner.check_due() && runner.check() {
+            break;
         }
     }
 

@@ -119,8 +119,12 @@ pub struct TestRunner<'a> {
     /// Another thread halted the step on an error in memory this test shares (the page exchange, TODO 28): finishing leaves the extent
     /// as it is, as a halt here does
     kept: bool,
-    /// Passes or samples since the clock and the stop flag were last read (`check_due`)
+    /// Samples since the last check (`check_due`)
     since_check: u32,
+    /// The passes or samples between checks, which keeps them about `CHECK_INTERVAL` apart (`check`)
+    every: u32,
+    /// When the last check read the clock
+    last_check: Instant,
 }
 
 /// What a step covers on one thread, for log lines: the bytes, the extent asked for, and the chunks (Mem-Random's are RNG iterations,
@@ -160,16 +164,34 @@ pub fn step_line(name: &str, test_name: &str, config: &TestMemoryConfig, span_by
     }
 }
 
-/// About how much a bandwidth test moves between its clock and stop checks (`TestRunner::check_due`, TODO 105 (2))
-const CHECK_BYTES: usize = 1 << 20;
+/// About how far apart a bandwidth or latency test's checks come (`TestRunner::check`, TODO 105 (2)): a stop or a time limit waits up to
+/// about twice it. The samples don't depend on it, and the progress publishes every 250 ms whatever it is.
+pub const CHECK_INTERVAL: Duration = Duration::from_millis(10);
 
-/// A bandwidth test's passes between its checks: about every `CHECK_BYTES` moved, one at least (a pass past 1 MiB checks after each)
-pub fn passes_per_check(pass_bytes: usize) -> u32 {
-    (CHECK_BYTES / pass_bytes.max(1)).clamp(1, u32::MAX as usize) as u32
+/// The most passes or samples between two checks: far past what `CHECK_INTERVAL` holds of the shortest pass (4 KiB)
+const MAX_EVERY: u32 = 1 << 24;
+
+/// The passes or samples between checks after one came `since` the last (TODO 105 (2)): twice as many while they come under half
+/// `CHECK_INTERVAL` apart, half as many past twice it, else the same. From one, it settles within a few milliseconds on any machine,
+/// one whose clock costs a microsecond a read too (a VM's can): checks counted by size, every 1 MiB, would cost such an L1 test a third.
+fn next_every(every: u32, since: Duration) -> u32 {
+    if since < CHECK_INTERVAL / 2 {
+        every.saturating_mul(2).min(MAX_EVERY)
+    } else if since > CHECK_INTERVAL * 2 {
+        (every / 2).max(1)
+    } else {
+        every
+    }
 }
 
-/// A latency test's samples between its checks: 64 is 64 microseconds at L1, about 5 ms at DRAM
-pub const SAMPLES_PER_CHECK: u32 = 64;
+/// The passes a bandwidth test runs before its next check: `every`, and no more than the cycle limit leaves after `cycle`, so a step
+/// stops there exactly. Past the limit (a minimum duration keeps it going), `every`.
+fn passes_before(every: u32, cycle: u32, cycles: Option<u32>) -> u32 {
+    match cycles {
+        Some(max) if cycle < max => every.min(max - cycle),
+        _ => every,
+    }
+}
 
 /// The extent a test of this config covers on these blocks: the first bytes of the thread's span (TODO 76), at least one granule when there
 /// is memory. Also the worker's view of what a step that never takes the seal will overwrite (TODO 74).
@@ -224,6 +246,8 @@ impl<'a> TestRunner<'a> {
             seal_errors: 0,
             kept: false,
             since_check: 0,
+            every: 1,
+            last_check: now,
         };
         // The untimed setup a latency or bandwidth test does before `restart_clock`, for the ticker
         match action {
@@ -271,6 +295,7 @@ impl<'a> TestRunner<'a> {
         self.start = now;
         self.inside = Duration::ZERO;
         self.last_progress_update = now;
+        self.last_check = now;
     }
 
     /// Setup since the clock started is done (TODO 90): recorded as `op` over `bytes`, and the clock starts again, so it counts toward
@@ -389,17 +414,41 @@ impl<'a> TestRunner<'a> {
         self.cycle
     }
 
-    /// Whether the clock and the stop flag are due (TODO 105 (2)): once every `every` passes or samples, and at the cycle limit, which reads
-    /// no clock, so a step stops there exactly. An L1 bandwidth pass is a few microseconds, and reading the clock twice a pass (the
-    /// progress and the time limit) took about half of it.
+    /// Whether a latency test's check is due (TODO 105 (2)): after `every` samples, which `check` keeps about `CHECK_INTERVAL` apart,
+    /// and at the cycle limit (a latency test's cycle is a sample), which reads no clock, so a step stops there exactly.
     #[inline]
-    pub fn check_due(&mut self, every: u32) -> bool {
+    pub fn check_due(&mut self) -> bool {
         self.since_check += 1;
-        if self.since_check >= every || self.timing.cycles.is_some_and(|max| self.cycle >= max) {
+        if self.since_check >= self.every || self.timing.cycles == Some(self.cycle) {
             self.since_check = 0;
             return true;
         }
         false
+    }
+
+    /// The passes a bandwidth test runs as one loop before its next check (TODO 105 (2), `passes_before`)
+    #[inline]
+    pub fn passes_to_check(&self) -> u32 {
+        passes_before(self.every, self.cycle, self.timing.cycles)
+    }
+
+    /// A bandwidth test's `passes` passes of `pass_bytes` each are done: counted, then checked (`check`). Whether the step stops.
+    #[inline(never)]
+    pub fn passes_done(&mut self, passes: u32, pass_bytes: usize) -> bool {
+        self.cycle = self.cycle.saturating_add(passes);
+        self.total_bytes_processed = self.total_bytes_processed.saturating_add(passes as usize * pass_bytes);
+        self.check()
+    }
+
+    /// The check of a bandwidth or latency test (TODO 105 (2)): one clock read for the progress, the time limit and the next interval
+    /// (`next_every`), and the stop flag. Whether the step stops.
+    #[inline(never)]
+    pub fn check(&mut self) -> bool {
+        let now = Instant::now();
+        self.every = next_every(self.every, now.duration_since(self.last_check));
+        self.last_check = now;
+        self.publish_progress(self.cycle, now);
+        self.shutdown_requested() || !self.timing.should_continue(self.cycle, now.duration_since(self.start).as_secs() as u32)
     }
 
     /// Accumulate processed bytes (called per block, between chunks).
@@ -451,37 +500,36 @@ impl<'a> TestRunner<'a> {
     /// their bookkeeping took registers from the kernels' loops (stuck-bit 512, stride and sequence each gained a reload). A call a chunk.
     #[inline(never)]
     pub fn update_progress(&mut self) {
-        self.publish_progress(self.cycle);
+        self.publish_progress(self.cycle, Instant::now());
     }
 
     /// The same from inside a cycle, between chunks: the current cycle isn't complete yet.
     #[inline(never)]
     pub fn update_progress_in_cycle(&mut self) {
-        self.publish_progress(self.cycle.saturating_sub(1));
+        self.publish_progress(self.cycle.saturating_sub(1), Instant::now());
     }
 
     #[inline]
-    fn publish_progress(&mut self, cycles_completed: u32) {
-        if let Some(progress) = self.progress {
-            let now = Instant::now();
-            if now.duration_since(self.last_progress_update).as_millis() >= 250 {
-                progress.cycles_completed.store(cycles_completed, Ordering::Relaxed);
-                progress.bytes_processed.store(self.total_bytes_processed as u64, Ordering::Relaxed);
-                progress.errors_found.store(self.total_error_count + self.seal_errors, Ordering::Relaxed);
-                progress.seal_errors_found.store(self.seal_errors, Ordering::Relaxed);
-                // The test's own time, as its report's speed takes it (TODO 109): without the seal's work around its chunks and its setup,
-                // whose bytes aren't the test's. Over the wall clock, a sealed test's first cycle, where every chunk is checked and resealed,
-                // drew a flat line low and the rest climbing toward the speed. At least 1: 0 is "nothing published yet".
-                let timed = self.start.elapsed().saturating_sub(self.inside);
-                let timed_ms = (timed.as_millis() as u64).max(1);
-                progress.last_update_ms.store(timed_ms, Ordering::Relaxed);
-                // The chart's line, the speed over its last seconds, and whether this pass is the sealed one of a step that makes more
-                let recent = progress.recent.push(timed_ms, self.total_bytes_processed as u64);
-                progress.recent_bytes_per_sec.store(recent.to_bits(), Ordering::Relaxed);
-                let sealed_pass = self.seal.wrap && self.cycle <= 1 && self.timing.cycles != Some(1);
-                progress.sealed_pass.store(sealed_pass, Ordering::Relaxed);
-                self.last_progress_update = now;
-            }
+    fn publish_progress(&mut self, cycles_completed: u32, now: Instant) {
+        if let Some(progress) = self.progress
+            && now.duration_since(self.last_progress_update).as_millis() >= 250
+        {
+            progress.cycles_completed.store(cycles_completed, Ordering::Relaxed);
+            progress.bytes_processed.store(self.total_bytes_processed as u64, Ordering::Relaxed);
+            progress.errors_found.store(self.total_error_count + self.seal_errors, Ordering::Relaxed);
+            progress.seal_errors_found.store(self.seal_errors, Ordering::Relaxed);
+            // The test's own time, as its report's speed takes it (TODO 109): without the seal's work around its chunks and its setup,
+            // whose bytes aren't the test's. Over the wall clock, a sealed test's first cycle, where every chunk is checked and resealed,
+            // drew a flat line low and the rest climbing toward the speed. At least 1: 0 is "nothing published yet".
+            let timed = now.duration_since(self.start).saturating_sub(self.inside);
+            let timed_ms = (timed.as_millis() as u64).max(1);
+            progress.last_update_ms.store(timed_ms, Ordering::Relaxed);
+            // The chart's line, the speed over its last seconds, and whether this pass is the sealed one of a step that makes more
+            let recent = progress.recent.push(timed_ms, self.total_bytes_processed as u64);
+            progress.recent_bytes_per_sec.store(recent.to_bits(), Ordering::Relaxed);
+            let sealed_pass = self.seal.wrap && self.cycle <= 1 && self.timing.cycles != Some(1);
+            progress.sealed_pass.store(sealed_pass, Ordering::Relaxed);
+            self.last_progress_update = now;
         }
     }
 
@@ -581,13 +629,20 @@ impl<'a> TestRunner<'a> {
 mod tests {
     use super::*;
 
-    /// TODO 105 (2): a bandwidth test checks its clock about every 1 MiB moved: an L1 pass of 16 KiB every 64, a 512 KiB one every 2,
-    /// one past 1 MiB after each, and never fewer than one
+    /// TODO 105 (2): the checks keep about 10 ms apart: the count doubles while they come under 5 ms apart, up to its cap, halves past
+    /// 20 ms, to one at least, and stays between; a bandwidth test runs that many passes, but never past its cycle limit.
     #[test]
-    fn a_bandwidth_test_checks_about_every_mib() {
-        const KIB: usize = 1024;
-        let every = [16 * KIB, 24 * KIB, 512 * KIB, 1024 * KIB, 1088 * KIB, 7 << 30, 0].map(passes_per_check);
-        assert_eq!(every, [64, 42, 2, 1, 1, 1, 1 << 20]);
+    fn checks_keep_about_ten_milliseconds_apart() {
+        let ms = Duration::from_millis;
+        assert_eq!([ms(0), ms(4), ms(5), ms(20), ms(21), ms(500)].map(|since| next_every(64, since)), [128, 128, 64, 64, 32, 32]);
+        assert_eq!((next_every(MAX_EVERY, ms(1)), next_every(1, ms(100))), (MAX_EVERY, 1));
+        let mut every = 1;
+        for _ in 0..24 {
+            every = next_every(every, Duration::from_nanos(62 * u64::from(every)));
+        }
+        assert!((1 << 17..=1 << 18).contains(&every), "an L1 pass of 62 ns settles at 5-20 ms of passes: {every}");
+        assert_eq!([None, Some(10), Some(100), Some(3)].map(|cycles| passes_before(64, 3, cycles)), [64, 7, 64, 64]);
+        assert_eq!(passes_before(64, 0, Some(1)), 1, "cycles=1 is one pass");
     }
 
     /// TODO 105: a step logs one line, not one a thread; threads whose spans give the same layout are counted together, in the order they

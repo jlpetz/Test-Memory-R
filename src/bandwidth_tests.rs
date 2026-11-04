@@ -206,25 +206,21 @@ macro_rules! spd_write_impl {
             let pattern = $set1_fn(STATIC_PATTERN as i64);
             // The extent as one chunk under the `whole` chunk mode the built-ins use
             let spread = runner.chunks(extent.test_size);
-            // About every 1 MiB moved, not every pass (TODO 105 (2))
-            let every = crate::test_scaffolding::passes_per_check(extent.test_size);
 
+            // The passes between checks as one loop, counted at the check, about every 10 ms (TODO 105 (2))
+            let pass_bytes = spread.count() * spread.chunk();
             loop {
-                runner.begin_cycle();
-
-                for k in 0..spread.count() {
-                    spd_write_hot!(base.add(spread.start(k)), spread.chunk(), pattern, $arch_type, $store_fn);
-                    if $need_sfence {
-                        std::arch::x86_64::_mm_sfence();
+                let passes = runner.passes_to_check();
+                for _ in 0..passes {
+                    for k in 0..spread.count() {
+                        spd_write_hot!(base.add(spread.start(k)), spread.chunk(), pattern, $arch_type, $store_fn);
+                        if $need_sfence {
+                            std::arch::x86_64::_mm_sfence();
+                        }
                     }
-                    runner.add_bytes(spread.chunk());
                 }
-
-                if runner.check_due(every) {
-                    runner.update_progress();
-                    if runner.shutdown_requested() || !runner.should_continue() {
-                        return runner.finish_completed((runner.bytes_processed() / 8) as u64);
-                    }
+                if runner.passes_done(passes, pass_bytes) {
+                    return runner.finish_completed((runner.bytes_processed() / 8) as u64);
                 }
             }
         }
@@ -275,22 +271,18 @@ macro_rules! spd_read_impl {
 
             // The extent as one chunk under the `whole` chunk mode the built-ins use
             let spread = runner.chunks(extent.test_size);
-            // About every 1 MiB moved, not every pass (TODO 105 (2))
-            let every = crate::test_scaffolding::passes_per_check(extent.test_size);
 
+            // The passes between checks as one loop, counted at the check, about every 10 ms (TODO 105 (2))
+            let pass_bytes = spread.count() * spread.chunk();
             loop {
-                runner.begin_cycle();
-
-                for k in 0..spread.count() {
-                    spd_read_hot!(base.add(spread.start(k)) as *const u8, spread.chunk(), $arch_type, $load_fn, $xor_fn, $setzero_fn);
-                    runner.add_bytes(spread.chunk());
-                }
-
-                if runner.check_due(every) {
-                    runner.update_progress();
-                    if runner.shutdown_requested() || !runner.should_continue() {
-                        return runner.finish_completed((runner.bytes_processed() / 8) as u64);
+                let passes = runner.passes_to_check();
+                for _ in 0..passes {
+                    for k in 0..spread.count() {
+                        spd_read_hot!(base.add(spread.start(k)) as *const u8, spread.chunk(), $arch_type, $load_fn, $xor_fn, $setzero_fn);
                     }
+                }
+                if runner.passes_done(passes, pass_bytes) {
+                    return runner.finish_completed((runner.bytes_processed() / 8) as u64);
                 }
             }
         }
@@ -347,31 +339,27 @@ macro_rules! spd_copy_impl {
 
             // Each half as one chunk under the `whole` chunk mode the built-ins use
             let spread = runner.half_chunks(extent.test_size);
-            // About every 1 MiB moved, not every pass (TODO 105 (2))
-            let every = crate::test_scaffolding::passes_per_check(extent.test_size);
             let (half_a, half_b) = (base, base.add(half_bytes));
 
+            // The passes between checks as one loop, counted at the check, about every 10 ms (TODO 105 (2)). A pass's traffic: each
+            // direction's chunks read plus written
+            let pass_bytes = 2 * spread.count() * spread.chunk() * 2;
             loop {
-                runner.begin_cycle();
-
-                // Bidirectional: A→B then B→A, each direction in full = the extent's traffic twice
-                for (src, dst) in [(half_a, half_b), (half_b, half_a)] {
-                    for k in 0..spread.count() {
-                        let offset = spread.start(k);
-                        $chunk_fn(src.add(offset), dst.add(offset), spread.chunk());
-                        // Traffic: the chunk read plus the chunk written
-                        runner.add_bytes(spread.chunk() * 2);
-                    }
-                    if $need_sfence {
-                        std::arch::x86_64::_mm_sfence();
+                let passes = runner.passes_to_check();
+                for _ in 0..passes {
+                    // Bidirectional: A→B then B→A, each direction in full = the extent's traffic twice
+                    for (src, dst) in [(half_a, half_b), (half_b, half_a)] {
+                        for k in 0..spread.count() {
+                            let offset = spread.start(k);
+                            $chunk_fn(src.add(offset), dst.add(offset), spread.chunk());
+                        }
+                        if $need_sfence {
+                            std::arch::x86_64::_mm_sfence();
+                        }
                     }
                 }
-
-                if runner.check_due(every) {
-                    runner.update_progress();
-                    if runner.shutdown_requested() || !runner.should_continue() {
-                        return runner.finish_completed((runner.bytes_processed() / 8) as u64);
-                    }
+                if runner.passes_done(passes, pass_bytes) {
+                    return runner.finish_completed((runner.bytes_processed() / 8) as u64);
                 }
             }
         }
