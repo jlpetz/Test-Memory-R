@@ -183,10 +183,18 @@ TM5 grants the same way (`TM5\bin\awe.asm`, `SetIOPLto3`).
   UAC check above is the owner's.
 - **Over-the-shoulder elevation and Administrator protection** (review 5): the elevated account may not be the person signed in (the
   admin who typed the password; Administrator protection's hidden system-managed account). The heading shows the full `DOMAIN\name`,
-  and `--setup-large-pages User:PC\you` names the desktop account. Offering the session's user too needs wtsapi32, a DLL-planting risk
-  until TODO 114 is done.
-- **DLL planting** of an elevated tmr.exe from a writable folder (review 6): TODO 114.
+  and `--setup-large-pages User:PC\you` names the desktop account. Offering the session's user too needs wtsapi32: no longer a
+  DLL-planting risk, since TODO 114 (5608059) loads the exe's imports from System32 only.
+- **DLL planting** of an elevated tmr.exe from a writable folder (review 6): TODO 114, closed 2026-11-04.
 - **A sign-in that didn't help** (review, minor): remembering TokenStatistics' AuthenticationId in tmr-cfg.json when SignIn is asked, to
   offer the grant instead the next time (a GPO that replaces the grant, or a deny-only group).
-- **winget's InstallationNotes** (`dist/winget/Petz.TMR.locale.en-US.yaml`) still say grant once and sign out and back in; the UAC
-  sentence may belong there too.
+- **winget's InstallationNotes** (`dist/winget/Petz.TMR.locale.en-US.yaml`) say grant once and sign out and back in: right as they
+  are, since an administrator keeps the right unelevated (UAC above); no UAC sentence wanted.
+
+## Closed (2026-11-04)
+
+The owner closed it after the desktop checks on the 8500G: the window's three dialogs, the grant list (e5c6c33, then efa5743 after
+a tooltip inside the dialog failed the window, then 68a3941 with the list scrolling and the broad mark's legend once), and the UAC
+finding (7b6e5cc). Not run live: a double-click after a grant, before signing out (9e26b97: an unelevated run reads who holds the
+right, and asks for a sign-in; whether Windows lets it read the policy is unknown, and the administrator's question says a fresh grant
+wants a sign-in either way), and a standard account granted by name.
