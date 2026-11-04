@@ -407,10 +407,11 @@ impl<'a> TestRunner<'a> {
         }
     }
 
-    /// What's left of a wait, for the ticker (Mem-Refresh's, TODO 112)
-    pub fn set_wait_left(&self, left: Duration) {
+    /// What's left of a wait, of its length, for the ticker (Mem-Refresh's, TODO 112)
+    pub fn set_wait(&self, left: Duration, of: Duration) {
         if let Some(progress) = self.progress {
             progress.wait_left_ms.store(left.as_millis() as u64, Ordering::Relaxed);
+            progress.wait_ms.store(of.as_millis() as u64, Ordering::Relaxed);
         }
     }
 

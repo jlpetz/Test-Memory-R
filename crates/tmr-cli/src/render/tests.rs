@@ -14,7 +14,7 @@ use tmr::frontend::{
     MeasureWhy, MemoryModule, MemoryStatus, NotRun, PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport,
     PerformanceByThreadReport, PhysicalCorePerformance, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus,
     SealCalibrationState, SealOp, Selection, Setup, SkipSpec, Stage, StepConfigLine, StepReport, SystemIdentity, TestSnapshot, TestSummary,
-    ThreadPerformance, ThreadPriority, WheaCounts, WorkerStart, WorkersReport,
+    ThreadPerformance, ThreadPriority, WaitLeft, WheaCounts, WorkerStart, WorkersReport,
 };
 use tmr::session::{SessionEnd, Stopped};
 use tmr::test_support::failing_bits;
@@ -204,11 +204,13 @@ fn the_ticker_draws_as_its_golden() {
     case("no limits, errors and WHEA, a stage, no figures yet", ticker::render(&pending));
     case("its stamp: the finished tests' errors only", ticker::test_stamp(&pending, Duration::from_secs(15)).unwrap());
 
-    // TODO 112: Mem-Refresh's wait, with what's left of it (a bit fade's 30 minutes)
-    let mut waiting = snapshot();
-    waiting.test.as_mut().unwrap().live =
-        LiveFigures { stage: Some(Stage::Waiting), wait_left: Some(Duration::from_secs(1752)), ..Default::default() };
-    case("Mem-Refresh waiting, with the time left", ticker::render(&waiting));
+    // TODO 112: Mem-Refresh's wait, with what's left of it: the default 500 ms, and a bit fade's 30 minutes
+    for (case_name, left, of) in [("Mem-Refresh waiting, the default 500 ms", 380, 500), ("a bit fade's wait", 1_752_000, 1_800_000)] {
+        let mut waiting = snapshot();
+        let wait = WaitLeft { left: Duration::from_millis(left), of: Duration::from_millis(of) };
+        waiting.test.as_mut().unwrap().live = LiveFigures { stage: Some(Stage::Waiting), wait: Some(wait), ..Default::default() };
+        case(case_name, ticker::render(&waiting));
+    }
 
     let mut limit_reached = snapshot();
     limit_reached.runtime = Duration::from_secs(3600);

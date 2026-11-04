@@ -35,7 +35,7 @@ use crate::failing_bits::FailingBits;
 pub use crate::memory::allocator::PageSizeLevel;
 pub use crate::memory::lsa::Sid;
 pub use crate::memory::privileges::{BROAD_CAUTION, BROAD_MARK, BROAD_RISK, Candidate, LargePageQuestion, Reach, broad_legend};
-pub use crate::progress::{ErrorCounts, LiveFigures, ProgressSnapshot, ProgressTracker, RunOutcome, TestSnapshot, TestSummary};
+pub use crate::progress::{ErrorCounts, LiveFigures, ProgressSnapshot, ProgressTracker, RunOutcome, TestSnapshot, TestSummary, WaitLeft};
 // The reports as tables, for a frontend to render: the default formatting's, through its renderer
 pub use crate::reporting::Reporter;
 pub use crate::reporting::models::{

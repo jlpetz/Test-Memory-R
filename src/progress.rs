@@ -215,8 +215,34 @@ pub struct LiveFigures {
     /// What the first worker not just testing is doing (TODO 74), e.g. "Checking seal": work a step does apart from its test, the seal's
     /// before and after it or across memory, a fill, a chain build. A sealed pass's per-chunk check and reseal name none (TODO 109).
     pub stage: Option<crate::tests::Stage>,
-    /// What's left of Mem-Refresh's wait while it waits (`Stage::Waiting`, TODO 112): the longest any worker has left
-    pub wait_left: Option<Duration>,
+    /// Mem-Refresh's wait while it waits (`Stage::Waiting`, TODO 112): the most any worker has left, of its length
+    pub wait: Option<WaitLeft>,
+}
+
+/// What's left of Mem-Refresh's wait between a pass's write and its check (`wait_ms`), of its length: the ticker's and the window's
+/// countdown, not the run's
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WaitLeft {
+    pub left: Duration,
+    pub of: Duration,
+}
+
+impl WaitLeft {
+    /// `0.4 s of 0.5 s left (wait_ms)`, `42 s of 50 s left (wait_ms)`, `00:29:12 of 00:30:00 left (wait_ms)`: the wait's length sets the
+    /// unit for both, a tenth of a second under 10 s (the default is 500 ms), whole seconds under a minute, hours to seconds past it
+    pub fn text(&self) -> String {
+        let shown = |d: Duration| {
+            if self.of < Duration::from_secs(10) {
+                format!("{:.1} s", d.as_secs_f64())
+            } else if self.of < Duration::from_secs(60) {
+                format!("{} s", d.as_secs())
+            } else {
+                let secs = d.as_secs();
+                format!("{:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
+            }
+        };
+        format!("{} of {} left (wait_ms)", shown(self.left), shown(self.of))
+    }
 }
 
 /// Where the suite is, read at once (TODO 29): what the ticker shows, and what a test's report ends with. `ProgressTracker::snapshot` takes
@@ -454,7 +480,10 @@ fn live_figures(workers: &[TestProgress]) -> LiveFigures {
         live.sealed_pass |= slot.sealed_pass.load(Ordering::Relaxed);
     }
     if live.stage == Some(crate::tests::Stage::Waiting) {
-        live.wait_left = workers.iter().map(|slot| slot.wait_left_ms.load(Ordering::Relaxed)).max().map(Duration::from_millis);
+        let most = |of: fn(&TestProgress) -> &std::sync::atomic::AtomicU64| {
+            Duration::from_millis(workers.iter().map(|slot| of(slot).load(Ordering::Relaxed)).max().unwrap_or(0))
+        };
+        live.wait = Some(WaitLeft { left: most(|slot| &slot.wait_left_ms), of: most(|slot| &slot.wait_ms) });
     }
     live
 }
@@ -584,19 +613,29 @@ mod tests {
         );
     }
 
-    /// TODO 112: while Mem-Refresh waits, the live figures say how long the longest of its workers has left, and nothing once it checks
+    /// TODO 112: while Mem-Refresh waits, the live figures say the most any worker has left of its wait, and nothing once it checks; the
+    /// countdown's unit follows the wait's length, the default 500 ms in tenths of a second
     #[test]
-    fn a_refresh_wait_shows_the_longest_time_left() {
+    fn a_refresh_wait_shows_the_most_time_left_of_its_length() {
         let workers: Vec<TestProgress> = (0..3).map(|_| TestProgress::new()).collect();
         for (slot, ms) in workers.iter().zip([300, 450, 0]) {
             slot.set_stage(Stage::Waiting);
             slot.wait_left_ms.store(ms, Ordering::Relaxed);
+            slot.wait_ms.store(500, Ordering::Relaxed);
         }
-        assert_eq!(live_figures(&workers).wait_left, Some(Duration::from_millis(450)));
+        let wait = live_figures(&workers).wait.expect("a wait");
+        assert_eq!(
+            (wait, wait.text().as_str()),
+            (WaitLeft { left: Duration::from_millis(450), of: Duration::from_millis(500) }, "0.5 s of 0.5 s left (wait_ms)")
+        );
+        let text = |left, of| WaitLeft { left: Duration::from_millis(left), of: Duration::from_millis(of) }.text();
+        assert_eq!(text(380, 500), "0.4 s of 0.5 s left (wait_ms)");
+        assert_eq!(text(41_700, 50_000), "41 s of 50 s left (wait_ms)");
+        assert_eq!(text(1_752_000, 1_800_000), "00:29:12 of 00:30:00 left (wait_ms)");
         for slot in &workers {
             slot.set_stage(Stage::Verifying);
         }
-        assert_eq!((live_figures(&workers).stage, live_figures(&workers).wait_left), (Some(Stage::Verifying), None));
+        assert_eq!((live_figures(&workers).stage, live_figures(&workers).wait), (Some(Stage::Verifying), None));
     }
 
     /// TODO 109: the seal's work before a step's test publishes as the test's figures, marked the seal's; once the test starts, the

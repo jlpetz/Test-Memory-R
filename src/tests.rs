@@ -606,6 +606,8 @@ pub struct TestProgress {
     pub stage: std::sync::atomic::AtomicU8,
     /// What's left of Mem-Refresh's wait, in ms, while it waits (`Stage::Waiting`, TODO 112); 0 otherwise
     pub wait_left_ms: std::sync::atomic::AtomicU64,
+    /// That wait's length, in ms (`wait_ms`), while it waits
+    pub wait_ms: std::sync::atomic::AtomicU64,
     /// The test's speed over the last seconds of its own time (TODO 109), bytes/s as `f64` bits, the window's chart's line; 0 when the
     /// worker publishes none (a seal stage's figures), where the speed since the start stands in
     pub recent_bytes_per_sec: std::sync::atomic::AtomicU64,
@@ -683,6 +685,7 @@ impl TestProgress {
             last_update_ms: AtomicU64::new(0),
             stage: std::sync::atomic::AtomicU8::new(Stage::Testing as u8),
             wait_left_ms: AtomicU64::new(0),
+            wait_ms: AtomicU64::new(0),
             recent_bytes_per_sec: AtomicU64::new(0),
             sealed_pass: std::sync::atomic::AtomicBool::new(false),
             recent: crate::test_scaffolding::Recent::new(0),
@@ -702,6 +705,7 @@ impl TestProgress {
         self.errors_found.store(0, Relaxed);
         self.seal_errors_found.store(0, Relaxed);
         self.wait_left_ms.store(0, Relaxed);
+        self.wait_ms.store(0, Relaxed);
         self.last_update_ms.store(0, Relaxed);
         self.stage.store(Stage::Testing as u8, Relaxed);
         self.recent_bytes_per_sec.store(0, Relaxed);
@@ -1482,11 +1486,11 @@ fn refresh_wait(runner: &mut crate::test_scaffolding::TestRunner<'_>, wait: std:
     let end = std::time::Instant::now() + wait;
     loop {
         if runner.shutdown_requested() {
-            runner.set_wait_left(std::time::Duration::ZERO);
+            runner.set_wait(std::time::Duration::ZERO, wait);
             return true;
         }
         let left = end.saturating_duration_since(std::time::Instant::now());
-        runner.set_wait_left(left);
+        runner.set_wait(left, wait);
         if left.is_zero() {
             return false;
         }

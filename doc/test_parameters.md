@@ -94,8 +94,9 @@ waits once, then checks every chunk, so each word waits at least this long, plus
 write and the check up to it (TODO 112: until then it waited after each chunk, so a config whose
 chunks are smaller than its extent waited once a chunk: the demo config's 1 MB chunks over 977 MiB
 a thread on the dev box, 977 waits of 64 ms, about a minute a cycle; the built-in plans' Refresh
-is one chunk, and waited once a pass already). The ticker shows the pass's phase: `Writing`, `Waiting, 00:29:12 left`,
-`Verifying`. A long wait checks for slow leaks (bit fade): minutes of it. The wait stops at Ctrl+C,
+is one chunk, and waited once a pass already). The ticker shows the pass's phase: `Writing`, then
+the wait's own countdown, `Waiting, 0.4 s of 0.5 s left (wait_ms)` (a bit fade's in hours to
+seconds, `00:29:12 of 00:30:00`; not the run's time left), then `Verifying`. A long wait checks for slow leaks (bit fade): minutes of it. The wait stops at Ctrl+C,
 and the plan shows it in the parameter column (`Wait(30min)`). Another test doesn't read it and warns.
 TM5's RefreshStable has no wait setting, so an imported `.cfg` takes the default.
 The waits count as the test's time, by design: the cells holding their charge is the test. So its
