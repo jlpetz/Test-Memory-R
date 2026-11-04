@@ -182,6 +182,23 @@ pub struct TierCalibrationResult {
     pub fallback_used: bool,
 }
 
+/// What a thread reaches with others running too (TODO 22), measured after the single thread's (anchor A): anchor B, L1 and L2 with its
+/// SMT sibling chasing on the same core; anchor C, the L3 with every logical CPU chasing, each group's L3 split among its CPUs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SharedReach {
+    /// L1 a thread with its sibling running (B); none without SMT
+    pub l1_smt: Option<usize>,
+    /// L2 a thread with its sibling running (B)
+    pub l2_smt: Option<usize>,
+    /// The L3 a thread reaches with every logical CPU running (C); none when its sweep found no edge
+    pub l3_loaded: Option<usize>,
+    /// Its latency there, ns
+    #[serde(serialize_with = "serialize_round_2dp", deserialize_with = "deserialize_f64_lenient")]
+    pub l3_loaded_ns: f64,
+    /// The CPUs sharing an L3 group then: the most one group has
+    pub l3_sharers: usize,
+}
+
 /// Complete calibration results for all tiers
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CalibrationResults {
@@ -197,6 +214,9 @@ pub struct CalibrationResults {
     /// Page size used for calibration allocation
     #[serde(default = "default_page_size")]
     pub page_size: String,
+    /// The tiers with other threads running (TODO 22, anchors B and C); none in a calibration measured before them
+    #[serde(default)]
+    pub shared: Option<SharedReach>,
 }
 
 fn default_page_size() -> String {
@@ -206,12 +226,29 @@ fn default_page_size() -> String {
 impl CalibrationResults {
     /// Create new empty results
     pub fn new(cpu_signature: CpuSignature) -> Self {
-        Self { timestamp: Utc::now(), cpu_signature, tiers: HashMap::new(), total_time_ms: 0, page_size: "large".to_string() }
+        Self { timestamp: Utc::now(), cpu_signature, tiers: HashMap::new(), total_time_ms: 0, page_size: "large".to_string(), shared: None }
     }
 
     /// Add a tier result
     pub fn add_tier_result(&mut self, result: TierCalibrationResult) {
         self.tiers.insert(result.tier, result);
+    }
+
+    /// What a thread reaches of its L3 with `k` threads in its group running (TODO 22): the curve through the single thread's reach R1
+    /// (anchor A) and the loaded one RN with N sharing (anchor C), reach(k) = own + split / k, so split = (R1 - RN) x N / (N - 1), at most
+    /// R1, and own = R1 - split. Without C, R1 / k: the threads split it all. None without an L3. On the dev box (a VM) 8 threads held 19
+    /// MB each, 154 MB in all, where one held 67 MB: the L3 doesn't split evenly, which the own part takes up (12 MB there).
+    pub fn l3_reach(&self, k: usize) -> Option<f64> {
+        let r1 = self.tiers.get(&CacheTier::L3)?.optimal_size as f64;
+        let k = k.max(1) as f64;
+        Some(match &self.shared {
+            Some(SharedReach { l3_loaded: Some(rn), l3_sharers: n, .. }) if *n > 1 => {
+                let (rn, n) = (*rn as f64, *n as f64);
+                let split = ((r1 - rn) * n / (n - 1.0)).clamp(0.0, r1);
+                (r1 - split) + split / k
+            }
+            _ => r1 / k,
+        })
     }
 }
 
@@ -464,6 +501,10 @@ pub struct ProbeEngine {
     page_obtained: Option<PageSizeLevel>,
 }
 
+// SAFETY: the engine's memory is its own buffer or one its caller keeps alive (`initialize_from_buffer`), and one thread at a time
+// uses it: `CalibrationTest::run` moves the engine to anchor A's thread and back
+unsafe impl Send for ProbeEngine {}
+
 impl ProbeEngine {
     /// Create a new probe engine
     pub fn new(tsc_frequency_ghz: f64) -> Self {
@@ -713,6 +754,153 @@ impl FineProbe {
 // Calibration Test (Orchestrator)
 // ============================================================================
 
+/// The CPUs the calibration runs on (TODO 22): anchor A's, the first CPU of the top-ranked core (Windows' preferred); B's, the SMT pair of
+/// the first core in that order that has one; C's, every logical CPU, and the most of them one L3 group has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalibrationCpus {
+    pub single: usize,
+    pub pair: Option<[usize; 2]>,
+    pub all: Vec<usize>,
+    pub per_l3: usize,
+}
+
+impl CalibrationCpus {
+    /// From the cores the selection ranks (`cpu_selection::cores`)
+    pub fn of(cores: &[crate::cpu_selection::Core]) -> Self {
+        let order = crate::cpu_selection::rank(cores);
+        let ranked = || order.iter().map(|&i| &cores[i]);
+        let single = ranked().next().map_or(0, |core| core.cpus[0]);
+        let pair = ranked().find(|core| core.cpus.len() >= 2).map(|core| [core.cpus[0], core.cpus[1]]);
+        let mut all: Vec<usize> = cores.iter().flat_map(|core| core.cpus.iter().copied()).collect();
+        all.sort_unstable();
+        let mut on_l3: HashMap<crate::cpu_topology::L3Group, usize> = HashMap::new();
+        for core in cores {
+            *on_l3.entry(core.l3).or_default() += core.cpus.len();
+        }
+        Self { single, pair, all, per_l3: on_l3.into_values().max().unwrap_or(1) }
+    }
+
+    /// This machine's
+    pub fn detect() -> Self {
+        Self::of(&crate::cpu_selection::cores(crate::cpu_topology::get_cpu_topology()))
+    }
+}
+
+/// A thread's own memory in a shared probe, and its CPU (TODO 22)
+#[derive(Debug, Clone, Copy)]
+struct Slot {
+    cpu: usize,
+    base: *mut u64,
+    bytes: usize,
+}
+
+// SAFETY: a slot's memory is its thread's alone while a probe runs (`probe_shared` gives each thread one slot, and the slots don't
+// overlap: `slots`), and the memory outlives the probe
+unsafe impl Send for Slot {}
+// SAFETY: as Send's: a probe's threads only read a slot's fields, each its own slot's memory
+unsafe impl Sync for Slot {}
+
+/// `count` slots of `block` bytes each, one after another from `base`, on `cpus` in turn
+fn slots(base: *mut u64, block: usize, cpus: &[usize]) -> Vec<Slot> {
+    // SAFETY: the caller's memory holds `cpus.len()` blocks of `block` bytes from `base` (`run_shared` sizes them so)
+    cpus.iter().enumerate().map(|(i, &cpu)| Slot { cpu, base: unsafe { base.add(i * block / 8) }, bytes: block }).collect()
+}
+
+/// A random cycle through the cache lines of the `bytes` at `base`, one node a line, each holding the next one's address: the shared
+/// probes' chain. u32 indices, so its setup takes a sixteenth of the block in heap (a thread of 384 on the metal box: 6 MB, 375 KB).
+///
+/// # Safety
+/// `base` is 64-byte aligned and `bytes` of it are writable and the caller's alone.
+unsafe fn setup_line_chase(base: *mut u64, bytes: usize, seed: usize) {
+    let lines = bytes / 64;
+    if lines == 0 {
+        return;
+    }
+    let mut order: Vec<u32> = (0..lines as u32).collect();
+    let mut rng = 0x9E37_79B9_7F4A_7C15u64 ^ seed as u64;
+    for i in (1..lines).rev() {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        order.swap(i, (rng % (i as u64 + 1)) as usize);
+    }
+    for i in 0..lines {
+        let next = order[(i + 1) % lines] as usize;
+        // SAFETY: both lines are inside the caller's `bytes` (indices below `lines`)
+        unsafe { *base.add(order[i] as usize * 8) = base.add(next * 8) as u64 };
+    }
+}
+
+/// Samples of a chase along the chain at `base` for `time`: ns a load, each the mean of 1000 loads.
+///
+/// # Safety
+/// `base` starts a chain that `setup_line_chase` (or `ProbeEngine::setup_pointer_chase`) laid, in memory the caller's alone.
+unsafe fn chase_for(base: *mut u64, tsc_ghz: f64, time: std::time::Duration) -> Vec<f64> {
+    const LOADS: usize = 1000;
+    let mut samples = Vec::with_capacity(4096);
+    let mut ptr = base;
+    let start = Instant::now();
+    while start.elapsed() < time {
+        let mut aux = 0u32;
+        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+        // SAFETY: RDTSCP, which every CPU past the startup gate has; the loads follow the caller's chain, every link an address in it
+        let (begin, end) = unsafe {
+            let begin = __rdtscp(&mut aux);
+            for _ in 0..LOADS {
+                ptr = *ptr as *mut u64;
+            }
+            (begin, __rdtscp(&mut aux))
+        };
+        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+        std::hint::black_box(ptr);
+        let ns = (end - begin) as f64 / LOADS as f64 / tsc_ghz;
+        if ns > 0.1 && ns < 10000.0 {
+            samples.push(ns);
+        }
+    }
+    samples
+}
+
+/// Every slot's thread, pinned to its CPU, chases its own `size` bytes with the others for `time`, all starting together (TODO 22): the
+/// median of the threads' median latencies, and of their spreads. None when a thread got no samples.
+fn probe_shared(slots: &[Slot], size: usize, tsc_ghz: f64, time: std::time::Duration) -> Option<ProbeStatistics> {
+    let barrier = std::sync::Barrier::new(slots.len());
+    let per_thread: Vec<Vec<f64>> = std::thread::scope(|scope| {
+        let threads: Vec<_> = slots
+            .iter()
+            .enumerate()
+            .map(|(i, &slot)| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    // The whole slot, which is Send, not its fields one by one (a closure captures what it uses)
+                    let slot: Slot = slot;
+                    if let Err(e) = crate::runner::pin_thread_to_cpu_with_config(i, slot.cpu, true) {
+                        log::debug!("Calibration thread {i} not pinned to CPU {}: {e}", slot.cpu);
+                    }
+                    // SAFETY: the slot's memory, 64-byte aligned (test memory, cut in whole lines), its thread's alone
+                    unsafe { setup_line_chase(slot.base, size.min(slot.bytes), i) };
+                    barrier.wait();
+                    // SAFETY: the chain just laid
+                    unsafe { chase_for(slot.base, tsc_ghz, time) }
+                })
+            })
+            .collect();
+        threads.into_iter().map(|t| t.join().unwrap_or_default()).collect()
+    });
+    if per_thread.iter().any(Vec::is_empty) {
+        return None;
+    }
+    let stats: Vec<ProbeStatistics> = per_thread.iter().map(|samples| StatisticsAnalyzer::analyze(samples)).collect();
+    Some(ProbeStatistics {
+        median_ns: median(&stats.iter().map(|s| s.median_ns).collect::<Vec<_>>()),
+        spread_ratio: median(&stats.iter().map(|s| s.spread_ratio).collect::<Vec<_>>()),
+    })
+}
+
+/// How long each shared probe runs: anchor B's (L1 and L2, a sample a few microseconds) and C's (L3 to DRAM, up to a tenth of a ms)
+const SMT_PROBE_TIME: std::time::Duration = std::time::Duration::from_millis(50);
+const LOADED_PROBE_TIME: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// Main calibration test that orchestrates tier calibration
 pub struct CalibrationTest {
     /// Cache information from system detection
@@ -743,12 +931,139 @@ impl CalibrationTest {
 
     /// The calibration, on one thread (TODO 22: the standard and the extended merged, 2026-11-04): a sweep from a quarter of L1 to four
     /// times L3, then a finer one around each tier's edge. On the dev box the extended one's L3 agreed with itself within 10% over three
-    /// runs (64-71 MB), the standard one's varied by a third (34-45 MB), for 10-30 s more. Allocates its own memory.
+    /// runs (64-71 MB), the standard one's varied by a third (34-45 MB), for 10-30 s more. Then anchors B and C (`run_shared`). Allocates
+    /// its own memory.
     pub fn run(&self) -> Result<CalibrationResults, String> {
-        let max_working_set = self.get_tier_size(CacheTier::FullDram);
+        let start = Instant::now();
+        let cpus = CalibrationCpus::detect();
+        let bytes = self.memory_needed(&cpus);
         let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
-        probe_engine.initialize_with_page_size(max_working_set, &self.config.page_size)?;
-        self.run_calibration(&mut probe_engine)
+        probe_engine.initialize_with_page_size(bytes, &self.config.page_size)?;
+        // Anchor A on one CPU, pinned, as a worker is
+        let (results, mut probe_engine) = std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    if let Err(e) = crate::runner::pin_thread_to_cpu_with_config(0, cpus.single, true) {
+                        log::debug!("Calibration not pinned to CPU {}: {e}", cpus.single);
+                    }
+                    (self.run_calibration(&mut probe_engine), probe_engine)
+                })
+                .join()
+                .map_err(|_| "the calibration's thread panicked".to_string())
+        })?;
+        let mut results = results?;
+        let base = probe_engine.get_base_ptr();
+        // SAFETY: the engine's buffer, `bytes` long, which nothing else uses, and which it keeps until after
+        results.shared = self.run_shared(&results, &cpus, base, bytes);
+        results.total_time_ms = start.elapsed().as_millis() as u64;
+        Ok(results)
+    }
+
+    /// The memory the calibration needs: anchor A's sweep, to four times CPUID's L3, or C's blocks, one a CPU, each twice the most it can
+    /// reach (an L3 group's L3 over its CPUs, and an L2), whichever is more
+    fn memory_needed(&self, cpus: &CalibrationCpus) -> usize {
+        let single = self.get_tier_size(CacheTier::FullDram);
+        let loaded = cpus.all.len() * Self::loaded_block(self.cache_info.l3_cache, self.cache_info.per_core_l2, cpus.per_l3);
+        single.max(loaded).next_multiple_of(crate::test_memory::GRANULE)
+    }
+
+    /// A C thread's block: twice the most it can reach, an L3 over its sharers plus an L2, in whole 4 KiB granules
+    fn loaded_block(l3: usize, l2: usize, sharers: usize) -> usize {
+        (2 * (l3 / sharers.max(1) + l2)).next_multiple_of(crate::test_memory::GRANULE)
+    }
+
+    /// Anchors B and C (TODO 22), after A's `results`: B, L1 and L2 a thread with its SMT sibling chasing on the same core (none without
+    /// SMT); C, the L3 a thread reaches with every logical CPU chasing. Each thread chases its own block of the `bytes` at `base`. None
+    /// when neither finds anything.
+    ///
+    /// The ranges come from A's: B sweeps from an eighth of A's L1 to one and a half of its L2, C from just past the thread's L2 (B's
+    /// with SMT, every CPU running) to twice what it could reach. Each takes the edges as A does: the sweep's tipping points, then a
+    /// finer sweep below each.
+    fn run_shared(&self, results: &CalibrationResults, cpus: &CalibrationCpus, base: *mut u64, bytes: usize) -> Option<SharedReach> {
+        let tsc = self.tsc_frequency_ghz;
+        let size_of = |tier: CacheTier| results.tiers.get(&tier).map(|t| t.optimal_size);
+        let (a_l1, a_l2, a_l3) = (size_of(CacheTier::L1)?, size_of(CacheTier::L2)?, size_of(CacheTier::L3)?);
+        let (repeats, fine_step, stable_spread) = (3u32, 1.05, 1.5);
+
+        // B: the SMT pair
+        let (mut l1_smt, mut l2_smt) = (None, None);
+        if let Some(pair) = cpus.pair {
+            log::info!(target: SHOWN_TARGET, "═══ Two threads on one core (CPUs {} and {}) ═══", pair[0], pair[1]);
+            let block = (bytes / 2) / crate::test_memory::GRANULE * crate::test_memory::GRANULE;
+            let pair_slots = slots(base, block, &pair);
+            let mut probe = |size: usize| probe_shared(&pair_slots, size, tsc, SMT_PROBE_TIME);
+            let sweep = self.run_sweep(&mut probe, (a_l1 / 8).max(4096), (a_l2 * 3 / 2).min(block), "Sweep, two threads on one core");
+            let tps: Vec<usize> = self.find_tipping_points(&sweep).iter().map(|(s, _, _)| *s).collect();
+            let (tp1, tp2) = (tps.first().copied().unwrap_or(a_l1 / 2), tps.get(1).copied().unwrap_or(a_l2 / 2));
+            let fine_l1 = self.run_fine_sweep(&mut probe, tp1.min(a_l1) / 2, tp1.min(a_l1), fine_step, repeats, "L1→L2, two threads");
+            let fine_l2 = self.run_fine_sweep(&mut probe, tp2.min(a_l2) / 2, tp2.min(a_l2), fine_step, repeats, "L2→L3, two threads");
+            l1_smt = Self::find_largest_reliable(&fine_l1, stable_spread).map(|fp| fp.size);
+            l2_smt = Self::find_largest_reliable(&fine_l2, stable_spread).map(|fp| fp.size);
+            log::info!(target: SHOWN_TARGET,
+                "Two threads on one core: L1 {} and L2 {} a thread",
+                l1_smt.map_or("none steady".to_string(), format_size),
+                l2_smt.map_or("none steady".to_string(), format_size)
+            );
+        }
+
+        // C: every logical CPU
+        let n = cpus.all.len();
+        let mut l3_loaded = None;
+        let mut l3_loaded_ns = 0.0;
+        if n > 1 {
+            log::info!(target: SHOWN_TARGET, "═══ Every CPU at once ({n}, {} sharing each L3) ═══", cpus.per_l3);
+            let own = if cpus.pair.is_some() { l2_smt.unwrap_or(a_l2 / 2) } else { a_l2 };
+            // Up to twice the most a thread could reach: CPUID's L3 share where it is more than A's (on the dev box, 8 threads held more
+            // than 144 MB, past twice A's 61 MB)
+            let l3 = a_l3.max(self.cache_info.l3_cache);
+            let block =
+                Self::loaded_block(l3, a_l2, cpus.per_l3).min((bytes / n) / crate::test_memory::GRANULE * crate::test_memory::GRANULE);
+            let all_slots = slots(base, block, &cpus.all);
+            let mut probe = |size: usize| probe_shared(&all_slots, size, tsc, LOADED_PROBE_TIME);
+            let low = (own + own / 10).max(4096);
+            let sweep = self.run_sweep(&mut probe, low, block, "Sweep, every CPU at once");
+            // The edge as A takes it, a step of 1.4x, but past the L3's own latency: the sweep starts just past a thread's L2, and with
+            // every CPU running the step into L3 comes first (4 to 34 ns at 1.4 MB on the dev box)
+            let l3_ns = results.tiers.get(&CacheTier::L3).map_or(0.0, |t| t.median_latency_ns);
+            let edge = self.find_tipping_points(&sweep).into_iter().find(|&(_, before, _)| before >= 0.8 * l3_ns).map(|(s, _, _)| s);
+            match edge {
+                Some(edge) => {
+                    let fine = self.run_fine_sweep(&mut probe, (edge / 2).max(low), edge, fine_step, repeats, "L3→DRAM, every CPU");
+                    // Steady, and still at about the latency A's L3 reach had: the latency climbs before the step (23.5 MB a thread on
+                    // the dev box was steady at 82 ns, past half way to DRAM's 130)
+                    let cap = 1.25 * l3_ns;
+                    let reached = fine
+                        .iter()
+                        .filter(|fp| fp.is_reliable() && fp.worst_spread < stable_spread && fp.overall_median_ns <= cap)
+                        .max_by_key(|fp| fp.size)
+                        .map(|fp| (fp.size, fp.overall_median_ns))
+                        .or_else(|| {
+                            sweep
+                                .iter()
+                                .filter(|p| p.size >= low && p.size < edge && p.spread < 2.0 && p.median_ns <= cap)
+                                .max_by_key(|p| p.size)
+                                .map(|p| (p.size, p.median_ns))
+                        });
+                    if let Some((size, ns)) = reached {
+                        (l3_loaded, l3_loaded_ns) = (Some(size), ns);
+                    }
+                }
+                None => log::warn!("Every CPU at once: no L3 edge between {} and {} a thread", format_size(low), format_size(block)),
+            }
+            log::info!(target: SHOWN_TARGET,
+                "Every CPU at once: L3 {} a thread ({} alone)",
+                l3_loaded.map_or("not found".to_string(), format_size),
+                format_size(a_l3)
+            );
+        }
+
+        (l1_smt.is_some() || l2_smt.is_some() || l3_loaded.is_some()).then_some(SharedReach {
+            l1_smt,
+            l2_smt,
+            l3_loaded,
+            l3_loaded_ns,
+            l3_sharers: cpus.per_l3,
+        })
     }
 
     /// The calibration's sweeps on `probe_engine`'s memory, and the size each tier takes from them
@@ -767,9 +1082,15 @@ impl CalibrationTest {
         let l2_size = self.cache_info.per_core_l2;
         let l3_size = self.cache_info.l3_cache;
 
-        // The sweep
-        log::info!(target: SHOWN_TARGET, "═══ The sweep ═══");
-        let sweep_results = self.run_sweep(probe_engine, l1_size, l2_size, l3_size);
+        // The sweep, from a quarter of L1 to four times L3 (or the buffer's end)
+        log::info!(target: SHOWN_TARGET, "═══ One thread ═══");
+        let max_working_set = probe_engine.max_working_set();
+        let config = self.config.clone();
+        let mut probe = |size: usize| {
+            let samples = probe_engine.probe(size, &config);
+            (!samples.is_empty()).then(|| StatisticsAnalyzer::analyze(&samples))
+        };
+        let sweep_results = self.run_sweep(&mut probe, (l1_size / 4).max(4096), (l3_size * 4).min(max_working_set), "Sweep, one thread");
         let tipping_points = self.find_tipping_points(&sweep_results);
 
         for (size, lat_before, lat_after) in &tipping_points {
@@ -801,9 +1122,9 @@ impl CalibrationTest {
         let l3_cap = tp_l3_dram.min(l3_size);
 
         // Search window: from 50% below cap to the cap
-        let fine_l1 = self.run_fine_sweep(probe_engine, l1_cap / 2, l1_cap, fine_step, repeats, "L1→L2");
-        let fine_l2 = self.run_fine_sweep(probe_engine, l2_cap / 2, l2_cap, fine_step, repeats, "L2→L3");
-        let fine_l3 = self.run_fine_sweep(probe_engine, l3_cap / 2, l3_cap, fine_step, repeats, "L3→DRAM");
+        let fine_l1 = self.run_fine_sweep(&mut probe, l1_cap / 2, l1_cap, fine_step, repeats, "L1→L2");
+        let fine_l2 = self.run_fine_sweep(&mut probe, l2_cap / 2, l2_cap, fine_step, repeats, "L2→L3");
+        let fine_l3 = self.run_fine_sweep(&mut probe, l3_cap / 2, l3_cap, fine_step, repeats, "L3→DRAM");
 
         // The tiers from the finer sweeps
         let cpu_signature = CpuSignature::from_cache_info(&self.cache_info);
@@ -962,7 +1283,8 @@ impl CalibrationTest {
 
     /// Run fine-grain sweep around a tipping point with multiple repeats per size
     fn run_fine_sweep(
-        &self, probe_engine: &mut ProbeEngine, min_size: usize, max_size: usize, step_factor: f64, repeats: u32, label: &str,
+        &self, probe: &mut dyn FnMut(usize) -> Option<ProbeStatistics>, min_size: usize, max_size: usize, step_factor: f64, repeats: u32,
+        label: &str,
     ) -> Vec<FineProbe> {
         let mut results = Vec::new();
         let mut current_size = min_size.max(4096);
@@ -983,9 +1305,7 @@ impl CalibrationTest {
             let mut worst_spread = 0.0f64;
 
             for _rep in 0..repeats {
-                let samples = probe_engine.probe(current_size, &self.config);
-                if !samples.is_empty() {
-                    let stats = StatisticsAnalyzer::analyze(&samples);
+                if let Some(stats) = probe(current_size) {
                     median_latencies.push(stats.median_ns);
                     if stats.spread_ratio < 1.5 {
                         stable_count += 1;
@@ -1051,15 +1371,12 @@ impl CalibrationTest {
 
     /// Run a continuous sweep from small to large sizes
     /// Collects comprehensive stats for each probe to enable accurate tier detection
-    fn run_sweep(&self, probe_engine: &mut ProbeEngine, l1_size: usize, _l2_size: usize, l3_size: usize) -> Vec<SweepProbe> {
+    fn run_sweep(
+        &self, probe: &mut dyn FnMut(usize) -> Option<ProbeStatistics>, min_size: usize, max_size: usize, label: &str,
+    ) -> Vec<SweepProbe> {
         let mut results = Vec::new();
 
-        // Start at 1/4 of L1 (well within L1)
-        let min_size = (l1_size / 4).max(4096);
-        // End at 4x L3 or buffer max
-        let max_size = (l3_size * 4).min(probe_engine.max_working_set());
-
-        log::info!(target: SHOWN_TARGET, "Running calibration sweep: {} to {}", format_size(min_size), format_size(max_size));
+        log::info!(target: SHOWN_TARGET, "{label}: {} to {}", format_size(min_size), format_size(max_size));
         log::info!(target: SHOWN_TARGET,
             "  {:>4} {:>10} {:>8} {:>7} {:>8} {:>6} {:>7} {:>6}",
             "#",
@@ -1087,11 +1404,7 @@ impl CalibrationTest {
         while current_size <= max_size {
             probe_num += 1;
 
-            let samples = probe_engine.probe(current_size, &self.config);
-
-            if !samples.is_empty() {
-                let stats = StatisticsAnalyzer::analyze(&samples);
-
+            if let Some(stats) = probe(current_size) {
                 // Calculate derivative (latency change per size doubling)
                 let derivative = if let (Some(prev_lat), Some(prev_sz)) = (prev_latency, prev_size) {
                     let lat_change = stats.median_ns - prev_lat;
@@ -1270,6 +1583,33 @@ impl CalibrationTest {
 
         writeln!(out, "───────────────────────────────────────────────────────────────────────────────")?;
         writeln!(out, "Total calibration time: {}ms", results.total_time_ms)?;
+        // TODO 22: anchors B and C, and the L3 a group splits, which a run's L3 tests take their share of
+        if let Some(shared) = &results.shared {
+            let size = |bytes: Option<usize>| bytes.map_or("none steady".to_string(), format_size);
+            if shared.l1_smt.is_some() || shared.l2_smt.is_some() {
+                writeln!(out, "Two threads on one core: L1 {}, L2 {} a thread", size(shared.l1_smt), size(shared.l2_smt))?;
+            }
+            match shared.l3_loaded {
+                Some(_) => writeln!(
+                    out,
+                    "Every CPU at once ({} sharing each L3): L3 {} a thread at {:.1}ns",
+                    shared.l3_sharers,
+                    size(shared.l3_loaded),
+                    shared.l3_loaded_ns
+                )?,
+                None => writeln!(out, "Every CPU at once ({} sharing each L3): no L3 edge found", shared.l3_sharers)?,
+            }
+        }
+        if let (Some(one), Some(shared)) = (results.l3_reach(1), &results.shared) {
+            let all = results.l3_reach(shared.l3_sharers).unwrap_or(one);
+            writeln!(
+                out,
+                "L3 a thread: {} alone, {} with {} sharing; a run's L3 tests size from the curve through them",
+                format_size(one as usize),
+                format_size(all as usize),
+                shared.l3_sharers
+            )?;
+        }
 
         // Check if DRAM and FullDRAM have similar latencies
         let dram_lat = results.tiers.get(&CacheTier::Dram).map(|r| r.median_latency_ns);
@@ -1798,6 +2138,56 @@ mod tests {
         assert_eq!(quantile(&[1.0, 2.0, 3.0, 4.0], 0.75), 3.25);
         assert_eq!(quantile(&[7.0], 0.75), 7.0);
         assert_eq!(quantile(&[], 0.75), 0.0);
+    }
+
+    /// TODO 22: the calibration's CPUs. On the 8600G (one L3, SMT) A takes the top-ranked core's first CPU and B that core's pair, C all
+    /// 12 sharing one L3; on the m8a.4xlarge (two L3 groups of 8, no SMT) there is no pair and 8 share each L3.
+    #[test]
+    fn the_calibration_takes_the_top_core_its_pair_and_every_cpu() {
+        use crate::cpu_selection::synthetic;
+        let r8600g = CalibrationCpus::of(&synthetic(&[3, 2, 1, 4, 0, 4], 64, 64, true));
+        assert_eq!((r8600g.single, r8600g.pair, r8600g.all.len(), r8600g.per_l3), (6, Some([6, 7]), 12, 12));
+        let m8a = CalibrationCpus::of(&synthetic(&[0; 16], 8, 64, false));
+        assert_eq!((m8a.single, m8a.pair, m8a.all, m8a.per_l3), (0, None, (0..16).collect::<Vec<_>>(), 8));
+    }
+
+    /// TODO 22: a thread's L3 reach with k sharing, from anchors A and C: one thread's 64 MiB and 9 MiB a thread with 8 sharing give the
+    /// curve through both, 16.86 MiB at 4; with no C (or none found), 64 MiB over k; a C past A's, A's for any k
+    #[test]
+    fn the_l3_reach_is_the_curve_through_one_thread_and_every_cpu() {
+        const MIB: f64 = (1 << 20) as f64;
+        let tier = |tier, optimal_size| TierCalibrationResult {
+            tier,
+            optimal_size,
+            median_latency_ns: 10.0,
+            spread_ratio: 1.1,
+            probes_attempted: 1,
+            converged: true,
+            fallback_used: false,
+        };
+        let mut cal = CalibrationResults::new(CpuSignature::default());
+        assert_eq!(cal.l3_reach(8), None, "no L3");
+        cal.add_tier_result(tier(CacheTier::L3, 64 << 20));
+        assert_eq!(cal.l3_reach(8), Some(8.0 * MIB), "A alone");
+        let loaded = |l3_loaded| SharedReach { l1_smt: None, l2_smt: None, l3_loaded, l3_loaded_ns: 40.0, l3_sharers: 8 };
+        cal.shared = Some(loaded(Some(9 << 20)));
+        let reach = |k| (cal.l3_reach(k).unwrap() / MIB * 100.0).round() / 100.0;
+        assert_eq!([1, 4, 8].map(reach), [64.0, 16.86, 9.0]);
+        cal.shared = Some(loaded(Some(80 << 20)));
+        assert_eq!(cal.l3_reach(8), Some(64.0 * MIB), "C past A: no split");
+        cal.shared = Some(loaded(None));
+        assert_eq!(cal.l3_reach(8), Some(8.0 * MIB), "C found no edge: A alone");
+    }
+
+    /// TODO 22: two threads, each chasing its own 64 KiB block of a heap buffer at once, give a latency and a spread
+    #[test]
+    fn a_shared_probe_times_every_threads_chase() {
+        const BLOCK: usize = 64 << 10;
+        let mut memory = vec![std::simd::u64x8::splat(0); 2 * BLOCK / 64];
+        let pair = slots(memory.as_mut_ptr() as *mut u64, BLOCK, &[0, 1]);
+        let tsc = crate::tests::get_cache_info().tsc_frequency_ghz.max(1.0);
+        let stats = probe_shared(&pair, BLOCK, tsc, std::time::Duration::from_millis(20)).expect("both threads sampled");
+        assert!(stats.median_ns > 0.1 && stats.median_ns < 1000.0 && stats.spread_ratio >= 1.0, "{stats:?}");
     }
 
     #[test]

@@ -88,7 +88,8 @@ pub fn parse_size_string(s: &str) -> Result<usize, String> {
 ///
 /// Each tier accepts a `scale: f64` interpreted relative to that tier's natural size:
 /// - L1/L2: per-core size ÷ active SMT siblings × scale
-/// - L3: per-thread share (one L3 group's L3 ÷ the run's threads in a group, `l3_sharers`) × scale
+/// - L3: per-thread share (one L3 group's L3 ÷ the run's threads in a group, `l3_sharers`) × scale; calibrated, `scale` of the
+///   reach with that many sharing (TODO 22's curve), never inside the thread's L2 share
 /// - DRAM: total L3 × scale (no thread divisor — each thread independently spills)
 ///
 /// `DRAMFull` is a sentinel meaning "use the full thread allocation" (no scale).
@@ -140,7 +141,7 @@ impl CacheTarget {
     /// Calculate extent size using calibration data (measured tier boundaries).
     /// Returns None if calibration data is unavailable or missing the needed tier.
     fn calculate_from_calibration(
-        &self, cal: &crate::calibration::CalibrationResults, _cache_info: &CacheInfo, thread_count: usize,
+        &self, cal: &crate::calibration::CalibrationResults, cache_info: &CacheInfo, thread_count: usize,
     ) -> Option<usize> {
         let tier = self.to_calibration_tier()?;
         let tier_result = cal.tiers.get(&tier)?;
@@ -149,16 +150,29 @@ impl CacheTarget {
         // sharing matters — no CPUID heuristics. Final 64-byte alignment is applied downstream in TestMemoryConfig::calculate_extent_size.
         let calibrated = tier_result.optimal_size as f64;
 
-        let size = match self {
-            CacheTarget::L1 { scale } | CacheTarget::L2 { scale } => {
-                // Per-core caches shared with SMT sibling
-                let per_thread = calibrated / get_active_threads_per_core() as f64;
-                (per_thread * scale) as usize
+        let per_core = get_active_threads_per_core();
+        // A tier a thread has with its SMT sibling running too: measured (TODO 22's anchor B) when the run puts two threads on a core and
+        // the calibration has it, else the single thread's split between them
+        let shared_by_siblings = |tier: crate::calibration::CacheTier, single: f64| {
+            let smt = cal.shared.as_ref().and_then(|shared| match tier {
+                crate::calibration::CacheTier::L1 => shared.l1_smt,
+                _ => shared.l2_smt,
+            });
+            match smt {
+                Some(measured) if per_core >= 2 => measured as f64,
+                _ => single / per_core as f64,
             }
+        };
+
+        let size = match self {
+            CacheTarget::L1 { scale } | CacheTarget::L2 { scale } => (shared_by_siblings(tier, calibrated) * scale) as usize,
             CacheTarget::L3 { scale } => {
-                // What one thread reaches is one L3 group's: shared by the run's threads in a group, not by every thread
-                let per_thread = calibrated / l3_sharers(thread_count) as f64;
-                (per_thread * scale) as usize
+                // `scale` of what a thread reaches with the run's threads in its group running (TODO 22: the curve through anchors A and C,
+                // `CalibrationResults::l3_reach`), and never inside the thread's L2 share, as the run shares it
+                let reach = cal.l3_reach(l3_sharers(thread_count)).unwrap_or(calibrated);
+                let l2 = cal.tiers.get(&crate::calibration::CacheTier::L2).map_or(cache_info.per_core_l2 as f64, |t| t.optimal_size as f64);
+                let floor = shared_by_siblings(crate::calibration::CacheTier::L2, l2) + (64 * 1024) as f64;
+                (reach * scale).max(floor) as usize
             }
             CacheTarget::Dram { scale } => {
                 // DRAM: each thread's working set is sized off the L3-spill threshold (calibrated total L3). No thread divisor — sharing L3
@@ -10588,6 +10602,8 @@ mod l3_share {
         });
         set_calibration_data(Some(cal));
         assert_eq!(l3.size_bytes(&cache_info, 16), 24 * MIB / 8 / 2, "calibrated");
+        // Never inside the thread's L2 (CPUID's 512 KiB, none calibrated): 24 MiB over 8 at a tenth is under it
+        assert_eq!(CacheTarget::L3 { scale: 0.1 }.size_bytes(&cache_info, 16), MIB / 2 + 64 * 1024, "the floor");
         assert_eq!(l3.name_with_context(16, false), "L3/8/2 [cal]");
         reset_run_settings();
     }
