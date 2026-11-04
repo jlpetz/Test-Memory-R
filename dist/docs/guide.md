@@ -93,7 +93,7 @@ takes the privilege away again (from you, or from the `Group:` or `User:` named)
   parameters, its size and colours. Settings, in its `•••` menu, sets the theme, starting on open
   and the serial numbers. The line under the box says what cache calibration a run finds; the
   first run on a machine measures one before its tests (about 2 minutes), or Calibrate the
-  caches, in the same menu, measures one now.
+  caches and the seal, in the same menu, measures it now, with the seal's fastest width.
 - **From a console**, type `tmr`. On its own it runs the stability plan, 3 cycles of it; press
   Ctrl+C to stop it sooner, and it stops at its next checkpoint and writes its report. Some
   settings:

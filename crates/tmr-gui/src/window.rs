@@ -264,9 +264,9 @@ impl Window {
         }
     }
 
-    /// The ••• menu's Calibrate the caches (TODO 110): `--calibrate-cache --yes` on a thread of its own, as the console runs it, what it
-    /// writes and logs in the Log tab and a log file of its own; it saves what it measured (the menu item was the request), and the info
-    /// line says the new one once it ends. Start waits for it.
+    /// The ••• menu's Calibrate (TODO 110): `--calibrate-all --yes` on a thread of its own, the caches then the seal's width (the fastest
+    /// here, which `seal-width=auto` takes), as the console runs it, what it writes and logs in the Log tab and a log file of its own; it
+    /// saves what it measured (the menu item was the request), and the info line says the new one once it ends. Start waits for it.
     fn calibrate(&mut self, context: &ComponentContext<Self>) {
         tmr::session::reset_run();
         let log = self.log.take().unwrap_or_else(logger::install);
@@ -276,7 +276,7 @@ impl Window {
         let transcript = log.transcript();
         let exe = self.model.command().first().cloned().unwrap_or_else(|| "tmr.exe".to_string());
         let calibration = std::thread::Builder::new().name("tmr-calibrate".to_string()).spawn(move || {
-            let command = tmr::commands::Command::Calibrate(vec![exe, "--calibrate-cache".to_string(), "--yes".to_string()]);
+            let command = tmr::commands::Command::Calibrate(vec![exe, "--calibrate-all".to_string(), "--yes".to_string()]);
             let mut out = logger::TranscriptWriter::new(transcript);
             let result = tmr::commands::run(&command, &mut out, &mut |_| true, &|_| String::new()).map_err(|e| e.to_string());
             out.finish();
@@ -416,7 +416,7 @@ const MENU_LOG: &str = "Open the log";
 const MENU_LOGS: &str = "Open the logs folder";
 const MENU_RESULTS: &str = "Open the results file";
 const MENU_RESULTS_FOLDER: &str = "Open the results folder";
-const MENU_CALIBRATE: &str = "Calibrate the caches";
+const MENU_CALIBRATE: &str = "Calibrate the caches and the seal";
 const MENU_SETTINGS: &str = "Settings";
 const MENU_ABOUT: &str = "About TMR";
 
