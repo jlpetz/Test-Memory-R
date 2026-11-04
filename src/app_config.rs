@@ -194,18 +194,8 @@ pub struct AppConfig {
     /// of (`valid_seal_calibration`); the identity above is the cache calibrations'
     #[serde(default)]
     pub seal_calibration: Option<SealCalibration>,
-
-    /// Last loaded test config file path (for TM5-style "reload last config" behavior)
-    #[serde(default)]
-    pub last_config: Option<String>,
-
-    /// Default UI mode: "cli" or "gui" (future)
-    #[serde(default)]
-    pub ui_mode: Option<String>,
-
-    /// Auto-start testing on launch without user prompt
-    #[serde(default)]
-    pub auto_start: Option<bool>,
+    // What the window keeps between sessions (its last parameters, the chart shown or not, starting on open, its size) is window.json's
+    // (tmr-gui's settings.rs, TODO 109), not this file's: this one is the engine's record of the machine (TODO 7, the owner, 2026-11-04)
 }
 
 const CONFIG_FILENAME: &str = "tmr-cfg.json";
@@ -365,7 +355,6 @@ mod tests {
         assert!(config.machine_id.is_none());
         assert!(config.calibration.is_none());
         assert!(config.calibration_extended.is_none());
-        assert!(config.last_config.is_none());
         assert!(config.get_best_calibration().is_none());
     }
 
@@ -380,18 +369,11 @@ mod tests {
 
     #[test]
     fn test_roundtrip_with_fields() {
-        let config = AppConfig {
-            machine_id: Some("abc123".to_string()),
-            last_config: Some("test.json".to_string()),
-            auto_start: Some(true),
-            ..Default::default()
-        };
+        let config = AppConfig { machine_id: Some("abc123".to_string()), ..Default::default() };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
         let loaded: AppConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.machine_id.as_deref(), Some("abc123"));
-        assert_eq!(loaded.last_config.as_deref(), Some("test.json"));
-        assert_eq!(loaded.auto_start, Some(true));
     }
 
     #[test]
