@@ -76,6 +76,38 @@ curve's own part (about 8-12 MB here) takes this up. A 4-thread `cputype=cores` 
 tests at 10.82 MiB a thread (`L3/4/2 [cal]`), and Lat-L3 read about 28 ns there: about 17% L2
 hits, the rest L3.
 
+## The curve checked (2026-11-05, `--calibrate-curve`, 13e7d2c)
+
+The L3 a thread reaches with k threads in each L3 group running, measured by C's method, against the
+curve through A and C. "Off" is the curve against the measurement: negative, the curve gives a test
+less than fits, the safe side. The outputs are in `baselines/2026-11-05-curve/` (outside git).
+
+| k | dev box (VM), one a core / both | petz007 (8600G) | daddy-petz (5700X) |
+|---|---|---|---|
+| 1 | -8% | +16% | +5% |
+| 2 | -3% / -1% | +9% / +4% | -14% / -4% |
+| 3 | -19% | -7% | -9% |
+| 4 | -19% / -7% | -2% / -19% | -2% / -6% |
+| 5-8 | / -5%, -13% | -9%, -8% / -21%, +0% | -16%, -35%*, -8%, -8% / -7%, -7% |
+| 10-16 | | / +5%, +4% | / -4%, -4%, -29%*, +0% |
+
+\* Each larger than the next count down: a single point scatters by 15-30% (C itself read 16.1 MB
+then 18.5 MB on the dev box in one session).
+
+- Every CPU together holds the L3 and the L2s, as Zen's victim L3 should. The 8600G: 12 x 1.8 MB =
+  22 MB (16 MB L3, 6 MB L2). The 5700X: 16 x 1.9 MB = 30 MB (32 MB L3, 4 MB L2). The VM holds
+  148 MB with 8, where one thread reaches 68 MB.
+- The curve stays within about 20% at every count on the three hosts, mostly low. Its errors are
+  the measurement's own scatter, so more anchors wouldn't buy accuracy.
+- The largest overestimates are +16% and +9% (the 8600G at 1 and 2 threads), where an L3 test takes
+  half the reach.
+- One thread a core (`cputype=cores`) is the one place it errs low consistently (-19% on the VM),
+  because C runs both threads of each core. An anchor D, one thread a core on every core, would
+  fix it for about 13 s more. Left out: it is the safe side, and within the scatter on the
+  desktops.
+- Decided (2026-11-05): the two-point curve stays. Next, a recheck (TODO 116), and a final run on
+  the metal box (several L3 groups and NUMA nodes).
+
 ## Notes (TODO 116 has them)
 
 - The coarse sweep runs to 4x CPUID's L3, 1.9 GB here, and most of its time goes on the DRAM
