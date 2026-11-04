@@ -219,12 +219,32 @@ pub struct Selection {
 pub enum CacheCalibrationState {
     /// This machine's, measured `at`
     Loaded { at: DateTime<Utc> },
-    /// None stored
-    None,
-    /// One measured on other hardware: not used
-    Stale,
-    /// `--no-calibration`
+    /// The run measures one before its tests (`calibrate=`, TODO 22), for this
+    Measuring(MeasureWhy),
+    /// `calibrate=off`
     Disabled,
+}
+
+/// Why a run measures the cache calibration before its tests (`calibrate=`, TODO 22)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasureWhy {
+    /// `calibrate=auto`, and none stored
+    NoneStored,
+    /// `calibrate=auto`, and the one stored is another machine's
+    OtherHardware,
+    /// `calibrate=auto`, and the one stored was measured one thread only, before the shared anchors: used until the new one is in
+    OneThreadOnly,
+    /// `calibrate=always`
+    Always,
+}
+
+/// The cache calibration a run measured before its tests (`Run::Calibrated`, TODO 22), and where it was saved, or why not
+#[derive(Debug)]
+pub struct CalibratedNow {
+    pub results: crate::calibration::CalibrationResults,
+    /// Its table, as `--calibrate-cache` shows it
+    pub table: String,
+    pub saved: Result<std::path::PathBuf, String>,
 }
 
 /// The seal calibration at startup (`Setup::SealCalibration`).
@@ -280,6 +300,9 @@ pub enum Run {
     AllocationStarting { min: PageSizeLevel, max: PageSizeLevel },
     /// What allocation got (TODO 81)
     Allocated(Box<AllocationReport>),
+    /// The cache calibration the run measured on its memory before its tests (`calibrate=`, TODO 22), or why it couldn't: the run goes
+    /// on without one
+    Calibrated(Result<Box<CalibratedNow>, String>),
     /// The suite's clock started: where it stands from now on, for a frontend that reads it on its own timer (the GUI; the CLI reads it on
     /// `tick`), the native patterns' seed, and the transfer width they take and where it came from, `None` when it is unknown
     SuiteStarted { progress: Arc<ProgressTracker>, seed: u64, transfer_bits: Option<u32>, transfer_source: String, rescan: bool },

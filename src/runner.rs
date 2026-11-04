@@ -684,6 +684,8 @@ pub enum TestFunction {
 /// config and the command line's overrides, and the caches the tests' sizes come from. Bundled so the run's entry point keeps a manageable
 /// signature (TODO 29 added its frontend).
 pub struct RunSetup<'a> {
+    /// Why the run measures the cache calibration on its memory before its tests (`calibrate=`, TODO 22), if it does
+    pub calibrate_first: Option<crate::frontend::MeasureWhy>,
     pub layout: EnhancedMemoryLayout,
     pub error_mode: ErrorMode,
     pub suite_timing: TestSuiteTiming,
@@ -695,7 +697,7 @@ pub struct RunSetup<'a> {
 
 /// Runs the suite `setup` describes, `fe` showing it (TODO 29), and says how the run ended.
 pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn Frontend>) -> RunStatus {
-    let RunSetup { layout, error_mode, suite_timing, runtime_config, config, overrides, cache_info } = setup;
+    let RunSetup { calibrate_first, layout, error_mode, suite_timing, runtime_config, config, overrides, cache_info } = setup;
     let TestRunOverrides {
         single_test_filter,
         plan,
@@ -985,7 +987,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         fe.event(Run::AllocationStarting { min, max }.into());
     }
 
-    let crate::memory::stitched::StitchedAllocation { blocks: allocated_blocks, spans, elapsed, numa_nodes } =
+    let crate::memory::stitched::StitchedAllocation { blocks: mut allocated_blocks, spans, elapsed, numa_nodes } =
         match allocate_all_blocks_new(&thread_blocks, &runtime_config) {
             Ok(allocation) => allocation,
             Err(e) => {
@@ -1003,6 +1005,15 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     // The allocation report (TODO 81). The request record goes with it.
     let report = crate::reporting::converters::create_allocation_report(spans, elapsed, numa_nodes);
     fe.event(Run::Allocated(Box::new(report)).into());
+
+    // The cache calibration on the run's own memory, before anything sizes from it (TODO 22): the plan's extents, the steps'
+    if calibrate_first.is_some() {
+        let calibrated = calibrate_on_allocation(&mut allocated_blocks, cache_info, &page_mix);
+        if let Ok(now) = &calibrated {
+            crate::tests::set_calibration_data(Some(now.results.clone()));
+        }
+        fe.event(Run::Calibrated(calibrated.map(Box::new)).into());
+    }
 
     let tests_per_cycle = test_definitions.len() as u64;
 
@@ -4695,6 +4706,38 @@ fn convert_to_latency_level_summary(
 }
 
 /// Every thread's share, from the stitched allocator: one contiguous VA span per thread.
+/// The cache calibration on a run's own memory, before its tests (TODO 22): its largest span, the workers not yet started and nothing
+/// written there yet, on the CPUs the calibration takes (`calibration::CalibrationCpus`), on the run's pages; saved to tmr-cfg.json as
+/// `--calibrate-cache` saves it, stamped with this machine.
+fn calibrate_on_allocation(
+    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, cache_info: &CacheInfo, pages: &crate::run_context::PageSizeMix,
+) -> Result<crate::frontend::CalibratedNow, String> {
+    use crate::memory::allocator::PageSizeLevel;
+    let block = blocks.values_mut().flatten().max_by_key(|block| block.buffer.size()).ok_or("the run has no memory")?;
+    let (base, bytes) = (block.buffer.as_mut_ptr() as *mut u64, block.buffer.size());
+    // The run's pages: what most of its memory is on
+    let page = [
+        (pages.huge_1gib_gib, PageSizeLevel::Huge),
+        (pages.large_2mib_gib, PageSizeLevel::Large),
+        (pages.regular_4kib_gib, PageSizeLevel::Regular),
+    ]
+    .into_iter()
+    .max_by(|a, b| a.0.total_cmp(&b.0))
+    .map_or(PageSizeLevel::Regular, |(_, page)| page);
+    let test = crate::calibration::CalibrationTest::with_config(cache_info.clone(), crate::calibration::CalibrationConfig::default());
+    // SAFETY: the run's span, allocated, 64-byte aligned (test memory), not yet handed to a worker and not touched by anything else until
+    // the pool takes it, after this; the workers, which would be pinned to the calibration's CPUs, don't exist yet
+    let results = unsafe { test.run_on(base, bytes, page) }?;
+    let path = crate::app_config::AppConfig::default_path();
+    let mut stored = crate::app_config::AppConfig::load(&path);
+    stored.update_machine_id(crate::tests::get_system_info(), crate::smbios::get_smbios());
+    stored.calibration = Some(results.clone());
+    let saved = stored.save(&path).map(|()| path);
+    let mut table = Vec::new();
+    let _ = crate::calibration::CalibrationTest::display_results(&results, cache_info, &mut table);
+    Ok(crate::frontend::CalibratedNow { results, table: String::from_utf8_lossy(&table).into_owned(), saved })
+}
+
 fn allocate_all_blocks_new(
     thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runtime_config: &RuntimeConfig,
 ) -> Result<crate::memory::stitched::StitchedAllocation, String> {
@@ -5145,6 +5188,7 @@ pub mod test_support {
             let _width = crate::simd::TestWidth::set(Some(crate::simd::Width::W256));
             let (layout, runtime_config) = golden_layout();
             let setup = RunSetup {
+                calibrate_first: None,
                 layout,
                 error_mode: ErrorMode::Log,
                 suite_timing: TestSuiteTiming::default(),

@@ -83,7 +83,7 @@ pub fn set_calibrated_width(width: SealWidth) {
     held_width().get_or_insert(width);
 }
 
-/// No calibrated width, for a session after another (`session::reset_run`, TODO 109): one with `--no-calibration` takes the rule
+/// No calibrated width, for a session after another (`session::reset_run`, TODO 109): one with `calibrate=off` takes the rule
 pub(crate) fn reset_calibrated_width() {
     *held_width() = None;
 }

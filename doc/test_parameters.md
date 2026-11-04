@@ -339,6 +339,34 @@ step, which no other step writes. One that isn't dependent verifies its own fill
 `Bench-Init-Seal-{TMR,TM5}[-128|-256|-512]` and their `Bench-Verify-Seal-*` measure the seal's
 fill and check alone.
 
+### The cache calibration, and `calibrate=` (TODO 22)
+
+The cache-sized extents (`L1`, `L2`, `L3`, `DRAM` targets) take their sizes from this machine's
+cache calibration in `tmr-cfg.json`, else from CPUID. The calibration measures three things, each a
+pointer chase whose latency shows where a tier ends:
+
+- **A, one thread** pinned to the top-ranked core: a sweep from a quarter of L1 to four times
+  CPUID's L3, then a finer sweep (5% steps, three times each) below each edge it found. It gives
+  each tier's size and latency.
+- **B, two threads on one core**, its SMT pair (left out without SMT): L1 and L2 a thread with its
+  sibling chasing too.
+- **C, every logical CPU at once**, each on its own block, all starting together: the L3 a thread
+  reaches with every CPU in its group running. The edge is the first step of 1.4x past the L3's
+  own latency, and the size is the largest steady one still within 1.25x of A's L3 latency.
+
+An L3 test takes its `scale` of a thread's reach with the run's threads in its L3 group running,
+on the curve through A and C: reach(k) = own + split / k, which both fix. It never goes inside the
+thread's L2 share plus 64 KiB. L1 and L2 tests with two threads a core take B's sizes. On the dev
+box (a VM, 8 CPUs, one L3 group) one thread reached 56-68 MB, 8 together 14-17 MB each: the L3
+doesn't split evenly there, which a single-thread measure divided by the threads misses. It takes
+about 2 minutes, 15-20 s of it B and C.
+
+`calibrate=auto` (the default) measures one on the run's own memory before its tests, after
+allocation, when there is none of this machine's with B and C stored, and saves it; later runs load
+it. `calibrate=always` measures before every run's tests. `calibrate=off` takes none (CPUID sizes,
+and the seal's width from its rule). `--calibrate-cache` measures on its own allocation, without a
+test, and asks before saving over a stored one.
+
 ### The seal's width under `auto` (TODO 99)
 
 `seal-width=auto` runs the width of this machine's seal calibration, else the rule's (256 with
@@ -372,7 +400,7 @@ the system UUID and the TSC frequency), and is used only while all of it is this
 save leaves the config's identity, which the cache calibrations are checked against, alone, and a
 cache calibration's save leaves the seal's alone: a CPU swap followed by only `--calibrate-seal`
 keeps the old cache calibration stale, and one followed by only `--calibrate-cache` keeps the old
-seal width stale. `--no-calibration` skips it.
+seal width stale. `calibrate=off` skips it.
 
 Every calibration (`--calibrate-cache`, `--calibrate-seal`, `--calibrate-all`) asks before saving over a stored one, `[Y/n]`; with none stored it saves. `--yes`
 saves without asking, `--no-save` shows the results and keeps what is stored (with none stored,

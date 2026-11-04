@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use chrono::TimeZone;
 use tmr::frontend::{
     BiosInfo, CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorCounts, ErrorMode, Frontend, Hypervisor, LiveFigures,
-    MemoryModule, MemoryStatus, NotRun, PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport,
+    MeasureWhy, MemoryModule, MemoryStatus, NotRun, PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport,
     PerformanceByThreadReport, PhysicalCorePerformance, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus,
     SealCalibrationState, SealOp, Selection, Setup, SkipSpec, Stage, StepConfigLine, StepReport, SystemIdentity, TestSnapshot, TestSummary,
     ThreadPerformance, ThreadPriority, WheaCounts, WorkerStart, WorkersReport,
@@ -473,8 +473,10 @@ fn setup_events_print_as_their_golden() {
         ("large pages not usable, and minpage needs them", large_pages(false, "large", true)),
         ("large pages not usable, and minpage doesn't need them", large_pages(false, "regular", false)),
         ("the cache calibration", Setup::CacheCalibration(CacheCalibrationState::Loaded { at: at(20) })),
-        ("no cache calibration", Setup::CacheCalibration(CacheCalibrationState::None)),
-        ("another machine's cache calibration", Setup::CacheCalibration(CacheCalibrationState::Stale)),
+        ("no cache calibration", Setup::CacheCalibration(CacheCalibrationState::Measuring(MeasureWhy::NoneStored))),
+        ("another machine's cache calibration", Setup::CacheCalibration(CacheCalibrationState::Measuring(MeasureWhy::OtherHardware))),
+        ("one measured one thread only", Setup::CacheCalibration(CacheCalibrationState::Measuring(MeasureWhy::OneThreadOnly))),
+        ("calibrate=always", Setup::CacheCalibration(CacheCalibrationState::Measuring(MeasureWhy::Always))),
         ("the cache calibration off", Setup::CacheCalibration(CacheCalibrationState::Disabled)),
         ("the seal calibration", Setup::SealCalibration(SealCalibrationState::Loaded { bits: 256, at: at(21) })),
         ("another machine's seal calibration", Setup::SealCalibration(SealCalibrationState::Stale)),

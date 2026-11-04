@@ -117,11 +117,15 @@ TMR will exit now.
 ## the cache calibration
   Calibration: Loaded (2026-10-20 09:05)
 ## no cache calibration
-  Calibration: None (run --calibrate-cache to calibrate)
+  Calibration: none stored: measured on this run's memory before its tests, about 2 minutes (calibrate=auto)
 ## another machine's cache calibration
-  Calibration: Stale (hardware changed, re-run --calibrate-cache)
+  Calibration: the one stored is another machine's: measured before the tests, about 2 minutes (calibrate=auto)
+## one measured one thread only
+  Calibration: the one stored measured one thread only: measured again with the others running, before the tests (calibrate=auto)
+## calibrate=always
+  Calibration: measured before the tests, about 2 minutes (calibrate=always)
 ## the cache calibration off
-  Calibration: Disabled (--no-calibration)
+  Calibration: off (calibrate=off): sizes from CPUID
 ## the seal calibration
   Seal calibration: Loaded (256 bits, 2026-10-21 09:05)
 ## another machine's seal calibration

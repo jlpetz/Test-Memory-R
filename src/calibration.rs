@@ -501,7 +501,7 @@ pub struct ProbeEngine {
     page_obtained: Option<PageSizeLevel>,
 }
 
-// SAFETY: the engine's memory is its own buffer or one its caller keeps alive (`initialize_from_buffer`), and one thread at a time
+// SAFETY: the engine's memory is its own buffer or one its caller keeps alive (`initialize_from_region`), and one thread at a time
 // uses it: `CalibrationTest::run` moves the engine to anchor A's thread and back
 unsafe impl Send for ProbeEngine {}
 
@@ -546,33 +546,23 @@ impl ProbeEngine {
         }
     }
 
-    /// Initialize from an existing MemoryBuffer (no allocation).
-    /// Used when calibrating with test plan memory — same page types, no extra alloc/dealloc. The buffer must outlive the ProbeEngine and
-    /// must not be concurrently modified.
-    #[expect(dead_code, reason = "TODO 22: the calibration on a run's own memory, which comes next")]
-    pub fn initialize_from_buffer(&mut self, buffer: &mut MemoryBuffer) -> Result<(), String> {
+    /// Initialize on memory the caller owns (no allocation): a run's own span (TODO 22).
+    ///
+    /// # Safety
+    /// `bytes` at `base` are 64-byte aligned, writable, the caller's alone, and outlive the engine.
+    pub unsafe fn initialize_from_region(&mut self, base: *mut u64, bytes: usize) -> Result<(), String> {
         if self.initialized {
             return Ok(());
         }
-
-        let max_size = buffer.size();
-        if max_size < 64 {
-            return Err(format!("Buffer too small for calibration: {} bytes", max_size));
+        if bytes < 64 {
+            return Err(format!("Buffer too small for calibration: {bytes} bytes"));
         }
-
-        let base = buffer.as_mut_ptr() as *mut u64;
-        let len = max_size / std::mem::size_of::<u64>();
-
-        log::info!("ProbeEngine: Using external buffer ({} bytes, {} u64 elements)", max_size, len);
-
-        // SAFETY: `len` u64s are the caller's buffer, test memory and so aligned, which outlives the engine and isn't touched meanwhile, as
-        // this fn's doc requires
-        unsafe {
-            Self::setup_pointer_chase(base, len, 0);
-        }
-
+        let len = bytes / std::mem::size_of::<u64>();
+        log::info!("ProbeEngine: Using external buffer ({bytes} bytes, {len} u64 elements)");
+        // SAFETY: `len` u64s of the caller's memory, as this fn's contract says
+        unsafe { Self::setup_pointer_chase(base, len, 0) };
         self.external_ptr = Some(base);
-        self.max_working_set = max_size;
+        self.max_working_set = bytes;
         self.initialized = true;
         Ok(())
     }
@@ -939,12 +929,42 @@ impl CalibrationTest {
         let bytes = self.memory_needed(&cpus);
         let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
         probe_engine.initialize_with_page_size(bytes, &self.config.page_size)?;
-        // Anchor A on one CPU, pinned, as a worker is
+        let page = probe_engine.page_obtained();
+        let mut results = self.measure(probe_engine, &cpus, bytes)?;
+        // The page size the buffer got, else the one asked for
+        results.page_size = page.map_or_else(|| self.config.page_size.clone(), |p| page_size_str(p).to_string());
+        results.total_time_ms = start.elapsed().as_millis() as u64;
+        Ok(results)
+    }
+
+    /// The calibration on a run's own memory, its pages `page`, before its tests (TODO 22): the `bytes` at `base`, as much as it needs.
+    ///
+    /// # Safety
+    /// As `ProbeEngine::initialize_from_region`'s: the memory is the caller's alone for the call, and no thread of the caller's is pinned
+    /// to the calibration's CPUs meanwhile (it would be measured too).
+    pub unsafe fn run_on(&self, base: *mut u64, bytes: usize, page: PageSizeLevel) -> Result<CalibrationResults, String> {
+        let start = Instant::now();
+        let cpus = CalibrationCpus::detect();
+        let bytes = bytes.min(self.memory_needed(&cpus)) / crate::test_memory::GRANULE * crate::test_memory::GRANULE;
+        let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
+        // SAFETY: as this fn's contract says
+        unsafe { probe_engine.initialize_from_region(base, bytes) }?;
+        log::info!(target: SHOWN_TARGET, "Calibration on the run's memory: {} on {} pages", format_size(bytes), page_size_name(page_size_str(page)));
+        let mut results = self.measure(probe_engine, &cpus, bytes)?;
+        results.page_size = page_size_str(page).to_string();
+        results.total_time_ms = start.elapsed().as_millis() as u64;
+        Ok(results)
+    }
+
+    /// Anchor A on its CPU, pinned, as a worker is, then B and C (`run_shared`), on `probe_engine`'s `bytes`
+    fn measure(&self, probe_engine: ProbeEngine, cpus: &CalibrationCpus, bytes: usize) -> Result<CalibrationResults, String> {
+        let single = cpus.single;
         let (results, mut probe_engine) = std::thread::scope(|scope| {
+            let mut probe_engine = probe_engine;
             scope
                 .spawn(move || {
-                    if let Err(e) = crate::runner::pin_thread_to_cpu_with_config(0, cpus.single, true) {
-                        log::debug!("Calibration not pinned to CPU {}: {e}", cpus.single);
+                    if let Err(e) = crate::runner::pin_thread_to_cpu_with_config(0, single, true) {
+                        log::debug!("Calibration not pinned to CPU {single}: {e}");
                     }
                     (self.run_calibration(&mut probe_engine), probe_engine)
                 })
@@ -953,9 +973,8 @@ impl CalibrationTest {
         })?;
         let mut results = results?;
         let base = probe_engine.get_base_ptr();
-        // SAFETY: the engine's buffer, `bytes` long, which nothing else uses, and which it keeps until after
-        results.shared = self.run_shared(&results, &cpus, base, bytes);
-        results.total_time_ms = start.elapsed().as_millis() as u64;
+        // The engine's memory, `bytes` long, which nothing else uses, and which it keeps until after
+        results.shared = self.run_shared(&results, cpus, base, bytes);
         Ok(results)
     }
 
@@ -1274,10 +1293,7 @@ impl CalibrationTest {
             });
         }
 
-        // The page size the buffer got, where the engine allocated it, else the one asked for
-        results.page_size = probe_engine.page_obtained().map_or_else(|| self.config.page_size.clone(), |p| page_size_str(p).to_string());
-        results.total_time_ms = start_time.elapsed().as_millis() as u64;
-        log::info!(target: SHOWN_TARGET, "Calibration complete in {}ms", results.total_time_ms);
+        log::info!(target: SHOWN_TARGET, "One thread's sweeps done in {} ms", start_time.elapsed().as_millis());
         Ok(results)
     }
 

@@ -82,6 +82,8 @@ pub(super) fn text(run: &Run) -> (String, Written) {
         Run::WheaMonitoring(Err(reason)) => (line(format!("🔎 WHEA hardware-error monitoring: unavailable ({})", reason)), Written::Plain),
         Run::AllocationStarting { min, max } => (allocation_starting(*min, *max), Written::Plain),
         Run::Allocated(report) => (report_text("the allocation report", |r| r.report_allocation(report)), Written::Plain),
+        Run::Calibrated(Ok(now)) => (calibrated(now), Written::Plain),
+        Run::Calibrated(Err(e)) => (line(format!("⚠️ The cache calibration failed ({e}): the tests size from CPUID")), Written::Plain),
         // The CLI reads the suite's progress on the monitor's ticks
         Run::SuiteStarted { progress: _, seed, transfer_bits, transfer_source, rescan } => (
             line(format!(
@@ -346,4 +348,14 @@ fn cpu_performance(summary: &CpuPerformanceSummary) -> String {
         let _ = reporter.report_performance_by_physical_core(&summary.by_core);
     }
     format!("\n=== CPU Performance Summary ===\n{}", reporter.into_renderer().into_text())
+}
+
+/// The cache calibration the run measured before its tests (TODO 22): its table, then where it was saved
+fn calibrated(now: &tmr::frontend::CalibratedNow) -> String {
+    let mut text = now.table.clone();
+    match &now.saved {
+        Ok(path) => text.push_str(&format!("💾 Calibration saved to {}\n", path.display())),
+        Err(e) => text.push_str(&format!("⚠️ Calibration not saved: {e}\n")),
+    }
+    text
 }

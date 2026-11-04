@@ -557,6 +557,8 @@ pub struct Model {
     /// The priority the window's thread takes (`window-priority=`): the selection's from setup's selection until the session ends,
     /// normal before and after
     window_priority: ThreadPriority,
+    /// The run measures the cache calibration once it has allocated, before its tests (`calibrate=`, TODO 22)
+    calibrating: bool,
 }
 
 impl Model {
@@ -601,6 +603,7 @@ impl Model {
             over: false,
             session_over: false,
             window_priority: ThreadPriority::Normal,
+            calibrating: false,
         }
     }
 
@@ -730,13 +733,13 @@ impl Model {
             | Setup::CpuType { .. }
             | Setup::CpuCount { .. }
             | Setup::LargePageDiagnostic { .. }
-            | Setup::CacheCalibration(_)
             | Setup::SealCalibration(_)
             | Setup::CpuTopology { .. } => {}
             Setup::Selection(selection) => {
                 self.facts.allocation = Some(format!("{} thread{}", selection.threads, plural(selection.threads)));
                 self.window_priority = selection.window_priority;
             }
+            Setup::CacheCalibration(state) => self.calibrating = matches!(state, tmr::frontend::CacheCalibrationState::Measuring(_)),
             Setup::LargePageCheck => self.position = "Checking large pages".to_string(),
             // After the dialog's grant
             Setup::LargePageGrant { outcome: Ok(()), .. } => self.position = "Exiting, to sign out and back in".to_string(),
@@ -1034,7 +1037,13 @@ impl Model {
             Run::AllocationStarting { .. } => self.position = "Allocating memory".to_string(),
             Run::Allocated(report) => {
                 self.facts.allocation = Some(allocation_fact(&report));
-                self.position = "Allocated".to_string();
+                // The calibration comes next when the run measures one (TODO 22): about 2 minutes, its sweeps in the Log tab
+                self.position =
+                    if self.calibrating { "Measuring the cache calibration, about 2 minutes (Log tab)" } else { "Allocated" }.to_string();
+            }
+            Run::Calibrated(_) => {
+                self.calibrating = false;
+                self.position = "Calibrated".to_string();
             }
             Run::SuiteStarted { progress, .. } => {
                 self.progress = Some(progress);
@@ -2488,7 +2497,7 @@ mod tests {
         for setup in [
             Setup::CpuType { cputype: "cores".to_string(), avoid_smt: false },
             Setup::Selection(Box::new(selection())),
-            Setup::CacheCalibration(tmr::frontend::CacheCalibrationState::None),
+            Setup::CacheCalibration(tmr::frontend::CacheCalibrationState::Measuring(tmr::frontend::MeasureWhy::NoneStored)),
             Setup::LargePageStatus { usable: true, min_page: "large".to_string(), min_needs_large: true },
             Setup::MemoryStatus(Some(status)),
             Setup::SystemInfo {
@@ -2516,7 +2525,7 @@ mod tests {
             "Limits: 2 cycles, no time limit", "SIMD: SSE, AVX2"
         ]);
         assert_eq!(outline(&s.system), [
-            "Cache calibration: none (tmr.exe --calibrate-cache measures it)",
+            "Cache calibration: none stored, measured before the tests (calibrate=auto)",
             "System Information",
             "table CPU Information",
             "table Cache Architecture (raw_cpuid leaf 4)",

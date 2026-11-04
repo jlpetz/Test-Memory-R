@@ -15,7 +15,8 @@ use crate::commands::Command;
 use crate::config::{CpuPinningConfig, MemoryAllocationConfig};
 use crate::cpu_topology::{get_cpu_topology, is_hybrid_cpu};
 use crate::frontend::{
-    CacheCalibrationState, Candidate, Frontend, LargePageAnswer, LargePageQuestion, ParamNote, SealCalibrationState, Selection, Setup,
+    CacheCalibrationState, Candidate, Frontend, LargePageAnswer, LargePageQuestion, MeasureWhy, ParamNote, SealCalibrationState, Selection,
+    Setup,
 };
 use crate::memory::allocation_strategy::EnhancedMemoryStrategy;
 use crate::runner::{RunStatus, TestSuiteTiming, ThreadPriority, detect_runtime_capabilities, run_tests_with_layout_and_timing_filtered};
@@ -141,9 +142,9 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     // This catches typos and deprecated flags early with helpful error messages
     let known_flags = [
         "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-seal", "--calibrate-all",
-        "--calibration-file", "--output", "--no-calibration", "--yes", "--no-save", "--create-demo-configs", "--compare-results",
-        "--show-results", "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages", "--startup-debug",
-        "--disable-pinning", "--no-serials", "--help", "-h", "-?", "--version", "-v",
+        "--calibration-file", "--output", "--yes", "--no-save", "--create-demo-configs", "--compare-results", "--show-results",
+        "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages", "--startup-debug", "--disable-pinning",
+        "--no-serials", "--help", "-h", "-?", "--version", "-v",
     ];
 
     let unknown_flags: Vec<String> = args
@@ -548,26 +549,30 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     // Detect SMBIOS data for identity validation
     let smbios = crate::smbios::get_smbios();
 
-    // Load calibration from tmr-cfg.json (unless --no-calibration)
-    let no_calibration = args.iter().any(|a| a == "--no-calibration");
-    if !no_calibration {
+    // The cache calibration (TODO 22, `calibrate=`): auto takes this machine's from tmr-cfg.json, and the run measures one before its tests
+    // when there is none with the shared anchors; always measures each run; off takes none, nor the seal's width
+    let calibrate = args.iter().rev().find_map(|a| a.strip_prefix("calibrate=")).map_or("auto".to_string(), str::to_ascii_lowercase);
+    let mut calibrate_first = None;
+    if calibrate != "off" {
         let cfg_path = crate::app_config::AppConfig::default_path();
         let app_config = crate::app_config::AppConfig::load(&cfg_path);
-        if app_config.is_calibration_valid(system_info, smbios) {
-            if let Some(cal) = app_config.calibration.as_ref() {
-                fe.event(Setup::CacheCalibration(CacheCalibrationState::Loaded { at: cal.timestamp }).into());
-                crate::set_calibration_data(Some(cal.clone()));
-            } else {
-                fe.event(Setup::CacheCalibration(CacheCalibrationState::None).into());
-                crate::set_calibration_data(None);
-            }
-        } else if app_config.machine_id.is_some() {
-            fe.event(Setup::CacheCalibration(CacheCalibrationState::Stale).into());
-            crate::set_calibration_data(None);
-        } else {
-            fe.event(Setup::CacheCalibration(CacheCalibrationState::None).into());
-            crate::set_calibration_data(None);
+        let valid = app_config.is_calibration_valid(system_info, smbios);
+        let stored = app_config.calibration.as_ref().filter(|_| valid);
+        // The one stored, until a new one is in
+        crate::set_calibration_data(stored.cloned());
+        let why = match stored {
+            _ if calibrate == "always" => Some(MeasureWhy::Always),
+            Some(cal) if cal.shared.is_some() => None,
+            Some(_) => Some(MeasureWhy::OneThreadOnly),
+            None if app_config.machine_id.is_some() && app_config.calibration.is_some() => Some(MeasureWhy::OtherHardware),
+            None => Some(MeasureWhy::NoneStored),
+        };
+        match (why, stored) {
+            (Some(why), _) => fe.event(Setup::CacheCalibration(CacheCalibrationState::Measuring(why)).into()),
+            (None, Some(cal)) => fe.event(Setup::CacheCalibration(CacheCalibrationState::Loaded { at: cal.timestamp }).into()),
+            (None, None) => unreachable!("no stored calibration is a reason to measure"),
         }
+        calibrate_first = why;
         let seal = load_seal_calibration(&app_config, system_info, smbios, crate::seal::set_calibrated_width);
         fe.event(Setup::SealCalibration(seal).into());
     } else {
@@ -684,6 +689,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
 
     let status = run_tests_with_layout_and_timing_filtered(
         crate::runner::RunSetup {
+            calibrate_first,
             layout: enhanced_layout,
             error_mode,
             suite_timing,

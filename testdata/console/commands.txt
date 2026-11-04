@@ -113,7 +113,9 @@ COMMAND LINE PARAMETERS:
   core-priority=hybrid                # Hybrid CPUs that report no core types (e.g. Ryzen 8500G):
                                       #   Windows' higher-priority cores are P-cores (default: equal);
                                       #   labels only: the core order is the priority's either way
-  --no-calibration                    # Skip loading calibration data (use CPUID heuristics; the seal's rule)
+  calibrate=auto                      # The cache calibration: measured before the tests when none is stored (default)
+  calibrate=always                    #   ...measured before every run's tests
+  calibrate=off                       #   ...none: sizes from CPUID, and the seal's width from its rule
   --no-serials                        # Leave the DIMMs' serials and the system's UUID out of the output, log and results
 
 CONFIG FILE OVERRIDES:

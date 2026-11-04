@@ -154,9 +154,8 @@ pub(super) fn text(setup: &Setup) -> String {
         Setup::CacheCalibration(state) => {
             let _ = match state {
                 CacheCalibrationState::Loaded { at } => writeln!(text, "  Calibration: Loaded ({})", at.format("%Y-%m-%d %H:%M")),
-                CacheCalibrationState::None => writeln!(text, "  Calibration: None (run --calibrate-cache to calibrate)"),
-                CacheCalibrationState::Stale => writeln!(text, "  Calibration: Stale (hardware changed, re-run --calibrate-cache)"),
-                CacheCalibrationState::Disabled => writeln!(text, "  Calibration: Disabled (--no-calibration)"),
+                CacheCalibrationState::Measuring(why) => writeln!(text, "  Calibration: {}", measuring(*why)),
+                CacheCalibrationState::Disabled => writeln!(text, "  Calibration: off (calibrate=off): sizes from CPUID"),
             };
         }
         Setup::SealCalibration(state) => {
@@ -266,6 +265,19 @@ fn machine_text(
             let _ = writeln!(text, "🧩 Hypervisor: {name}, a VM ({why}): without a calibration, the L3 tests take half the L3's share");
         }
         None => {}
+    }
+}
+
+/// Why the run measures the cache calibration before its tests, and when (TODO 22)
+pub(crate) fn measuring(why: tmr::frontend::MeasureWhy) -> &'static str {
+    use tmr::frontend::MeasureWhy;
+    match why {
+        MeasureWhy::NoneStored => "none stored: measured on this run's memory before its tests, about 2 minutes (calibrate=auto)",
+        MeasureWhy::OtherHardware => "the one stored is another machine's: measured before the tests, about 2 minutes (calibrate=auto)",
+        MeasureWhy::OneThreadOnly => {
+            "the one stored measured one thread only: measured again with the others running, before the tests (calibrate=auto)"
+        }
+        MeasureWhy::Always => "measured before the tests, about 2 minutes (calibrate=always)",
     }
 }
 

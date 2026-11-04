@@ -50,6 +50,7 @@ impl Frontend for Recording {
             Run::WheaMonitoring(_) => "WheaMonitoring".to_string(),
             Run::AllocationStarting { .. } => "AllocationStarting".to_string(),
             Run::Allocated(_) => "Allocated".to_string(),
+            Run::Calibrated(_) => "Calibrated".to_string(),
             Run::SuiteStarted { .. } => "SuiteStarted".to_string(),
             Run::CycleStarted { cycle, .. } => format!("CycleStarted {cycle}"),
             Run::CycleFinished { cycle, .. } => format!("CycleFinished {cycle}"),

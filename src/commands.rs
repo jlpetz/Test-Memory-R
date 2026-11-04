@@ -253,7 +253,12 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  core-priority=hybrid                # Hybrid CPUs that report no core types (e.g. Ryzen 8500G):")?;
     writeln!(out, "                                      #   Windows' higher-priority cores are P-cores (default: equal);")?;
     writeln!(out, "                                      #   labels only: the core order is the priority's either way")?;
-    writeln!(out, "  --no-calibration                    # Skip loading calibration data (use CPUID heuristics; the seal's rule)")?;
+    writeln!(
+        out,
+        "  calibrate=auto                      # The cache calibration: measured before the tests when none is stored (default)"
+    )?;
+    writeln!(out, "  calibrate=always                    #   ...measured before every run's tests")?;
+    writeln!(out, "  calibrate=off                       #   ...none: sizes from CPUID, and the seal's width from its rule")?;
     writeln!(
         out,
         "  --no-serials                        # Leave the DIMMs' serials and the system's UUID out of the output, log and results"

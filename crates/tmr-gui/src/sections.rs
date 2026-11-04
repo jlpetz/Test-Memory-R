@@ -51,9 +51,8 @@ impl Sections {
             }
             Setup::CacheCalibration(state) => self.system.push(text(match state {
                 CacheCalibrationState::Loaded { at } => format!("Cache calibration: loaded ({})", at.format("%Y-%m-%d %H:%M")),
-                CacheCalibrationState::None => "Cache calibration: none (tmr.exe --calibrate-cache measures it)".to_string(),
-                CacheCalibrationState::Stale => "Cache calibration: stale, the hardware changed (tmr.exe --calibrate-cache)".to_string(),
-                CacheCalibrationState::Disabled => "Cache calibration: off (--no-calibration)".to_string(),
+                CacheCalibrationState::Measuring(why) => format!("Cache calibration: {}", measuring(*why)),
+                CacheCalibrationState::Disabled => "Cache calibration: off (calibrate=off): sizes from CPUID".to_string(),
             })),
             Setup::SealCalibration(state) => self.system.push(text(match state {
                 SealCalibrationState::Loaded { bits, at } => {
@@ -111,12 +110,32 @@ impl Sections {
             }
             // Its first table's title names the allocator and its time
             Run::Allocated(report) => self.memory.extend(blocks(|r| r.report_allocation(report))),
+            // TODO 22: the calibration the run measured before its tests
+            Run::Calibrated(Ok(now)) => {
+                self.system.push(Block::Text(now.table.trim().to_string()));
+                self.system.push(Block::Text(match &now.saved {
+                    Ok(path) => format!("Cache calibration: measured now, saved to {}", path.display()),
+                    Err(e) => format!("Cache calibration: measured now, not saved ({e})"),
+                }));
+            }
+            Run::Calibrated(Err(e)) => self.system.push(Block::Text(format!("Cache calibration: failed ({e}), sizes from CPUID"))),
             _ => {}
         }
     }
 }
 
 /// The CPUs chosen, and the run's error mode, limits and SIMD: the console's selection lines
+/// Why the run measures the cache calibration before its tests (TODO 22), as the console says it
+fn measuring(why: tmr::frontend::MeasureWhy) -> &'static str {
+    use tmr::frontend::MeasureWhy;
+    match why {
+        MeasureWhy::NoneStored => "none stored, measured before the tests (calibrate=auto)",
+        MeasureWhy::OtherHardware => "the one stored is another machine's, measured before the tests (calibrate=auto)",
+        MeasureWhy::OneThreadOnly => "the one stored measured one thread only, measured again before the tests (calibrate=auto)",
+        MeasureWhy::Always => "measured before the tests (calibrate=always)",
+    }
+}
+
 fn selection_lines(s: &Selection) -> Vec<String> {
     let mut lines = vec![format!("Using {}/{} {} for testing", s.threads, s.available, s.cputype)];
     let unpinned = if s.pinned { "" } else { " (NUMA placement only: pinning is off)" };
