@@ -143,7 +143,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-cache-ext", "--calibrate-seal",
         "--calibrate-all", "--calibration-file", "--output", "--no-calibration", "--yes", "--no-save", "--create-demo-configs",
         "--compare-results", "--show-results", "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages",
-        "--startup-debug", "--disable-pinning", "--help", "-h", "-?", "--version", "-v",
+        "--startup-debug", "--disable-pinning", "--no-serials", "--help", "-h", "-?", "--version", "-v",
     ];
 
     let unknown_flags: Vec<String> = args
@@ -532,6 +532,9 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     let min_needs_large = PageSizeLevel::from_config_str(&alloc_config.min_page_size) > PageSizeLevel::Regular;
     fe.event(Setup::LargePageStatus { usable, min_page: alloc_config.min_page_size.clone(), min_needs_large }.into());
 
+    // Serials out of what the run shows and keeps (`--no-serials`), before SMBIOS is first read and logged (TODO 105)
+    crate::smbios::hide_serials(args.iter().any(|a| a == "--no-serials"));
+
     // Get system info for later use (formatted output comes via reporter below)
     let system_info = crate::tests::get_system_info();
     let cache_info = system_info.get_cache_info();
@@ -583,7 +586,18 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         use crate::reporting::system_info_builder::build_system_info_report;
 
         let report = build_system_info_report(system_info, &simd_caps);
-        fe.event(Setup::SystemInfo { report: Box::new(report), memory_modules: smbios.memory_modules.clone() }.into());
+        let hypervisor =
+            cache_info.is_virtual_machine.then(|| cache_info.hypervisor_name.clone().unwrap_or_else(|| "unidentified".to_string()));
+        fe.event(
+            Setup::SystemInfo {
+                report: Box::new(report),
+                memory_modules: crate::smbios::shown_modules(&smbios.memory_modules),
+                system: crate::smbios::shown_system(&smbios.system),
+                bios: smbios.bios.clone(),
+                hypervisor,
+            }
+            .into(),
+        );
     }
 
     // Calculate memory layout using enhanced system

@@ -750,7 +750,7 @@ impl Model {
                     self.ram_bytes = Some(status.total_phys);
                 }
             }
-            Setup::SystemInfo { report, memory_modules } => {
+            Setup::SystemInfo { report, memory_modules, .. } => {
                 self.system = Some(SystemPanel::of(&Machine::of(&report, memory_modules)));
             }
             Setup::Starting => self.position = "Starting".to_string(),
@@ -1843,7 +1843,13 @@ mod tests {
             Setup::LargePageStatus { usable: false, min_page: "regular".to_string(), min_needs_large: false },
             Setup::MemoryStatus(Some(status)),
             Setup::MemoryStatus(None),
-            Setup::SystemInfo { report: Box::new(system_info()), memory_modules: vec![module, second] },
+            Setup::SystemInfo {
+                report: Box::new(system_info()),
+                memory_modules: vec![module, second],
+                system: Default::default(),
+                bios: Default::default(),
+                hypervisor: None,
+            },
             Setup::Starting,
             Setup::RealtimeOnEveryCpu,
             Setup::Plan { name: "stability", about: "the stability tests", is_default: true },
@@ -2481,7 +2487,13 @@ mod tests {
             Setup::CacheCalibration(tmr::frontend::CacheCalibrationState::None),
             Setup::LargePageStatus { usable: true, min_page: "large".to_string(), min_needs_large: true },
             Setup::MemoryStatus(Some(status)),
-            Setup::SystemInfo { report: Box::new(system_info()), memory_modules: vec![module] },
+            Setup::SystemInfo {
+                report: Box::new(system_info()),
+                memory_modules: vec![module],
+                system: Default::default(),
+                bios: Default::default(),
+                hypervisor: None,
+            },
         ] {
             m.apply(setup.into());
         }

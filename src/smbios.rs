@@ -52,6 +52,42 @@ pub struct MemoryModule {
     pub capacity_human: String,
 }
 
+/// Whether the run leaves serial numbers out of what it shows and keeps (`--no-serials`, TODO 105, the owner 2026-11-04): the DIMMs'
+/// and the system's UUID, from the console, the log and the results file. The machine's fingerprints
+/// (`AppConfig::generate_machine_id`, `memory_fingerprint`) still read them, as a hash: calibration needs it to know the machine.
+static SERIALS_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `--no-serials`, set as a session starts, before SMBIOS is read
+pub fn hide_serials(hidden: bool) {
+    SERIALS_HIDDEN.store(hidden, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn serials_hidden() -> bool {
+    SERIALS_HIDDEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `modules` as the run shows and keeps them: without their serials under `--no-serials`
+pub fn shown_modules(modules: &[MemoryModule]) -> Vec<MemoryModule> {
+    let hidden = serials_hidden();
+    modules.iter().cloned().map(|module| if hidden { MemoryModule { serial_number: String::new(), ..module } } else { module }).collect()
+}
+
+/// The system as the run shows and keeps it: without its UUID under `--no-serials`
+pub fn shown_system(system: &SystemIdentity) -> SystemIdentity {
+    if serials_hidden() { SystemIdentity { uuid: String::new(), ..system.clone() } } else { system.clone() }
+}
+
+/// The SMBIOS memory type's name (Type 17 offset 0x12), for the ones a DDR5 tester meets
+pub fn memory_type_name(code: u8) -> Option<&'static str> {
+    match code {
+        0x1A => Some("DDR4"),
+        0x1E => Some("LPDDR4"),
+        0x22 => Some("DDR5"),
+        0x23 => Some("LPDDR5"),
+        _ => None,
+    }
+}
+
 /// All SMBIOS-derived system information + supplementary CPU/BIOS data from registry
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SmbiosData {
@@ -380,7 +416,11 @@ fn parse_smbios(raw: &[u8]) -> SmbiosData {
     } else {
         format!("{} {}", data.system.manufacturer, data.system.product_name).trim().to_string()
     };
-    let uuid_str = if data.system.uuid.is_empty() { "(none)" } else { &data.system.uuid };
+    let uuid_str = match (serials_hidden(), data.system.uuid.is_empty()) {
+        (true, _) => "(left out: --no-serials)",
+        (false, true) => "(none)",
+        (false, false) => &data.system.uuid,
+    };
     let mem_str = if data.memory_modules.is_empty() {
         "none detected".to_string()
     } else {

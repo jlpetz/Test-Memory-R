@@ -88,7 +88,7 @@ impl SystemPanel {
     pub fn of(machine: &Machine) -> Self {
         let modules = &machine.memory_modules;
         let total: u64 = modules.iter().map(|m| m.capacity_bytes).sum();
-        let types: Vec<&str> = modules.iter().filter_map(|m| memory_type(m.memory_type)).collect();
+        let types: Vec<&str> = modules.iter().filter_map(|m| tmr::frontend::memory_type_name(m.memory_type)).collect();
         let kind = match types.first() {
             Some(kind) if types.iter().all(|t| t == kind) => format!(" {kind}"),
             _ => String::new(),
@@ -207,17 +207,6 @@ fn named_apart(mut dimms: Vec<Dimm>) -> Vec<Dimm> {
         }
     }
     dimms
-}
-
-/// The SMBIOS memory type's name (Type 17 offset 0x12), for the ones a DDR5 tester meets
-pub(crate) fn memory_type(code: u8) -> Option<&'static str> {
-    match code {
-        0x1A => Some("DDR4"),
-        0x1E => Some("LPDDR4"),
-        0x22 => Some("DDR5"),
-        0x23 => Some("LPDDR5"),
-        _ => None,
-    }
 }
 
 /// 49152 -> `48 KiB`, 2097152 -> `2 MiB`, 67 GB -> `62.4 GiB`

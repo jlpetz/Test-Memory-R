@@ -205,7 +205,8 @@ impl RunIdentity {
         Self {
             machine_id: crate::app_config::AppConfig::generate_machine_id(sys, smbios),
             memory_id: smbios.memory_fingerprint(),
-            system_uuid: if smbios.system.uuid.is_empty() { None } else { Some(smbios.system.uuid.clone()) },
+            // Under `--no-serials`, none (TODO 105): the hashes above still know the machine
+            system_uuid: Some(crate::smbios::shown_system(&smbios.system).uuid).filter(|uuid| !uuid.is_empty()),
             // Same constructor `AppConfig::update_identity` uses, so a result file's readable identity always corresponds to the
             // `machine_id` that gates calibration reuse.
             machine: MachineIdentity::detect(sys, smbios),
@@ -225,7 +226,7 @@ impl RunIdentity {
             hypervisor: cache.hypervisor_name.clone(),
             memory_modules_reported: smbios.memory_modules.len(),
             memory_reported_gib: to_gib(smbios.total_memory_bytes()),
-            memory_modules: smbios.memory_modules.clone(),
+            memory_modules: crate::smbios::shown_modules(&smbios.memory_modules),
             memory_identity_is_physical: !virtualized,
         }
     }

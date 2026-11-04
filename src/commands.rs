@@ -259,6 +259,10 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "                                      #   Windows' higher-priority cores are P-cores (default: equal);")?;
     writeln!(out, "                                      #   labels only: the core order is the priority's either way")?;
     writeln!(out, "  --no-calibration                    # Skip loading calibration data (use CPUID heuristics; the seal's rule)")?;
+    writeln!(
+        out,
+        "  --no-serials                        # Leave the DIMMs' serials and the system's UUID out of the output, log and results"
+    )?;
     writeln!(out)?;
     writeln!(out, "CONFIG FILE OVERRIDES:")?;
     writeln!(out, "  All parameters can override config file values:")?;

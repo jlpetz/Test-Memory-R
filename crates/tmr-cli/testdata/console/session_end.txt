@@ -146,6 +146,7 @@ COMMAND LINE PARAMETERS:
                                       #   Windows' higher-priority cores are P-cores (default: equal);
                                       #   labels only: the core order is the priority's either way
   --no-calibration                    # Skip loading calibration data (use CPUID heuristics; the seal's rule)
+  --no-serials                        # Leave the DIMMs' serials and the system's UUID out of the output, log and results
 
 CONFIG FILE OVERRIDES:
   All parameters can override config file values:

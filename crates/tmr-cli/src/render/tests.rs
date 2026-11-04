@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 
 use chrono::TimeZone;
 use tmr::frontend::{
-    CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorCounts, ErrorMode, Frontend, LiveFigures, MemoryModule,
+    BiosInfo, CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorCounts, ErrorMode, Frontend, LiveFigures, MemoryModule,
     MemoryStatus, NotRun, PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
     PhysicalCorePerformance, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealCalibrationState, SealOp, Selection, Setup,
-    SkipSpec, Stage, StepConfigLine, StepReport, TestSnapshot, TestSummary, ThreadPerformance, ThreadPriority, WheaCounts, WorkerStart,
-    WorkersReport,
+    SkipSpec, Stage, StepConfigLine, StepReport, SystemIdentity, TestSnapshot, TestSummary, ThreadPerformance, ThreadPriority, WheaCounts,
+    WorkerStart, WorkersReport,
 };
 use tmr::session::{SessionEnd, Stopped};
 use tmr::test_support::failing_bits;
@@ -150,7 +150,16 @@ fn a_cycle_ending_prints_nothing() {
 fn a_redirected_stdout_gets_no_escape_codes_and_no_ticker() {
     let fe = CliFrontend::new();
     let shown = || {
-        fe.event(Setup::SystemInfo { report: Box::new(crate::renderer::tests::system_info_report()), memory_modules: Vec::new() }.into());
+        fe.event(
+            Setup::SystemInfo {
+                report: Box::new(crate::renderer::tests::system_info_report()),
+                memory_modules: Vec::new(),
+                system: Default::default(),
+                bios: Default::default(),
+                hypervisor: None,
+            }
+            .into(),
+        );
         fe.event(Run::CpuPerformance(Box::new(cpu_performance())).into());
         log::warn!("a record");
     };
@@ -478,9 +487,40 @@ fn setup_events_print_as_their_golden() {
             })),
         ),
         ("no memory status, on stderr", Setup::MemoryStatus(None)),
+        // TODO 105: the system's line, a line a DIMM with its serial, and the hypervisor's
         ("the system", Setup::SystemInfo {
             report: Box::new(crate::renderer::tests::system_info_report()),
-            memory_modules: vec![MemoryModule { locator: "DIMM_A2".to_string(), ..Default::default() }],
+            memory_modules: vec![
+                MemoryModule {
+                    locator: "DIMM_A2".to_string(),
+                    manufacturer: "G Skill".to_string(),
+                    part_number: "F5-6000J3038F16G".to_string(),
+                    serial_number: "00000000".to_string(),
+                    speed_mts: 6000,
+                    memory_type: 0x22,
+                    capacity_bytes: 16 << 30,
+                    ..Default::default()
+                },
+                MemoryModule { locator: "DIMM_B2".to_string(), capacity_bytes: 16 << 30, memory_type: 0x22, ..Default::default() },
+            ],
+            system: SystemIdentity {
+                manufacturer: "ASUS".to_string(),
+                product_name: "PRIME B650M-A".to_string(),
+                uuid: "03000200-0400-0500-0006-000700080009".to_string(),
+            },
+            bios: BiosInfo {
+                vendor: "American Megatrends Inc.".to_string(),
+                version: "3222".to_string(),
+                release_date: "2025-01-02".to_string(),
+            },
+            hypervisor: Some("HyperV".to_string()),
+        }),
+        ("a system SMBIOS names nothing of", Setup::SystemInfo {
+            report: Box::new(crate::renderer::tests::system_info_report()),
+            memory_modules: Vec::new(),
+            system: Default::default(),
+            bios: Default::default(),
+            hypervisor: None,
         }),
         ("realtime on every CPU", Setup::RealtimeOnEveryCpu),
         ("the default plan", Setup::Plan { name: "stability", about: "the stability tests at the widest width", is_default: true }),

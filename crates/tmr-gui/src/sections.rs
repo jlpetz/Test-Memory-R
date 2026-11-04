@@ -45,7 +45,7 @@ impl Sections {
                     self.threads.push(text("E-cores were skipped first".to_string()));
                 }
             }
-            Setup::SystemInfo { report, memory_modules } => {
+            Setup::SystemInfo { report, memory_modules, .. } => {
                 self.system.extend(blocks(|r| r.report_system_info(report)));
                 self.system.push(Block::Table(modules_table(memory_modules)));
             }
@@ -189,7 +189,7 @@ fn modules_table(modules: &[MemoryModule]) -> TableData {
         table.add_row(vec![
             m.locator.clone(),
             if m.capacity_bytes > 0 { crate::sysinfo::size(m.capacity_bytes as usize) } else { String::new() },
-            crate::sysinfo::memory_type(m.memory_type).unwrap_or_default().to_string(),
+            tmr::frontend::memory_type_name(m.memory_type).unwrap_or_default().to_string(),
             if m.speed_mts > 0 { format!("{} MT/s", m.speed_mts) } else { String::new() },
             m.manufacturer.trim().to_string(),
             m.part_number.trim().to_string(),

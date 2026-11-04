@@ -46,7 +46,7 @@ pub use crate::reporting::models::{
 };
 pub use crate::reporting::renderers::Renderer;
 pub use crate::runner::{RunStatus, ThreadPriority};
-pub use crate::smbios::MemoryModule;
+pub use crate::smbios::{BiosInfo, MemoryModule, SystemIdentity, memory_type_name, serials_hidden};
 pub use crate::tests::Stage;
 pub use crate::thread_pool::{SealOp, WorkerStart};
 pub use crate::whea::WheaCounts;
@@ -150,7 +150,15 @@ pub enum Setup {
     /// The system's memory now, `None` when Windows doesn't say
     MemoryStatus(Option<MemoryStatus>),
     /// The CPU, its caches and TSC, and the memory modules SMBIOS lists
-    SystemInfo { report: Box<SystemInfoReport>, memory_modules: Vec<MemoryModule> },
+    SystemInfo {
+        report: Box<SystemInfoReport>,
+        /// The DIMMs SMBIOS lists, and the system and its BIOS, as the run shows and keeps them: without serials under `--no-serials`
+        memory_modules: Vec<MemoryModule>,
+        system: SystemIdentity,
+        bios: BiosInfo,
+        /// The hypervisor, when CPUID says one runs (its name, or `unidentified`): a VM's, or Windows' VBS on a desktop (TODO 115)
+        hypervisor: Option<String>,
+    },
     /// The tests are about to start (the CLI takes Ctrl+C from here)
     Starting,
     /// `priority=realtime` with a worker on every logical CPU, which can freeze the console and input

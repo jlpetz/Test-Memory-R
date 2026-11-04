@@ -449,6 +449,7 @@ pub fn parse_and_validate_args(args: &[String]) -> Result<HashMap<String, ParamV
             || arg.starts_with("--ram-latency")
             || arg.starts_with("--cache-latency")
             || arg.starts_with("--no-calibration")
+            || arg == "--no-serials"
             || arg.starts_with("--startup-debug")
         {
             continue;

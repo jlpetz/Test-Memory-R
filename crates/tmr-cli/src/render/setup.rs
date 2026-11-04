@@ -193,8 +193,9 @@ pub(super) fn text(setup: &Setup) -> String {
         Setup::MemoryStatus(Some(status)) => memory_status_text(&mut text, status),
         // On stderr (`show`)
         Setup::MemoryStatus(None) => {}
-        Setup::SystemInfo { report, memory_modules: _ } => {
+        Setup::SystemInfo { report, memory_modules, system, bios, hypervisor } => {
             text += &report_text("system info report", |reporter| reporter.report_system_info(report));
+            machine_text(&mut text, system, bios, memory_modules, hypervisor.as_deref());
             let _ = writeln!(text);
         }
         Setup::Starting => {
@@ -215,6 +216,57 @@ pub(super) fn text(setup: &Setup) -> String {
         }
     }
     text
+}
+
+/// The machine as SMBIOS and CPUID give it (TODO 105, the owner 2026-11-04): a line for the system, its BIOS, its UUID and its memory; one,
+/// indented, for each DIMM, its serial too; and one for a hypervisor. Under `--no-serials` the serials and the UUID aren't there, and the
+/// system's line says so.
+fn machine_text(
+    text: &mut String, system: &tmr::frontend::SystemIdentity, bios: &tmr::frontend::BiosInfo, modules: &[tmr::frontend::MemoryModule],
+    hypervisor: Option<&str>,
+) {
+    let gib = |bytes: u64| {
+        let gib = bytes as f64 / (1u64 << 30) as f64;
+        if gib.fract() == 0.0 { format!("{gib:.0} GiB") } else { format!("{gib:.1} GiB") }
+    };
+    let joined = |parts: &[&str]| parts.iter().filter(|part| !part.trim().is_empty()).map(|part| part.trim()).collect::<Vec<_>>().join(" ");
+    let mut parts = Vec::new();
+    let name = joined(&[&system.manufacturer, &system.product_name]);
+    parts.push(if name.is_empty() { "unnamed".to_string() } else { name });
+    let firmware = joined(&[&bios.vendor, &bios.version]);
+    if !firmware.is_empty() {
+        let date = if bios.release_date.is_empty() { String::new() } else { format!(" ({})", bios.release_date) };
+        parts.push(format!("BIOS {firmware}{date}"));
+    }
+    if !system.uuid.is_empty() {
+        parts.push(format!("UUID {}", system.uuid));
+    }
+    let total: u64 = modules.iter().map(|module| module.capacity_bytes).sum();
+    parts.push(match modules.len() {
+        0 => "no memory modules listed".to_string(),
+        1 => format!("1 module, {}", gib(total)),
+        n => format!("{n} modules, {}", gib(total)),
+    });
+    if tmr::frontend::serials_hidden() {
+        parts.push("serials left out (--no-serials)".to_string());
+    }
+    let _ = writeln!(text, "🖥️  System: {}", parts.join(" · "));
+    for module in modules {
+        let size = joined(&[&gib(module.capacity_bytes), tmr::frontend::memory_type_name(module.memory_type).unwrap_or("")]);
+        let speed = if module.speed_mts > 0 { format!("{} MT/s", module.speed_mts) } else { String::new() };
+        let maker = joined(&[&module.manufacturer, &module.part_number]);
+        let serial = if module.serial_number.trim().is_empty() { String::new() } else { format!("serial {}", module.serial_number.trim()) };
+        let fields = [joined(&[&size, &speed]), maker, serial];
+        let details: Vec<&str> = fields.iter().filter(|field| !field.is_empty()).map(String::as_str).collect();
+        let locator = if module.locator.trim().is_empty() { "a module" } else { module.locator.trim() };
+        let _ = writeln!(text, "    {locator}: {}", details.join(" · "));
+    }
+    if let Some(name) = hypervisor {
+        let _ = writeln!(
+            text,
+            "🧩 Hypervisor: {name}, a VM's or Windows' VBS on a desktop: without a calibration, the L3 tests take half the L3's share"
+        );
+    }
 }
 
 /// The CPUs chosen, and the run's error mode, limits and SIMD, then a blank line.

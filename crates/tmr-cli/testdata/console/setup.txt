@@ -250,6 +250,47 @@ Confidence                                        99%
 Calibration         12 samples in 240ms (✅ Converged)  
 Std Deviation                            0.000012 GHz  
 -------------------------------------------------------
+🖥️  System: ASUS PRIME B650M-A · BIOS American Megatrends Inc. 3222 (2025-01-02) · UUID 03000200-0400-0500-0006-000700080009 · 2 modules, 32 GiB
+    DIMM_A2: 16 GiB DDR5 6000 MT/s · G Skill F5-6000J3038F16G · serial 00000000
+    DIMM_B2: 16 GiB DDR5
+🧩 Hypervisor: HyperV, a VM's or Windows' VBS on a desktop: without a calibration, the L3 tests take half the L3's share
+
+## a system SMBIOS names nothing of
+
+[1m🔍 System Information[0m
+════════════════════════════════════════════════════════════════════════════════
+[1m📊 CPU Information[0m
+------------------------------------------------------------------------
+Property      Value                                                     
+------------------------------------------------------------------------
+CPU           AMD Ryzen 5 8600G w/ Radeon 760M Graphics (AuthenticAMD)  
+Architecture  Family 25, Model 117, Stepping 2                          
+Cores         6 physical, 12 logical (HT enabled)                       
+SIMD Support  SSE2, AVX, AVX2, AVX-512F, AVX-512BW                      
+------------------------------------------------------------------------
+[1m📊 Cache Architecture (CPUID leaf 0x8000001D)[0m
+-----------------------------------------
+Cache Level      Total Size    Per Core  
+-----------------------------------------
+L1 Data          192.00 KiB   32.00 KiB  
+L1 Instruction   192.00 KiB   32.00 KiB  
+L2                 6.00 MiB    1.00 MiB  
+L3 (Shared)       16.00 MiB           -  
+Cache Line Size    64 bytes           -  
+-----------------------------------------
+[1m📊 TSC Calibration[0m
+-------------------------------------------------------
+Property                                        Value  
+-------------------------------------------------------
+Measured Freq                            4.299874 GHz  
+Likely Freq                      4300 MHz (4.300 GHz)  
+Detection Method                           CPUID 0x15  
+TSC Type                  ✅ Invariant (constant rate)  
+Confidence                                        99%  
+Calibration         12 samples in 240ms (✅ Converged)  
+Std Deviation                            0.000012 GHz  
+-------------------------------------------------------
+🖥️  System: unnamed · no memory modules listed
 
 ## realtime on every CPU
 ⚠️  priority=realtime with a worker on every logical CPU: the console and input can freeze until the run ends. Leave a core free (skip-cores=1) or use priority=high.
