@@ -526,20 +526,13 @@ impl ProbeEngine {
         match allocate_calibration_buffer(max_size, calibration_page_size(page_size_str)) {
             Ok((buffer, obtained)) => {
                 self.page_obtained = Some(obtained);
-                // Setup pointer-chase pattern
-                let base = buffer.as_mut_ptr() as *mut u64;
-                let len = max_size / std::mem::size_of::<u64>();
-
-                // SAFETY: a page-aligned buffer of `max_size` bytes, just allocated: `len` u64s
-                unsafe {
-                    Self::setup_pointer_chase(base, len, 0);
-                }
-
+                // No chain over the whole buffer: each probe lays its own, its size's (`probe`). One here cost about 6 s on the dev box's
+                // 1.9 GB buffer, and the first probe replaced it.
                 self.memory_buffer = Some(buffer);
                 self.max_working_set = max_size;
                 self.initialized = true;
 
-                log::info!("ProbeEngine: Initialized with {} byte buffer ({} u64 elements)", max_size, len);
+                log::info!("ProbeEngine: Initialized with {} byte buffer", max_size);
                 Ok(())
             }
             Err(e) => Err(e),
@@ -557,10 +550,8 @@ impl ProbeEngine {
         if bytes < 64 {
             return Err(format!("Buffer too small for calibration: {bytes} bytes"));
         }
-        let len = bytes / std::mem::size_of::<u64>();
-        log::info!("ProbeEngine: Using external buffer ({bytes} bytes, {len} u64 elements)");
-        // SAFETY: `len` u64s of the caller's memory, as this fn's contract says
-        unsafe { Self::setup_pointer_chase(base, len, 0) };
+        // Each probe lays its own chain (`probe`), as `initialize_with_page_size` says
+        log::info!("ProbeEngine: Using external buffer ({bytes} bytes)");
         self.external_ptr = Some(base);
         self.max_working_set = bytes;
         self.initialized = true;
