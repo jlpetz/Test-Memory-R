@@ -206,6 +206,8 @@ macro_rules! spd_write_impl {
             let pattern = $set1_fn(STATIC_PATTERN as i64);
             // The extent as one chunk under the `whole` chunk mode the built-ins use
             let spread = runner.chunks(extent.test_size);
+            // About every 1 MiB moved, not every pass (TODO 105 (2))
+            let every = crate::test_scaffolding::passes_per_check(extent.test_size);
 
             loop {
                 runner.begin_cycle();
@@ -218,9 +220,11 @@ macro_rules! spd_write_impl {
                     runner.add_bytes(spread.chunk());
                 }
 
-                runner.update_progress();
-                if runner.shutdown_requested() || !runner.should_continue() {
-                    return runner.finish_completed((runner.bytes_processed() / 8) as u64);
+                if runner.check_due(every) {
+                    runner.update_progress();
+                    if runner.shutdown_requested() || !runner.should_continue() {
+                        return runner.finish_completed((runner.bytes_processed() / 8) as u64);
+                    }
                 }
             }
         }
@@ -271,6 +275,8 @@ macro_rules! spd_read_impl {
 
             // The extent as one chunk under the `whole` chunk mode the built-ins use
             let spread = runner.chunks(extent.test_size);
+            // About every 1 MiB moved, not every pass (TODO 105 (2))
+            let every = crate::test_scaffolding::passes_per_check(extent.test_size);
 
             loop {
                 runner.begin_cycle();
@@ -280,9 +286,11 @@ macro_rules! spd_read_impl {
                     runner.add_bytes(spread.chunk());
                 }
 
-                runner.update_progress();
-                if runner.shutdown_requested() || !runner.should_continue() {
-                    return runner.finish_completed((runner.bytes_processed() / 8) as u64);
+                if runner.check_due(every) {
+                    runner.update_progress();
+                    if runner.shutdown_requested() || !runner.should_continue() {
+                        return runner.finish_completed((runner.bytes_processed() / 8) as u64);
+                    }
                 }
             }
         }
@@ -339,6 +347,8 @@ macro_rules! spd_copy_impl {
 
             // Each half as one chunk under the `whole` chunk mode the built-ins use
             let spread = runner.half_chunks(extent.test_size);
+            // About every 1 MiB moved, not every pass (TODO 105 (2))
+            let every = crate::test_scaffolding::passes_per_check(extent.test_size);
             let (half_a, half_b) = (base, base.add(half_bytes));
 
             loop {
@@ -357,9 +367,11 @@ macro_rules! spd_copy_impl {
                     }
                 }
 
-                runner.update_progress();
-                if runner.shutdown_requested() || !runner.should_continue() {
-                    return runner.finish_completed((runner.bytes_processed() / 8) as u64);
+                if runner.check_due(every) {
+                    runner.update_progress();
+                    if runner.shutdown_requested() || !runner.should_continue() {
+                        return runner.finish_completed((runner.bytes_processed() / 8) as u64);
+                    }
                 }
             }
         }

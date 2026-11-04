@@ -119,6 +119,8 @@ pub struct TestRunner<'a> {
     /// Another thread halted the step on an error in memory this test shares (the page exchange, TODO 28): finishing leaves the extent
     /// as it is, as a halt here does
     kept: bool,
+    /// Passes or samples since the clock and the stop flag were last read (`check_due`)
+    since_check: u32,
 }
 
 /// What a step covers on one thread, for log lines: the bytes, the extent asked for, and the chunks (Mem-Random's are RNG iterations,
@@ -157,6 +159,17 @@ pub fn step_line(name: &str, test_name: &str, config: &TestMemoryConfig, span_by
         }
     }
 }
+
+/// About how much a bandwidth test moves between its clock and stop checks (`TestRunner::check_due`, TODO 105 (2))
+const CHECK_BYTES: usize = 1 << 20;
+
+/// A bandwidth test's passes between its checks: about every `CHECK_BYTES` moved, one at least (a pass past 1 MiB checks after each)
+pub fn passes_per_check(pass_bytes: usize) -> u32 {
+    (CHECK_BYTES / pass_bytes.max(1)).clamp(1, u32::MAX as usize) as u32
+}
+
+/// A latency test's samples between its checks: 64 is 64 microseconds at L1, about 5 ms at DRAM
+pub const SAMPLES_PER_CHECK: u32 = 64;
 
 /// The extent a test of this config covers on these blocks: the first bytes of the thread's span (TODO 76), at least one granule when there
 /// is memory. Also the worker's view of what a step that never takes the seal will overwrite (TODO 74).
@@ -210,6 +223,7 @@ impl<'a> TestRunner<'a> {
             seal_words: extent.test_size / 8,
             seal_errors: 0,
             kept: false,
+            since_check: 0,
         };
         // The untimed setup a latency or bandwidth test does before `restart_clock`, for the ticker
         match action {
@@ -373,6 +387,19 @@ impl<'a> TestRunner<'a> {
     pub fn begin_cycle(&mut self) -> u32 {
         self.cycle += 1;
         self.cycle
+    }
+
+    /// Whether the clock and the stop flag are due (TODO 105 (2)): once every `every` passes or samples, and at the cycle limit, which reads
+    /// no clock, so a step stops there exactly. An L1 bandwidth pass is a few microseconds, and reading the clock twice a pass (the
+    /// progress and the time limit) took about half of it.
+    #[inline]
+    pub fn check_due(&mut self, every: u32) -> bool {
+        self.since_check += 1;
+        if self.since_check >= every || self.timing.cycles.is_some_and(|max| self.cycle >= max) {
+            self.since_check = 0;
+            return true;
+        }
+        false
     }
 
     /// Accumulate processed bytes (called per block, between chunks).
@@ -553,6 +580,15 @@ impl<'a> TestRunner<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TODO 105 (2): a bandwidth test checks its clock about every 1 MiB moved: an L1 pass of 16 KiB every 64, a 512 KiB one every 2,
+    /// one past 1 MiB after each, and never fewer than one
+    #[test]
+    fn a_bandwidth_test_checks_about_every_mib() {
+        const KIB: usize = 1024;
+        let every = [16 * KIB, 24 * KIB, 512 * KIB, 1024 * KIB, 1088 * KIB, 7 << 30, 0].map(passes_per_check);
+        assert_eq!(every, [64, 42, 2, 1, 1, 1, 1 << 20]);
+    }
 
     /// TODO 105: a step logs one line, not one a thread; threads whose spans give the same layout are counted together, in the order they
     /// come, and a thread with no memory says so
