@@ -1367,7 +1367,11 @@ fn live(s: &ProgressSnapshot) -> Option<String> {
         "no live data".to_string()
     };
     Some(match live.stage.map(|stage| stage.label()).filter(|label| !label.is_empty()) {
-        Some(stage) => format!("{stage} · {figures}"),
+        // Mem-Refresh's wait, with what's left of it (TODO 112)
+        Some(stage) => match live.wait_left {
+            Some(left) => format!("{stage}, {} left · {figures}", hms(left)),
+            None => format!("{stage} · {figures}"),
+        },
         None => figures,
     })
 }
@@ -2665,6 +2669,12 @@ mod tests {
             position: "Cycle 12 (00:12:34) · Test 2/6 Mem-Refresh128 (00:05:12)".to_string(),
             live: some("Checking seal · pending"),
         });
+
+        // TODO 112: Mem-Refresh's wait, with what's left of it
+        let mut waiting = ticker_snapshot();
+        waiting.test.as_mut().unwrap().live =
+            LiveFigures { stage: Some(Stage::Waiting), wait_left: Some(Duration::from_secs(1752)), ..Default::default() };
+        assert_eq!(shown(waiting, None).live, some("Waiting, 00:29:12 left · pending"));
 
         let mut limit_reached = ProgressSnapshot { runtime: Duration::from_secs(3600), ..ticker_snapshot() };
         let test = limit_reached.test.as_mut().unwrap();

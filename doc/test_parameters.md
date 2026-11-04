@@ -88,19 +88,22 @@ Number of copy direction patterns for memory move operations:
 ### `wait_ms: Option<u64>`
 **Used by:** RefreshStable (`Mem-Refresh128/-256/-512/-Auto`, and the `-Flush` variants)
 
-How long each chunk waits between its write and its check, in milliseconds: the time the cells
-must hold their charge. The test writes a chunk, flushes it if `flush_before_verify` is on, waits,
-then checks it, chunk by chunk. A long wait checks for slow leaks (bit fade): one chunk the
-extent's size, so all of it waits at once, and minutes of wait. The wait stops at Ctrl+C, and the
-plan shows it in the parameter column (`Wait(30min)`). Another test doesn't read it and warns.
+How long the test waits between its write and its check, in milliseconds: the time the cells
+must hold their charge. A pass writes every chunk (each flushed if `flush_before_verify` is on),
+waits once, then checks every chunk, so each word waits at least this long, plus the rest of the
+write and the check up to it (TODO 112: until then it waited after each chunk, so a config whose
+chunks are smaller than its extent waited once a chunk: the demo config's 1 MB chunks over 977 MiB
+a thread on the dev box, 977 waits of 64 ms, about a minute a cycle; the built-in plans' Refresh
+is one chunk, and waited once a pass already). The ticker shows the pass's phase: `Writing`, `Waiting, 00:29:12 left`,
+`Verifying`. A long wait checks for slow leaks (bit fade): minutes of it. The wait stops at Ctrl+C,
+and the plan shows it in the parameter column (`Wait(30min)`). Another test doesn't read it and warns.
 TM5's RefreshStable has no wait setting, so an imported `.cfg` takes the default.
 The waits count as the test's time, by design: the cells holding their charge is the test. So its
-MiB/s reads well under the memory's rate (about 30% under at 64 ms on the dev box, more the longer
-the wait): it measures a refresh test, not a transfer rate (TODO 112).
+MiB/s reads well under the memory's rate: it measures a refresh test, not a transfer rate.
 
-- **Default:** 64 (DDR4's refresh window; DDR5's is 32 ms)
-- **JSON config field:** `"wait_ms": 64`
-- **Bit fade:** `{"function": "Mem-RefreshAuto", "chunk": {"mode": "whole"}, "wait_ms": 1800000}` (30 minutes)
+- **Default:** 500 (about 15 of DDR5's 32 ms refresh windows; 8 of DDR4's 64 ms)
+- **JSON config field:** `"wait_ms": 500`
+- **Bit fade:** `{"function": "Mem-RefreshAuto", "wait_ms": 1800000}` (30 minutes)
 
 ### `tile_patterns: Option<u32>`
 **Used by:** Mem-TileTransform (TODO 102)

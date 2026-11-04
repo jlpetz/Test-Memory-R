@@ -204,6 +204,12 @@ fn the_ticker_draws_as_its_golden() {
     case("no limits, errors and WHEA, a stage, no figures yet", ticker::render(&pending));
     case("its stamp: the finished tests' errors only", ticker::test_stamp(&pending, Duration::from_secs(15)).unwrap());
 
+    // TODO 112: Mem-Refresh's wait, with what's left of it (a bit fade's 30 minutes)
+    let mut waiting = snapshot();
+    waiting.test.as_mut().unwrap().live =
+        LiveFigures { stage: Some(Stage::Waiting), wait_left: Some(Duration::from_secs(1752)), ..Default::default() };
+    case("Mem-Refresh waiting, with the time left", ticker::render(&waiting));
+
     let mut limit_reached = snapshot();
     limit_reached.runtime = Duration::from_secs(3600);
     let test = limit_reached.test.as_mut().unwrap();

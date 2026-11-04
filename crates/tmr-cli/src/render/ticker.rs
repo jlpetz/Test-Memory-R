@@ -32,6 +32,10 @@ pub(super) fn render(snapshot: &ProgressSnapshot) -> String {
         line.push(')');
         if let Some(stage) = live.stage {
             let _ = write!(line, " | {}", stage.label());
+            // Mem-Refresh's wait (TODO 112): a bit fade's is minutes
+            if let Some(left) = live.wait_left {
+                let _ = write!(line, ", {} left", hms(left));
+            }
         }
         if live.published {
             let _ = write!(

@@ -407,6 +407,13 @@ impl<'a> TestRunner<'a> {
         }
     }
 
+    /// What's left of a wait, for the ticker (Mem-Refresh's, TODO 112)
+    pub fn set_wait_left(&self, left: Duration) {
+        if let Some(progress) = self.progress {
+            progress.wait_left_ms.store(left.as_millis() as u64, Ordering::Relaxed);
+        }
+    }
+
     /// Increment and return the new cycle number. Call at the top of each outer cycle.
     #[inline]
     pub fn begin_cycle(&mut self) -> u32 {

@@ -215,6 +215,8 @@ pub struct LiveFigures {
     /// What the first worker not just testing is doing (TODO 74), e.g. "Checking seal": work a step does apart from its test, the seal's
     /// before and after it or across memory, a fill, a chain build. A sealed pass's per-chunk check and reseal name none (TODO 109).
     pub stage: Option<crate::tests::Stage>,
+    /// What's left of Mem-Refresh's wait while it waits (`Stage::Waiting`, TODO 112): the longest any worker has left
+    pub wait_left: Option<Duration>,
 }
 
 /// Where the suite is, read at once (TODO 29): what the ticker shows, and what a test's report ends with. `ProgressTracker::snapshot` takes
@@ -451,6 +453,9 @@ fn live_figures(workers: &[TestProgress]) -> LiveFigures {
         live.recent_bytes_per_sec += if recent > 0.0 { recent } else { since_start };
         live.sealed_pass |= slot.sealed_pass.load(Ordering::Relaxed);
     }
+    if live.stage == Some(crate::tests::Stage::Waiting) {
+        live.wait_left = workers.iter().map(|slot| slot.wait_left_ms.load(Ordering::Relaxed)).max().map(Duration::from_millis);
+    }
     live
 }
 
@@ -577,6 +582,21 @@ mod tests {
                 "0 errors (0 test + 0 WHEA)"
             ]
         );
+    }
+
+    /// TODO 112: while Mem-Refresh waits, the live figures say how long the longest of its workers has left, and nothing once it checks
+    #[test]
+    fn a_refresh_wait_shows_the_longest_time_left() {
+        let workers: Vec<TestProgress> = (0..3).map(|_| TestProgress::new()).collect();
+        for (slot, ms) in workers.iter().zip([300, 450, 0]) {
+            slot.set_stage(Stage::Waiting);
+            slot.wait_left_ms.store(ms, Ordering::Relaxed);
+        }
+        assert_eq!(live_figures(&workers).wait_left, Some(Duration::from_millis(450)));
+        for slot in &workers {
+            slot.set_stage(Stage::Verifying);
+        }
+        assert_eq!((live_figures(&workers).stage, live_figures(&workers).wait_left), (Some(Stage::Verifying), None));
     }
 
     /// TODO 109: the seal's work before a step's test publishes as the test's figures, marked the seal's; once the test starts, the

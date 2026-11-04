@@ -590,6 +590,8 @@ pub struct TestProgress {
     pub last_update_ms: std::sync::atomic::AtomicU64,
     /// What the worker is doing (`Stage as u8`), for the ticker (TODO 74). Set between chunks.
     pub stage: std::sync::atomic::AtomicU8,
+    /// What's left of Mem-Refresh's wait, in ms, while it waits (`Stage::Waiting`, TODO 112); 0 otherwise
+    pub wait_left_ms: std::sync::atomic::AtomicU64,
     /// The test's speed over the last seconds of its own time (TODO 109), bytes/s as `f64` bits, the window's chart's line; 0 when the
     /// worker publishes none (a seal stage's figures), where the speed since the start stands in
     pub recent_bytes_per_sec: std::sync::atomic::AtomicU64,
@@ -611,6 +613,10 @@ pub enum Stage {
     FinalSealCheck = 4,
     FillingMemory = 5,
     BuildingPointerChain = 6,
+    /// Mem-Refresh's three phases a pass (TODO 112): its write, its wait (with the time left, `TestProgress::wait_left_ms`), its check
+    Writing = 7,
+    Waiting = 8,
+    Verifying = 9,
 }
 
 impl Stage {
@@ -622,6 +628,9 @@ impl Stage {
             4 => Stage::FinalSealCheck,
             5 => Stage::FillingMemory,
             6 => Stage::BuildingPointerChain,
+            7 => Stage::Writing,
+            8 => Stage::Waiting,
+            9 => Stage::Verifying,
             _ => Stage::Testing,
         }
     }
@@ -635,6 +644,9 @@ impl Stage {
             Stage::FinalSealCheck => "Final seal check",
             Stage::FillingMemory => "Filling memory",
             Stage::BuildingPointerChain => "Building pointer chain",
+            Stage::Writing => "Writing",
+            Stage::Waiting => "Waiting",
+            Stage::Verifying => "Verifying",
         }
     }
 }
@@ -656,6 +668,7 @@ impl TestProgress {
             seal_errors_found: AtomicU64::new(0),
             last_update_ms: AtomicU64::new(0),
             stage: std::sync::atomic::AtomicU8::new(Stage::Testing as u8),
+            wait_left_ms: AtomicU64::new(0),
             recent_bytes_per_sec: AtomicU64::new(0),
             sealed_pass: std::sync::atomic::AtomicBool::new(false),
             recent: crate::test_scaffolding::Recent::new(0),
@@ -674,6 +687,7 @@ impl TestProgress {
         self.bytes_processed.store(0, Relaxed);
         self.errors_found.store(0, Relaxed);
         self.seal_errors_found.store(0, Relaxed);
+        self.wait_left_ms.store(0, Relaxed);
         self.last_update_ms.store(0, Relaxed);
         self.stage.store(Stage::Testing as u8, Relaxed);
         self.recent_bytes_per_sec.store(0, Relaxed);
@@ -1441,21 +1455,24 @@ pub unsafe fn stuck_bit_test_auto_multi(
 /// `memset` by LoopIdiomRecognize (#61).
 pub const REFRESH_PATTERN: u64 = 0xA55AA55AA55AA55Au64;
 
-/// Mem-Refresh's wait between a chunk's write and its check where its config gives no `wait_ms`: the 64 ms it has always waited (DDR4's
-/// refresh window; DDR5's is 32 ms).
-pub const REFRESH_WAIT_MS: u64 = 64;
+/// Mem-Refresh's wait between a pass's write and its check where its config gives no `wait_ms` (TODO 112): 500 ms, about 15 of DDR5's
+/// 32 ms refresh windows (8 of DDR4's 64 ms), where it was 64 ms. In the built-in plans' 15 s step on the dev box that is 24 passes
+/// instead of 71, each word untouched for 12 s of it instead of 4.5 s.
+pub const REFRESH_WAIT_MS: u64 = 500;
 
-/// Mem-Refresh's wait between a chunk's write and its check: `wait` in slices of at most 100 ms, so a long one (a bit fade's minutes,
-/// `wait_ms`) still stops at Ctrl+C, and the live display keeps moving. Whether the run asked to stop.
+/// Mem-Refresh's wait between a pass's write and its check: `wait` in slices of at most 100 ms, so a long one (a bit fade's minutes,
+/// `wait_ms`) still stops at Ctrl+C, and the live display keeps moving and says how long is left. Whether the run asked to stop.
 #[inline(never)]
 fn refresh_wait(runner: &mut crate::test_scaffolding::TestRunner<'_>, wait: std::time::Duration) -> bool {
     const SLICE: std::time::Duration = std::time::Duration::from_millis(100);
     let end = std::time::Instant::now() + wait;
     loop {
         if runner.shutdown_requested() {
+            runner.set_wait_left(std::time::Duration::ZERO);
             return true;
         }
         let left = end.saturating_duration_since(std::time::Instant::now());
+        runner.set_wait_left(left);
         if left.is_zero() {
             return false;
         }
@@ -1464,11 +1481,13 @@ fn refresh_wait(runner: &mut crate::test_scaffolding::TestRunner<'_>, wait: std:
     }
 }
 
-/// Generates a Refresh `_impl` at a given SIMD width (the `_multi` runtime gate stays hand-written and calls this). Per chunk: write
-/// pattern → CLFLUSHOPT the chunk to DRAM → MFENCE → wait (`wait_ms`, else 64 ms; `refresh_wait`) → verify. The flush is what makes the
-/// post-wait verify actually read DRAM (defeats cache masking of bit-fade). Verify uses **4 independent accumulator chains** (MLP; see
-/// `memory/simd-loop-optimization.md`) — this is the cold-DRAM regime where MLP mattered most in benchmarking. A tripped accumulator
-/// rescans the chunk to count and log each bad word. `TestRunner` owns extent/timer/progress/stats/shutdown.
+/// Generates a Refresh `_impl` at a given SIMD width (the `_multi` runtime gate stays hand-written and calls this). A pass: every chunk
+/// written with the pattern (each CLFLUSHOPTed to DRAM when asked, ending in an MFENCE), one wait (`wait_ms`, else 500 ms;
+/// `refresh_wait`), then every chunk verified (TODO 112: the wait was a chunk's until then, a minute a cycle for 1 MB chunks on the dev
+/// box). The flush is what makes the post-wait verify actually read DRAM (defeats cache masking of bit-fade). Verify uses **4 independent
+/// accumulator chains** (MLP; see `memory/simd-loop-optimization.md`) — this is the cold-DRAM regime where MLP mattered most in
+/// benchmarking. A tripped accumulator rescans the chunk to count and log each bad word. `TestRunner` owns
+/// extent/timer/progress/stats/shutdown.
 macro_rules! refresh_impl {
     ($fn_name:ident, $test_name:literal, $simd_type:ty, $tf:literal) => {
         #[doc = include_str!("test_fn_safety.md")]
@@ -1507,47 +1526,56 @@ macro_rules! refresh_impl {
                 let spread = runner.chunks(extent.test_size);
                 let chunk_size_vectors = spread.chunk() / lanes;
 
+                // The seal over the whole extent first, and its reseal after the last check (TODO 112): the pass writes every word before
+                // it checks any, and chunks spread evenly can overlap, so a chunk's own check or reseal would meet its neighbour's pattern
+                runner.check_seal(0, extent.test_size);
+                halt_here!(runner, cycle_errors, (runner.bytes_processed() / lanes) as u64);
+
+                // Write every chunk: the pass's data all written before its one wait
+                runner.set_stage(Stage::Writing);
                 for k in 0..spread.count() {
                     let processed = spread.start(k) / lanes;
                     let chunk_end = processed + chunk_size_vectors;
 
-                    runner.check_seal(spread.start(k), spread.chunk());
-                    halt_here!(runner, cycle_errors, (runner.bytes_processed() / lanes) as u64);
-
-                    // Write phase.
                     for i in processed..chunk_end {
                         *base.add(i) = pattern;
                     }
 
-                    // Optional flush (TODO #59, opt-in): evict this chunk so the post-sleep verify reads DRAM rather than a cache-resident
-                    // copy that would mask bit-fade. Default OFF — natural eviction already handles this here:
-                    //   - the extent is `CacheTotal 2.0x`, i.e. 2× the whole hierarchy by
-                    //     design, so writing it evicts its own earlier half;
-                    //   - N threads run concurrently against a *shared* L3, cutting the
-                    //     per-thread residency further (on a 482 MiB-cache box: ≤50% of the
-                    //     extent could survive at 1 thread, but ≤6.4% at 8);
-                    //   - the verify below sweeps *forward*, the same direction as the write,
-                    //     so any surviving tail line is read last — after the verify's own
-                    //     reads have pulled ~a whole extent through the cache. The residual is
-                    //     both the smallest and the least-likely-resident part of the range.
-                    // So this buys insurance against a fluke at ~20-30% throughput. For a tool where throughput *is*
-                    // coverage-per-unit-time, faster cycles find more errors than a marginally stricter single pass. Turn it on to make the
-                    // DRAM round-trip architecturally guaranteed instead of policy- dependent (shared virtualized L3, non-inclusive caches,
-                    // prefetchers).
+                    // Optional flush (TODO #59, opt-in): evict this chunk so the post-wait verify reads DRAM rather than a cache-resident
+                    // copy that would mask bit-fade. Writing the whole pass before the wait evicts most of it anyway when the extent is
+                    // past the caches (the built-in step's is twice them), and the verify sweeps forward, as the write did, so what
+                    // survives in cache is read last, after the verify's own reads have pulled most of an extent through. Turn it on to
+                    // make the DRAM round-trip architecturally guaranteed instead of policy-dependent (shared virtualized L3,
+                    // non-inclusive caches, prefetchers); the built-in step and an imported RefreshStable do.
                     if flush_before_verify {
                         let chunk_ptr = base.add(processed) as *const u8;
                         let chunk_bytes = (chunk_end - processed) * lanes;
                         flush_range_to_dram(chunk_ptr, chunk_bytes, config.cache_line_bytes);
                     }
+                    runner.add_bytes(spread.chunk());
 
-                    // No fence (TODO 16): the flush, when on, ends in its own MFENCE; the sleep is the wait. Stopped during it, the chunk
-                    // goes unchecked: the cycle's end check is skipped too
-                    if refresh_wait(&mut runner, wait) {
+                    if runner.shutdown_requested() {
                         let total_operations = (runner.bytes_processed() / lanes) as u64;
                         return runner.finish_aborted(cycle_errors, total_operations);
                     }
+                    runner.update_progress_in_cycle();
+                }
 
-                    // Verify — 4 independent accumulator chains (MLP).
+                // One wait a pass (TODO 112): each word waits at least this, plus the rest of the write and the verify up to it. No fence
+                // (TODO 16): the flush, when on, ends in its own MFENCE; the sleep is the wait. Stopped during it, the pass goes unchecked:
+                // the cycle's end check is skipped too
+                runner.set_stage(Stage::Waiting);
+                if refresh_wait(&mut runner, wait) {
+                    let total_operations = (runner.bytes_processed() / lanes) as u64;
+                    return runner.finish_aborted(cycle_errors, total_operations);
+                }
+
+                // Verify every chunk — 4 independent accumulator chains (MLP)
+                runner.set_stage(Stage::Verifying);
+                for k in 0..spread.count() {
+                    let processed = spread.start(k) / lanes;
+                    let chunk_end = processed + chunk_size_vectors;
+
                     let mut a0 = <$simd_type>::splat(0);
                     let mut a1 = <$simd_type>::splat(0);
                     let mut a2 = <$simd_type>::splat(0);
@@ -1574,9 +1602,8 @@ macro_rules! refresh_impl {
                             });
                     }
                     // Count the chunk when it is done; overlaps count each time
-                    runner.add_bytes(spread.chunk() * 2);
+                    runner.add_bytes(spread.chunk());
                     halt_here!(runner, cycle_errors, (runner.bytes_processed() / lanes) as u64);
-                    runner.reseal(spread.start(k), spread.chunk());
 
                     if runner.should_halt(cycle_errors) {
                         let total_operations = (runner.bytes_processed() / lanes) as u64;
@@ -1590,6 +1617,8 @@ macro_rules! refresh_impl {
                     // The live display, throttled inside: a cycle can be the whole test (TODO 109)
                     runner.update_progress_in_cycle();
                 }
+                runner.reseal(0, extent.test_size);
+                runner.set_stage(Stage::Testing);
 
                 runner.commit_cycle_errors(cycle_errors);
                 runner.update_progress();
@@ -8581,8 +8610,8 @@ mod heap_span {
 mod refresh_wait_tests {
     use super::*;
 
-    /// Mem-Refresh waits between a chunk's write and its check for its `wait_ms`, else 64 ms (`REFRESH_WAIT_MS`): one cycle of one chunk
-    /// the span's size takes at least that, and checks clean after it.
+    /// Mem-Refresh waits between a pass's write and its check for its `wait_ms`, else 500 ms (`REFRESH_WAIT_MS`): one cycle takes at least
+    /// that, and checks clean after it.
     #[test]
     fn mem_refresh_waits_its_wait_ms() {
         let span = super::heap_span::HeapSpan::new(64 * 1024, 0);
@@ -8602,6 +8631,18 @@ mod refresh_wait_tests {
             assert!(took >= wait, "wait_ms {wait_ms:?}: took {took:?}");
             assert_eq!((stats.cycles_completed, stats.error_count), (1, 0), "wait_ms {wait_ms:?}");
         }
+
+        // TODO 112: one wait a pass, whatever its chunks: 16 chunks of 4 KiB wait 200 ms once, not 16 times (3.2 s)
+        let mut config = base.clone();
+        (config.timing, config.thread_count, config.cache_line_bytes) = (TestTiming::cycles_only(1), 1, cache_info.cache_line_size);
+        config.chunk_mode = ChunkMode::Absolute { size_bytes: 4 * 1024 };
+        config.parameter_context = Some(crate::config::TestParameterContext { wait_ms: Some(200), ..Default::default() });
+        let start = std::time::Instant::now();
+        // SAFETY: as above
+        let stats = unsafe { refresh_stable_256_multi(&span.blocks, 0, ErrorMode::Log, &config.timing, &config, None) };
+        let took = start.elapsed();
+        assert!((200..1000).contains(&took.as_millis()), "16 chunks took {took:?}");
+        assert_eq!((stats.cycles_completed, stats.error_count), (1, 0));
     }
 }
 

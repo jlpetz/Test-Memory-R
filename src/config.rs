@@ -619,9 +619,9 @@ pub struct TestConfig {
     /// `parameter`.
     #[serde(default)]
     pub mirror: Option<MirrorMode>,
-    /// Mem-Refresh*: how long each chunk waits between its write and its check, in milliseconds. Unset is 64 (`tests::REFRESH_WAIT_MS`). A
-    /// bit fade is one chunk the extent's size (`"chunk": {"mode": "whole"}`) and minutes of wait. Another test doesn't read it, and says
-    /// so (`validate_repetition`'s rule for a knob the test doesn't read).
+    /// Mem-Refresh*: how long a pass waits between its write and its check, in milliseconds (TODO 112: once a pass, not a chunk). Unset is
+    /// 500 (`tests::REFRESH_WAIT_MS`). A bit fade is minutes of it. Another test doesn't read it, and says so (`validate_repetition`'s rule
+    /// for a knob the test doesn't read).
     #[serde(default)]
     pub wait_ms: Option<u64>,
     /// Mem-TileTransform: patterns a set, 16 (the built-in set, the default), 32 or 64: a group of that many KiB holds each once (TODO 102).
@@ -781,7 +781,7 @@ pub struct TestParameterContext {
     pub subdivisions: Option<u32>,
     /// BlockMove: number of copy direction patterns (default 1).
     pub copy_directions: Option<u32>,
-    /// Mem-Refresh*: each chunk's wait between its write and its check, in ms (default 64).
+    /// Mem-Refresh*: a pass's wait between its write and its check, in ms (default 500).
     pub wait_ms: Option<u64>,
     /// Mem-TileTransform: patterns a set, 16 (the built-in set, the default), 32 or 64; a group of that many KiB holds each once (TODO 102).
     pub tile_patterns: Option<u32>,
@@ -2461,8 +2461,7 @@ mod tests {
     }
 
     /// A Mem-Refresh entry's `wait_ms` reaches the test (`TestParameterContext::wait_ms`, which the refresh kernel reads) and the plan's
-    /// parameter column, in the largest unit that holds it whole; unset, the test takes its own 64 ms. A bit fade: one chunk the extent's
-    /// size, minutes of wait.
+    /// parameter column, in the largest unit that holds it whole; unset, the test takes its own 500 ms. A bit fade: minutes of wait.
     #[test]
     fn a_refresh_entrys_wait_ms_reaches_the_test() {
         use crate::reporting::converters::format_parameter_context;

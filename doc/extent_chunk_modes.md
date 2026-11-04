@@ -221,7 +221,7 @@ emits the new shape.
 }
 ```
 
-A chunk this size sits in the caches through the test's sleep: without the flush the verify reads
+An extent this size sits in the caches through the test's wait: without the flush the verify reads
 cached copies and the test checks nothing about DRAM retention.
 
 ### Full-memory stuck-bit sweep

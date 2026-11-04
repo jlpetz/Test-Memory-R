@@ -10,6 +10,10 @@ Runtime: 00:41:10 | Cycle 12 (00:12:34) | ⚠️ 6 errors (1 test + 2 seal + 3 W
 Test 2/6 Mem-Refresh128 (00:05:12) | Checking seal | pending
 ## its stamp: the finished tests' errors only
 Runtime: 00:41:10 | Cycle 12 (00:12:34) | ⚠️ 5 errors (1 test + 1 seal + 3 WHEA 1C/2UC) | Test 2/6 Mem-Refresh128 (00:00:15)
+## Mem-Refresh waiting, with the time left
+
+Runtime: 00:41:10 (remaining 00:18:50) | Cycle 4/8 (00:12:34, 39%) | 0 errors (0 test + 0 seal + 0 WHEA)
+Test 2/6 Mem-Refresh128 (00:05:12, 52%) | Waiting, 00:29:12 left | pending
 ## the time limit reached, a test with no live figures
 
 Runtime: 01:00:00 (limit reached, finishing cycle) | Cycle 4/8 (00:12:34, 39%) | 0 errors (0 test + 0 seal + 0 WHEA)

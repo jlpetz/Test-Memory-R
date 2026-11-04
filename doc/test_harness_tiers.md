@@ -79,7 +79,7 @@ shape. It cannot express:
 
 - more than one pattern constant per chunk visit (StuckBit needs three phases with alternating
   constants),
-- a **delay** between write and verify (Refresh waits 64 ms per chunk, or its `wait_ms`),
+- a **delay** between write and verify (Refresh writes a pass, waits 500 ms or its `wait_ms`, then checks it),
 - a **non-linear** access order within the chunk (Random, Stride, CacheBust),
 - a loop level **outside** the chunk walk (Stride loops over strides, then chunks),
 - **two ranges** with different roles (BlockMove uses first half as source, second as destination).
@@ -112,7 +112,7 @@ milliseconds later. The seal checks data that has sat untouched for about one wh
 to minutes) while the step hammered the rest of memory: retention under load, which is sensitive
 to refresh timings, heat and neighbouring-row disturbance. It also catches a test that wrote
 outside its own chunk. TM5 does the same with its test 0 and numbers these errors 0; nothing else
-in TMR waits under load (Mem-Refresh* waits 64 ms, or its `wait_ms`, idle).
+in TMR waits under load (Mem-Refresh* waits 500 ms a pass, or its `wait_ms`, idle).
 
 **How a run uses it** (`seal.rs`, `seal=tmr|tm5|off`, `seal-width=`):
 
@@ -269,7 +269,7 @@ This is the table to read if you are deciding where a new test goes.
 | Registration names | Function / macro | Why the phased harness cannot express it |
 |---|---|---|
 | `Mem-StuckBit{128,256,512,Auto}`, `Mem-StuckBit-Flush{Auto,128,256,512}` | `stuck_bit_impl!` | **Three phases per chunk visit with alternating constants**: write P1→verify, write P2→verify, write P1→verify. `run_phased_test` has one `test_fn`/`verify_fn` pair and one pattern per chunk visit. The third phase (P1 again) specifically catches transition-induced flips, so it is not reducible to two runs of a two-phase test |
-| `Mem-Refresh{128,256,512,Auto}`, `Mem-Refresh-Flush{128,256,512,Auto}` | `refresh_impl!` | **A 64 ms `sleep` between write and verify, per chunk.** The harness has no delay phase, and the sleep has to be ordered after the fence and after the optional flush — otherwise a cached copy masks the bit-fade the test exists to find (the #26 bug) |
+| `Mem-Refresh{128,256,512,Auto}`, `Mem-Refresh-Flush{128,256,512,Auto}` | `refresh_impl!` | **A pass written, one `sleep` (500 ms, or `wait_ms`), then the pass checked** (TODO 112; it slept after each chunk until then). The harness has no delay phase, and the sleep has to be ordered after the fence and after the optional flush — otherwise a cached copy masks the bit-fade the test exists to find (the #26 bug). Its chunks can overlap, so it checks the seal over the extent before the write and reseals it after the check |
 | `Mem-CacheBust` | `cache_busting_multi` | **Non-linear access order.** Walks the chunk at `CACHE_BUSTING_STRIDE`, and the whole write/verify shape switches on the `stride_patterns` parameter. `ChunkCtx` hands the closure a linear `chunk_start..chunk_end`; the offset-then-stride walk is a loop nest the harness does not have |
 | `Mem-Random` | `random_torture_multi` | **RNG-driven access order** over the piece, indexed by multiply-high (`rng * len >> 64`, any length), iterating `rng_sequences`. Mismatches OR into an accumulator; a nonzero one replays the chunk from its saved RNG state to count and log, each bad word once (TODO 76, 97). Also inits once up front and never re-inits, which does not map onto per-cycle `test_fn`/`verify_fn`, and ends with a sweep of every word in order (TODO 97). (Reads only today — random *writes* are an open item, TODO #19 step 6) |
 | `Mem-Stride` | `stride_access_multi` | **A loop level above the chunk walk.** The nest is cycle → block → *stride* → chunk → subdivision. The harness's nest is cycle → block → chunk, and the stride loop cannot be pushed inside a chunk without changing what is measured |
@@ -381,7 +381,7 @@ TODO #19's remaining test backlog is already assigned:
   it as one concrete test; do **not** build a `march_element!` macro until a second march-shaped
   test appears
 - **Cross-thread page exchange** — Tier 3, blocked
-- **Extended bit fade** — Tier 2, a config variant of Refresh with 1–60 min delays
+- **Extended bit fade** — Refresh with a 1–60 min `wait_ms`, nothing more: it waits once a pass
 
 ---
 
