@@ -94,6 +94,9 @@ then checks it, chunk by chunk. A long wait checks for slow leaks (bit fade): on
 extent's size, so all of it waits at once, and minutes of wait. The wait stops at Ctrl+C, and the
 plan shows it in the parameter column (`Wait(30min)`). Another test doesn't read it and warns.
 TM5's RefreshStable has no wait setting, so an imported `.cfg` takes the default.
+The waits count as the test's time, by design: the cells holding their charge is the test. So its
+MiB/s reads well under the memory's rate (about 30% under at 64 ms on the dev box, more the longer
+the wait): it measures a refresh test, not a transfer rate (TODO 112).
 
 - **Default:** 64 (DDR4's refresh window; DDR5's is 32 ms)
 - **JSON config field:** `"wait_ms": 64`
