@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::CacheInfo;
 use crate::formatting::{serialize_round_2dp, serialize_round_3dp};
+use crate::logfile::SHOWN_TARGET;
 
 /// Accept any f64 on deserialize (don't enforce rounding on load)
 fn deserialize_f64_lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
@@ -428,7 +429,7 @@ fn allocate_stepping_down<T>(
         match allocate(&config) {
             Ok(buffer) => {
                 if refused.is_empty() {
-                    log::info!("Calibration buffer: {} bytes on {} pages", size, page_size_name(page_size_str(level)));
+                    log::info!(target: SHOWN_TARGET, "Calibration buffer: {} bytes on {} pages", size, page_size_name(page_size_str(level)));
                 } else {
                     log::warn!(
                         "Calibration buffer: {} bytes on {} pages, after {} refused",
@@ -760,8 +761,8 @@ impl CalibrationTest {
     fn run_sweep_calibration(&self, probe_engine: &mut ProbeEngine) -> Result<CalibrationResults, String> {
         let start_time = Instant::now();
 
-        log::info!("Starting adaptive cache calibration (sweep mode)...");
-        log::info!(
+        log::info!(target: SHOWN_TARGET, "Starting adaptive cache calibration (sweep mode)...");
+        log::info!(target: SHOWN_TARGET,
             "  L1D: {} KB, L2: {} KB, L3: {} MB",
             self.cache_info.per_core_l1d / 1024,
             self.cache_info.per_core_l2 / 1024,
@@ -779,7 +780,7 @@ impl CalibrationTest {
         results.page_size = probe_engine.page_obtained().map_or_else(|| self.config.page_size.clone(), |p| page_size_str(p).to_string());
         results.total_time_ms = start_time.elapsed().as_millis() as u64;
 
-        log::info!("Calibration complete in {}ms", results.total_time_ms);
+        log::info!(target: SHOWN_TARGET, "Calibration complete in {}ms", results.total_time_ms);
 
         Ok(results)
     }
@@ -804,8 +805,8 @@ impl CalibrationTest {
     fn run_extended_calibration(&self, probe_engine: &mut ProbeEngine) -> Result<CalibrationResults, String> {
         let start_time = Instant::now();
 
-        log::info!("Starting extended cache calibration (phase 1 + phase 2)...");
-        log::info!(
+        log::info!(target: SHOWN_TARGET, "Starting extended cache calibration (phase 1 + phase 2)...");
+        log::info!(target: SHOWN_TARGET,
             "  L1D: {} KB, L2: {} KB, L3: {} MB",
             self.cache_info.per_core_l1d / 1024,
             self.cache_info.per_core_l2 / 1024,
@@ -817,12 +818,12 @@ impl CalibrationTest {
         let l3_size = self.cache_info.l3_cache;
 
         // Phase 1: Coarse sweep (same as --calibrate-cache)
-        log::info!("═══ Phase 1: Coarse sweep ═══");
+        log::info!(target: SHOWN_TARGET, "═══ Phase 1: Coarse sweep ═══");
         let sweep_results = self.run_sweep(probe_engine, l1_size, l2_size, l3_size);
         let tipping_points = self.find_tipping_points(&sweep_results);
 
         for (size, lat_before, lat_after) in &tipping_points {
-            log::info!(
+            log::info!(target: SHOWN_TARGET,
                 "  Tipping point at {}: {:.1}ns → {:.1}ns ({:.1}x jump)",
                 format_size(*size),
                 lat_before,
@@ -838,7 +839,7 @@ impl CalibrationTest {
 
         // Phase 2: Fine-grain sweep around each tipping point
         // Cap sweep ranges to CPU cache sizes — workload must fit in the tier
-        log::info!("\n═══ Phase 2: Fine-grain verification ═══");
+        log::info!(target: SHOWN_TARGET, "═══ Phase 2: Fine-grain verification ═══");
 
         let repeats = 3u32;
         let fine_step = 1.05; // 5% steps
@@ -858,11 +859,11 @@ impl CalibrationTest {
         let cpu_signature = CpuSignature::from_cache_info(&self.cache_info);
         let mut results = CalibrationResults::new(cpu_signature);
 
-        log::info!("\n═══ Final Selection ═══");
+        log::info!(target: SHOWN_TARGET, "═══ Final Selection ═══");
 
         // L1: Largest size where ALL repeats are stable, below TP1
         if let Some(fp) = Self::find_largest_reliable(&fine_l1, stable_spread) {
-            log::info!(
+            log::info!(target: SHOWN_TARGET,
                 "L1: {} @ {:.1}ns ({}/{} stable, worst_spread={:.2}x, consistency={:.2}ns)",
                 format_size(fp.size),
                 fp.overall_median_ns,
@@ -895,7 +896,7 @@ impl CalibrationTest {
 
         // L2: Largest reliable below L2 cap
         if let Some(fp) = Self::find_largest_reliable(&fine_l2, stable_spread) {
-            log::info!(
+            log::info!(target: SHOWN_TARGET,
                 "L2: {} @ {:.1}ns ({}/{} stable, worst_spread={:.2}x, consistency={:.2}ns)",
                 format_size(fp.size),
                 fp.overall_median_ns,
@@ -928,7 +929,7 @@ impl CalibrationTest {
 
         // L3: Largest reliable below L3 cap
         if let Some(fp) = Self::find_largest_reliable(&fine_l3, stable_spread) {
-            log::info!(
+            log::info!(target: SHOWN_TARGET,
                 "L3: {} @ {:.1}ns ({}/{} stable, worst_spread={:.2}x, consistency={:.2}ns)",
                 format_size(fp.size),
                 fp.overall_median_ns,
@@ -966,7 +967,7 @@ impl CalibrationTest {
         let dram_max = tp_l3_dram * 2;
         let dram_max = dram_max.max(dram_min + 1);
         if let Some(probe) = self.find_largest_stable_in_range(&sweep_results, dram_min, dram_max, 2.0, 8.0) {
-            log::info!("DRAM: {} @ {:.1}ns (from phase 1)", format_size(probe.size), probe.median_ns);
+            log::info!(target: SHOWN_TARGET, "DRAM: {} @ {:.1}ns (from phase 1)", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::Dram,
                 optimal_size: probe.size,
@@ -977,7 +978,7 @@ impl CalibrationTest {
                 fallback_used: false,
             });
         } else if let Some(probe) = self.find_largest_stable_in_range(&sweep_results, dram_min, usize::MAX, 2.0, 8.0) {
-            log::info!("DRAM: {} @ {:.1}ns (from phase 1, extended range)", format_size(probe.size), probe.median_ns);
+            log::info!(target: SHOWN_TARGET, "DRAM: {} @ {:.1}ns (from phase 1, extended range)", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::Dram,
                 optimal_size: probe.size,
@@ -990,7 +991,7 @@ impl CalibrationTest {
         }
         // FullDRAM: Largest available (maximum memory pressure / TLB stress)
         if let Some(probe) = self.find_largest_stable(&sweep_results, l3_size * 2) {
-            log::info!("FullDRAM: {} @ {:.1}ns (from phase 1)", format_size(probe.size), probe.median_ns);
+            log::info!(target: SHOWN_TARGET, "FullDRAM: {} @ {:.1}ns (from phase 1)", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::FullDram,
                 optimal_size: probe.size,
@@ -1005,7 +1006,7 @@ impl CalibrationTest {
         // The page size the buffer got, where the engine allocated it, else the one asked for
         results.page_size = probe_engine.page_obtained().map_or_else(|| self.config.page_size.clone(), |p| page_size_str(p).to_string());
         results.total_time_ms = start_time.elapsed().as_millis() as u64;
-        log::info!("Extended calibration complete in {}ms", results.total_time_ms);
+        log::info!(target: SHOWN_TARGET, "Extended calibration complete in {}ms", results.total_time_ms);
         Ok(results)
     }
 
@@ -1016,7 +1017,7 @@ impl CalibrationTest {
         let mut results = Vec::new();
         let mut current_size = min_size.max(4096);
 
-        log::info!(
+        log::info!(target: SHOWN_TARGET,
             "  Fine sweep {}: {} to {} ({}x steps, {} repeats each)",
             label,
             format_size(min_size),
@@ -1024,7 +1025,7 @@ impl CalibrationTest {
             step_factor,
             repeats
         );
-        log::info!("  {:>10} {:>8} {:>6} {:>10} {:>10} {:>10}", "Size", "Median", "Stbl", "Worst Spr", "Consistency", "Latencies");
+        log::info!(target: SHOWN_TARGET, "  {:>10} {:>8} {:>6} {:>10} {:>10} {:>10}", "Size", "Median", "Stbl", "Worst Spr", "Consistency", "Latencies");
 
         while current_size <= max_size {
             let mut median_latencies = Vec::new();
@@ -1066,7 +1067,7 @@ impl CalibrationTest {
                     "~~~"
                 };
 
-                log::info!(
+                log::info!(target: SHOWN_TARGET,
                     "  {:>10} {:>6.1}ns {:>6} {:>9.2}x {:>9.2}ns  [{}]",
                     format_size(current_size),
                     overall_median,
@@ -1108,8 +1109,8 @@ impl CalibrationTest {
         // End at 4x L3 or buffer max
         let max_size = (l3_size * 4).min(probe_engine.max_working_set());
 
-        log::info!("Running calibration sweep: {} to {}", format_size(min_size), format_size(max_size));
-        log::info!(
+        log::info!(target: SHOWN_TARGET, "Running calibration sweep: {} to {}", format_size(min_size), format_size(max_size));
+        log::info!(target: SHOWN_TARGET,
             "  {:>4} {:>10} {:>8} {:>7} {:>8} {:>6} {:>7} {:>6}",
             "#",
             "Size",
@@ -1178,7 +1179,7 @@ impl CalibrationTest {
 
                 let stable_marker = if is_stable { "✓" } else { "~" };
 
-                log::info!(
+                log::info!(target: SHOWN_TARGET,
                     "  {:>4}: {:>10} {:>6.1}ns {:>6.2}x {:>+7.1} {:>5.2}x {:>6.2} {:>6}",
                     probe_num,
                     format_size(current_size),
@@ -1201,7 +1202,7 @@ impl CalibrationTest {
             current_size = next_size.max(current_size + 4096);
         }
 
-        log::info!("Sweep complete: {} probes collected", results.len());
+        log::info!(target: SHOWN_TARGET, "Sweep complete: {} probes collected", results.len());
         results
     }
 
@@ -1216,13 +1217,13 @@ impl CalibrationTest {
             return results;
         }
 
-        log::info!("Analyzing sweep data for tier boundaries...");
+        log::info!(target: SHOWN_TARGET, "Analyzing sweep data for tier boundaries...");
 
         // Find tipping points by looking for latency jumps
         let tipping_points = self.find_tipping_points(sweep);
 
         for (size, lat_before, lat_after) in &tipping_points {
-            log::info!(
+            log::info!(target: SHOWN_TARGET,
                 "  Tipping point at {}: {:.1}ns → {:.1}ns ({:.1}x jump)",
                 format_size(*size),
                 lat_before,
@@ -1243,7 +1244,7 @@ impl CalibrationTest {
         let tp_l2_l3 = tp_sizes.get(1).copied().unwrap_or(l2_size);
         let tp_l3_dram = tp_sizes.get(2).copied().unwrap_or(l3_size);
 
-        log::info!("Tier boundaries: L1<{}, L2<{}, L3<{}", format_size(tp_l1_l2), format_size(tp_l2_l3), format_size(tp_l3_dram));
+        log::info!(target: SHOWN_TARGET, "Tier boundaries: L1<{}, L2<{}, L3<{}", format_size(tp_l1_l2), format_size(tp_l2_l3), format_size(tp_l3_dram));
 
         // Stability thresholds for "stable enough"
         let stable_spread = 1.5;
@@ -1251,7 +1252,7 @@ impl CalibrationTest {
 
         // L1: Largest stable probe below TP1
         if let Some(probe) = self.find_largest_stable_in_range(sweep, 0, tp_l1_l2, stable_spread, stable_winsd) {
-            log::info!(
+            log::info!(target: SHOWN_TARGET,
                 "L1: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
                 format_size(probe.size),
                 probe.median_ns,
@@ -1271,7 +1272,7 @@ impl CalibrationTest {
 
         // L2: Largest stable probe between TP1 and TP2
         if let Some(probe) = self.find_largest_stable_in_range(sweep, tp_l1_l2, tp_l2_l3, stable_spread, stable_winsd) {
-            log::info!(
+            log::info!(target: SHOWN_TARGET,
                 "L2: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
                 format_size(probe.size),
                 probe.median_ns,
@@ -1291,7 +1292,7 @@ impl CalibrationTest {
 
         // L3: Largest stable probe between TP2 and TP3
         if let Some(probe) = self.find_largest_stable_in_range(sweep, tp_l2_l3, tp_l3_dram, stable_spread, stable_winsd) {
-            log::info!(
+            log::info!(target: SHOWN_TARGET,
                 "L3: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
                 format_size(probe.size),
                 probe.median_ns,
@@ -1330,7 +1331,7 @@ impl CalibrationTest {
         let dram_min = tp_l3_dram.max(total_cache);
         let dram_max = tp_l3_dram * 2; // 2x tipping point — moderate DRAM working set
         let dram_max = dram_max.max(dram_min + 1); // Ensure max > min
-        log::info!(
+        log::info!(target: SHOWN_TARGET,
             "DRAM range: {} to {} (total cache={}, TP3={})",
             format_size(dram_min),
             format_size(dram_max),
@@ -1338,7 +1339,7 @@ impl CalibrationTest {
             format_size(tp_l3_dram)
         );
         if let Some(probe) = self.find_largest_stable_in_range(sweep, dram_min, dram_max, 2.0, 8.0) {
-            log::info!(
+            log::info!(target: SHOWN_TARGET,
                 "DRAM: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
                 format_size(probe.size),
                 probe.median_ns,
@@ -1356,7 +1357,7 @@ impl CalibrationTest {
             });
         } else if let Some(probe) = self.find_largest_stable_in_range(sweep, dram_min, usize::MAX, 2.0, 8.0) {
             // Fallback: no probes in capped range, use any stable DRAM probe
-            log::info!(
+            log::info!(target: SHOWN_TARGET,
                 "DRAM: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2}) [extended range]",
                 format_size(probe.size),
                 probe.median_ns,
@@ -1376,7 +1377,7 @@ impl CalibrationTest {
 
         // FullDRAM: Largest stable size above 2x L3
         if let Some(probe) = self.find_largest_stable(sweep, l3_size * 2) {
-            log::info!(
+            log::info!(target: SHOWN_TARGET,
                 "FullDRAM: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
                 format_size(probe.size),
                 probe.median_ns,
@@ -1714,7 +1715,7 @@ pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCal
         .filter(|w| w.resolve().is_ok())
         .map(|w| SealKernel::new(SealPattern::Tmr, w))
         .collect();
-    log::info!(
+    log::info!(target: SHOWN_TARGET,
         "Seal width calibration: tmr at {:?} bits, {} (asking for {} pages), {} timed runs each",
         kernels.iter().map(|k| k.width.bits()).collect::<Vec<_>>(),
         format_size(bytes),
