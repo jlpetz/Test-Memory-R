@@ -158,10 +158,10 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     // Validate that all -- flags are recognized before processing
     // This catches typos and deprecated flags early with helpful error messages
     let known_flags = [
-        "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-seal", "--calibrate-all",
-        "--calibration-file", "--output", "--yes", "--no-save", "--create-demo-configs", "--compare-results", "--show-results",
-        "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages", "--startup-debug", "--disable-pinning",
-        "--no-serials", "--help", "-h", "-?", "--version", "-v",
+        "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-curve", "--calibrate-seal",
+        "--calibrate-all", "--calibration-file", "--output", "--yes", "--no-save", "--create-demo-configs", "--compare-results",
+        "--show-results", "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages", "--startup-debug",
+        "--disable-pinning", "--no-serials", "--help", "-h", "-?", "--version", "-v",
     ];
 
     let unknown_flags: Vec<String> = args

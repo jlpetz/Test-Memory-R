@@ -776,6 +776,51 @@ impl CalibrationCpus {
     }
 }
 
+/// One point of TODO 22's curve check (`CalibrationTest::run_curve`): the L3 a thread reached with `k` threads in its L3 group running,
+/// one a core or both of a core's, its latency, and what the curve through anchors A and C says for `k`
+#[derive(Debug, Clone, PartialEq)]
+pub struct CurvePoint {
+    pub k: usize,
+    pub both: bool,
+    pub reach: Option<usize>,
+    pub ns: f64,
+    pub curve: f64,
+}
+
+/// The curve check's table: each point's reach against the curve's, and how far off
+pub fn display_curve(results: &CalibrationResults, points: &[CurvePoint], out: &mut dyn std::io::Write) -> std::io::Result<()> {
+    writeln!(out, "\n📈 The L3 a thread reaches with k threads in its L3 group running, against the curve through A and C (TODO 22)")?;
+    if let (Some(one), Some(shared)) = (results.l3_reach(1), &results.shared) {
+        writeln!(
+            out,
+            "A, one thread: {}; C, every CPU ({} a group): {}",
+            format_size(one as usize),
+            shared.l3_sharers,
+            shared.l3_loaded.map_or("not found".to_string(), format_size)
+        )?;
+    }
+    writeln!(out, "{:>4}  {:<24} {:>12} {:>10} {:>12} {:>8}", "k", "threads", "measured", "latency", "curve", "off")?;
+    for point in points {
+        let layout = if point.both { "both threads of a core" } else { "one thread a core" };
+        let (measured, ns, off) = match point.reach {
+            Some(size) => (format_size(size), format!("{:.1}ns", point.ns), format!("{:+.0}%", (point.curve / size as f64 - 1.0) * 100.0)),
+            None => ("not found".to_string(), String::new(), String::new()),
+        };
+        writeln!(out, "{:>4}  {:<24} {:>12} {:>10} {:>12} {:>8}", point.k, layout, measured, ns, format_size(point.curve as usize), off)?;
+    }
+    writeln!(out, "(off: the curve's reach against the measured one; positive, the curve gives a test more than fits)")?;
+    Ok(())
+}
+
+/// What a loaded probe runs on (`CalibrationTest::loaded_reach`, TODO 22): its CPUs, how many of them share an L3 group, a thread's L2
+/// then, and what its log lines call it
+struct Loaded<'a> {
+    cpus: &'a [usize],
+    sharers: usize,
+    own: usize,
+    label: String,
+}
+
 /// A thread's own memory in a shared probe, and its CPU (TODO 22)
 #[derive(Debug, Clone, Copy)]
 struct Slot {
@@ -1026,48 +1071,14 @@ impl CalibrationTest {
         }
 
         // C: every logical CPU
-        let n = cpus.all.len();
         let mut l3_loaded = None;
         let mut l3_loaded_ns = 0.0;
-        if n > 1 {
-            log::info!(target: SHOWN_TARGET, "═══ Every CPU at once ({n}, {} sharing each L3) ═══", cpus.per_l3);
+        if cpus.all.len() > 1 {
+            log::info!(target: SHOWN_TARGET, "═══ Every CPU at once ({}, {} sharing each L3) ═══", cpus.all.len(), cpus.per_l3);
             let own = if cpus.pair.is_some() { l2_smt.unwrap_or(a_l2 / 2) } else { a_l2 };
-            // Up to twice the most a thread could reach: CPUID's L3 share where it is more than A's (on the dev box, 8 threads held more
-            // than 144 MB, past twice A's 61 MB)
-            let l3 = a_l3.max(self.cache_info.l3_cache);
-            let block =
-                Self::loaded_block(l3, a_l2, cpus.per_l3).min((bytes / n) / crate::test_memory::GRANULE * crate::test_memory::GRANULE);
-            let all_slots = slots(base, block, &cpus.all);
-            let mut probe = |size: usize| probe_shared(&all_slots, size, tsc, LOADED_PROBE_TIME);
-            let low = (own + own / 10).max(4096);
-            let sweep = self.run_sweep(&mut probe, low, block, "Sweep, every CPU at once");
-            // The edge as A takes it, a step of 1.4x, but past the L3's own latency: the sweep starts just past a thread's L2, and with
-            // every CPU running the step into L3 comes first (4 to 34 ns at 1.4 MB on the dev box)
-            let l3_ns = results.tiers.get(&CacheTier::L3).map_or(0.0, |t| t.median_latency_ns);
-            let edge = self.find_tipping_points(&sweep).into_iter().find(|&(_, before, _)| before >= 0.8 * l3_ns).map(|(s, _, _)| s);
-            match edge {
-                Some(edge) => {
-                    let fine = self.run_fine_sweep(&mut probe, (edge / 2).max(low), edge, fine_step, repeats, "L3→DRAM, every CPU");
-                    // Steady, and still at about the latency A's L3 reach had: the latency climbs before the step (23.5 MB a thread on
-                    // the dev box was steady at 82 ns, past half way to DRAM's 130)
-                    let cap = 1.25 * l3_ns;
-                    let reached = fine
-                        .iter()
-                        .filter(|fp| fp.is_reliable() && fp.worst_spread < stable_spread && fp.overall_median_ns <= cap)
-                        .max_by_key(|fp| fp.size)
-                        .map(|fp| (fp.size, fp.overall_median_ns))
-                        .or_else(|| {
-                            sweep
-                                .iter()
-                                .filter(|p| p.size >= low && p.size < edge && p.spread < 2.0 && p.median_ns <= cap)
-                                .max_by_key(|p| p.size)
-                                .map(|p| (p.size, p.median_ns))
-                        });
-                    if let Some((size, ns)) = reached {
-                        (l3_loaded, l3_loaded_ns) = (Some(size), ns);
-                    }
-                }
-                None => log::warn!("Every CPU at once: no L3 edge between {} and {} a thread", format_size(low), format_size(block)),
+            let loaded = Loaded { cpus: &cpus.all, sharers: cpus.per_l3, own, label: "every CPU".to_string() };
+            if let Some((size, ns)) = self.loaded_reach(results, &loaded, base, bytes) {
+                (l3_loaded, l3_loaded_ns) = (Some(size), ns);
             }
             log::info!(target: SHOWN_TARGET,
                 "Every CPU at once: L3 {} a thread ({} alone)",
@@ -1083,6 +1094,103 @@ impl CalibrationTest {
             l3_loaded_ns,
             l3_sharers: cpus.per_l3,
         })
+    }
+
+    /// The L3 a thread reaches with `cpus` all chasing at once, `sharers` of them in an L3 group (anchor C's measure, TODO 22), each on
+    /// its own block of the `bytes` at `base`, a thread's L2 `own`: the size and its latency, None when the sweep found no edge. The
+    /// sweep runs from just past `own` to twice the most a thread could reach (CPUID's L3 share where it is more than A's: on the dev
+    /// box, 8 threads held more than 144 MB, past twice A's 61 MB). The edge is A's, a step of 1.4x, but past the L3's own latency: with
+    /// many threads the step into L3 comes first (4 to 34 ns at 1.4 MB there). The size is the largest steady one still within 1.25x of
+    /// A's L3 latency, as the latency climbs before the step (23.5 MB a thread there was steady at 82 ns, past half way to DRAM's 130).
+    fn loaded_reach(&self, results: &CalibrationResults, loaded: &Loaded, base: *mut u64, bytes: usize) -> Option<(usize, f64)> {
+        let Loaded { cpus, sharers, own, label } = loaded;
+        let (sharers, own) = (*sharers, *own);
+        let (repeats, fine_step, stable_spread) = (3u32, 1.05, 1.5);
+        let a_l3 = results.tiers.get(&CacheTier::L3)?.optimal_size;
+        let a_l2 = results.tiers.get(&CacheTier::L2).map_or(own, |t| t.optimal_size);
+        let granule = crate::test_memory::GRANULE;
+        let block = Self::loaded_block(a_l3.max(self.cache_info.l3_cache), a_l2, sharers).min((bytes / cpus.len()) / granule * granule);
+        let loaded_slots = slots(base, block, cpus);
+        let tsc = self.tsc_frequency_ghz;
+        let mut probe = |size: usize| probe_shared(&loaded_slots, size, tsc, LOADED_PROBE_TIME);
+        let low = (own + own / 10).max(4096);
+        let sweep = self.run_sweep(&mut probe, low, block, &format!("Sweep, {label}"));
+        let l3_ns = results.tiers.get(&CacheTier::L3).map_or(0.0, |t| t.median_latency_ns);
+        let Some(edge) =
+            self.find_tipping_points(&sweep).into_iter().find(|&(_, before, _)| before >= 0.8 * l3_ns).map(|(size, _, _)| size)
+        else {
+            log::warn!("{label}: no L3 edge between {} and {} a thread", format_size(low), format_size(block));
+            return None;
+        };
+        let fine = self.run_fine_sweep(&mut probe, (edge / 2).max(low), edge, fine_step, repeats, &format!("L3→DRAM, {label}"));
+        let cap = 1.25 * l3_ns;
+        fine.iter()
+            .filter(|fp| fp.is_reliable() && fp.worst_spread < stable_spread && fp.overall_median_ns <= cap)
+            .max_by_key(|fp| fp.size)
+            .map(|fp| (fp.size, fp.overall_median_ns))
+            .or_else(|| {
+                sweep
+                    .iter()
+                    .filter(|p| p.size >= low && p.size < edge && p.spread < 2.0 && p.median_ns <= cap)
+                    .max_by_key(|p| p.size)
+                    .map(|p| (p.size, p.median_ns))
+            })
+    }
+
+    /// TODO 22's check of the curve (`--calibrate-curve`, which saves nothing): the calibration, then the L3 a thread reaches with `k` in
+    /// each L3 group running, one thread a core (k = 1 up to a group's cores) and both of each core's (k = 2 up to all its CPUs), each
+    /// against the curve's reach(k). Allocates its own memory. Every group runs its `k` at once, as a run's threads do.
+    pub fn run_curve(&self) -> Result<(CalibrationResults, Vec<CurvePoint>), String> {
+        let cores = crate::cpu_selection::cores(crate::cpu_topology::get_cpu_topology());
+        let results = self.run()?;
+        let cpus = CalibrationCpus::of(&cores);
+        let bytes = self.memory_needed(&cpus);
+        let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
+        probe_engine.initialize_with_page_size(bytes, &self.config.page_size)?;
+        let base = probe_engine.get_base_ptr();
+        let (a_l2, l2_smt) = (
+            results.tiers.get(&CacheTier::L2).map_or(self.cache_info.per_core_l2, |t| t.optimal_size),
+            results.shared.as_ref().and_then(|shared| shared.l2_smt),
+        );
+        // Each L3 group's cores, in the order the selection ranks them
+        let order = crate::cpu_selection::rank(&cores);
+        let mut groups: Vec<(crate::cpu_topology::L3Group, Vec<&crate::cpu_selection::Core>)> = Vec::new();
+        for core in order.iter().map(|&i| &cores[i]) {
+            match groups.iter_mut().find(|(l3, _)| *l3 == core.l3) {
+                Some((_, members)) => members.push(core),
+                None => groups.push((core.l3, vec![core])),
+            }
+        }
+        let per_group = groups.iter().map(|(_, members)| members.len()).min().unwrap_or(1);
+        let smt = groups.iter().all(|(_, members)| members.iter().all(|core| core.cpus.len() >= 2));
+        let mut points = Vec::new();
+        for both in [false, true] {
+            if both && !smt {
+                continue;
+            }
+            for used in 1..=per_group {
+                let k = if both { 2 * used } else { used };
+                let chosen: Vec<usize> = groups
+                    .iter()
+                    .flat_map(|(_, members)| {
+                        members[..used].iter().flat_map(|core| core.cpus.iter().take(if both { 2 } else { 1 }).copied())
+                    })
+                    .collect();
+                let own = if both { l2_smt.unwrap_or(a_l2 / 2) } else { a_l2 };
+                let layout = if both { "both threads of a core" } else { "one thread a core" };
+                let label = format!("{k} a group, {layout}");
+                log::info!(target: SHOWN_TARGET, "═══ {label} ({} CPUs) ═══", chosen.len());
+                let reached = self.loaded_reach(&results, &Loaded { cpus: &chosen, sharers: k, own, label }, base, bytes);
+                points.push(CurvePoint {
+                    k,
+                    both,
+                    reach: reached.map(|(size, _)| size),
+                    ns: reached.map_or(0.0, |(_, ns)| ns),
+                    curve: results.l3_reach(k).unwrap_or(0.0),
+                });
+            }
+        }
+        Ok((results, points))
     }
 
     /// The calibration's sweeps on `probe_engine`'s memory, and the size each tier takes from them

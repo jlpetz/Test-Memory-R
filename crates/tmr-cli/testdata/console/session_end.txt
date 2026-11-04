@@ -51,6 +51,7 @@ USAGE:
                                           #   (DOMAIN\name, or .\name for this PC's; quote a name with spaces)
   tmr.exe --remove-large-pages             # Remove it from you, or from the Group:<name> or User:<name> given
   tmr.exe --calibrate-cache                # Measure the cache tiers' sizes, finer around each edge; saved to tmr-cfg.json after a prompt
+  tmr.exe --calibrate-curve                # Check the calibration's curve: the L3 at every thread count, against it (saves nothing)
   tmr.exe --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto
                                           #   then runs the fastest (a narrower one if it is as fast)
   tmr.exe --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)

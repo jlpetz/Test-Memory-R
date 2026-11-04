@@ -59,7 +59,7 @@ impl Command {
                 "--remove-large-pages" => return Some(Command::RemoveLargePages(args.to_vec())),
                 // The calibrations (TODO 99 adds the seal's width): each measures, shows what it found and saves it to tmr-cfg.json after a
                 // prompt
-                "--calibrate-cache" | "--calibrate-seal" | "--calibrate-all" => {
+                "--calibrate-cache" | "--calibrate-seal" | "--calibrate-all" | "--calibrate-curve" => {
                     return Some(Command::Calibrate(args.to_vec()));
                 }
                 "--help" | "-h" | "/?" | "-?" => return Some(Command::Help(args[0].clone())),
@@ -138,6 +138,11 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(
         out,
         "  {} --calibrate-cache                # Measure the cache tiers' sizes, finer around each edge; saved to tmr-cfg.json after a prompt",
+        program_name
+    )?;
+    writeln!(
+        out,
+        "  {} --calibrate-curve                # Check the calibration's curve: the L3 at every thread count, against it (saves nothing)",
         program_name
     )?;
     writeln!(
@@ -655,6 +660,24 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
         return Ok(RunStatus::NotRun);
     }
     let command = args[1].as_str();
+    // TODO 22's curve check: the calibration, then the L3 at every thread count between, against its curve; it saves nothing
+    if command == "--calibrate-curve" {
+        writeln!(out, "🔬 TMR Calibration Curve Check (saves nothing)")?;
+        writeln!(out, "=============================================\n")?;
+        let system_info = crate::SystemInfo::detect();
+        let test = crate::calibration::CalibrationTest::with_config(system_info.get_cache_info().clone(), Default::default());
+        return match test.run_curve() {
+            Ok((results, points)) => {
+                crate::calibration::CalibrationTest::display_results(&results, system_info.get_cache_info(), out)?;
+                crate::calibration::display_curve(&results, &points, out)?;
+                Ok(RunStatus::Passed)
+            }
+            Err(e) => {
+                writeln!(out, "Calibration failed: {e}")?;
+                Ok(RunStatus::NotRun)
+            }
+        };
+    }
     let (cache, seal) = match command {
         "--calibrate-cache" => (true, false),
         "--calibrate-seal" => (false, true),
