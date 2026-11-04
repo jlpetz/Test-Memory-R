@@ -27,7 +27,9 @@ pub(super) fn show(run: &Run) -> String {
     text
 }
 
-/// The workers as they started (TODO 7): their count and priority, and their pinning, or each that didn't take, by thread and CPU
+/// The run's threads and the settings that set them (TODO 7, the owner: which setting controls which): the workers as they started,
+/// their count and priority, and their pinning, or each that didn't take, by thread and CPU; the monitor, at the workers' priority; and
+/// the engine's thread, at normal. The window adds its own line (`tmr-gui`'s `follow_priority`).
 fn workers(report: &tmr::frontend::WorkersReport) -> String {
     let n = report.starts.len();
     let priority = format!("{} priority ({})", report.priority, report.priority.win32_name());
@@ -49,11 +51,14 @@ fn workers(report: &tmr::frontend::WorkersReport) -> String {
         (true, 0) => "each pinned to its CPU".to_string(),
         (true, failed) => format!("{} of {n} pinned; not {}", n - failed, unpinned.join("; ")),
     };
-    let mark = if unpinned.is_empty() && unprioritised.is_empty() { "⚙ " } else { "⚠️ " };
-    let mut text = format!("{mark} Workers: {n} at {priority}, {pinning}\n");
+    let mark = if unpinned.is_empty() && unprioritised.is_empty() { "  " } else { "⚠️" };
+    let mut text = "⚙  Threads (priority= sets the workers and the monitor; --disable-pinning unpins the workers)\n".to_string();
+    text += &format!(" {mark} Workers: {n} at {priority}, {pinning}\n");
     if !unprioritised.is_empty() {
-        text += &format!("⚠️  Priority not set on {} of {n}: {}\n", unprioritised.len(), unprioritised.join("; "));
+        text += &format!(" ⚠️ Priority not set on {} of {n}: {}\n", unprioritised.len(), unprioritised.join("; "));
     }
+    text += "    Monitor, the progress line and the WHEA poll: at the workers' priority\n";
+    text += "    Engine, the steps between the workers' runs: normal\n";
     text
 }
 

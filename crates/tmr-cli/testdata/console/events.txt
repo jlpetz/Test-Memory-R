@@ -54,12 +54,21 @@ Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 1 er
 ⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)
 ⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)
 ## the workers, each pinned
-⚙  Workers: 4 at high priority (THREAD_PRIORITY_HIGHEST), each pinned to its CPU
+⚙  Threads (priority= sets the workers and the monitor; --disable-pinning unpins the workers)
+    Workers: 4 at high priority (THREAD_PRIORITY_HIGHEST), each pinned to its CPU
+    Monitor, the progress line and the WHEA poll: at the workers' priority
+    Engine, the steps between the workers' runs: normal
 ## the workers, pinning off
-⚙  Workers: 4 at high priority (THREAD_PRIORITY_HIGHEST), not pinned (--disable-pinning)
+⚙  Threads (priority= sets the workers and the monitor; --disable-pinning unpins the workers)
+    Workers: 4 at high priority (THREAD_PRIORITY_HIGHEST), not pinned (--disable-pinning)
+    Monitor, the progress line and the WHEA poll: at the workers' priority
+    Engine, the steps between the workers' runs: normal
 ## the workers, two not pinned and one without its priority
-⚠️  Workers: 4 at high priority (THREAD_PRIORITY_HIGHEST), 2 of 4 pinned; not thread 1 (CPU 2): SetThreadAffinityMask: Access is denied; thread 3 (CPU 6): SetThreadAffinityMask: Access is denied
-⚠️  Priority not set on 1 of 4: thread 2: SetThreadPriority(THREAD_PRIORITY_HIGHEST) failed: Access is denied
+⚙  Threads (priority= sets the workers and the monitor; --disable-pinning unpins the workers)
+ ⚠️ Workers: 4 at high priority (THREAD_PRIORITY_HIGHEST), 2 of 4 pinned; not thread 1 (CPU 2): SetThreadAffinityMask: Access is denied; thread 3 (CPU 6): SetThreadAffinityMask: Access is denied
+ ⚠️ Priority not set on 1 of 4: thread 2: SetThreadPriority(THREAD_PRIORITY_HIGHEST) failed: Access is denied
+    Monitor, the progress line and the WHEA poll: at the workers' priority
+    Engine, the steps between the workers' runs: normal
 ## the CPU performance summary
 
 === CPU Performance Summary ===

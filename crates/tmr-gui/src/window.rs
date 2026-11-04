@@ -298,10 +298,13 @@ impl Window {
         // While a run is on, its outcome is a line of the run's output, the Log tab's and the log file's, beside the Workers line (TODO 7);
         // back to Normal as the session ends, only the debug log says so
         let line = match wanted.apply() {
-            Ok(()) => format!("🪟  Window: {wanted} priority ({})", wanted.win32_name()),
+            Ok(()) => format!(
+                "🪟  Window: {wanted} priority ({}), with its feed's thread (window-priority=, the workers' by default)",
+                wanted.win32_name()
+            ),
             Err(e) => {
                 self.model.errors.push(format!("The window's thread at {wanted} priority: {e}"));
-                format!("⚠️  Window: {wanted} priority ({}) not set: {e}", wanted.win32_name())
+                format!("⚠️  Window: {wanted} priority ({}) not set (window-priority=): {e}", wanted.win32_name())
             }
         };
         if self.model.session_over() {
