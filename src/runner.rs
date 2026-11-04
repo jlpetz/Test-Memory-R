@@ -1015,7 +1015,13 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
 
     // Start the monitor thread: the WHEA poll, and the frontend's ticks
     let (progress_clone, fe_clone) = (Arc::clone(&progress), Arc::clone(fe));
+    // At the workers' priority (TODO 7): with a worker on every logical CPU, a Normal thread gets time only from Windows' starvation boost,
+    // and the ticker and the WHEA poll stalled for seconds
+    let monitor_priority = runtime_config.thread_priority;
     let monitor_handle = thread::spawn(move || {
+        if let Err(e) = monitor_priority.apply() {
+            log::debug!("The monitor's thread at {monitor_priority} priority: {e}");
+        }
         monitor(progress_clone, fe_clone);
     });
 
@@ -1039,7 +1045,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     // satisfied request still runs, so it can't come from `layout.allocation_result`.
     let allocated_bytes: u64 = allocated_blocks.values().flat_map(|blocks| blocks.iter()).map(|block| block.buffer.size() as u64).sum();
 
-    log::info!(
+    log::debug!(
         "Creating thread pool: {} persistent workers at {} priority ({})",
         thread_count,
         thread_priority,
@@ -1051,6 +1057,14 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         thread_priority,
         thread_count,
         runtime_config.cpu_list.as_deref(), // Pass the CPU list
+    );
+    fe.event(
+        Run::Workers(Box::new(crate::frontend::WorkersReport {
+            priority: thread_priority,
+            pinning: runtime_config.pin_threads,
+            starts: thread_pool.starts().to_vec(),
+        }))
+        .into(),
     );
 
     // Open the result file with the run's resolved configuration, now that both allocation and thread placement are observable facts (TODO

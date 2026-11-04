@@ -27,6 +27,36 @@ pub(super) fn show(run: &Run) -> String {
     text
 }
 
+/// The workers as they started (TODO 7): their count and priority, and their pinning, or each that didn't take, by thread and CPU
+fn workers(report: &tmr::frontend::WorkersReport) -> String {
+    let n = report.starts.len();
+    let priority = format!("{} priority ({})", report.priority, report.priority.win32_name());
+    let unpinned: Vec<String> = report
+        .starts
+        .iter()
+        .filter_map(|s| match &s.pinned {
+            Some(Err(e)) => Some(format!("thread {} (CPU {}): {}", s.thread_id, s.cpu_id, e.trim_end_matches('.'))),
+            _ => None,
+        })
+        .collect();
+    let unprioritised: Vec<String> = report
+        .starts
+        .iter()
+        .filter_map(|s| s.priority.as_ref().err().map(|e| format!("thread {}: {}", s.thread_id, e.trim_end_matches('.'))))
+        .collect();
+    let pinning = match (report.pinning, unpinned.len()) {
+        (false, _) => "not pinned (--disable-pinning)".to_string(),
+        (true, 0) => "each pinned to its CPU".to_string(),
+        (true, failed) => format!("{} of {n} pinned; not {}", n - failed, unpinned.join("; ")),
+    };
+    let mark = if unpinned.is_empty() && unprioritised.is_empty() { "⚙ " } else { "⚠️ " };
+    let mut text = format!("{mark} Workers: {n} at {priority}, {pinning}\n");
+    if !unprioritised.is_empty() {
+        text += &format!("⚠️  Priority not set on {} of {n}: {}\n", unprioritised.len(), unprioritised.join("; "));
+    }
+    text
+}
+
 /// What the console shows for `run`, and how it writes it
 pub(super) fn text(run: &Run) -> (String, Written) {
     let line = |text: String| text + "\n";
@@ -42,6 +72,7 @@ pub(super) fn text(run: &Run) -> (String, Written) {
             Written::Plain,
         ),
         Run::TestPlan(report) => (report_text("test configuration report", |r| r.report_test_configuration(report)), Written::Plain),
+        Run::Workers(report) => (workers(report), Written::Plain),
         Run::WheaMonitoring(Ok(())) => (line("🔎 WHEA hardware-error monitoring: active".to_string()), Written::Plain),
         Run::WheaMonitoring(Err(reason)) => (line(format!("🔎 WHEA hardware-error monitoring: unavailable ({})", reason)), Written::Plain),
         Run::AllocationStarting { min, max } => (allocation_starting(*min, *max), Written::Plain),
@@ -87,7 +118,8 @@ pub(super) fn text(run: &Run) -> (String, Written) {
             let mut text = String::new();
             // Display completion status
             if *outcome == RunOutcome::Interrupted {
-                text += "\n⚠️  Test suite interrupted by user (CTRL+C)\n";
+                // The console can't tell which stopped it: CTRL+C, the window's Stop, or the window closed
+                text += "\n⚠️  Test suite interrupted before its end (CTRL+C, Stop or the window closed)\n";
             } else if *status == RunStatus::NotRun {
                 text += "\n⚠️  No test ran: the cycle or time limit is 0\n";
             } else if *status == RunStatus::Passed {

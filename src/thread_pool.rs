@@ -105,6 +105,17 @@ pub struct ThreadPool {
     live: Arc<[TestProgress]>,
     /// Each thread's span in bytes, by thread_id: what the coordinator sizes a step's line from (TODO 105)
     span_bytes: Vec<usize>,
+    /// How each worker's start went, by thread_id (TODO 7): what the run's Workers line says
+    starts: Vec<WorkerStart>,
+}
+
+/// How a worker's start went (TODO 7): its pinning, `None` when pinning is off, else the CPU it took or why not; and its priority
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkerStart {
+    pub thread_id: usize,
+    pub cpu_id: usize,
+    pub pinned: Option<Result<usize, String>>,
+    pub priority: Result<(), String>,
 }
 
 impl ThreadPool {
@@ -117,6 +128,7 @@ impl ThreadPool {
         let mut workers = Vec::new();
         let mut cpu_assignments = Vec::new();
         let mut span_bytes = Vec::new();
+        let (start_sender, start_receiver) = channel();
 
         // Get CPU assignments from provided list or calculate
         let cpu_list_final: Vec<usize> = if let Some(list) = cpu_list { list.to_vec() } else { (0..thread_count).collect() };
@@ -138,26 +150,29 @@ impl ThreadPool {
 
             let result_sender = result_sender.clone();
             let live = Arc::clone(&live);
+            let start_sender = start_sender.clone();
 
             let handle = thread::spawn(move || {
                 // Pin thread to CPU once at creation
-                if pin_threads {
-                    match crate::runner::pin_thread_to_cpu_with_config(thread_id, cpu_id, pin_threads) {
-                        Ok(actual_cpu) => {
-                            log::debug!("Thread {} pinned to CPU {}", thread_id, actual_cpu);
-                            // SAFETY: the current thread's pseudo-handle, needing no closing
-                            let thread_handle = unsafe { windows::Win32::System::Threading::GetCurrentThread() };
-                            let _ = crate::runner::set_thread_ideal_processor_ex(thread_handle, actual_cpu as u32);
-                        }
-                        Err(e) => {
-                            log::warn!("Thread {} pinning failed: {}", thread_id, e);
-                        }
+                let pinned = pin_threads.then(|| crate::runner::pin_thread_to_cpu_with_config(thread_id, cpu_id, pin_threads));
+                match &pinned {
+                    Some(Ok(actual_cpu)) => {
+                        log::debug!("Thread {} pinned to CPU {}", thread_id, actual_cpu);
+                        // SAFETY: the current thread's pseudo-handle, needing no closing
+                        let thread_handle = unsafe { windows::Win32::System::Threading::GetCurrentThread() };
+                        let _ = crate::runner::set_thread_ideal_processor_ex(thread_handle, *actual_cpu as u32);
                     }
+                    Some(Err(e)) => log::warn!("Thread {} pinning failed: {}", thread_id, e),
+                    None => {}
                 }
 
-                if let Err(e) = thread_priority.apply() {
+                let priority = thread_priority.apply();
+                if let Err(e) = &priority {
                     log::warn!("Thread {} priority not set: {}", thread_id, e);
                 }
+                // The pool waits for every worker's, so the run's Workers line says how all of them started
+                let _ =
+                    start_sender.send(WorkerStart { thread_id, cpu_id, pinned: pinned.map(|r| r.map_err(|e| e.to_string())), priority });
 
                 let mut context = WorkerContext {
                     thread_id,
@@ -179,7 +194,12 @@ impl ThreadPool {
             workers.push(handle);
         }
 
-        (ThreadPool { workers, senders, cpu_assignments, live, span_bytes }, result_receiver)
+        // Each worker's start, in thread order: a worker that never reports (it panicked as it started) is left out after the wait
+        drop(start_sender);
+        let mut starts: Vec<WorkerStart> =
+            (0..workers.len()).map_while(|_| start_receiver.recv_timeout(std::time::Duration::from_secs(30)).ok()).collect();
+        starts.sort_by_key(|start| start.thread_id);
+        (ThreadPool { workers, senders, cpu_assignments, live, span_bytes, starts }, result_receiver)
     }
 
     pub fn get_cpu_assignments(&self) -> &[CpuAssignment] {
@@ -189,6 +209,11 @@ impl ThreadPool {
     /// Each thread's span in bytes, by thread_id
     pub fn span_bytes(&self) -> &[usize] {
         &self.span_bytes
+    }
+
+    /// How each worker's start went, by thread_id
+    pub fn starts(&self) -> &[WorkerStart] {
+        &self.starts
     }
 
     /// The workers' live-progress slots, for the progress ticker. Reset one only while no test is running.

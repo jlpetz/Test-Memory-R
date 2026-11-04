@@ -13,7 +13,8 @@ use tmr::frontend::{
     CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorCounts, ErrorMode, Frontend, LiveFigures, MemoryModule,
     MemoryStatus, NotRun, PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
     PhysicalCorePerformance, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealCalibrationState, SealOp, Selection, Setup,
-    SkipSpec, Stage, StepConfigLine, StepReport, TestSnapshot, TestSummary, ThreadPerformance, ThreadPriority, WheaCounts,
+    SkipSpec, Stage, StepConfigLine, StepReport, TestSnapshot, TestSummary, ThreadPerformance, ThreadPriority, WheaCounts, WorkerStart,
+    WorkersReport,
 };
 use tmr::session::{SessionEnd, Stopped};
 use tmr::test_support::failing_bits;
@@ -86,6 +87,24 @@ fn events_print_as_their_golden() {
                 "⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)".to_string(),
                 "⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)".to_string(),
             ]),
+        ),
+        (
+            "the workers, each pinned",
+            workers(true, |t| WorkerStart { thread_id: t, cpu_id: 2 * t, pinned: Some(Ok(2 * t)), priority: Ok(()) }),
+        ),
+        ("the workers, pinning off", workers(false, |t| WorkerStart { thread_id: t, cpu_id: 2 * t, pinned: None, priority: Ok(()) })),
+        (
+            "the workers, two not pinned and one without its priority",
+            workers(true, |t| WorkerStart {
+                thread_id: t,
+                cpu_id: 2 * t,
+                pinned: Some(if t % 2 == 1 { Err("SetThreadAffinityMask: Access is denied.".to_string()) } else { Ok(2 * t) }),
+                priority: if t == 2 {
+                    Err("SetThreadPriority(THREAD_PRIORITY_HIGHEST) failed: Access is denied.".to_string())
+                } else {
+                    Ok(())
+                },
+            }),
         ),
         ("the CPU performance summary", Run::CpuPerformance(Box::new(cpu_performance()))),
         (
@@ -299,6 +318,11 @@ fn step() -> StepReport {
             ..snapshot()
         }),
     }
+}
+
+/// Four workers at high priority, as `start` has each start (TODO 7)
+fn workers(pinning: bool, start: impl Fn(usize) -> WorkerStart) -> Run {
+    Run::Workers(Box::new(WorkersReport { priority: ThreadPriority::High, pinning, starts: (0..4).map(start).collect() }))
 }
 
 /// Four threads on two cores of two CPUs each, one thread with errors, and the run's WHEA event on each table's aggregate row

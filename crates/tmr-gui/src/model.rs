@@ -1059,6 +1059,17 @@ impl Model {
             }
             Run::LateWhea(lines) => self.errors.extend(lines),
             Run::CpuPerformance(summary) => self.work = crate::report::cpu_performance(&summary),
+            // The console's line is the Log tab's (the transcript); a worker that didn't start as asked is an error too
+            Run::Workers(report) => {
+                for start in &report.starts {
+                    if let Some(Err(e)) = &start.pinned {
+                        self.errors.push(format!("Thread {} not pinned to CPU {}: {e}", start.thread_id, start.cpu_id));
+                    }
+                    if let Err(e) = &start.priority {
+                        self.errors.push(format!("Thread {} priority not set: {e}", start.thread_id));
+                    }
+                }
+            }
             Run::SuiteEnded { outcome, status, errors } => {
                 self.status = Status::of(status);
                 self.position = self.ended_line(outcome);

@@ -48,7 +48,7 @@ pub use crate::reporting::renderers::Renderer;
 pub use crate::runner::{RunStatus, ThreadPriority};
 pub use crate::smbios::MemoryModule;
 pub use crate::tests::Stage;
-pub use crate::thread_pool::SealOp;
+pub use crate::thread_pool::{SealOp, WorkerStart};
 pub use crate::whea::WheaCounts;
 
 /// Whoever shows a run. Two engine threads call it, so it is `Send + Sync` and takes `&self`: the thread that runs the suite sends the
@@ -230,6 +230,15 @@ pub struct MemoryStatus {
     pub avail_page_file: u64,
 }
 
+/// The workers as they started (`Run::Workers`): the priority asked of each, whether pinning is on (`--disable-pinning` turns it off),
+/// and each one's start (`WorkerStart`), in thread order
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkersReport {
+    pub priority: ThreadPriority,
+    pub pinning: bool,
+    pub starts: Vec<WorkerStart>,
+}
+
 /// A run's facts, in the order a run has them (`run_tests_with_layout_and_timing_filtered`). The large ones are boxed, so the enum stays
 /// small.
 pub enum Run {
@@ -247,6 +256,8 @@ pub enum Run {
     Channels { channels: u32, cache_line: usize },
     /// The test plan, right after `Channels`
     TestPlan(Box<TestConfigurationReport>),
+    /// The workers as they started (TODO 7): their priority, whether pinning is on, and how each one's pinning and priority went
+    Workers(Box<WorkersReport>),
     /// Whether WHEA is monitored, or why not
     WheaMonitoring(Result<(), String>),
     /// Allocation starts, between these page sizes (`minpage=`, `maxpage=`)

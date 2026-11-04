@@ -57,6 +57,7 @@ impl Frontend for Recording {
             Run::StepFinished(report) => format!("StepFinished {}, {} errors", report.summary.step, report.summary.errors),
             Run::LateWhea(_) => "LateWhea".to_string(),
             Run::CpuPerformance(_) => "CpuPerformance".to_string(),
+            Run::Workers(_) => "Workers".to_string(),
             Run::SuiteEnded { .. } => "SuiteEnded".to_string(),
             Run::FinalSummary(_) => "FinalSummary".to_string(),
             Run::ResultsSaved { .. } => "ResultsSaved".to_string(),

@@ -53,6 +53,13 @@ Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 1 er
 ## WHEA after the monitor's last tick
 ⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)
 ⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)
+## the workers, each pinned
+⚙  Workers: 4 at high priority (THREAD_PRIORITY_HIGHEST), each pinned to its CPU
+## the workers, pinning off
+⚙  Workers: 4 at high priority (THREAD_PRIORITY_HIGHEST), not pinned (--disable-pinning)
+## the workers, two not pinned and one without its priority
+⚠️  Workers: 4 at high priority (THREAD_PRIORITY_HIGHEST), 2 of 4 pinned; not thread 1 (CPU 2): SetThreadAffinityMask: Access is denied; thread 3 (CPU 6): SetThreadAffinityMask: Access is denied
+⚠️  Priority not set on 1 of 4: thread 2: SetThreadPriority(THREAD_PRIORITY_HIGHEST) failed: Access is denied
 ## the CPU performance summary
 
 === CPU Performance Summary ===
@@ -101,15 +108,15 @@ Runtime: 00:41:10 (remaining 00:18:50) | Cycle 3/8 (00:12:34, 35%) | ⚠️ 1 er
 ❌ Test suite failed: 1 error (0 test + 0 seal + 1 WHEA 0C/1UC)
 ## interrupted
 
-⚠️  Test suite interrupted by user (CTRL+C)
+⚠️  Test suite interrupted before its end (CTRL+C, Stop or the window closed)
 ## interrupted with errors
 
-⚠️  Test suite interrupted by user (CTRL+C)
+⚠️  Test suite interrupted before its end (CTRL+C, Stop or the window closed)
 
 ❌ Test suite failed: 4 errors (1 test + 1 seal + 2 WHEA 2C/0UC)
 ## interrupted before any test
 
-⚠️  Test suite interrupted by user (CTRL+C)
+⚠️  Test suite interrupted before its end (CTRL+C, Stop or the window closed)
 ## no test ran
 
 ⚠️  No test ran: the cycle or time limit is 0

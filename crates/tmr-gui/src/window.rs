@@ -190,9 +190,12 @@ pub(crate) const START: &str = "--start";
 
 /// Waits on a thread-pool thread for the feed, up to `TICK`, then returns everything queued as one message, with where the suite stands
 /// then and the lines logged. A wait that brought nothing returns as well: that is the window's clock, as Reactor 0.100.0 has no timer.
-/// Re-armed from `update` after each delivery, so there is one waiter at a time, and the feeds travel with it.
-fn listen(feeds: Feeds, progress: Option<Arc<ProgressTracker>>, context: &ComponentContext<Window>) {
+/// Re-armed from `update` after each delivery, so there is one waiter at a time, and the feeds travel with it. The waiter runs at the
+/// window's `priority`, Normal again before it returns the pool's thread (TODO 7: with a worker on every logical CPU, at Normal it waited
+/// for Windows' starvation boost, and the window's figures froze for 6-10 s at a time while its own thread answered in milliseconds).
+fn listen(feeds: Feeds, progress: Option<Arc<ProgressTracker>>, priority: ThreadPriority, context: &ComponentContext<Window>) {
     context.spawn_background(move |_| {
+        let raised = priority != ThreadPriority::Normal && priority.apply().is_ok();
         let mut feed = Vec::new();
         let closed = match feeds.events.recv_timeout(TICK) {
             Ok(first) => {
@@ -208,6 +211,9 @@ fn listen(feeds: Feeds, progress: Option<Arc<ProgressTracker>>, context: &Compon
         let progress = progress.or_else(|| feed.iter().find_map(Feed::progress));
         let (snapshot, whea) = progress.map_or((None, Vec::new()), |p| (p.snapshot(), p.take_whea_descriptions()));
         let (log, dropped) = feeds.log.take();
+        if raised {
+            let _ = ThreadPriority::Normal.apply();
+        }
         Message::Feed(Box::new(Batch { feed, snapshot, whea, log, dropped, feeds, closed }))
     });
 }
@@ -242,7 +248,7 @@ impl Window {
             Ok(session) => {
                 crate::session_started(session);
                 self.model.start();
-                listen(Feeds { events: rx, log }, None, context);
+                listen(Feeds { events: rx, log }, None, self.priority, context);
             }
             Err(e) => self.model.ended(Err(format!("the engine's thread didn't start: {e}"))),
         }
@@ -278,7 +284,7 @@ impl Window {
             tmr::logfile::close();
             self.log = Some(feeds.log);
         } else {
-            listen(feeds, self.model.progress().cloned(), context);
+            listen(feeds, self.model.progress().cloned(), self.priority, context);
         }
     }
 
@@ -290,12 +296,20 @@ impl Window {
         if wanted == self.priority {
             return;
         }
-        match wanted.apply() {
-            Ok(()) => log::info!("The window's thread at {wanted} priority ({})", wanted.win32_name()),
+        // While a run is on, its outcome is a line of the run's output, the Log tab's and the log file's, beside the Workers line (TODO 7);
+        // back to Normal as the session ends, only the debug log says so
+        let line = match wanted.apply() {
+            Ok(()) => format!("🪟  Window: {wanted} priority ({})", wanted.win32_name()),
             Err(e) => {
-                log::warn!(target: tmr::logfile::FILE_ONLY_TARGET, "The window's thread at {wanted} priority: {e}");
                 self.model.errors.push(format!("The window's thread at {wanted} priority: {e}"));
+                format!("⚠️  Window: {wanted} priority ({}) not set: {e}", wanted.win32_name())
             }
+        };
+        if self.model.session_over() {
+            log::debug!("{line}");
+        } else {
+            tmr::logfile::write_text(&format!("{line}\n"));
+            self.model.log.push(line);
         }
         self.priority = wanted;
     }
