@@ -6,11 +6,13 @@
 //! | `chart`         | the throughput chart shows; its ▾ hides it, leaving its title line             | `true`    |
 //! | `theme`         | `"system"`, `"light"` or `"dark"`                                              | `system`  |
 //! | `start_on_open` | the run starts as the window opens, as `--start` does                          | `false`   |
+//! | `serials`       | the DIMMs' serials and the system's UUID in the run's output, log and results   | `true`    |
 //! | `parameters`    | the parameters box's text when tmr.exe is given none: the last run's           | none      |
 //! | `size`          | the window's size, `[width, height]`, as it last closed                         | 860 × 960 |
 //! | `colours`       | the palette over its defaults, a `"dark"` and a `"light"` object (`palette.rs`) | none      |
 //!
-//! The window writes `chart` as it changes, `parameters` at Start and `size` as it closes, keeping the rest of the file (the colours, any
+//! The window writes `chart` as it changes, `parameters` at Start, `size` as it closes, and its Settings dialog's (`start_on_open`,
+//! `serials`, `theme`) as they change, keeping the rest of the file (the colours, any
 //! notes) as it was. Keys starting with `_` are notes. A missing file is the defaults; a bad key or value goes in the errors list and keeps
 //! its default; a file that isn't JSON says so, and the window doesn't write over it. `crates/tmr-gui/window.example.json` has every key
 //! at its default, a test keeping it so: copy it into TMR's folder as `window.json` and edit it.
@@ -32,6 +34,18 @@ pub enum Theme {
 impl Theme {
     const NAMES: [(&str, Theme); 3] = [("system", Theme::System), ("light", Theme::Light), ("dark", Theme::Dark)];
 
+    /// The Settings dialog's choices, in the order of `NAMES`
+    pub const LABELS: [&str; 3] = ["As Windows", "Light", "Dark"];
+
+    /// Its place in `NAMES` and `LABELS`
+    pub fn index(self) -> usize {
+        Self::NAMES.iter().position(|(_, theme)| *theme == self).unwrap_or(0)
+    }
+
+    pub fn at(index: usize) -> Self {
+        Self::NAMES.get(index).map_or(Theme::System, |(_, theme)| *theme)
+    }
+
     fn name(self) -> &'static str {
         Self::NAMES.iter().find(|(_, theme)| *theme == self).map_or("system", |(name, _)| name)
     }
@@ -43,6 +57,8 @@ pub struct Settings {
     pub chart: bool,
     pub theme: Theme,
     pub start_on_open: bool,
+    /// The run's output, log and results keep the DIMMs' serials and the system's UUID; off, the window runs with `--no-serials`
+    pub serials: bool,
     pub parameters: Option<String>,
     pub size: Option<(f64, f64)>,
     /// The file as it was read, so a save keeps what the window doesn't own: the colours, notes
@@ -57,6 +73,7 @@ impl Default for Settings {
             chart: true,
             theme: Theme::System,
             start_on_open: false,
+            serials: true,
             parameters: None,
             size: None,
             file: Map::new(),
@@ -113,6 +130,10 @@ impl Settings {
                     Some(start) => settings.start_on_open = start,
                     None => problems.push(wrong("true or false")),
                 },
+                "serials" => match value.as_bool() {
+                    Some(serials) => settings.serials = serials,
+                    None => problems.push(wrong("true or false")),
+                },
                 "theme" => match Theme::NAMES.iter().find(|(name, _)| value.as_str() == Some(name)) {
                     Some((_, theme)) => settings.theme = *theme,
                     None => problems.push(wrong("\"system\", \"light\" or \"dark\"")),
@@ -139,6 +160,7 @@ impl Settings {
         file.insert("chart".to_string(), Value::Bool(self.chart));
         file.insert("theme".to_string(), Value::String(self.theme.name().to_string()));
         file.insert("start_on_open".to_string(), Value::Bool(self.start_on_open));
+        file.insert("serials".to_string(), Value::Bool(self.serials));
         file.insert("parameters".to_string(), self.parameters.clone().map_or(Value::Null, Value::String));
         if let Some((width, height)) = self.size {
             file.insert("size".to_string(), serde_json::json!([width.round(), height.round()]));
@@ -170,10 +192,11 @@ mod tests {
              \"It is read when the window opens. Keys starting with _ are notes.\",\n    \
              \"chart: the throughput chart shows. theme: system, light or dark.\",\n    \
              \"start_on_open: the run starts as the window opens, as --start does.\",\n    \
+             \"serials: the DIMMs' serials and the system's UUID in the run's output, log and results; false runs with --no-serials.\",\n    \
              \"parameters: the parameters box's text when tmr.exe is given none; the window keeps the last run's.\",\n    \
              \"size: [width, height], as it last closed.\",\n    \
              \"colours: #RRGGBB or #AARRGGBB (alpha first). Leave a key out to keep its default.\"\n  ],\n  \
-             \"chart\": true,\n  \"theme\": \"system\",\n  \"start_on_open\": false,\n  \"parameters\": null,\n  \
+             \"chart\": true,\n  \"theme\": \"system\",\n  \"start_on_open\": false,\n  \"serials\": true,\n  \"parameters\": null,\n  \
              \"colours\": {colours}\n}}\n"
         )
     }

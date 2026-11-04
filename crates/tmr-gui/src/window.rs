@@ -97,6 +97,11 @@ pub(crate) enum Message {
     /// A file or a folder opened, or why the shell couldn't
     Opened(Result<(), String>),
     AboutClosed,
+    /// The Settings dialog (TODO 105): closed; its switches and the theme, each saved to window.json as it changes
+    SettingsClosed,
+    StartOnOpen(bool),
+    Serials(bool),
+    Theme(Option<usize>),
     Scheme(ColorScheme),
     Size(WindowSize),
 }
@@ -137,6 +142,8 @@ pub(crate) struct Window {
     tab: Tab,
     /// The About dialog is open
     about: bool,
+    /// The Settings dialog is open
+    settings_open: bool,
     /// `window.json`'s (TODO 109): the chart shown or hidden, the theme, the parameters, the size
     settings: Settings,
     dark: bool,
@@ -232,7 +239,11 @@ impl Window {
         self.model.log_path = Some(tmr::logfile::path());
         let (tx, rx) = mpsc::channel();
         let fe = Arc::new(GuiFrontend { feed: tx.clone(), transcript: Some(log.transcript()) });
-        let args = self.model.command();
+        let mut args = self.model.command();
+        // Serials off in the Settings dialog: the run leaves them out, as --no-serials does (TODO 105)
+        if !self.settings.serials && !args.iter().any(|arg| arg == "--no-serials") {
+            args.push("--no-serials".to_string());
+        }
         let session = std::thread::Builder::new().name("tmr-engine".to_string()).spawn(move || {
             let result = tmr::session::run(args, fe).map_err(|e| {
                 // In the log file, as the CLI has it; the window shows it as the session's end
@@ -340,6 +351,10 @@ impl Window {
             MENU_LOGS => Some(tmr::home::logs()),
             MENU_RESULTS => self.model.results_path().map(PathBuf::from),
             MENU_RESULTS_FOLDER => Some(tmr::home::results()),
+            MENU_SETTINGS => {
+                self.settings_open = true;
+                None
+            }
             MENU_ABOUT => {
                 self.about = true;
                 None
@@ -360,6 +375,7 @@ const MENU_LOG: &str = "Open the log";
 const MENU_LOGS: &str = "Open the logs folder";
 const MENU_RESULTS: &str = "Open the results file";
 const MENU_RESULTS_FOLDER: &str = "Open the results folder";
+const MENU_SETTINGS: &str = "Settings";
 const MENU_ABOUT: &str = "About TMR";
 
 /// The window's size, as it closes, into `window.json` (TODO 109): Run again's window opens as this one was
@@ -389,7 +405,8 @@ impl Component for Window {
         model.errors.extend(problems.into_iter().map(|problem| format!("window.json: {problem}")));
         let (width, dark) = (settings.size.map_or(WIDTH, |(width, _)| width), settings.theme == Theme::Dark);
         let priority = ThreadPriority::Normal;
-        let mut window = Self { model, log: None, tab: Tab::Run, about: false, settings, dark, width, palettes, priority };
+        let mut window =
+            Self { model, log: None, tab: Tab::Run, about: false, settings_open: false, settings, dark, width, palettes, priority };
         if start {
             window.start(context);
         }
@@ -503,6 +520,20 @@ impl Component for Window {
             Message::Opened(Ok(())) => {}
             Message::Opened(Err(e)) => self.model.errors.push(e),
             Message::AboutClosed => self.about = false,
+            Message::SettingsClosed => self.settings_open = false,
+            Message::StartOnOpen(on) => {
+                self.settings.start_on_open = on;
+                self.save_settings();
+            }
+            Message::Serials(on) => {
+                self.settings.serials = on;
+                self.save_settings();
+            }
+            Message::Theme(Some(index)) => {
+                self.settings.theme = crate::settings::Theme::at(index);
+                self.save_settings();
+            }
+            Message::Theme(None) => {}
             Message::Tab(label) => {
                 if let Some(tab) = Tab::ALL.into_iter().find(|tab| label.as_deref() == Some(tab.label())) {
                     self.tab = tab;
@@ -560,6 +591,7 @@ impl Component for Window {
                 self.large_page_dialog(context),
                 self.broad_dialog(context),
                 self.about_dialog(context),
+                self.settings_dialog(context),
             ))
     }
 }
@@ -804,7 +836,8 @@ impl Window {
             item(self.model.results_path().is_some(), 3, MENU_RESULTS),
             MenuItem::item(4usize, MENU_RESULTS_FOLDER),
             MenuItem::separator(5usize),
-            MenuItem::item(6usize, MENU_ABOUT),
+            MenuItem::item(6usize, MENU_SETTINGS),
+            MenuItem::item(7usize, MENU_ABOUT),
         ];
         let more = Button::new()
             .grid_column(4)
@@ -1106,6 +1139,26 @@ impl Window {
 }
 
 impl Window {
+    /// Settings (TODO 105, the owner 2026-11-04): what the window keeps in window.json that a user sets, each saved as it changes; not open
+    /// while the large-page question is, as WinUI opens one dialog at a time
+    fn settings_dialog(&self, context: &ViewContext<Self>) -> View {
+        let open = self.settings_open && !self.model.large_pages_pending();
+        let dialog = ContentDialog::new()
+            .title("Settings")
+            .close_button_text("Close")
+            .is_open(open)
+            .on_closed(context.callback(|_: ContentDialogResult| Message::SettingsClosed));
+        if !open {
+            return dialog.content(TextBlock::new());
+        }
+        dialog.content(settings_content(
+            &self.settings,
+            context.callback(Message::StartOnOpen),
+            context.callback(Message::Serials),
+            context.callback(Message::Theme),
+        ))
+    }
+
     /// About (TODO 109): the logo, what TMR is, its version and build, its licence and its GitHub page. Its content is built only while it
     /// is open, so the logo isn't decoded at each redraw; and it isn't open while the large-page question is, as WinUI opens one dialog at
     /// a time. In the dialog's own colours, as the large-page dialog's.
@@ -1465,6 +1518,38 @@ fn dialog_content(text: TextBlock, words: &crate::model::LargePageDialog, on_sel
     StackPanel::new().spacing(8.0).keyed_children(parts)
 }
 
+/// The Settings dialog's content: a row a switch, its words on the left; the theme's choices; and where they're kept. No tooltip: one
+/// inside a dialog fails reactor 0.100.0 (`a_tooltip_in_a_dialog_still_fails`).
+fn settings_content(
+    settings: &crate::settings::Settings, on_start: impl IntoPayloadCallback<bool>, on_serials: impl IntoPayloadCallback<bool>,
+    on_theme: impl IntoPayloadCallback<Option<usize>>,
+) -> View {
+    let row = |words: &str, switch: ToggleSwitch| -> View {
+        Grid::new().columns([GridLength::STAR, GridLength::Auto]).column_spacing(12.0).children((
+            TextBlock::new().text(words).text_wrapping(TextWrapping::Wrap).vertical_alignment(VerticalAlignment::Center),
+            Border::new().grid_column(1).content(switch),
+        ))
+    };
+    let start = row(
+        "Start the run as the window opens, with the parameters given or the last run's",
+        ToggleSwitch::new().is_on(settings.start_on_open).on_toggled(on_start),
+    );
+    let serials = row(
+        "Keep serial numbers, the DIMMs' and the system's UUID, in the run's output, log and results file (off: --no-serials)",
+        ToggleSwitch::new().is_on(settings.serials).on_toggled(on_serials),
+    );
+    let theme = StackPanel::new().spacing(4.0).children((
+        TextBlock::new().text("Theme"),
+        RadioButtons::new()
+            .items_source(crate::settings::Theme::LABELS)
+            .max_columns(3)
+            .selected_index(settings.theme.index())
+            .on_selection_changed(on_theme),
+    ));
+    let kept = TextBlock::new().text("Kept in window.json, in TMR's folder, as each changes").text_wrapping(TextWrapping::Wrap);
+    StackPanel::new().spacing(14.0).children((start, serials, theme, kept))
+}
+
 fn card_title(title: String, p: &Palette) -> TextBlock {
     TextBlock::new().text(title).font_weight(FontWeight::SEMI_BOLD).foreground(brush(p.text_primary))
 }
@@ -1569,6 +1654,20 @@ mod tests {
         for (open, chosen) in [(true, Some(0)), (true, Some(2)), (true, Some(2)), (true, None), (false, None)] {
             pump.update_view(dialog(open, content(chosen))).unwrap_or_else(|e| panic!("open {open}, chosen {chosen:?}: {e:?}"));
         }
+    }
+
+    /// TODO 105: the Settings dialog opens, takes a change and closes through reactor's planner, as the grant dialog's
+    #[test]
+    fn the_settings_dialog_opens_and_closes() {
+        let mut settings = crate::settings::Settings::default();
+        let content =
+            |settings: &crate::settings::Settings| super::settings_content(settings, |_: bool| {}, |_: bool| {}, |_: Option<usize>| {});
+        let mut pump = Pump::new(RecordingRuntime::default());
+        pump.mount_view(dialog(false, TextBlock::new().text("closed").into())).unwrap();
+        pump.update_view(dialog(true, content(&settings))).unwrap();
+        (settings.serials, settings.start_on_open) = (false, true);
+        pump.update_view(dialog(true, content(&settings))).unwrap();
+        pump.update_view(dialog(false, content(&settings))).unwrap();
     }
 
     /// Reactor 0.100.0 can't plan a tooltip inside a dialog's content, so the dialogs have none. When this fails, a reactor upgrade

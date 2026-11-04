@@ -4,6 +4,7 @@
     "It is read when the window opens. Keys starting with _ are notes.",
     "chart: the throughput chart shows. theme: system, light or dark.",
     "start_on_open: the run starts as the window opens, as --start does.",
+    "serials: the DIMMs' serials and the system's UUID in the run's output, log and results; false runs with --no-serials.",
     "parameters: the parameters box's text when tmr.exe is given none; the window keeps the last run's.",
     "size: [width, height], as it last closed.",
     "colours: #RRGGBB or #AARRGGBB (alpha first). Leave a key out to keep its default."
@@ -11,6 +12,7 @@
   "chart": true,
   "theme": "system",
   "start_on_open": false,
+  "serials": true,
   "parameters": null,
   "colours": {
     "_note": "egui's grey text instead of WinUI's white: dark.text_primary #8C8C8C, light.text_primary #505050.",
