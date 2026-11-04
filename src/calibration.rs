@@ -1246,17 +1246,32 @@ impl CalibrationTest {
         };
         let fine = self.run_fine_sweep(&mut probe, (edge / 2).max(low), edge, fine_step, repeats, &format!("L3→DRAM, {label}"));
         let cap = 1.25 * l3_ns;
-        fine.iter()
+        // The sizes that qualify, largest first: steady, and within the cap
+        let mut candidates: Vec<(usize, f64)> = fine
+            .iter()
             .filter(|fp| fp.is_reliable() && fp.worst_spread < stable_spread && fp.overall_median_ns <= cap)
-            .max_by_key(|fp| fp.size)
             .map(|fp| (fp.size, fp.overall_median_ns))
-            .or_else(|| {
-                sweep
-                    .iter()
-                    .filter(|p| p.size >= low && p.size < edge && p.spread < 2.0 && p.median_ns <= cap)
-                    .max_by_key(|p| p.size)
-                    .map(|p| (p.size, p.median_ns))
-            })
+            .collect();
+        if candidates.is_empty() {
+            candidates = sweep
+                .iter()
+                .filter(|p| p.size >= low && p.size < edge && p.spread < 2.0 && p.median_ns <= cap)
+                .map(|p| (p.size, p.median_ns))
+                .collect();
+        }
+        candidates.sort_by_key(|&(size, _)| std::cmp::Reverse(size));
+        // Each confirmed before it is taken (TODO 116): three probes more at it, which must read inside the L3 as a recheck reads it
+        // (within 1.5x A's latency), else the next smaller. On daddy-petz a run's C took 2.6 MB a thread with 16 sharing, 42 MB in a
+        // 32 MB L3: something brief let all three of its finer probes read steady, and the next run's recheck read it at 31.6 ns.
+        for &(size, ns) in candidates.iter().take(4) {
+            let medians: Vec<f64> = (0..3).filter_map(|_| probe(size).map(|stats| stats.median_ns)).collect();
+            let confirmed = if medians.is_empty() { f64::INFINITY } else { median(&medians) };
+            if confirmed <= 1.5 * l3_ns {
+                return Some((size, ns.max(confirmed)));
+            }
+            log::warn!("{label}: {} a thread read {confirmed:.1} ns on a second look, past the L3: a smaller size", format_size(size));
+        }
+        None
     }
 
     /// TODO 22's check of the curve (`--calibrate-curve`, which saves nothing): the calibration, then the L3 a thread reaches with `k` in
