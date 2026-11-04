@@ -106,6 +106,14 @@ impl From<Run> for Event {
     }
 }
 
+/// The hypervisor CPUID reports (TODO 115): its name (or `unidentified`), and what says TMR runs in a VM above it, none for the PC's
+/// own Windows above the one VBS runs on a desktop (`cache::vm_signs`)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hypervisor {
+    pub name: String,
+    pub vm_signs: Vec<&'static str>,
+}
+
 /// A session's setup facts, in the order a session has them (`session::run`). The large ones are boxed, so the enum stays small.
 pub enum Setup {
     /// `test=` picks the tests `pattern` matches, once each unless `cycles=` says otherwise. One for
@@ -156,8 +164,8 @@ pub enum Setup {
         memory_modules: Vec<MemoryModule>,
         system: SystemIdentity,
         bios: BiosInfo,
-        /// The hypervisor, when CPUID says one runs (its name, or `unidentified`): a VM's, or Windows' VBS on a desktop (TODO 115)
-        hypervisor: Option<String>,
+        /// The hypervisor, when CPUID says one runs: a VM's, or the one Windows' VBS runs on a desktop (TODO 115)
+        hypervisor: Option<Hypervisor>,
     },
     /// The tests are about to start (the CLI takes Ctrl+C from here)
     Starting,

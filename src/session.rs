@@ -588,8 +588,11 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         use crate::reporting::system_info_builder::build_system_info_report;
 
         let report = build_system_info_report(system_info, &simd_caps);
-        let hypervisor =
-            cache_info.is_virtual_machine.then(|| cache_info.hypervisor_name.clone().unwrap_or_else(|| "unidentified".to_string()));
+        // Every hypervisor CPUID reports, a VM's or the one VBS runs on a desktop, and what made it a VM (TODO 115)
+        let hypervisor = (cache_info.is_virtual_machine || cache_info.hypervisor_name.is_some()).then(|| crate::frontend::Hypervisor {
+            name: cache_info.hypervisor_name.clone().unwrap_or_else(|| "unidentified".to_string()),
+            vm_signs: cache_info.vm_signs.clone(),
+        });
         fe.event(
             Setup::SystemInfo {
                 report: Box::new(report),

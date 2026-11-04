@@ -195,7 +195,7 @@ pub(super) fn text(setup: &Setup) -> String {
         Setup::MemoryStatus(None) => {}
         Setup::SystemInfo { report, memory_modules, system, bios, hypervisor } => {
             text += &report_text("system info report", |reporter| reporter.report_system_info(report));
-            machine_text(&mut text, system, bios, memory_modules, hypervisor.as_deref());
+            machine_text(&mut text, system, bios, memory_modules, hypervisor.as_ref());
             let _ = writeln!(text);
         }
         Setup::Starting => {
@@ -219,11 +219,11 @@ pub(super) fn text(setup: &Setup) -> String {
 }
 
 /// The machine as SMBIOS and CPUID give it (TODO 105, the owner 2026-11-04): a line for the system, its BIOS, its UUID and its memory; one,
-/// indented, for each DIMM, its serial too; and one for a hypervisor. Under `--no-serials` the serials and the UUID aren't there, and the
-/// system's line says so.
+/// indented, for each DIMM, its serial too; and one for a hypervisor, a VM's or the one VBS runs on (TODO 115). Under `--no-serials` the
+/// serials and the UUID aren't there, and the system's line says so.
 fn machine_text(
     text: &mut String, system: &tmr::frontend::SystemIdentity, bios: &tmr::frontend::BiosInfo, modules: &[tmr::frontend::MemoryModule],
-    hypervisor: Option<&str>,
+    hypervisor: Option<&tmr::frontend::Hypervisor>,
 ) {
     let gib = |bytes: u64| {
         let gib = bytes as f64 / (1u64 << 30) as f64;
@@ -261,11 +261,15 @@ fn machine_text(
         let locator = if module.locator.trim().is_empty() { "a module" } else { module.locator.trim() };
         let _ = writeln!(text, "    {locator}: {}", details.join(" · "));
     }
-    if let Some(name) = hypervisor {
-        let _ = writeln!(
-            text,
-            "🧩 Hypervisor: {name}, a VM's or Windows' VBS on a desktop: without a calibration, the L3 tests take half the L3's share"
-        );
+    match hypervisor {
+        Some(tmr::frontend::Hypervisor { name, vm_signs }) if vm_signs.is_empty() => {
+            let _ = writeln!(text, "🧩 Hypervisor: {name}, the one Windows runs on (VBS or Hyper-V on this PC): not a VM");
+        }
+        Some(tmr::frontend::Hypervisor { name, vm_signs }) => {
+            let why = vm_signs.join(", ");
+            let _ = writeln!(text, "🧩 Hypervisor: {name}, a VM ({why}): without a calibration, the L3 tests take half the L3's share");
+        }
+        None => {}
     }
 }
 

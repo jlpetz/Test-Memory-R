@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 
 use chrono::TimeZone;
 use tmr::frontend::{
-    BiosInfo, CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorCounts, ErrorMode, Frontend, LiveFigures, MemoryModule,
-    MemoryStatus, NotRun, PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport, PerformanceByThreadReport,
-    PhysicalCorePerformance, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus, SealCalibrationState, SealOp, Selection, Setup,
-    SkipSpec, Stage, StepConfigLine, StepReport, SystemIdentity, TestSnapshot, TestSummary, ThreadPerformance, ThreadPriority, WheaCounts,
-    WorkerStart, WorkersReport,
+    BiosInfo, CacheCalibrationState, CpuPerformance, CpuPerformanceSummary, ErrorCounts, ErrorMode, Frontend, Hypervisor, LiveFigures,
+    MemoryModule, MemoryStatus, NotRun, PageSizeLevel, ParamNote, PerformanceByCpuReport, PerformanceByPhysicalCoreReport,
+    PerformanceByThreadReport, PhysicalCorePerformance, ProgressSnapshot, ProgressTracker, Run, RunOutcome, RunStatus,
+    SealCalibrationState, SealOp, Selection, Setup, SkipSpec, Stage, StepConfigLine, StepReport, SystemIdentity, TestSnapshot, TestSummary,
+    ThreadPerformance, ThreadPriority, WheaCounts, WorkerStart, WorkersReport,
 };
 use tmr::session::{SessionEnd, Stopped};
 use tmr::test_support::failing_bits;
@@ -487,7 +487,7 @@ fn setup_events_print_as_their_golden() {
             })),
         ),
         ("no memory status, on stderr", Setup::MemoryStatus(None)),
-        // TODO 105: the system's line, a line a DIMM with its serial, and the hypervisor's
+        // TODO 105: the system's line, a line a DIMM with its serial, and the hypervisor's (VBS's on a PC, TODO 115)
         ("the system", Setup::SystemInfo {
             report: Box::new(crate::renderer::tests::system_info_report()),
             memory_modules: vec![
@@ -513,7 +513,15 @@ fn setup_events_print_as_their_golden() {
                 version: "3222".to_string(),
                 release_date: "2025-01-02".to_string(),
             },
-            hypervisor: Some("HyperV".to_string()),
+            hypervisor: Some(Hypervisor { name: "HyperV".to_string(), vm_signs: Vec::new() }),
+        }),
+        // TODO 115: a VM, and why
+        ("a VM", Setup::SystemInfo {
+            report: Box::new(crate::renderer::tests::system_info_report()),
+            memory_modules: Vec::new(),
+            system: Default::default(),
+            bios: Default::default(),
+            hypervisor: Some(Hypervisor { name: "HyperV".to_string(), vm_signs: vec!["a guest partition", "the firmware's WAET table"] }),
         }),
         ("a system SMBIOS names nothing of", Setup::SystemInfo {
             report: Box::new(crate::renderer::tests::system_info_report()),

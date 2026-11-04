@@ -16,10 +16,14 @@ pub struct CacheInfo {
     pub per_core_l1i: usize,
     pub per_core_l2: usize,
     pub core_count: usize,
-    pub tsc_frequency_ghz: f64,          // TSC frequency (kept for backward compat)
-    pub tsc_info: TscInfo,               // Full TSC detection info
-    pub is_virtual_machine: bool,        // Running under hypervisor (VM)
-    pub hypervisor_name: Option<String>, // Hypervisor vendor if detected
+    pub tsc_frequency_ghz: f64, // TSC frequency (kept for backward compat)
+    pub tsc_info: TscInfo,      // Full TSC detection info
+    /// A VM, not the PC's own Windows above the hypervisor that VBS runs on a desktop (`vm_signs`, TODO 115)
+    pub is_virtual_machine: bool,
+    /// The hypervisor's vendor, whenever CPUID reports one: a VM's, or VBS's on a desktop
+    pub hypervisor_name: Option<String>,
+    /// What made it a VM (`vm_signs`); empty when it isn't
+    pub vm_signs: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +57,7 @@ impl Default for CacheInfo {
             tsc_info: TscInfo::default(),
             is_virtual_machine: false,
             hypervisor_name: None,
+            vm_signs: Vec::new(),
         }
     }
 }
@@ -67,7 +72,8 @@ impl CacheInfo {
         let tsc_frequency_ghz = tsc_info.frequency_ghz;
 
         // Detect if running in a VM
-        let (is_vm, hypervisor_name) = detect_hypervisor();
+        let (vm_signs, hypervisor_name) = detect_hypervisor();
+        let is_vm = !vm_signs.is_empty();
 
         // Try multiple detection methods in order of preference
 
@@ -78,6 +84,7 @@ impl CacheInfo {
             cache_info.tsc_info = tsc_info;
             cache_info.is_virtual_machine = is_vm;
             cache_info.hypervisor_name = hypervisor_name;
+            cache_info.vm_signs = vm_signs;
             return cache_info;
         }
 
@@ -90,6 +97,7 @@ impl CacheInfo {
                 cache_info.tsc_info = tsc_info;
                 cache_info.is_virtual_machine = is_vm;
                 cache_info.hypervisor_name = hypervisor_name;
+                cache_info.vm_signs = vm_signs;
                 return cache_info;
             }
         }
@@ -101,6 +109,7 @@ impl CacheInfo {
             cache_info.tsc_info = tsc_info;
             cache_info.is_virtual_machine = is_vm;
             cache_info.hypervisor_name = hypervisor_name;
+            cache_info.vm_signs = vm_signs;
             return cache_info;
         }
 
@@ -112,6 +121,7 @@ impl CacheInfo {
             tsc_info,
             is_virtual_machine: is_vm,
             hypervisor_name,
+            vm_signs,
             ..Default::default()
         };
         default.recalculate_totals();
@@ -231,6 +241,7 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
         tsc_info: TscInfo::default(), // Will be set by caller
         is_virtual_machine: false,    // Will be set by caller
         hypervisor_name: None,        // Will be set by caller
+        vm_signs: Vec::new(),         // Will be set by caller
     };
 
     let mut found_any = false;
@@ -464,6 +475,7 @@ fn detect_via_hardcoded_database(physical_cores: usize) -> Option<CacheInfo> {
         tsc_info: TscInfo::default(), // Will be set by caller
         is_virtual_machine: false,    // Will be set by caller
         hypervisor_name: None,        // Will be set by caller
+        vm_signs: Vec::new(),         // Will be set by caller
     };
 
     cache_info.recalculate_totals();
@@ -471,24 +483,109 @@ fn detect_via_hardcoded_database(physical_cores: usize) -> Option<CacheInfo> {
     Some(cache_info)
 }
 
-/// Detect if running under a hypervisor (VM) using CPUID
-/// Returns (is_vm, hypervisor_name)
-fn detect_hypervisor() -> (bool, Option<String>) {
+/// The hypervisor CPUID reports, if any, and what says TMR runs in a VM above it (`vm_signs`, TODO 115): none for the PC's own Windows,
+/// which every desktop with VBS runs above Hyper-V's hypervisor, so a hypervisor alone doesn't make a VM.
+fn detect_hypervisor() -> (Vec<&'static str>, Option<String>) {
     let cpuid = CpuId::new();
 
-    // Check CPUID.01H:ECX.bit31 - Hypervisor Present bit
-    // This bit is set by hypervisors to indicate we're running in a VM
-    // raw_cpuid exposes this via has_hypervisor() on FeatureInfo
+    // CPUID.01H:ECX.bit31, the hypervisor-present bit
     if let Some(feature_info) = cpuid.get_feature_info()
         && feature_info.has_hypervisor()
     {
-        // We're in a VM - try to identify the hypervisor via CPUID leaf 0x40000000
         let hypervisor_name = cpuid.get_hypervisor_info().map(|info| format!("{:?}", info.identify()));
-
-        log::info!("Hypervisor detected: {} (running in VM)", hypervisor_name.as_deref().unwrap_or("Unknown"));
-        return (true, hypervisor_name);
+        let leaves = hyperv_leaves();
+        let waet = acpi_has_waet();
+        let signs = vm_signs(leaves, waet);
+        let name = hypervisor_name.as_deref().unwrap_or("Unknown");
+        match leaves {
+            Some(HyperVLeaves { privileges, recommendations }) => log::info!(
+                "Hypervisor: {name}, privileges {privileges:#010x} (0x40000003 EBX), recommendations {recommendations:#010x} \
+                 (0x40000004 EAX), WAET {waet}: {}",
+                if signs.is_empty() { "its root partition, not a VM".to_string() } else { format!("a VM ({})", signs.join(", ")) }
+            ),
+            None => log::info!("Hypervisor: {name}, WAET {waet}: a VM ({})", signs.join(", ")),
+        }
+        return (signs, hypervisor_name);
     }
 
     log::debug!("No hypervisor detected (running on physical hardware)");
-    (false, None)
+    (Vec::new(), None)
+}
+
+/// Hyper-V's CPUID leaves that tell its root partition from a guest (TODO 115): 0x40000003 EBX, the partition's privileges, and
+/// 0x40000004 EAX, the hypervisor's recommendations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HyperVLeaves {
+    pub privileges: u32,
+    pub recommendations: u32,
+}
+
+/// Hyper-V's leaves, when the hypervisor is Microsoft's and has them (its top leaf is 0x40000004 or more); else none
+fn hyperv_leaves() -> Option<HyperVLeaves> {
+    use std::arch::x86_64::__cpuid;
+    let top = __cpuid(0x4000_0000);
+    let vendor: Vec<u8> = [top.ebx, top.ecx, top.edx].iter().flat_map(|word| word.to_le_bytes()).collect();
+    (vendor == b"Microsoft Hv" && top.eax >= 0x4000_0004)
+        .then(|| HyperVLeaves { privileges: __cpuid(0x4000_0003).ebx, recommendations: __cpuid(0x4000_0004).eax })
+}
+
+/// Whether the firmware lists ACPI's WAET (the Windows ACPI Emulated devices Table), which a VM's firmware has and a PC's doesn't
+fn acpi_has_waet() -> bool {
+    use windows::Win32::System::SystemInformation::{EnumSystemFirmwareTables, FIRMWARE_TABLE_PROVIDER};
+    let acpi = FIRMWARE_TABLE_PROVIDER(u32::from_be_bytes(*b"ACPI"));
+    // SAFETY: the size first, then a buffer that long, which Windows fills with the tables' 4-byte signatures
+    let size = unsafe { EnumSystemFirmwareTables(acpi, None) } as usize;
+    let mut ids = vec![0u8; size];
+    // SAFETY: as above
+    let got = unsafe { EnumSystemFirmwareTables(acpi, Some(&mut ids)) } as usize;
+    ids.truncate(got.min(size));
+    ids.as_chunks::<4>().0.iter().any(|id| id == b"WAET")
+}
+
+/// What says TMR runs in a VM (TODO 115), none for Hyper-V's root partition: the PC's own Windows, above the hypervisor VBS (or Hyper-V)
+/// runs on a desktop. A VM is any hypervisor but Hyper-V's (or a Hyper-V without the leaves); under Hyper-V's, a partition without both
+/// of the root's privileges (CreatePartitions, 0x40000003 EBX bit 0, and CpuManagement, bit 12: Linux's root test), or a root whose
+/// hypervisor is itself in a VM (0x40000004 EAX bit 12: a VM host nested in a VM); and firmware with ACPI's WAET table, which only a
+/// VM's has, whatever the hypervisor says. 2026-11-04: the dev box's EC2 VM, a guest with WAET; a laptop with VBS, both privileges, not
+/// nested, no WAET.
+pub(crate) fn vm_signs(hyperv: Option<HyperVLeaves>, waet: bool) -> Vec<&'static str> {
+    const ROOT_PRIVILEGES: u32 = 1 | 1 << 12;
+    const NESTED: u32 = 1 << 12;
+    let mut signs = Vec::new();
+    match hyperv {
+        None => signs.push("not Hyper-V's"),
+        Some(leaves) => {
+            if leaves.privileges & ROOT_PRIVILEGES != ROOT_PRIVILEGES {
+                signs.push("a guest partition");
+            }
+            if leaves.recommendations & NESTED != 0 {
+                signs.push("its hypervisor nested in a VM");
+            }
+        }
+    }
+    if waet {
+        signs.push("the firmware's WAET table");
+    }
+    signs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TODO 115: the probe's readings. The dev box's EC2 VM is a guest with WAET; a laptop with VBS is Hyper-V's root, not a VM; a VM host
+    /// nested in a VM, another hypervisor, or WAET alone each make one.
+    #[test]
+    fn a_vm_is_a_guest_a_nested_root_or_another_hypervisor() {
+        let ec2 = HyperVLeaves { privileges: 0x0033_0000, recommendations: 0x0006_0038 };
+        assert_eq!(vm_signs(Some(ec2), true), ["a guest partition", "the firmware's WAET table"]);
+        let laptop = HyperVLeaves { privileges: 0x002b_b9ff, recommendations: 0x0094_0d1c };
+        assert!(vm_signs(Some(laptop), false).is_empty(), "VBS on a PC is no VM");
+        let nested = HyperVLeaves { recommendations: laptop.recommendations | 1 << 12, ..laptop };
+        assert_eq!(vm_signs(Some(nested), false), ["its hypervisor nested in a VM"]);
+        assert_eq!(vm_signs(None, false), ["not Hyper-V's"]);
+        assert_eq!(vm_signs(Some(laptop), true), ["the firmware's WAET table"]);
+        let one_privilege = HyperVLeaves { privileges: 1, ..laptop };
+        assert_eq!(vm_signs(Some(one_privilege), false), ["a guest partition"]);
+    }
 }
