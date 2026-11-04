@@ -325,12 +325,9 @@ What sets them apart:
 
 `calibration.rs` is not a tier. It does not go through the thread pool, does not return
 `TestStats`, and is not in `get_test_function_by_name`. It runs single-threaded via its own
-`ProbeEngine` (pointer-chasing latency sweep), reached from `main.rs` (`--calibrate-extended`).
-
-It has two allocation modes: `run()` / `run_extended()` allocate their own buffer, while
-`run_with_buffer()` / `run_extended_with_buffer()` borrow an existing `MemoryBuffer` so
-calibration uses the same page types as the test plan with no extra alloc. Whether it should
-*always* share the main allocator is an open design question in CLAUDE.md.
+`ProbeEngine` (pointer-chasing latency sweep, then a finer one around each tier's edge),
+reached from `commands.rs` (`--calibrate-cache`). `run()` allocates its own buffer (TODO 22
+makes it a run's first step, on the run's own memory).
 
 ---
 

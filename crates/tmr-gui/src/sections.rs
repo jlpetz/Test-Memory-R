@@ -50,10 +50,7 @@ impl Sections {
                 self.system.push(Block::Table(modules_table(memory_modules)));
             }
             Setup::CacheCalibration(state) => self.system.push(text(match state {
-                CacheCalibrationState::Loaded { extended, at } => {
-                    let kind = if *extended { "extended" } else { "standard" };
-                    format!("Cache calibration: loaded ({kind}, {})", at.format("%Y-%m-%d %H:%M"))
-                }
+                CacheCalibrationState::Loaded { at } => format!("Cache calibration: loaded ({})", at.format("%Y-%m-%d %H:%M")),
                 CacheCalibrationState::None => "Cache calibration: none (tmr.exe --calibrate-cache measures it)".to_string(),
                 CacheCalibrationState::Stale => "Cache calibration: stale, the hardware changed (tmr.exe --calibrate-cache)".to_string(),
                 CacheCalibrationState::Disabled => "Cache calibration: off (--no-calibration)".to_string(),

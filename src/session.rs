@@ -140,10 +140,10 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     // Validate that all -- flags are recognized before processing
     // This catches typos and deprecated flags early with helpful error messages
     let known_flags = [
-        "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-cache-ext", "--calibrate-seal",
-        "--calibrate-all", "--calibration-file", "--output", "--no-calibration", "--yes", "--no-save", "--create-demo-configs",
-        "--compare-results", "--show-results", "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages",
-        "--startup-debug", "--disable-pinning", "--no-serials", "--help", "-h", "-?", "--version", "-v",
+        "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-seal", "--calibrate-all",
+        "--calibration-file", "--output", "--no-calibration", "--yes", "--no-save", "--create-demo-configs", "--compare-results",
+        "--show-results", "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages", "--startup-debug",
+        "--disable-pinning", "--no-serials", "--help", "-h", "-?", "--version", "-v",
     ];
 
     let unknown_flags: Vec<String> = args
@@ -554,9 +554,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         let cfg_path = crate::app_config::AppConfig::default_path();
         let app_config = crate::app_config::AppConfig::load(&cfg_path);
         if app_config.is_calibration_valid(system_info, smbios) {
-            if let Some(cal) = app_config.get_best_calibration() {
-                let extended = app_config.calibration_extended.is_some();
-                fe.event(Setup::CacheCalibration(CacheCalibrationState::Loaded { extended, at: cal.timestamp }).into());
+            if let Some(cal) = app_config.calibration.as_ref() {
+                fe.event(Setup::CacheCalibration(CacheCalibrationState::Loaded { at: cal.timestamp }).into());
                 crate::set_calibration_data(Some(cal.clone()));
             } else {
                 fe.event(Setup::CacheCalibration(CacheCalibrationState::None).into());
@@ -719,7 +718,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
 fn calibration_flag_without_calibration(args: &[String]) -> Option<String> {
     args.iter().find(|a| *a == "--yes" || *a == "--no-save").map(|flag| {
         format!(
-            "{flag} answers a calibration's save question: give it with --calibrate-cache, --calibrate-cache-ext, \
+            "{flag} answers a calibration's save question: give it with --calibrate-cache, \
          --calibrate-seal or --calibrate-all"
         )
     })

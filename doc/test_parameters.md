@@ -374,8 +374,7 @@ cache calibration's save leaves the seal's alone: a CPU swap followed by only `-
 keeps the old cache calibration stale, and one followed by only `--calibrate-cache` keeps the old
 seal width stale. `--no-calibration` skips it.
 
-Every calibration (`--calibrate-cache`, `--calibrate-cache-ext`, `--calibrate-seal`,
-`--calibrate-all`) asks before saving over a stored one, `[Y/n]`; with none stored it saves. `--yes`
+Every calibration (`--calibrate-cache`, `--calibrate-seal`, `--calibrate-all`) asks before saving over a stored one, `[Y/n]`; with none stored it saves. `--yes`
 saves without asking, `--no-save` shows the results and keeps what is stored (with none stored,
 it saves nothing), and the answer is shown after the question. With neither, a run that can't be
 answered (no console, as over WinRM; the input ended) takes the default, yes. The two go only with a

@@ -114,10 +114,8 @@ TMR will exit now.
    memory traffic is less stress, so marginal errors that only appear at
    full bandwidth may go undetected
 
-## the extended cache calibration
-  Calibration: Loaded (extended, 2026-10-20 09:05)
-## the standard cache calibration
-  Calibration: Loaded (standard, 2026-10-02 09:05)
+## the cache calibration
+  Calibration: Loaded (2026-10-20 09:05)
 ## no cache calibration
   Calibration: None (run --calibrate-cache to calibrate)
 ## another machine's cache calibration

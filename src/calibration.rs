@@ -508,6 +508,7 @@ impl ProbeEngine {
     /// Initialize from an existing MemoryBuffer (no allocation).
     /// Used when calibrating with test plan memory — same page types, no extra alloc/dealloc. The buffer must outlive the ProbeEngine and
     /// must not be concurrently modified.
+    #[expect(dead_code, reason = "TODO 22: the calibration on a run's own memory, which comes next")]
     pub fn initialize_from_buffer(&mut self, buffer: &mut MemoryBuffer) -> Result<(), String> {
         if self.initialized {
             return Ok(());
@@ -740,28 +741,21 @@ impl CalibrationTest {
         }
     }
 
-    /// Run the calibration test using a sweep-based approach (allocates its own memory)
+    /// The calibration, on one thread (TODO 22: the standard and the extended merged, 2026-11-04): a sweep from a quarter of L1 to four
+    /// times L3, then a finer one around each tier's edge. On the dev box the extended one's L3 agreed with itself within 10% over three
+    /// runs (64-71 MB), the standard one's varied by a third (34-45 MB), for 10-30 s more. Allocates its own memory.
     pub fn run(&self) -> Result<CalibrationResults, String> {
         let max_working_set = self.get_tier_size(CacheTier::FullDram);
         let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
         probe_engine.initialize_with_page_size(max_working_set, &self.config.page_size)?;
-        self.run_sweep_calibration(&mut probe_engine)
+        self.run_calibration(&mut probe_engine)
     }
 
-    /// Run calibration using an existing memory buffer (no separate allocation).
-    /// Used when calibrating with test plan memory — same page types, no extra alloc/dealloc.
-    #[expect(dead_code, reason = "CLAUDE.md Open Design Question 1: kept as the path for calibrating on the test plan's own memory")]
-    pub fn run_with_buffer(&self, buffer: &mut MemoryBuffer) -> Result<CalibrationResults, String> {
-        let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
-        probe_engine.initialize_from_buffer(buffer)?;
-        self.run_sweep_calibration(&mut probe_engine)
-    }
-
-    /// Core sweep calibration logic (shared by run() and run_with_buffer())
-    fn run_sweep_calibration(&self, probe_engine: &mut ProbeEngine) -> Result<CalibrationResults, String> {
+    /// The calibration's sweeps on `probe_engine`'s memory, and the size each tier takes from them
+    fn run_calibration(&self, probe_engine: &mut ProbeEngine) -> Result<CalibrationResults, String> {
         let start_time = Instant::now();
 
-        log::info!(target: SHOWN_TARGET, "Starting adaptive cache calibration (sweep mode)...");
+        log::info!(target: SHOWN_TARGET, "Starting cache calibration: a sweep, then a finer one around each edge");
         log::info!(target: SHOWN_TARGET,
             "  L1D: {} KB, L2: {} KB, L3: {} MB",
             self.cache_info.per_core_l1d / 1024,
@@ -773,52 +767,8 @@ impl CalibrationTest {
         let l2_size = self.cache_info.per_core_l2;
         let l3_size = self.cache_info.l3_cache;
 
-        let sweep_results = self.run_sweep(probe_engine, l1_size, l2_size, l3_size);
-        let mut results = self.analyze_sweep(&sweep_results, l1_size, l2_size, l3_size);
-
-        // The page size the buffer got, where the engine allocated it, else the one asked for
-        results.page_size = probe_engine.page_obtained().map_or_else(|| self.config.page_size.clone(), |p| page_size_str(p).to_string());
-        results.total_time_ms = start_time.elapsed().as_millis() as u64;
-
-        log::info!(target: SHOWN_TARGET, "Calibration complete in {}ms", results.total_time_ms);
-
-        Ok(results)
-    }
-
-    /// Run extended calibration (allocates its own memory)
-    pub fn run_extended(&self) -> Result<CalibrationResults, String> {
-        let max_working_set = self.get_tier_size(CacheTier::FullDram);
-        let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
-        probe_engine.initialize_with_page_size(max_working_set, &self.config.page_size)?;
-        self.run_extended_calibration(&mut probe_engine)
-    }
-
-    /// Run extended calibration using an existing memory buffer
-    #[expect(dead_code, reason = "CLAUDE.md Open Design Question 1: kept as the path for calibrating on the test plan's own memory")]
-    pub fn run_extended_with_buffer(&self, buffer: &mut MemoryBuffer) -> Result<CalibrationResults, String> {
-        let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
-        probe_engine.initialize_from_buffer(buffer)?;
-        self.run_extended_calibration(&mut probe_engine)
-    }
-
-    /// Core extended calibration logic (shared by run_extended() and run_extended_with_buffer())
-    fn run_extended_calibration(&self, probe_engine: &mut ProbeEngine) -> Result<CalibrationResults, String> {
-        let start_time = Instant::now();
-
-        log::info!(target: SHOWN_TARGET, "Starting extended cache calibration (phase 1 + phase 2)...");
-        log::info!(target: SHOWN_TARGET,
-            "  L1D: {} KB, L2: {} KB, L3: {} MB",
-            self.cache_info.per_core_l1d / 1024,
-            self.cache_info.per_core_l2 / 1024,
-            self.cache_info.l3_cache / (1024 * 1024)
-        );
-
-        let l1_size = self.cache_info.per_core_l1d;
-        let l2_size = self.cache_info.per_core_l2;
-        let l3_size = self.cache_info.l3_cache;
-
-        // Phase 1: Coarse sweep (same as --calibrate-cache)
-        log::info!(target: SHOWN_TARGET, "═══ Phase 1: Coarse sweep ═══");
+        // The sweep
+        log::info!(target: SHOWN_TARGET, "═══ The sweep ═══");
         let sweep_results = self.run_sweep(probe_engine, l1_size, l2_size, l3_size);
         let tipping_points = self.find_tipping_points(&sweep_results);
 
@@ -837,9 +787,9 @@ impl CalibrationTest {
         let tp_l2_l3 = tp_sizes.get(1).copied().unwrap_or(l2_size);
         let tp_l3_dram = tp_sizes.get(2).copied().unwrap_or(l3_size);
 
-        // Phase 2: Fine-grain sweep around each tipping point
+        // A finer sweep around each tipping point
         // Cap sweep ranges to CPU cache sizes — workload must fit in the tier
-        log::info!(target: SHOWN_TARGET, "═══ Phase 2: Fine-grain verification ═══");
+        log::info!(target: SHOWN_TARGET, "═══ Finer, around each edge ═══");
 
         let repeats = 3u32;
         let fine_step = 1.05; // 5% steps
@@ -855,7 +805,7 @@ impl CalibrationTest {
         let fine_l2 = self.run_fine_sweep(probe_engine, l2_cap / 2, l2_cap, fine_step, repeats, "L2→L3");
         let fine_l3 = self.run_fine_sweep(probe_engine, l3_cap / 2, l3_cap, fine_step, repeats, "L3→DRAM");
 
-        // Build results using phase 2 data
+        // The tiers from the finer sweeps
         let cpu_signature = CpuSignature::from_cache_info(&self.cache_info);
         let mut results = CalibrationResults::new(cpu_signature);
 
@@ -882,7 +832,7 @@ impl CalibrationTest {
                 fallback_used: false,
             });
         } else if let Some(probe) = self.find_largest_stable_in_range(&sweep_results, 0, l1_cap, 1.5, 2.0) {
-            log::warn!("L1: Phase 2 failed, using phase 1 fallback: {} @ {:.1}ns", format_size(probe.size), probe.median_ns);
+            log::warn!("L1: no steady size in the finer sweep, the sweep's: {} @ {:.1}ns", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::L1,
                 optimal_size: probe.size,
@@ -915,7 +865,7 @@ impl CalibrationTest {
                 fallback_used: false,
             });
         } else if let Some(probe) = self.find_largest_stable_in_range(&sweep_results, tp_l1_l2, l2_cap, 1.5, 2.0) {
-            log::warn!("L2: Phase 2 failed, using phase 1 fallback: {} @ {:.1}ns", format_size(probe.size), probe.median_ns);
+            log::warn!("L2: no steady size in the finer sweep, the sweep's: {} @ {:.1}ns", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::L2,
                 optimal_size: probe.size,
@@ -948,7 +898,7 @@ impl CalibrationTest {
                 fallback_used: false,
             });
         } else if let Some(probe) = self.find_largest_stable_in_range(&sweep_results, tp_l2_l3, l3_cap, 2.0, 5.0) {
-            log::warn!("L3: Phase 2 failed, using phase 1 fallback: {} @ {:.1}ns", format_size(probe.size), probe.median_ns);
+            log::warn!("L3: no steady size in the finer sweep, the sweep's: {} @ {:.1}ns", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::L3,
                 optimal_size: probe.size,
@@ -960,14 +910,14 @@ impl CalibrationTest {
             });
         }
 
-        // DRAM + FullDRAM: Use phase 1 data (fine-grain not needed for DRAM)
+        // DRAM + FullDRAM: from the sweep (no finer one needed for DRAM)
         // DRAM: Moderate size — 2x tipping point cap to differentiate from FullDRAM
         let total_cache = l3_size + l2_size + l1_size;
         let dram_min = tp_l3_dram.max(total_cache);
         let dram_max = tp_l3_dram * 2;
         let dram_max = dram_max.max(dram_min + 1);
         if let Some(probe) = self.find_largest_stable_in_range(&sweep_results, dram_min, dram_max, 2.0, 8.0) {
-            log::info!(target: SHOWN_TARGET, "DRAM: {} @ {:.1}ns (from phase 1)", format_size(probe.size), probe.median_ns);
+            log::info!(target: SHOWN_TARGET, "DRAM: {} @ {:.1}ns (from the sweep)", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::Dram,
                 optimal_size: probe.size,
@@ -978,7 +928,7 @@ impl CalibrationTest {
                 fallback_used: false,
             });
         } else if let Some(probe) = self.find_largest_stable_in_range(&sweep_results, dram_min, usize::MAX, 2.0, 8.0) {
-            log::info!(target: SHOWN_TARGET, "DRAM: {} @ {:.1}ns (from phase 1, extended range)", format_size(probe.size), probe.median_ns);
+            log::info!(target: SHOWN_TARGET, "DRAM: {} @ {:.1}ns (from the sweep, past its range)", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::Dram,
                 optimal_size: probe.size,
@@ -991,7 +941,7 @@ impl CalibrationTest {
         }
         // FullDRAM: Largest available (maximum memory pressure / TLB stress)
         if let Some(probe) = self.find_largest_stable(&sweep_results, l3_size * 2) {
-            log::info!(target: SHOWN_TARGET, "FullDRAM: {} @ {:.1}ns (from phase 1)", format_size(probe.size), probe.median_ns);
+            log::info!(target: SHOWN_TARGET, "FullDRAM: {} @ {:.1}ns (from the sweep)", format_size(probe.size), probe.median_ns);
             results.add_tier_result(TierCalibrationResult {
                 tier: CacheTier::FullDram,
                 optimal_size: probe.size,
@@ -1006,7 +956,7 @@ impl CalibrationTest {
         // The page size the buffer got, where the engine allocated it, else the one asked for
         results.page_size = probe_engine.page_obtained().map_or_else(|| self.config.page_size.clone(), |p| page_size_str(p).to_string());
         results.total_time_ms = start_time.elapsed().as_millis() as u64;
-        log::info!(target: SHOWN_TARGET, "Extended calibration complete in {}ms", results.total_time_ms);
+        log::info!(target: SHOWN_TARGET, "Calibration complete in {}ms", results.total_time_ms);
         Ok(results)
     }
 
@@ -1203,198 +1153,6 @@ impl CalibrationTest {
         }
 
         log::info!(target: SHOWN_TARGET, "Sweep complete: {} probes collected", results.len());
-        results
-    }
-
-    /// Analyze sweep results to find optimal sizes for each tier
-    /// Selection criteria: within tier bounds (CPUID), most stable measurements
-    fn analyze_sweep(&self, sweep: &[SweepProbe], l1_size: usize, l2_size: usize, l3_size: usize) -> CalibrationResults {
-        let cpu_signature = CpuSignature::from_cache_info(&self.cache_info);
-        let mut results = CalibrationResults::new(cpu_signature);
-
-        if sweep.is_empty() {
-            log::error!("No sweep data to analyze!");
-            return results;
-        }
-
-        log::info!(target: SHOWN_TARGET, "Analyzing sweep data for tier boundaries...");
-
-        // Find tipping points by looking for latency jumps
-        let tipping_points = self.find_tipping_points(sweep);
-
-        for (size, lat_before, lat_after) in &tipping_points {
-            log::info!(target: SHOWN_TARGET,
-                "  Tipping point at {}: {:.1}ns → {:.1}ns ({:.1}x jump)",
-                format_size(*size),
-                lat_before,
-                lat_after,
-                lat_after / lat_before
-            );
-        }
-
-        // Selection strategy: Use tipping points to define tier boundaries, then find the LARGEST STABLE probe within each tier.
-        // This maximizes working set utilization while avoiding spill to next tier.
-
-        // Extract tipping point sizes (sorted by size)
-        let tp_sizes: Vec<usize> = tipping_points.iter().map(|(s, _, _)| *s).collect();
-
-        // Assign tipping points to tier transitions
-        // TP[0] = L1→L2, TP[1] = L2→L3, TP[2] = L3→DRAM
-        let tp_l1_l2 = tp_sizes.first().copied().unwrap_or(l1_size);
-        let tp_l2_l3 = tp_sizes.get(1).copied().unwrap_or(l2_size);
-        let tp_l3_dram = tp_sizes.get(2).copied().unwrap_or(l3_size);
-
-        log::info!(target: SHOWN_TARGET, "Tier boundaries: L1<{}, L2<{}, L3<{}", format_size(tp_l1_l2), format_size(tp_l2_l3), format_size(tp_l3_dram));
-
-        // Stability thresholds for "stable enough"
-        let stable_spread = 1.5;
-        let stable_winsd = 2.0;
-
-        // L1: Largest stable probe below TP1
-        if let Some(probe) = self.find_largest_stable_in_range(sweep, 0, tp_l1_l2, stable_spread, stable_winsd) {
-            log::info!(target: SHOWN_TARGET,
-                "L1: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
-                format_size(probe.size),
-                probe.median_ns,
-                probe.spread,
-                probe.window_stddev
-            );
-            results.add_tier_result(TierCalibrationResult {
-                tier: CacheTier::L1,
-                optimal_size: probe.size,
-                median_latency_ns: probe.median_ns,
-                spread_ratio: probe.spread,
-                probes_attempted: sweep.len() as u32,
-                converged: true,
-                fallback_used: false,
-            });
-        }
-
-        // L2: Largest stable probe between TP1 and TP2
-        if let Some(probe) = self.find_largest_stable_in_range(sweep, tp_l1_l2, tp_l2_l3, stable_spread, stable_winsd) {
-            log::info!(target: SHOWN_TARGET,
-                "L2: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
-                format_size(probe.size),
-                probe.median_ns,
-                probe.spread,
-                probe.window_stddev
-            );
-            results.add_tier_result(TierCalibrationResult {
-                tier: CacheTier::L2,
-                optimal_size: probe.size,
-                median_latency_ns: probe.median_ns,
-                spread_ratio: probe.spread,
-                probes_attempted: sweep.len() as u32,
-                converged: true,
-                fallback_used: false,
-            });
-        }
-
-        // L3: Largest stable probe between TP2 and TP3
-        if let Some(probe) = self.find_largest_stable_in_range(sweep, tp_l2_l3, tp_l3_dram, stable_spread, stable_winsd) {
-            log::info!(target: SHOWN_TARGET,
-                "L3: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
-                format_size(probe.size),
-                probe.median_ns,
-                probe.spread,
-                probe.window_stddev
-            );
-            results.add_tier_result(TierCalibrationResult {
-                tier: CacheTier::L3,
-                optimal_size: probe.size,
-                median_latency_ns: probe.median_ns,
-                spread_ratio: probe.spread,
-                probes_attempted: sweep.len() as u32,
-                converged: true,
-                fallback_used: false,
-            });
-        } else {
-            // Fallback: relax thresholds for shared VM/cache
-            log::warn!("L3: No stable probes found, relaxing thresholds");
-            if let Some(probe) = self.find_largest_stable_in_range(sweep, tp_l2_l3, tp_l3_dram, 2.0, 5.0) {
-                results.add_tier_result(TierCalibrationResult {
-                    tier: CacheTier::L3,
-                    optimal_size: probe.size,
-                    median_latency_ns: probe.median_ns,
-                    spread_ratio: probe.spread,
-                    probes_attempted: sweep.len() as u32,
-                    converged: false,
-                    fallback_used: true,
-                });
-            }
-        }
-
-        // DRAM: Moderate size above the L3→DRAM tipping point.
-        // Use 2x the tipping point as cap — large enough to be firmly in DRAM, but not so large it overlaps with FullDRAM (which uses the
-        // largest available).
-        let total_cache = l3_size + l2_size + l1_size;
-        let dram_min = tp_l3_dram.max(total_cache);
-        let dram_max = tp_l3_dram * 2; // 2x tipping point — moderate DRAM working set
-        let dram_max = dram_max.max(dram_min + 1); // Ensure max > min
-        log::info!(target: SHOWN_TARGET,
-            "DRAM range: {} to {} (total cache={}, TP3={})",
-            format_size(dram_min),
-            format_size(dram_max),
-            format_size(total_cache),
-            format_size(tp_l3_dram)
-        );
-        if let Some(probe) = self.find_largest_stable_in_range(sweep, dram_min, dram_max, 2.0, 8.0) {
-            log::info!(target: SHOWN_TARGET,
-                "DRAM: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
-                format_size(probe.size),
-                probe.median_ns,
-                probe.spread,
-                probe.window_stddev
-            );
-            results.add_tier_result(TierCalibrationResult {
-                tier: CacheTier::Dram,
-                optimal_size: probe.size,
-                median_latency_ns: probe.median_ns,
-                spread_ratio: probe.spread,
-                probes_attempted: sweep.len() as u32,
-                converged: true,
-                fallback_used: false,
-            });
-        } else if let Some(probe) = self.find_largest_stable_in_range(sweep, dram_min, usize::MAX, 2.0, 8.0) {
-            // Fallback: no probes in capped range, use any stable DRAM probe
-            log::info!(target: SHOWN_TARGET,
-                "DRAM: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2}) [extended range]",
-                format_size(probe.size),
-                probe.median_ns,
-                probe.spread,
-                probe.window_stddev
-            );
-            results.add_tier_result(TierCalibrationResult {
-                tier: CacheTier::Dram,
-                optimal_size: probe.size,
-                median_latency_ns: probe.median_ns,
-                spread_ratio: probe.spread,
-                probes_attempted: sweep.len() as u32,
-                converged: true,
-                fallback_used: false,
-            });
-        }
-
-        // FullDRAM: Largest stable size above 2x L3
-        if let Some(probe) = self.find_largest_stable(sweep, l3_size * 2) {
-            log::info!(target: SHOWN_TARGET,
-                "FullDRAM: {} @ {:.1}ns (spread={:.2}x, WinSD={:.2})",
-                format_size(probe.size),
-                probe.median_ns,
-                probe.spread,
-                probe.window_stddev
-            );
-            results.add_tier_result(TierCalibrationResult {
-                tier: CacheTier::FullDram,
-                optimal_size: probe.size,
-                median_latency_ns: probe.median_ns,
-                spread_ratio: probe.spread,
-                probes_attempted: sweep.len() as u32,
-                converged: true,
-                fallback_used: false,
-            });
-        }
-
         results
     }
 

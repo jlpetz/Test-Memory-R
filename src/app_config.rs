@@ -181,13 +181,9 @@ pub struct AppConfig {
     #[serde(default)]
     pub tsc_frequency_ghz: Option<f64>,
 
-    /// Standard calibration results (from --calibrate-cache)
+    /// The cache calibration (from --calibrate-cache)
     #[serde(default)]
     pub calibration: Option<CalibrationResults>,
-
-    /// Extended calibration results (from --calibrate-cache-ext) — preferred over standard
-    #[serde(default)]
-    pub calibration_extended: Option<CalibrationResults>,
 
     /// The seal's width, measured (from --calibrate-seal or --calibrate-all, TODO 99): what
     /// `seal-width=auto` runs on the machine it was measured on, which it keeps its own fingerprint
@@ -291,12 +287,6 @@ impl AppConfig {
         smbios.memory_fingerprint()
     }
 
-    /// Get the best available calibration data.
-    /// Prefers extended over standard (extended has finer-grain verification).
-    pub fn get_best_calibration(&self) -> Option<&CalibrationResults> {
-        self.calibration_extended.as_ref().or(self.calibration.as_ref())
-    }
-
     /// The machine the config's identity names, which the cache calibrations were measured on.
     pub fn fingerprint(&self) -> MachineFingerprint {
         MachineFingerprint {
@@ -354,8 +344,6 @@ mod tests {
         let config = AppConfig::default();
         assert!(config.machine_id.is_none());
         assert!(config.calibration.is_none());
-        assert!(config.calibration_extended.is_none());
-        assert!(config.get_best_calibration().is_none());
     }
 
     #[test]
@@ -383,37 +371,6 @@ mod tests {
         // Should parse without error (serde default behavior with #[serde(default)])
         let config: AppConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.machine_id.as_deref(), Some("test"));
-    }
-
-    #[test]
-    fn test_get_best_calibration_prefers_extended() {
-        use crate::calibration::{CalibrationResults, CpuSignature};
-
-        let sig = CpuSignature {
-            vendor: "Test".to_string(),
-            brand: "Test".to_string(),
-            l1d_size: 32 * 1024,
-            l2_size: 512 * 1024,
-            l3_size: 32 * 1024 * 1024,
-            ..Default::default()
-        };
-
-        let mut config = AppConfig::default();
-
-        // No calibration
-        assert!(config.get_best_calibration().is_none());
-
-        // Only standard
-        let mut standard = CalibrationResults::new(sig.clone());
-        standard.total_time_ms = 1000;
-        config.calibration = Some(standard);
-        assert_eq!(config.get_best_calibration().unwrap().total_time_ms, 1000);
-
-        // Extended available — should be preferred
-        let mut extended = CalibrationResults::new(sig);
-        extended.total_time_ms = 5000;
-        config.calibration_extended = Some(extended);
-        assert_eq!(config.get_best_calibration().unwrap().total_time_ms, 5000);
     }
 
     #[test]

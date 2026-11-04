@@ -217,8 +217,8 @@ pub struct Selection {
 
 /// The cache calibration at startup (`Setup::CacheCalibration`).
 pub enum CacheCalibrationState {
-    /// This machine's, measured `at`: the extended one when there is one (`--calibrate-cache-ext`)
-    Loaded { extended: bool, at: DateTime<Utc> },
+    /// This machine's, measured `at`
+    Loaded { at: DateTime<Utc> },
     /// None stored
     None,
     /// One measured on other hardware: not used

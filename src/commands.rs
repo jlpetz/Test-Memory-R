@@ -35,7 +35,7 @@ pub enum Command {
     /// `--remove-large-pages [User:<name> | Group:<name>]`: remove that right, from the account TMR runs as or the user or group named:
     /// the command line, the exe's name first
     RemoveLargePages(Vec<String>),
-    /// `--calibrate-cache`, `--calibrate-cache-ext`, `--calibrate-seal`, `--calibrate-all`: the command line, the exe's name first, then
+    /// `--calibrate-cache`, `--calibrate-seal`, `--calibrate-all`: the command line, the exe's name first, then
     /// the command
     Calibrate(Vec<String>),
     /// `--help`: the exe's name, as the usage lines give it
@@ -59,7 +59,7 @@ impl Command {
                 "--remove-large-pages" => return Some(Command::RemoveLargePages(args.to_vec())),
                 // The calibrations (TODO 99 adds the seal's width): each measures, shows what it found and saves it to tmr-cfg.json after a
                 // prompt
-                "--calibrate-cache" | "--calibrate-cache-ext" | "--calibrate-seal" | "--calibrate-all" => {
+                "--calibrate-cache" | "--calibrate-seal" | "--calibrate-all" => {
                     return Some(Command::Calibrate(args.to_vec()));
                 }
                 "--help" | "-h" | "/?" | "-?" => return Some(Command::Help(args[0].clone())),
@@ -137,12 +137,7 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     )?;
     writeln!(
         out,
-        "  {} --calibrate-cache                # Measure the cache tiers' sizes; saved to tmr-cfg.json after a prompt",
-        program_name
-    )?;
-    writeln!(
-        out,
-        "  {} --calibrate-cache-ext            #   ...finer, around each tier's edge (preferred when both are saved)",
+        "  {} --calibrate-cache                # Measure the cache tiers' sizes, finer around each edge; saved to tmr-cfg.json after a prompt",
         program_name
     )?;
     writeln!(
@@ -635,7 +630,7 @@ impl Save<'_> {
     }
 }
 
-/// The calibration commands: `--calibrate-cache` and `--calibrate-cache-ext` (the cache tiers), `--calibrate-seal` (the seal's width, TODO
+/// The calibration commands: `--calibrate-cache` (the cache tiers), `--calibrate-seal` (the seal's width, TODO
 /// 99) and `--calibrate-all` (the cache tiers as `--calibrate-cache` measures them, then the seal's width). Each part measures, shows what
 /// it found and saves it to tmr-cfg.json if `confirm` (or `--yes` / `--no-save`) says to; a failure stops it before any more runs.
 /// `maxpage=` sets the page size both ask for.
@@ -655,20 +650,15 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
         return Ok(RunStatus::NotRun);
     }
     let command = args[1].as_str();
-    let (cache, extended, seal) = match command {
-        "--calibrate-cache" => (true, false, false),
-        "--calibrate-cache-ext" => (true, true, false),
-        "--calibrate-seal" => (false, false, true),
-        _ => (true, false, true),
+    let (cache, seal) = match command {
+        "--calibrate-cache" => (true, false),
+        "--calibrate-seal" => (false, true),
+        _ => (true, true),
     };
     match command {
         "--calibrate-cache" => {
             writeln!(out, "🔬 TMR Adaptive Cache Calibration")?;
             writeln!(out, "==================================\n")?;
-        }
-        "--calibrate-cache-ext" => {
-            writeln!(out, "🔬 TMR Adaptive Cache Calibration (Extended - Phase 2)")?;
-            writeln!(out, "======================================================\n")?;
         }
         "--calibrate-seal" => {
             writeln!(out, "🔬 TMR Seal Width Calibration")?;
@@ -697,7 +687,7 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
     }
     let page_size = config.page_size.clone();
 
-    if cache && calibrate_cache(args, config, &system_info, smbios, extended, out, &mut save)? == RunStatus::NotRun {
+    if cache && calibrate_cache(args, config, &system_info, smbios, out, &mut save)? == RunStatus::NotRun {
         return Ok(RunStatus::NotRun);
     }
     if seal {
@@ -706,17 +696,17 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
     Ok(RunStatus::Passed)
 }
 
-/// `--calibrate-cache` (`extended`: `--calibrate-cache-ext`): the cache tiers, shown, saved if `save` says to and written to `--output`'s
+/// `--calibrate-cache`: the cache tiers, shown, saved if `save` says to and written to `--output`'s
 /// file when given.
 fn calibrate_cache(
     args: &[String], config: crate::calibration::CalibrationConfig, system_info: &crate::SystemInfo, smbios: &crate::smbios::SmbiosData,
-    extended: bool, out: &mut dyn Write, save: &mut Save,
+    out: &mut dyn Write, save: &mut Save,
 ) -> io::Result<RunStatus> {
     let cache_info = system_info.get_cache_info();
-    // Run calibration (extended: phase 1 sweep + phase 2 fine-grain)
+    // The sweep, then a finer one around each edge
     let calibration_test = crate::calibration::CalibrationTest::with_config(cache_info.clone(), config);
-    let measured = if extended { calibration_test.run_extended() } else { calibration_test.run() };
-    let what = if extended { "Extended calibration" } else { "Calibration" };
+    let measured = calibration_test.run();
+    let what = "Calibration";
     match measured {
         Ok(results) => {
             crate::calibration::CalibrationTest::display_results(&results, cache_info, out)?;
@@ -724,17 +714,11 @@ fn calibrate_cache(
             // Save to tmr-cfg.json — compare with existing if present
             let cfg_path = crate::app_config::AppConfig::default_path();
             let mut app_config = crate::app_config::AppConfig::load(&cfg_path);
-            let (existing, cal_type) =
-                if extended { (&app_config.calibration_extended, "extended") } else { (&app_config.calibration, "standard") };
-            let stored = existing.is_some();
-            let should_save = prompt_calibration_save(existing, &results, cal_type, out, save)?;
+            let stored = app_config.calibration.is_some();
+            let should_save = prompt_calibration_save(&app_config.calibration, &results, "cache", out, save)?;
             if should_save {
                 app_config.update_machine_id(system_info, smbios);
-                if extended {
-                    app_config.calibration_extended = Some(results.clone());
-                } else {
-                    app_config.calibration = Some(results.clone());
-                }
+                app_config.calibration = Some(results.clone());
                 // A save that was asked for and failed is the command's failure (exit 2), as a script would want to know
                 if let Err(e) = app_config.save(&cfg_path) {
                     writeln!(out, "❌ Failed to save calibration: {}", e)?;

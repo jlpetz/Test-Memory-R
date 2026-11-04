@@ -153,11 +153,7 @@ pub(super) fn text(setup: &Setup) -> String {
         }
         Setup::CacheCalibration(state) => {
             let _ = match state {
-                CacheCalibrationState::Loaded { extended, at } => {
-                    let cal_type = if *extended { "extended" } else { "standard" };
-                    let timestamp = at.format("%Y-%m-%d %H:%M");
-                    writeln!(text, "  Calibration: Loaded ({}, {})", cal_type, timestamp)
-                }
+                CacheCalibrationState::Loaded { at } => writeln!(text, "  Calibration: Loaded ({})", at.format("%Y-%m-%d %H:%M")),
                 CacheCalibrationState::None => writeln!(text, "  Calibration: None (run --calibrate-cache to calibrate)"),
                 CacheCalibrationState::Stale => writeln!(text, "  Calibration: Stale (hardware changed, re-run --calibrate-cache)"),
                 CacheCalibrationState::Disabled => writeln!(text, "  Calibration: Disabled (--no-calibration)"),
