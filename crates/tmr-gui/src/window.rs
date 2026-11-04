@@ -190,12 +190,14 @@ pub(crate) const START: &str = "--start";
 
 /// Waits on a thread-pool thread for the feed, up to `TICK`, then returns everything queued as one message, with where the suite stands
 /// then and the lines logged. A wait that brought nothing returns as well: that is the window's clock, as Reactor 0.100.0 has no timer.
-/// Re-armed from `update` after each delivery, so there is one waiter at a time, and the feeds travel with it. The waiter runs at the
-/// window's `priority`, Normal again before it returns the pool's thread (TODO 7: with a worker on every logical CPU, at Normal it waited
-/// for Windows' starvation boost, and the window's figures froze for 6-10 s at a time while its own thread answered in milliseconds).
+/// Re-armed from `update` after each delivery, so there is one waiter at a time, and the feeds travel with it. Each wait sets its pool
+/// thread to the window's `priority`, and leaves it there (TODO 7): with a worker on every logical CPU, a pool thread at Normal waits for
+/// Windows' starvation boost before it even starts the task, and the window's figures froze for 6-10 s at a time while its own thread
+/// answered in milliseconds. Raised inside the task and put back after, the next task started low again. The pool reuses the thread
+/// for the next wait, so it stays ready; once the window is at Normal again, so is the waiter's next thread.
 fn listen(feeds: Feeds, progress: Option<Arc<ProgressTracker>>, priority: ThreadPriority, context: &ComponentContext<Window>) {
     context.spawn_background(move |_| {
-        let raised = priority != ThreadPriority::Normal && priority.apply().is_ok();
+        let _ = priority.apply();
         let mut feed = Vec::new();
         let closed = match feeds.events.recv_timeout(TICK) {
             Ok(first) => {
@@ -211,9 +213,6 @@ fn listen(feeds: Feeds, progress: Option<Arc<ProgressTracker>>, priority: Thread
         let progress = progress.or_else(|| feed.iter().find_map(Feed::progress));
         let (snapshot, whea) = progress.map_or((None, Vec::new()), |p| (p.snapshot(), p.take_whea_descriptions()));
         let (log, dropped) = feeds.log.take();
-        if raised {
-            let _ = ThreadPriority::Normal.apply();
-        }
         Message::Feed(Box::new(Batch { feed, snapshot, whea, log, dropped, feeds, closed }))
     });
 }
