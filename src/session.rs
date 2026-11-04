@@ -71,6 +71,23 @@ pub fn reset_run() {
     crate::runner::clear_stop();
 }
 
+/// The cache calibration tmr-cfg.json holds, as the window shows it before a run (TODO 110): when it was measured, the CPU it was
+/// measured on, and whether with the shared anchors (TODO 22). From the file alone: a run checks it against this machine at its setup,
+/// and under `calibrate=auto` measures one first when it isn't this machine's or lacks the anchors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredCalibration {
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub cpu: String,
+    pub shared: bool,
+}
+
+/// The cache calibration stored in TMR's home, if any (`StoredCalibration`)
+pub fn stored_calibration() -> Option<StoredCalibration> {
+    let config = crate::app_config::AppConfig::load(&crate::app_config::AppConfig::default_path());
+    let cpu = config.machine_identity.as_ref().map_or_else(String::new, |identity| identity.cpu_brand.trim().to_string());
+    config.calibration.map(|cal| StoredCalibration { at: cal.timestamp, cpu, shared: cal.shared.is_some() })
+}
+
 /// A session: `command_line` (the exe's name first) set up, then run, its events to `fe`. Returns how it ended.
 pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<SessionEnd> {
     // A frontend checks first (tmr.exe does), and this is for one that didn't: the kernels would fault on a CPU without them

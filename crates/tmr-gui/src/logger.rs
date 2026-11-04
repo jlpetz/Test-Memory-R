@@ -72,6 +72,49 @@ impl Transcript {
     }
 }
 
+/// What a one-shot command writes, into the Log tab a line at a time (TODO 110: the window's calibration), as the console shows it;
+/// its records, the sweeps among them, go to the log file and the Log tab as a run's do
+pub(crate) struct TranscriptWriter {
+    transcript: Transcript,
+    pending: Vec<u8>,
+}
+
+impl TranscriptWriter {
+    pub(crate) fn new(transcript: Transcript) -> Self {
+        Self { transcript, pending: Vec::new() }
+    }
+
+    /// The last line, which has no newline
+    pub(crate) fn finish(&mut self) {
+        if !self.pending.is_empty() {
+            self.line();
+        }
+    }
+
+    fn line(&mut self) {
+        let text = String::from_utf8_lossy(&self.pending).trim_end().to_string();
+        self.pending.clear();
+        self.transcript.send(&text);
+    }
+}
+
+impl std::io::Write for TranscriptWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        for &byte in bytes {
+            if byte == b'\n' {
+                self.line();
+            } else {
+                self.pending.push(byte);
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// A logger taking what `levels` says, and its window's side, with room for `queued` lines
 fn logger(levels: tmr::logfile::Levels, queued: usize) -> (GuiLogger, LogLines) {
     let (tx, rx) = mpsc::sync_channel(queued);

@@ -48,6 +48,8 @@ enum Feed {
     Ask { question: LargePageQuestion, reply: SyncSender<LargePageAnswer> },
     /// The session ended: how, or the error that stopped it
     Ended(Result<SessionEnd, String>),
+    /// The window's own calibration ended (the ••• menu's, TODO 110): how it did, or the error that stopped it
+    Calibrated(Result<RunStatus, String>),
 }
 
 /// The window's frontend: each event onto the window's feed, as it comes, and its console text into the log (`transcript`). No ticks:

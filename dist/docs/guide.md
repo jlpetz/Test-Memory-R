@@ -91,7 +91,9 @@ takes the privilege away again (from you, or from the `Group:` or `User:` named)
   `window.json` beside tmr.exe: the chart shown or hidden, the theme, whether a run starts as it
   opens (`tmr --gui --start` does that once), whether serial numbers are kept, the last run's
   parameters, its size and colours. Settings, in its `•••` menu, sets the theme, starting on open
-  and the serial numbers.
+  and the serial numbers. The line under the box says what cache calibration a run finds; the
+  first run on a machine measures one before its tests (about 2 minutes), or Calibrate the
+  caches, in the same menu, measures one now.
 - **From a console**, type `tmr`. On its own it runs the stability plan, 3 cycles of it; press
   Ctrl+C to stop it sooner, and it stops at its next checkpoint and writes its report. Some
   settings:
@@ -105,6 +107,7 @@ takes the privilege away again (from you, or from the `Group:` or `User:` named)
   | `skip-cores=1` | leave the core Windows ranks lowest free, for Windows (the default; `skip-cores=0` uses every core) |
   | `config=my_tm5.cfg` | run a TM5 config, or a TMR `.json` one |
   | `errors=halt` | stop at the first error |
+  | `calibrate=always` | measure the cache calibration before the tests every run (`calibrate=off` takes none; by default the first run on a machine measures one) |
   | `--no-serials` | leave the memory modules' serial numbers and the system's UUID out of the output, the log and the results file |
 
   `tmr --help` explains every setting.

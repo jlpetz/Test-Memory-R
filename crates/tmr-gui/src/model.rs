@@ -557,8 +557,11 @@ pub struct Model {
     /// The priority the window's thread takes (`window-priority=`): the selection's from setup's selection until the session ends,
     /// normal before and after
     window_priority: ThreadPriority,
-    /// The run measures the cache calibration once it has allocated, before its tests (`calibrate=`, TODO 22)
+    /// A calibration runs: the run's, once it has allocated, before its tests (`calibrate=`, TODO 22), or the window's own (TODO 110)
     calibrating: bool,
+    /// The cache calibration tmr-cfg.json holds, as the info line says it before a run (TODO 110); the window reads it as it opens and
+    /// after its own calibration
+    pub stored_calibration: Option<String>,
 }
 
 impl Model {
@@ -604,6 +607,7 @@ impl Model {
             session_over: false,
             window_priority: ThreadPriority::Normal,
             calibrating: false,
+            stored_calibration: None,
         }
     }
 
@@ -704,12 +708,14 @@ impl Model {
         .into_iter()
         .flatten()
         .collect();
+        // Before a run, after the command: what calibration the run finds (TODO 110)
+        let stored = self.stored_calibration.as_deref().map_or(String::new(), |stored| format!(" · {stored}"));
         if !facts.is_empty() {
             facts.join(" · ")
         } else if self.args.trim().is_empty() {
-            "tmr".to_string()
+            format!("tmr{stored}")
         } else {
-            format!("tmr {}", self.args.trim())
+            format!("tmr {}{stored}", self.args.trim())
         }
     }
 
@@ -1132,6 +1138,27 @@ impl Model {
         self.window_priority
     }
 
+    /// A calibration runs, the window's or the run's: Start and the window's Calibrate wait for it (TODO 110)
+    pub fn calibrating(&self) -> bool {
+        self.calibrating
+    }
+
+    /// The window's own calibration started (the ••• menu's, TODO 110)
+    pub fn calibration_started(&mut self) {
+        self.calibrating = true;
+        self.position = "Calibrating the caches, about 2 minutes: the Log tab shows it".to_string();
+    }
+
+    /// The window's own calibration ended: how it did
+    pub fn calibration_ended(&mut self, result: Result<RunStatus, String>) {
+        self.calibrating = false;
+        self.position = match result {
+            Ok(RunStatus::Passed) => "Calibrated: the next run sizes its tests from it".to_string(),
+            Ok(_) => "The calibration failed: the Log tab says why".to_string(),
+            Err(e) => format!("The calibration failed: {e}"),
+        };
+    }
+
     /// The session's thread has ended, so another run can start: Run again's (TODO 109)
     pub fn session_over(&self) -> bool {
         self.session_over
@@ -1385,6 +1412,20 @@ fn live(s: &ProgressSnapshot) -> Option<String> {
     })
 }
 
+/// The cache calibration tmr-cfg.json holds, as the info line says it before a run (TODO 110): its date and CPU, and what the run does
+/// when it measured one thread only; with none, that the first run measures one
+pub fn stored_calibration_text(stored: Option<&tmr::session::StoredCalibration>) -> String {
+    match stored {
+        None => "no cache calibration: the first run measures one, about 2 minutes".to_string(),
+        Some(stored) => {
+            let at = stored.at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M");
+            let cpu = if stored.cpu.is_empty() { String::new() } else { format!(", {}", stored.cpu) };
+            let then = if stored.shared { "" } else { ", one thread only: the next run measures it again" };
+            format!("cache calibration {at}{cpu}{then}")
+        }
+    }
+}
+
 /// The cycle running, with how long it has run, in the ticker's words (crates/tmr-cli's `render/ticker.rs`): `Cycle 4/8 (00:12:34,
 /// 39%)`, the percentage the whole run's, where a cycle limit gives one. The ticker's first line, as `test_line` is its second's start.
 fn cycle_line(s: &ProgressSnapshot) -> String {
@@ -1610,6 +1651,28 @@ mod tests {
                 },
             }),
         }
+    }
+
+    /// TODO 110: before a run, the info line says what cache calibration the run finds; the window's own calibration says it runs, and
+    /// how it did
+    #[test]
+    fn the_info_line_says_the_stored_calibration_and_a_calibration_its_progress() {
+        let at = chrono::Utc::now();
+        let mut m = model();
+        m.stored_calibration = Some(stored_calibration_text(None));
+        assert_eq!(m.info_line(), "tmr memory=50% cycles=2 · no cache calibration: the first run measures one, about 2 minutes");
+        let stored = tmr::session::StoredCalibration { at, cpu: "Intel(R) Xeon(R) 6975P-C".to_string(), shared: false };
+        let local = at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M");
+        assert_eq!(
+            stored_calibration_text(Some(&stored)),
+            format!("cache calibration {local}, Intel(R) Xeon(R) 6975P-C, one thread only: the next run measures it again")
+        );
+        m.calibration_started();
+        assert!(m.calibrating() && m.position.starts_with("Calibrating the caches"));
+        m.calibration_ended(Ok(RunStatus::Passed));
+        assert_eq!((m.calibrating(), m.position.as_str()), (false, "Calibrated: the next run sizes its tests from it"));
+        m.calibration_ended(Ok(RunStatus::NotRun));
+        assert_eq!(m.position, "The calibration failed: the Log tab says why");
     }
 
     fn model() -> Model {

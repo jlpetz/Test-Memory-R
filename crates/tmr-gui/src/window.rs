@@ -264,6 +264,37 @@ impl Window {
         }
     }
 
+    /// The ••• menu's Calibrate the caches (TODO 110): `--calibrate-cache --yes` on a thread of its own, as the console runs it, what it
+    /// writes and logs in the Log tab and a log file of its own; it saves what it measured (the menu item was the request), and the info
+    /// line says the new one once it ends. Start waits for it.
+    fn calibrate(&mut self, context: &ComponentContext<Self>) {
+        tmr::session::reset_run();
+        let log = self.log.take().unwrap_or_else(logger::install);
+        logger::open_log_file();
+        self.model.log_path = Some(tmr::logfile::path());
+        let (tx, rx) = mpsc::channel();
+        let transcript = log.transcript();
+        let exe = self.model.command().first().cloned().unwrap_or_else(|| "tmr.exe".to_string());
+        let calibration = std::thread::Builder::new().name("tmr-calibrate".to_string()).spawn(move || {
+            let command = tmr::commands::Command::Calibrate(vec![exe, "--calibrate-cache".to_string(), "--yes".to_string()]);
+            let mut out = logger::TranscriptWriter::new(transcript);
+            let result = tmr::commands::run(&command, &mut out, &mut |_| true, &|_| String::new()).map_err(|e| e.to_string());
+            out.finish();
+            let _ = tx.send(Feed::Calibrated(result));
+        });
+        match calibration {
+            Ok(_) => {
+                self.model.calibration_started();
+                listen(Feeds { events: rx, log }, None, self.priority, context);
+            }
+            Err(e) => {
+                self.log = Some(log);
+                tmr::logfile::close();
+                self.model.calibration_ended(Err(format!("its thread didn't start: {e}")));
+            }
+        }
+    }
+
     fn take(&mut self, batch: Batch, context: &ComponentContext<Self>) {
         let Batch { feed, snapshot, whea, log, dropped, feeds, closed } = batch;
         let mut ended = false;
@@ -273,6 +304,12 @@ impl Window {
                 Feed::Ask { question, reply } => self.model.ask_large_pages(question, reply),
                 Feed::Ended(result) => {
                     self.model.ended(result);
+                    ended = true;
+                }
+                Feed::Calibrated(result) => {
+                    self.model.calibration_ended(result);
+                    self.model.stored_calibration =
+                        Some(crate::model::stored_calibration_text(tmr::session::stored_calibration().as_ref()));
                     ended = true;
                 }
             }
@@ -351,6 +388,10 @@ impl Window {
             MENU_LOGS => Some(tmr::home::logs()),
             MENU_RESULTS => self.model.results_path().map(PathBuf::from),
             MENU_RESULTS_FOLDER => Some(tmr::home::results()),
+            MENU_CALIBRATE if self.model.takes_parameters() && !self.model.calibrating() => {
+                self.calibrate(context);
+                None
+            }
             MENU_SETTINGS => {
                 self.settings_open = true;
                 None
@@ -375,6 +416,7 @@ const MENU_LOG: &str = "Open the log";
 const MENU_LOGS: &str = "Open the logs folder";
 const MENU_RESULTS: &str = "Open the results file";
 const MENU_RESULTS_FOLDER: &str = "Open the results folder";
+const MENU_CALIBRATE: &str = "Calibrate the caches";
 const MENU_SETTINGS: &str = "Settings";
 const MENU_ABOUT: &str = "About TMR";
 
@@ -401,6 +443,8 @@ impl Component for Window {
             args.extend(crate::model::args_of(parameters));
         }
         let mut model = Model::new(&args);
+        // The cache calibration a run finds, from tmr-cfg.json (TODO 110): the info line says it before Start
+        model.stored_calibration = Some(crate::model::stored_calibration_text(tmr::session::stored_calibration().as_ref()));
         // Before Start there is no log file to take them, and maybe no console
         model.errors.extend(problems.into_iter().map(|problem| format!("window.json: {problem}")));
         let (width, dark) = (settings.size.map_or(WIDTH, |(width, _)| width), settings.theme == Theme::Dark);
@@ -417,7 +461,7 @@ impl Component for Window {
         match message {
             Message::Feed(batch) => self.take(*batch, context),
             // One session a process: the engine's run settings are set once (TODO 29), so another run is another process (Run again)
-            Message::Start if self.model.status == Status::Ready => {
+            Message::Start if self.model.status == Status::Ready && !self.model.calibrating() => {
                 // The parameters the window opens with next time, when given none
                 self.settings.parameters = Some(self.model.args.clone());
                 self.save_settings();
@@ -425,7 +469,7 @@ impl Component for Window {
             }
             Message::Start => {}
             // In this window (TODO 109): a new run's model, the Compare tab's files kept, and the engine readied as a new process's
-            Message::RunAgain if self.model.session_over() => {
+            Message::RunAgain if self.model.session_over() && !self.model.calibrating() => {
                 self.model = self.model.again();
                 self.settings.parameters = Some(self.model.args.clone());
                 self.save_settings();
@@ -836,6 +880,8 @@ impl Window {
             item(self.model.results_path().is_some(), 3, MENU_RESULTS),
             MenuItem::item(4usize, MENU_RESULTS_FOLDER),
             MenuItem::separator(5usize),
+            // A calibration of its own, before a run or after one, never during (TODO 110): they'd measure each other
+            item(self.model.takes_parameters() && !self.model.calibrating(), 8, MENU_CALIBRATE),
             MenuItem::item(6usize, MENU_SETTINGS),
             MenuItem::item(7usize, MENU_ABOUT),
         ];
@@ -858,6 +904,8 @@ impl Window {
         let p = self.palette();
         let button = Button::new().width(RUN_BUTTON).grid_column(column);
         match self.model.status {
+            // A calibration of the window's own first (TODO 110)
+            _ if self.model.calibrating() && self.model.takes_parameters() => button.is_enabled(false).content("Calibrating…"),
             Status::Ready => button.style(ButtonStyle::Accent).on_click(context.callback(|()| Message::Start)).content("Start"),
             Status::Running => button.resource_overrides(stop_colours(p)).on_click(context.callback(|()| Message::Stop)).content("Stop"),
             Status::Stopping => button.is_enabled(false).content("Stopping…"),
