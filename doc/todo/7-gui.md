@@ -106,3 +106,28 @@ own child, with no second file.
    has added `FontFamily`, so the next release should have it. Until then: wait for it, use master,
    or draw the timer with windows-canvas (which in 0.100.0 wakes every frame). Whether an unpackaged
    WinUI 3 app can load a bundled font file is still to check.
+
+## The checks (2026-11-03/04)
+
+- **By the campaign and the owner:** the double-click (the 8500G), a console launch (the CLI), WinRM launches (every campaign run on
+  5 hosts), the CLI on Server 2022 (the metal box, build 20348: 17 runs of the full exe, the window built in), the sign-in and grant
+  dialogs (TODO 113).
+- **Live on the dev box, 2026-11-04** (79ae891, then ea587dc and cf4361a), a probe driving the window through UI Automation and timing
+  a WM_NULL round trip every 500 ms, as Windows' hung-window test does (`gui_probe.ps1`, in the session's scratch, not kept):
+  - **The window against the console:** a 4-step run (StuckBit, SimpleV2, Lat-L1-Read, Spd-L1-Read, standard settings): its final
+    summary, per-test and intermediate tables equal `--show-results`' line for line; its by-thread table equals the results file's
+    per-thread records summed (within 1 ms of rounding). `--show-results` doesn't print the by-thread, CPU and core tables a live run's
+    console printed (`Run::CpuPerformance`); the window shows them in its final summary.
+  - **Closing it mid-run** (WM_CLOSE 20 s in, in SimpleV2): the process exited 1.4 s later, exit 3 (interrupted); the results saved,
+    `outcome: interrupted`, `in_progress: false`, the step stopped (`stopped_by: stopped`). The console's line said "interrupted by user
+    (CTRL+C)"; now "interrupted before its end (CTRL+C, Stop or the window closed)" (ea587dc).
+  - **window-priority= with every CPU taken** (cputype=threads cpus=100%, 8 workers at THREAD_PRIORITY_HIGHEST on 4 cores and 8
+    threads; the probe at High so that it isn't what starves): at the default (the workers' priority) the window's thread answered in
+    under 13 ms; at window-priority=normal a 4.7 s answer and a 5 s timeout (Not responding). But at the default its figures froze for
+    6-14 s at a time: the feed's waiter, a Windows thread-pool thread at Normal, waited for the starvation boost before each 500 ms wait
+    even began. Raised inside its task and put back after (ea587dc), the next task started low again; left at the window's priority
+    (cf4361a), the clock kept within its 1 s. The monitor thread (the console's ticker, the WHEA poll) runs at the workers' priority too
+    (ea587dc). UI Automation's own calls into the process still take seconds then (Windows' threads, for accessibility tools only).
+- **The run's output** (the console, the log file, the window's Log tab) now says how the workers started, `⚙  Workers: 8 at high
+  priority (THREAD_PRIORITY_HIGHEST), each pinned to its CPU`, naming each that wasn't pinned or didn't take its priority, and the
+  window `🪟  Window: high priority (THREAD_PRIORITY_HIGHEST)` (the owner, 2026-11-04: in the output, not the INFO log).
