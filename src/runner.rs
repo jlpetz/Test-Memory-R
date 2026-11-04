@@ -684,8 +684,8 @@ pub enum TestFunction {
 /// config and the command line's overrides, and the caches the tests' sizes come from. Bundled so the run's entry point keeps a manageable
 /// signature (TODO 29 added its frontend).
 pub struct RunSetup<'a> {
-    /// Why the run measures the cache calibration on its memory before its tests (`calibrate=`, TODO 22), if it does
-    pub calibrate_first: Option<crate::frontend::MeasureWhy>,
+    /// What the run does with the cache calibration on its memory before its tests (`calibrate=`, TODO 22), if anything
+    pub calibrate_first: Option<CalibrateFirst>,
     pub layout: EnhancedMemoryLayout,
     pub error_mode: ErrorMode,
     pub suite_timing: TestSuiteTiming,
@@ -693,6 +693,14 @@ pub struct RunSetup<'a> {
     pub config: Option<&'a crate::config::ModernConfig>,
     pub overrides: TestRunOverrides<'a>,
     pub cache_info: &'a CacheInfo,
+}
+
+/// What a run does with the cache calibration before its tests (`calibrate=`, TODO 22): measures one, and why; or rechecks the stored
+/// one (TODO 116), measuring again only if it has drifted
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalibrateFirst {
+    Measure(crate::frontend::MeasureWhy),
+    Recheck,
 }
 
 /// Runs the suite `setup` describes, `fe` showing it (TODO 29), and says how the run ended.
@@ -1007,7 +1015,18 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     fe.event(Run::Allocated(Box::new(report)).into());
 
     // The cache calibration on the run's own memory, before anything sizes from it (TODO 22): the plan's extents, the steps'
-    if calibrate_first.is_some() {
+    // A recheck first, when that is all it asks (TODO 116): a calibration that holds is the run's as it is
+    let measure = match calibrate_first {
+        Some(CalibrateFirst::Recheck) => {
+            let rechecked = recheck_on_allocation(&mut allocated_blocks, cache_info);
+            let held = matches!(&rechecked, Ok(recheck) if recheck.held);
+            fe.event(Run::Rechecked(rechecked.map(Box::new)).into());
+            !held
+        }
+        Some(CalibrateFirst::Measure(_)) => true,
+        None => false,
+    };
+    if measure {
         let calibrated = calibrate_on_allocation(&mut allocated_blocks, cache_info, &page_mix);
         if let Ok(now) = &calibrated {
             crate::tests::set_calibration_data(Some(now.results.clone()));
@@ -4706,6 +4725,19 @@ fn convert_to_latency_level_summary(
 }
 
 /// Every thread's share, from the stitched allocator: one contiguous VA span per thread.
+/// The stored cache calibration rechecked on a run's own memory, before its tests (TODO 116), on its largest span, as
+/// `calibrate_on_allocation` measures one there
+fn recheck_on_allocation(
+    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, cache_info: &CacheInfo,
+) -> Result<crate::frontend::Recheck, String> {
+    let stored = crate::tests::get_calibration_data().ok_or("no stored calibration")?;
+    let block = blocks.values_mut().flatten().max_by_key(|block| block.buffer.size()).ok_or("the run has no memory")?;
+    let (base, bytes) = (block.buffer.as_mut_ptr() as *mut u64, block.buffer.size());
+    let test = crate::calibration::CalibrationTest::with_config(cache_info.clone(), crate::calibration::CalibrationConfig::default());
+    // SAFETY: as `calibrate_on_allocation`'s: the run's span, not yet a worker's, and no worker yet to be pinned to the probes' CPUs
+    unsafe { test.recheck_on(&stored, base, bytes) }
+}
+
 /// The cache calibration on a run's own memory, before its tests (TODO 22): its largest span, the workers not yet started and nothing
 /// written there yet, on the CPUs the calibration takes (`calibration::CalibrationCpus`), on the run's pages; saved to tmr-cfg.json as
 /// `--calibrate-cache` saves it, stamped with this machine.

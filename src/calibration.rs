@@ -767,6 +767,60 @@ impl CalibrationCpus {
     }
 }
 
+/// One probe of a recheck (`CalibrationTest::recheck_on`, TODO 116): what it probed, at what size, its median latency of three, and
+/// whether it should still read inside the L3 (at the stored size: at most `limit_ns`) or past it (at one and a half times it: more)
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecheckProbe {
+    pub what: &'static str,
+    pub size: usize,
+    pub ns: f64,
+    pub should_be_inside: bool,
+    pub limit_ns: f64,
+}
+
+impl RecheckProbe {
+    /// It reads as it should
+    pub fn holds(&self) -> bool {
+        (self.ns <= self.limit_ns) == self.should_be_inside
+    }
+}
+
+/// What a recheck found: its probes, the stored L3 latency they're measured against, whether the stored calibration holds (every
+/// probe as it should be), and how long it took. The limits leave room for noise: a stored size reads inside at 1.5x the stored L3
+/// latency, a size half as big again reads past it at 1.25x, the latency anchor C takes its size at. On one, a recheck read C's
+/// size at 43.6 ns against 43.6 (2026-11-05, the dev box), a coin toss.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Recheck {
+    pub probes: Vec<RecheckProbe>,
+    pub l3_ns: f64,
+    pub held: bool,
+    pub time_ms: u64,
+}
+
+impl Recheck {
+    /// The console's lines: the verdict, then each probe
+    pub fn text(&self) -> String {
+        let verdict = if self.held { "holds" } else { "has drifted: measured again" };
+        let mut text = format!(
+            "🔁 Cache calibration rechecked in {:.1} s: it {verdict} (its L3 latency {:.1} ns)\n",
+            self.time_ms as f64 / 1000.0,
+            self.l3_ns
+        );
+        for probe in &self.probes {
+            let (should, sign) = if probe.should_be_inside { ("inside", "≤") } else { ("past it", ">") };
+            let mark = if probe.holds() { "✓" } else { "⚠️ it isn't" };
+            text.push_str(&format!(
+                "   {}: {} at {:.1} ns, {should} ({sign} {:.1} ns) {mark}\n",
+                probe.what,
+                format_size(probe.size),
+                probe.ns,
+                probe.limit_ns
+            ));
+        }
+        text
+    }
+}
+
 /// One point of TODO 22's curve check (`CalibrationTest::run_curve`): the L3 a thread reached with `k` threads in its L3 group running,
 /// one a core or both of a core's, its latency, and what the curve through anchors A and C says for `k`
 #[derive(Debug, Clone, PartialEq)]
@@ -990,6 +1044,83 @@ impl CalibrationTest {
         results.page_size = page_size_str(page).to_string();
         results.total_time_ms = start.elapsed().as_millis() as u64;
         Ok(results)
+    }
+
+    /// The recheck on a run's memory (TODO 116, `calibrate=recheck`): from the `stored` calibration, the L3 one thread reaches (anchor
+    /// A) and the one a thread reaches with every CPU running (C), each probed three times at its size, where it should still read
+    /// inside the L3, and at one and a half times it, where it shouldn't. It holds when every probe reads as it should; otherwise the L3
+    /// has shrunk or grown since (a VM's neighbours, a BIOS setting), and the run measures it again. L1 and L2 are the hardware's, and a
+    /// hardware change already makes the stored calibration another machine's. A probe the memory can't hold is left out.
+    ///
+    /// # Safety
+    /// As `run_on`'s.
+    pub unsafe fn recheck_on(&self, stored: &CalibrationResults, base: *mut u64, bytes: usize) -> Result<Recheck, String> {
+        let start = Instant::now();
+        let cpus = CalibrationCpus::detect();
+        let l3 = stored.tiers.get(&CacheTier::L3).ok_or("the stored calibration has no L3")?;
+        let l3_ns = l3.median_latency_ns;
+        let granule = crate::test_memory::GRANULE;
+        let whole = |size: usize| size / granule * granule;
+        let mut probes = Vec::new();
+        let mut push = |what: &'static str, size: usize, ns: f64, should_be_inside: bool| {
+            let limit_ns = if should_be_inside { 1.5 * l3_ns } else { 1.25 * l3_ns };
+            probes.push(RecheckProbe { what, size, ns, should_be_inside, limit_ns });
+        };
+        log::info!(target: SHOWN_TARGET, "Rechecking the cache calibration of {}", stored.timestamp.format("%Y-%m-%d %H:%M UTC"));
+
+        // A: one thread, pinned, as the calibration measured it
+        let sizes: Vec<(usize, bool)> =
+            [(l3.optimal_size, true), (l3.optimal_size * 3 / 2, false)].into_iter().filter(|&(size, _)| size <= bytes).collect();
+        let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
+        // SAFETY: as this fn's contract says
+        unsafe { probe_engine.initialize_from_region(base, bytes) }?;
+        let (single, config) = (cpus.single, self.config.clone());
+        let single_ns: Vec<(usize, bool, f64)> = std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    if let Err(e) = crate::runner::pin_thread_to_cpu_with_config(0, single, true) {
+                        log::debug!("The recheck not pinned to CPU {single}: {e}");
+                    }
+                    sizes
+                        .iter()
+                        .map(|&(size, inside)| {
+                            let size = whole(size);
+                            let medians: Vec<f64> = (0..3)
+                                .filter_map(|_| {
+                                    let samples = probe_engine.probe(size, &config);
+                                    (!samples.is_empty()).then(|| StatisticsAnalyzer::analyze(&samples).median_ns)
+                                })
+                                .collect();
+                            (size, inside, if medians.is_empty() { f64::INFINITY } else { median(&medians) })
+                        })
+                        .collect()
+                })
+                .join()
+                .map_err(|_| "the recheck's thread panicked".to_string())
+        })?;
+        for (size, inside, ns) in single_ns {
+            push("one thread", size, ns, inside);
+        }
+
+        // C: every CPU, when it was measured
+        if let Some(SharedReach { l3_loaded: Some(loaded), .. }) = &stored.shared
+            && cpus.all.len() > 1
+        {
+            let block = whole(bytes / cpus.all.len());
+            let all_slots = slots(base, block, &cpus.all);
+            for (size, inside) in [(*loaded, true), (*loaded * 3 / 2, false)] {
+                if size > block {
+                    continue;
+                }
+                let size = whole(size);
+                let medians: Vec<f64> = (0..3)
+                    .filter_map(|_| probe_shared(&all_slots, size, self.tsc_frequency_ghz, LOADED_PROBE_TIME).map(|stats| stats.median_ns))
+                    .collect();
+                push("every CPU, a thread", size, if medians.is_empty() { f64::INFINITY } else { median(&medians) }, inside);
+            }
+        }
+        let held = probes.iter().all(RecheckProbe::holds);
+        Ok(Recheck { probes, l3_ns, held, time_ms: start.elapsed().as_millis() as u64 })
     }
 
     /// Anchor A on its CPU, pinned, as a worker is, then B and C (`run_shared`), on `probe_engine`'s `bytes`
@@ -2253,6 +2384,34 @@ mod tests {
         assert_eq!(quantile(&[1.0, 2.0, 3.0, 4.0], 0.75), 3.25);
         assert_eq!(quantile(&[7.0], 0.75), 7.0);
         assert_eq!(quantile(&[], 0.75), 0.0);
+    }
+
+    /// TODO 116: a recheck holds when every probe reads as it should, inside the L3 at the stored size (within 1.5x its latency) and
+    /// past it at one and a half times the size (over 1.25x); one that reads otherwise says so, and the verdict is to measure again
+    #[test]
+    fn a_recheck_says_each_probe_and_whether_it_holds() {
+        let probe = |size, ns, should_be_inside| RecheckProbe {
+            what: "one thread",
+            size,
+            ns,
+            should_be_inside,
+            limit_ns: if should_be_inside { 52.35 } else { 43.625 },
+        };
+        let mut recheck =
+            Recheck { probes: vec![probe(64 << 20, 43.6, true), probe(96 << 20, 68.3, false)], l3_ns: 34.9, held: true, time_ms: 7200 };
+        assert!(recheck.probes.iter().all(RecheckProbe::holds), "43.6 ns at the stored size is inside, with the margin");
+        assert_eq!(
+            recheck.text(),
+            "🔁 Cache calibration rechecked in 7.2 s: it holds (its L3 latency 34.9 ns)\n   one thread: 64.0 MB at 43.6 ns, inside (≤ 52.4 ns) ✓\n   \
+             one thread: 96.0 MB at 68.3 ns, past it (> 43.6 ns) ✓\n"
+        );
+        recheck.probes[1] = probe(96 << 20, 40.0, false);
+        recheck.held = recheck.probes.iter().all(RecheckProbe::holds);
+        assert!(
+            !recheck.held
+                && recheck.text().contains("it has drifted: measured again")
+                && recheck.text().contains("(> 43.6 ns) ⚠️ it isn't")
+        );
     }
 
     /// TODO 22: the calibration's CPUs. On the 8600G (one L3, SMT) A takes the top-ranked core's first CPU and B that core's pair, C all

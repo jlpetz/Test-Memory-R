@@ -745,7 +745,10 @@ impl Model {
                 self.facts.allocation = Some(format!("{} thread{}", selection.threads, plural(selection.threads)));
                 self.window_priority = selection.window_priority;
             }
-            Setup::CacheCalibration(state) => self.calibrating = matches!(state, tmr::frontend::CacheCalibrationState::Measuring(_)),
+            Setup::CacheCalibration(state) => {
+                use tmr::frontend::CacheCalibrationState::{Measuring, Rechecking};
+                self.calibrating = matches!(state, Measuring(_) | Rechecking { .. });
+            }
             Setup::LargePageCheck => self.position = "Checking large pages".to_string(),
             // After the dialog's grant
             Setup::LargePageGrant { outcome: Ok(()), .. } => self.position = "Exiting, to sign out and back in".to_string(),
@@ -1051,6 +1054,12 @@ impl Model {
                 self.calibrating = false;
                 self.position = "Calibrated".to_string();
             }
+            // A recheck that held ends the calibration; one that didn't, a measure follows (TODO 116)
+            Run::Rechecked(Ok(recheck)) if recheck.held => {
+                self.calibrating = false;
+                self.position = "Calibration rechecked: it holds".to_string();
+            }
+            Run::Rechecked(_) => self.position = "The calibration has drifted: measuring it again, about 2 minutes".to_string(),
             Run::SuiteStarted { progress, .. } => {
                 self.progress = Some(progress);
                 self.position = "Starting the suite".to_string();

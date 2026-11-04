@@ -479,6 +479,7 @@ fn setup_events_print_as_their_golden() {
         ("another machine's cache calibration", Setup::CacheCalibration(CacheCalibrationState::Measuring(MeasureWhy::OtherHardware))),
         ("one measured one thread only", Setup::CacheCalibration(CacheCalibrationState::Measuring(MeasureWhy::OneThreadOnly))),
         ("calibrate=always", Setup::CacheCalibration(CacheCalibrationState::Measuring(MeasureWhy::Always))),
+        ("calibrate=recheck", Setup::CacheCalibration(CacheCalibrationState::Rechecking { at: at(20) })),
         ("the cache calibration off", Setup::CacheCalibration(CacheCalibrationState::Disabled)),
         ("the seal calibration", Setup::SealCalibration(SealCalibrationState::Loaded { bits: 256, at: at(21) })),
         ("another machine's seal calibration", Setup::SealCalibration(SealCalibrationState::Stale)),

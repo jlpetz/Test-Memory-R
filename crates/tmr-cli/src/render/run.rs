@@ -83,6 +83,8 @@ pub(super) fn text(run: &Run) -> (String, Written) {
         Run::AllocationStarting { min, max } => (allocation_starting(*min, *max), Written::Plain),
         Run::Allocated(report) => (report_text("the allocation report", |r| r.report_allocation(report)), Written::Plain),
         Run::Calibrated(Ok(now)) => (calibrated(now), Written::Plain),
+        Run::Rechecked(Ok(recheck)) => (recheck.text(), Written::Plain),
+        Run::Rechecked(Err(e)) => (line(format!("⚠️ The cache calibration's recheck failed ({e}): measured again")), Written::Plain),
         Run::Calibrated(Err(e)) => (line(format!("⚠️ The cache calibration failed ({e}): the tests size from CPUID")), Written::Plain),
         // The CLI reads the suite's progress on the monitor's ticks
         Run::SuiteStarted { progress: _, seed, transfer_bits, transfer_source, rescan } => (

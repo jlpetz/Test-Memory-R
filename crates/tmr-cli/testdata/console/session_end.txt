@@ -146,6 +146,7 @@ COMMAND LINE PARAMETERS:
                                       #   Windows' higher-priority cores are P-cores (default: equal);
                                       #   labels only: the core order is the priority's either way
   calibrate=auto                      # The cache calibration: measured before the tests when none is stored (default)
+  calibrate=recheck                   #   ...and a stored one probed first, about 15 s, measured again if it has drifted
   calibrate=always                    #   ...measured before every run's tests
   calibrate=off                       #   ...none: sizes from CPUID, and the seal's width from its rule
   --no-serials                        # Leave the DIMMs' serials and the system's UUID out of the output, log and results

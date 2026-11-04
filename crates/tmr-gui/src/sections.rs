@@ -52,6 +52,9 @@ impl Sections {
             Setup::CacheCalibration(state) => self.system.push(text(match state {
                 CacheCalibrationState::Loaded { at } => format!("Cache calibration: loaded ({})", at.format("%Y-%m-%d %H:%M")),
                 CacheCalibrationState::Measuring(why) => format!("Cache calibration: {}", measuring(*why)),
+                CacheCalibrationState::Rechecking { at } => {
+                    format!("Cache calibration: loaded ({}), rechecked before the tests (calibrate=recheck)", at.format("%Y-%m-%d %H:%M"))
+                }
                 CacheCalibrationState::Disabled => "Cache calibration: off (calibrate=off): sizes from CPUID".to_string(),
             })),
             Setup::SealCalibration(state) => self.system.push(text(match state {
@@ -119,6 +122,8 @@ impl Sections {
                 }));
             }
             Run::Calibrated(Err(e)) => self.system.push(Block::Text(format!("Cache calibration: failed ({e}), sizes from CPUID"))),
+            Run::Rechecked(Ok(recheck)) => self.system.push(Block::Text(recheck.text().trim_end().to_string())),
+            Run::Rechecked(Err(e)) => self.system.push(Block::Text(format!("Cache calibration: the recheck failed ({e}), measured again"))),
             _ => {}
         }
     }

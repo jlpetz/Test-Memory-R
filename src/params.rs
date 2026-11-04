@@ -145,13 +145,14 @@ impl ParamRegistry {
             parser: |v| crate::pattern::parse_seed(v).map(|_| ParamValue::String(v.to_string())),
         });
         // The cache calibration (TODO 22): auto measures one before the tests when none of this machine's, with the shared anchors, is
-        // stored; always measures each run; off sizes from CPUID and leaves the seal's width to its rule
+        // stored; recheck also probes a stored one first (TODO 116); always measures each run; off sizes from CPUID and leaves the seal's
+        // width to its rule
         params.insert("calibrate", ParamDef {
             key: "calibrate",
             can_override_config: true,
             parser: |v| match v.to_ascii_lowercase().as_str() {
-                "auto" | "always" | "off" => Ok(ParamValue::String(v.to_ascii_lowercase())),
-                _ => Err(format!("calibrate '{v}': use auto, always or off")),
+                "auto" | "recheck" | "always" | "off" => Ok(ParamValue::String(v.to_ascii_lowercase())),
+                _ => Err(format!("calibrate '{v}': use auto, recheck, always or off")),
             },
         });
         params.insert("rescan", ParamDef {

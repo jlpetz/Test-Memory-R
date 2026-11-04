@@ -364,9 +364,14 @@ about 2 minutes, 15-20 s of it B and C.
 
 `calibrate=auto` (the default) measures one on the run's own memory before its tests, after
 allocation, when there is none of this machine's with B and C stored, and saves it; later runs load
-it. `calibrate=always` measures before every run's tests. `calibrate=off` takes none (CPUID sizes,
-and the seal's width from its rule). `--calibrate-cache` measures on its own allocation, without a
-test, and asks before saving over a stored one.
+it. `calibrate=recheck` loads it too, then probes it on the run's memory before the tests, about
+15 s (TODO 116): the L3 one thread reaches and the one a thread reaches with every CPU running, each
+at its stored size, where it must still read within 1.5x the stored L3 latency, and at 1.5x the
+size, where it must read past 1.25x it. If any probe reads otherwise the L3 has shrunk or grown
+since (a VM's neighbours, a BIOS setting), and the run measures it again. `calibrate=always`
+measures before every run's tests. `calibrate=off` takes none (CPUID sizes, and the seal's width
+from its rule). `--calibrate-cache` measures on its own allocation, without a test, and asks before
+saving over a stored one.
 
 ### The seal's width under `auto` (TODO 99)
 

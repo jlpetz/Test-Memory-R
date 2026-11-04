@@ -262,6 +262,10 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
         out,
         "  calibrate=auto                      # The cache calibration: measured before the tests when none is stored (default)"
     )?;
+    writeln!(
+        out,
+        "  calibrate=recheck                   #   ...and a stored one probed first, about 15 s, measured again if it has drifted"
+    )?;
     writeln!(out, "  calibrate=always                    #   ...measured before every run's tests")?;
     writeln!(out, "  calibrate=off                       #   ...none: sizes from CPUID, and the seal's width from its rule")?;
     writeln!(

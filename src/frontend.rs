@@ -30,6 +30,7 @@ use chrono::{DateTime, Utc};
 
 pub use crate::ErrorMode;
 // `Selection`'s skip, and the words for its cores, which both frontends' skip lines use
+pub use crate::calibration::{Recheck, RecheckProbe};
 pub use crate::cpu_selection::{SkipSpec, core_list};
 use crate::failing_bits::FailingBits;
 pub use crate::memory::allocator::PageSizeLevel;
@@ -221,6 +222,9 @@ pub enum CacheCalibrationState {
     Loaded { at: DateTime<Utc> },
     /// The run measures one before its tests (`calibrate=`, TODO 22), for this
     Measuring(MeasureWhy),
+    /// This machine's, measured `at`, which the run rechecks before its tests (`calibrate=recheck`, TODO 116), measuring it again if it
+    /// has drifted
+    Rechecking { at: DateTime<Utc> },
     /// `calibrate=off`
     Disabled,
 }
@@ -303,6 +307,9 @@ pub enum Run {
     /// The cache calibration the run measured on its memory before its tests (`calibrate=`, TODO 22), or why it couldn't: the run goes
     /// on without one
     Calibrated(Result<Box<CalibratedNow>, String>),
+    /// The stored cache calibration rechecked on the run's memory (`calibrate=recheck`, TODO 116): each probe and whether it holds, or
+    /// why it couldn't recheck. When it doesn't hold, `Calibrated` comes next.
+    Rechecked(Result<Box<Recheck>, String>),
     /// The suite's clock started: where it stands from now on, for a frontend that reads it on its own timer (the GUI; the CLI reads it on
     /// `tick`), the native patterns' seed, and the transfer width they take and where it came from, `None` when it is unknown
     SuiteStarted { progress: Arc<ProgressTracker>, seed: u64, transfer_bits: Option<u32>, transfer_source: String, rescan: bool },

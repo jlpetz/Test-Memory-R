@@ -155,6 +155,11 @@ pub(super) fn text(setup: &Setup) -> String {
             let _ = match state {
                 CacheCalibrationState::Loaded { at } => writeln!(text, "  Calibration: Loaded ({})", at.format("%Y-%m-%d %H:%M")),
                 CacheCalibrationState::Measuring(why) => writeln!(text, "  Calibration: {}", measuring(*why)),
+                CacheCalibrationState::Rechecking { at } => writeln!(
+                    text,
+                    "  Calibration: Loaded ({}), rechecked before the tests, about 15 s (calibrate=recheck)",
+                    at.format("%Y-%m-%d %H:%M")
+                ),
                 CacheCalibrationState::Disabled => writeln!(text, "  Calibration: off (calibrate=off): sizes from CPUID"),
             };
         }

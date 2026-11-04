@@ -124,6 +124,8 @@ TMR will exit now.
   Calibration: the one stored measured one thread only: measured again with the others running, before the tests (calibrate=auto)
 ## calibrate=always
   Calibration: measured before the tests, about 2 minutes (calibrate=always)
+## calibrate=recheck
+  Calibration: Loaded (2026-10-20 09:05), rechecked before the tests, about 15 s (calibrate=recheck)
 ## the cache calibration off
   Calibration: off (calibrate=off): sizes from CPUID
 ## the seal calibration
