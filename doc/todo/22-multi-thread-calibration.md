@@ -44,21 +44,43 @@ Xeon 6975P-C, 2 MB pages):
   CLAUDE.md's open question 1.
 - TODO 110 (the window) builds on it.
 
-## Proposed, waiting on the owner
+## Built (the owner's go, 2026-11-04)
 
-- **One calibration:** today's extended one (the sweep, then the fine sweeps), so there is no
-  separate `--calibrate-cache-ext` and no `calibration_extended`.
-- **Three anchors, the owner's**, stored per machine and page size:
-  - **A**, one thread: L1, L2, the L3 reach and the latencies.
-  - **B**, two SMT siblings on one core, only with SMT: L1 and L2 a thread.
-  - **C**, every logical CPU at once, each chasing its own block: the L3 a thread under full load,
-    in every group, which is the VM's or the node's soak.
-- **A run's L3 share** comes from A and C, as reach(k) = private + shared / k, with k the threads
-  per group. Two points fix both terms; the private part is the thread's own L2, which it keeps
-  however many threads share the L3.
+- **One calibration**, the extended one (6ba08e8): `--calibrate-cache-ext` and `calibration_extended`
+  are gone.
+- **Anchors B and C** (ff518fb), after A, each thread pinned and chasing its own block, all
+  starting together at a barrier. Their chains have one node a cache line with u32 indices, a
+  sixteenth of a block in heap. B sweeps a core's SMT pair over L1 and L2. C sweeps every logical
+  CPU from just past a thread's L2 to twice CPUID's L3 share.
+- **C's edge** is the first 1.4x step past the L3's own latency. With every CPU running, the step
+  into L3 comes first (4 to 34 ns at 1.4 MB here). Its size is the largest steady one still within
+  1.25x of A's L3 latency: the finer sweep's top was steady at 82 ns, half way to DRAM.
+- **Sizing.** A run's L3 reach is the curve through A and C, reach(k) = own + split / k. An L3 test
+  takes `scale` of it, never inside the thread's L2 share + 64 KiB. L1 and L2 tests with two
+  threads a core take B's.
+- **A run's first step** (0e8574f): `calibrate=auto` measures on the run's largest span after
+  allocation when none with B and C is stored, then saves it. `always` measures every run, `off`
+  takes none (`--no-calibration` is gone).
 
-## Notes
+### Measured on the dev box
 
-- The coarse sweep runs to 4x CPUID's L3, 1.9 GB here; most of its time is the DRAM probes. It
-  could stop a few probes past the L3 edge.
+| Run | A's L3 | B: L1, L2 a thread | C: L3 a thread, 8 sharing | Time |
+|---|---|---|---|---|
+| 3 | 67.8 MB | 25 KB, 887 KB | 16.9 MB at 43 ns | 116 s |
+| 4 | 55.8 MB | 19 KB, 887 KB | 14.0 MB at 39 ns | 129 s |
+| in a run | 59.0 MB | 25 KB, 887 KB | 15.4 MB | 147 s |
+
+The L3 doesn't split evenly. 8 threads hold about 15 MB each, 120-135 MB in all, about twice what
+one thread reaches. So one thread's reach divided by the threads undersizes a run's share. The
+curve's own part (about 8-12 MB here) takes this up. A 4-thread `cputype=cores` run sized its L3
+tests at 10.82 MiB a thread (`L3/4/2 [cal]`), and Lat-L3 read about 28 ns there: about 17% L2
+hits, the rest L3.
+
+## Notes (TODO 116 has them)
+
+- The coarse sweep runs to 4x CPUID's L3, 1.9 GB here, and most of its time goes on the DRAM
+  probes. A flushed chase would give DRAM's latency in milliseconds, so the sweep could stop a
+  few probes past the L3's edge.
+- A recheck mode: a few probes either side of each stored edge.
+- `auto` doesn't key the stored calibration by page size.
 - On a VM the neighbours change what the L3 gives, so `auto` might re-measure there each run.
