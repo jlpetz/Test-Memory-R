@@ -212,7 +212,7 @@ fn pad_to_huge_boundary(fill: &mut impl Fill, source: Source, floor: usize, who:
         while padded < gap {
             let len = fill.request_len(i, gap - padded, floor)?;
             if let Grant::Refused(code) = fill.request(i, len, PageSizeLevel::Large, pool)? {
-                log::info!(
+                log::info!(target: crate::logfile::SHOWN_TARGET,
                     "❌ {who}: {}: {} ({label}) for thread {}, up to its next 1 GiB boundary, refused: {}; it stays on 2 MiB pages",
                     source.label(pool),
                     size_label(len),
@@ -224,7 +224,7 @@ fn pad_to_huge_boundary(fill: &mut impl Fill, source: Source, floor: usize, who:
             padded += len;
         }
         if padded == gap {
-            log::info!(
+            log::info!(target: crate::logfile::SHOWN_TARGET,
                 "✅ {who}: {}: {} ({label}) for thread {}, up to its next 1 GiB boundary",
                 source.label(pool),
                 size_label(gap),
@@ -295,7 +295,7 @@ pub(crate) fn fill_ladder(
                     rung.insert(pool, smaller);
                     format!("retrying at {}", size_label(smaller))
                 };
-                log::info!(
+                log::info!(target: crate::logfile::SHOWN_TARGET,
                     "❌ {who}: {}: {} ({label}) for thread {} refused: {}; {next}",
                     source.label(pool),
                     size_label(len),
@@ -325,7 +325,7 @@ fn bytes_above(fill: &impl Fill, i: usize, page: PageSizeLevel) -> usize {
 /// One ✅ line per request size granted, largest first.
 fn log_granted(who: &str, pool: &str, label: &str, sizes: Option<BTreeMap<usize, usize>>) {
     for (len, count) in sizes.into_iter().flatten().rev() {
-        log::info!("✅ {who}: {pool}: {count} × {} granted ({label})", size_label(len));
+        log::info!(target: crate::logfile::SHOWN_TARGET, "✅ {who}: {pool}: {count} × {} granted ({label})", size_label(len));
     }
 }
 
@@ -343,7 +343,7 @@ pub(crate) fn fill_regular(fill: &mut impl Fill, who: &str) -> Result<Option<(us
             match fill.request(i, len, PageSizeLevel::Regular, home)? {
                 Grant::Done => *tally.entry(home).or_default().entry(len).or_default() += 1,
                 Grant::Refused(code) => {
-                    log::info!(
+                    log::info!(target: crate::logfile::SHOWN_TARGET,
                         "❌ {who}: {}: {} ({label}) for thread {} refused: {}",
                         node_label(home),
                         size_label(len),

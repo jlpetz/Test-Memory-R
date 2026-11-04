@@ -266,7 +266,7 @@ pub enum Run {
     Allocated(Box<AllocationReport>),
     /// The suite's clock started: where it stands from now on, for a frontend that reads it on its own timer (the GUI; the CLI reads it on
     /// `tick`), the native patterns' seed, and the transfer width they take and where it came from, `None` when it is unknown
-    SuiteStarted { progress: Arc<ProgressTracker>, seed: u64, transfer_bits: Option<u32>, transfer_source: String },
+    SuiteStarted { progress: Arc<ProgressTracker>, seed: u64, transfer_bits: Option<u32>, transfer_source: String, rescan: bool },
     /// A cycle starts, of `limit` when there is one
     CycleStarted { cycle: u32, limit: Option<u32> },
     /// A cycle is over, after its results were saved when a save was due: `partial` when it stopped before its end (Ctrl+C, Stop, or a halt

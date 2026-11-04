@@ -34,19 +34,24 @@ pub(crate) const ERROR_COMMITMENT_LIMIT: u32 = 1455;
 /// 87 (`../numa-test/FINDINGS.md`).
 pub(crate) const NUMA_NODE_MANDATORY: u64 = 1 << 63;
 
-/// `code` with its name, for logs and errors.
+/// `code` with its name and Windows' own words for it (`FormatMessage`), for logs and errors: not a guess at the cause (the owner,
+/// 2026-11-04: a refusal can mean fragmentation or simply asking for more than there is)
 pub(crate) fn describe_error(code: u32) -> String {
     let name = match code {
         ERROR_NOT_ENOUGH_MEMORY => " ERROR_NOT_ENOUGH_MEMORY",
         ERROR_OUTOFMEMORY => " ERROR_OUTOFMEMORY",
-        ERROR_INVALID_PARAMETER => " ERROR_INVALID_PARAMETER (a bug in the request)",
+        ERROR_INVALID_PARAMETER => " ERROR_INVALID_PARAMETER",
         ERROR_INVALID_ADDRESS => " ERROR_INVALID_ADDRESS",
-        ERROR_PRIVILEGE_NOT_HELD => " ERROR_PRIVILEGE_NOT_HELD (no SeLockMemoryPrivilege)",
-        ERROR_NO_SYSTEM_RESOURCES => " ERROR_NO_SYSTEM_RESOURCES (no contiguous physical memory)",
+        ERROR_PRIVILEGE_NOT_HELD => " ERROR_PRIVILEGE_NOT_HELD",
+        ERROR_NO_SYSTEM_RESOURCES => " ERROR_NO_SYSTEM_RESOURCES",
         ERROR_COMMITMENT_LIMIT => " ERROR_COMMITMENT_LIMIT",
         _ => "",
     };
-    format!("error {code}{name}")
+    let message = windows::core::HRESULT::from_win32(code).message();
+    match message.trim().trim_end_matches('.') {
+        "" => format!("error {code}{name}"),
+        said => format!("error {code}{name}: {said}"),
+    }
 }
 
 /// Whether a refusal with `code` means the page size it asked for has run out, so a smaller request or the next page size is worth trying.

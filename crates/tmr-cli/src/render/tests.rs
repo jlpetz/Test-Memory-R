@@ -41,6 +41,7 @@ fn events_print_as_their_golden() {
         seed,
         transfer_bits,
         transfer_source: transfer_source.to_string(),
+        rescan: true,
     };
     let no_whea = WheaCounts::default();
     let cases = vec![

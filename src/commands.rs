@@ -265,7 +265,9 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "    {} config=test.json cycles=1 skip-cores=0 memory=4GiB", program_name)?;
     writeln!(out)?;
     writeln!(out, "LOGGING:")?;
-    writeln!(out, "  RUST_LOG=info                       # Set log level (error/warn/info/debug/trace)")?;
+    writeln!(out, "  RUST_LOG=info                       # What the console shows and the log file takes (error/warn/info/debug/trace)")?;
+    writeln!(out, "                                        # Without it: the console warnings (a debug build: info), the log file info")?;
+    writeln!(out, "                                        # The run's own lines (allocation, each step's start) show either way")?;
     writeln!(out, "                                        # Use debug for detailed per-thread logs")?;
     writeln!(out, "  Logs saved to: logs\\TMR_YYYY-MM-DD_HH-MM-SS.log      (local time)")?;
     writeln!(out, "  Results saved to: results\\TMR_YYYY-MM-DD_HH-MM-SS.json (same name as the log)")?;

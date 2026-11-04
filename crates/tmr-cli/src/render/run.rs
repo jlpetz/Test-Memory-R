@@ -83,11 +83,12 @@ pub(super) fn text(run: &Run) -> (String, Written) {
         Run::AllocationStarting { min, max } => (allocation_starting(*min, *max), Written::Plain),
         Run::Allocated(report) => (report_text("the allocation report", |r| r.report_allocation(report)), Written::Plain),
         // The CLI reads the suite's progress on the monitor's ticks
-        Run::SuiteStarted { progress: _, seed, transfer_bits, transfer_source } => (
+        Run::SuiteStarted { progress: _, seed, transfer_bits, transfer_source, rescan } => (
             line(format!(
-                "🎲 Pattern seed {seed:#018x} (seed= replays it), transfer width {}",
+                "🎲 Pattern seed {seed:#018x} (seed= replays it), transfer width {}, rescan {} (rescan=)",
                 transfer_bits
-                    .map_or("unknown: switch alternates 64 and 32 bits".to_string(), |bits| format!("{bits} bits ({transfer_source})"))
+                    .map_or("unknown: switch alternates 64 and 32 bits".to_string(), |bits| format!("{bits} bits ({transfer_source})")),
+                if *rescan { "on" } else { "off" }
             )),
             Written::Above,
         ),
@@ -138,7 +139,11 @@ pub(super) fn text(run: &Run) -> (String, Written) {
             (text, Written::Plain)
         }
         Run::FinalSummary(report) => (report_text("final summary", |r| r.report_final_summary(report)), Written::Plain),
-        Run::ResultsSaved { path } => (line(format!("💾 Results saved: {}", path)), Written::Plain),
+        // The log file beside it, when there is one (TODO 105): the two files that keep the run
+        Run::ResultsSaved { path } => {
+            let log = if tmr::logfile::is_open() { format!("📝 Log file: {}\n", tmr::logfile::path().display()) } else { String::new() };
+            (format!("💾 Results saved: {path}\n{log}"), Written::Plain)
+        }
     }
 }
 

@@ -10,6 +10,12 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 /// the console gets the same text another way, as WHEA events do through the ticker's queue.
 pub const FILE_ONLY_TARGET: &str = "tmr::file_only";
 
+/// Log target for a line of the run's own output that the engine composes where only the log reaches (an allocation's grants and
+/// refusals as they happen, its sizing, a step's start; TODO 105, the owner 2026-11-04): a frontend shows it at every level, as
+/// `[HH:MM:SS] text` (`shown_line`), where it shows the run (the console, the window's Log tab), and the log file has it as every record.
+/// Info level.
+pub const SHOWN_TARGET: &str = "tmr::shown";
+
 /// The run's log file, once `open` has created it, until `close` (TODO 109: a file a run, so a session after another has its own)
 static FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 
@@ -23,19 +29,67 @@ pub fn close() {
     *file() = None;
 }
 
-/// `RUST_LOG` as TMR reads it, the same for every frontend: its value (`info` without it), and the records a logger lets through, that
-/// level and the ones above it. A value that isn't a level (a module's filter, as other programs take) is info.
-pub fn level() -> (String, log::LevelFilter) {
-    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-    let level_filter = match log_level.to_lowercase().as_str() {
+/// How TMR logs, the same for every frontend (TODO 105, the owner 2026-11-04): the records the log file takes, and the ones a frontend
+/// shows where it shows the run (the console, the window's Log tab), each that level and the ones above it; `SHOWN_TARGET`'s at every
+/// level. `rust_log` is `RUST_LOG`'s value when it's set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Levels {
+    pub rust_log: Option<String>,
+    pub file: log::LevelFilter,
+    pub shown: log::LevelFilter,
+}
+
+impl Levels {
+    /// What a logger lets through for either: the file's level, and at least info, which `SHOWN_TARGET`'s records are
+    pub fn most(&self) -> log::LevelFilter {
+        self.file.max(self.shown).max(log::LevelFilter::Info)
+    }
+
+    /// Whether `record` goes to the log file
+    pub fn to_file(&self, record: &log::Record) -> bool {
+        record.level() <= self.file || record.target() == SHOWN_TARGET
+    }
+
+    /// Whether a frontend shows `record` as a record (`[stamp LEVEL module] message`); `SHOWN_TARGET`'s it shows as `shown_line`, and
+    /// `FILE_ONLY_TARGET`'s not at all
+    pub fn shows(&self, record: &log::Record) -> bool {
+        record.level() <= self.shown && record.target() != SHOWN_TARGET && record.target() != FILE_ONLY_TARGET
+    }
+
+    /// How the run's output says it, after the log file's path: `RUST_LOG`'s value, or what a frontend shows without it
+    pub fn described(&self) -> String {
+        match (&self.rust_log, self.shown) {
+            (Some(set), _) => format!("RUST_LOG={set}"),
+            (None, log::LevelFilter::Warn) => "here, warnings and errors; RUST_LOG=info shows the rest".to_string(),
+            (None, _) => "here too".to_string(),
+        }
+    }
+}
+
+/// `RUST_LOG` as TMR reads it: its level for both, the file and what's shown; without it, info for the file, and what's shown info in a
+/// debug build and warnings in a release one, whose output already says what the info records do. A value that isn't a level (a
+/// module's filter, as other programs take) is info.
+pub fn levels() -> Levels {
+    let rust_log = std::env::var("RUST_LOG").ok();
+    let parsed = rust_log.as_deref().map(|value| match value.to_lowercase().as_str() {
         "error" => log::LevelFilter::Error,
         "warn" => log::LevelFilter::Warn,
-        "info" => log::LevelFilter::Info,
         "debug" => log::LevelFilter::Debug,
         "trace" => log::LevelFilter::Trace,
         _ => log::LevelFilter::Info,
-    };
-    (log_level, level_filter)
+    });
+    let shown_by_default = if cfg!(debug_assertions) { log::LevelFilter::Info } else { log::LevelFilter::Warn };
+    Levels { file: parsed.unwrap_or(log::LevelFilter::Info), shown: parsed.unwrap_or(shown_by_default), rust_log }
+}
+
+/// A `SHOWN_TARGET` record as a frontend shows it: its time and its text
+pub fn shown_line(record: &log::Record) -> String {
+    format!("[{}] {}", chrono::Local::now().format("%H:%M:%S"), record.args())
+}
+
+/// Whether the run's log file is open, so a line naming it names a file that's there
+pub fn is_open() -> bool {
+    file().is_some()
 }
 
 /// Whether a command line (the exe's name first) keeps a log file: a session does, and so do the one-shot commands that change the system
@@ -161,6 +215,29 @@ pub fn write(record: &log::Record) {
 
 #[cfg(test)]
 mod tests {
+    /// TODO 105: a release build's frontend shows warnings and up, the log file takes info; the run's own lines (`SHOWN_TARGET`) go to
+    /// both whatever the levels, shown as their time and text, not as a record; a file-only record is never shown; a logger lets through
+    /// at least info, which the run's own lines are
+    #[test]
+    fn the_file_takes_info_and_a_frontend_shows_warnings_and_the_runs_own_lines() {
+        use log::{Level, LevelFilter, Record};
+        let levels = super::Levels { rust_log: None, file: LevelFilter::Info, shown: LevelFilter::Warn };
+        let check = |level: Level, target: &str| {
+            let record = Record::builder().level(level).target(target).args(format_args!("a line")).build();
+            (levels.shows(&record), levels.to_file(&record))
+        };
+        assert_eq!(check(Level::Info, "tmr::runner"), (false, true), "info: the file's, not shown");
+        assert_eq!(check(Level::Warn, "tmr::runner"), (true, true), "a warning: both");
+        assert_eq!(check(Level::Debug, "tmr::runner"), (false, false), "debug: neither");
+        assert_eq!(check(Level::Info, super::SHOWN_TARGET), (false, true), "the run's own line: the file's, and shown as a line");
+        assert_eq!(check(Level::Warn, super::FILE_ONLY_TARGET), (false, true), "file only");
+        assert_eq!(levels.most(), LevelFilter::Info);
+        let quiet = super::Levels { rust_log: Some("warn".to_string()), file: LevelFilter::Warn, shown: LevelFilter::Warn };
+        assert_eq!((quiet.most(), quiet.described()), (LevelFilter::Info, "RUST_LOG=warn".to_string()), "still the run's own lines");
+        let record = Record::builder().level(Level::Info).target(super::SHOWN_TARGET).args(format_args!("✅ granted")).build();
+        assert!(super::shown_line(&record).ends_with("] ✅ granted"), "{}", super::shown_line(&record));
+    }
+
     /// The transcript leaves the console's colours out, and keeps the rest as it was, a line's emoji and its breaks
     #[test]
     fn the_transcript_has_no_colours() {

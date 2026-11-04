@@ -125,8 +125,8 @@ fn setup_logging(log_file: bool) {
     // Shared with the result filename so a run's log and result can be paired by name
     let log_filename = tmr::logfile::path();
 
-    // The records the log file gets, as the window's logger has them too
-    let (log_level, level_filter) = tmr::logfile::level();
+    // The records the log file gets and the ones the console shows, as the window's logger has them too
+    let levels = tmr::logfile::levels();
 
     // Whether the log file is open, so the line below says so only when it is
     let log_file = log_file && {
@@ -141,12 +141,16 @@ fn setup_logging(log_file: bool) {
     };
 
     // Set up env_logger for console with original nice formatting (colors + module info)
+    let (shown, most) = (levels.clone(), levels.most());
     Builder::new()
-        .filter_level(level_filter)
-        .format(|buf, record| {
+        .filter_level(most)
+        .format(move |buf, record| {
             // Write to console with original env_logger format. `LogSink` below prints it above the progress ticker, so the two never
-            // merge. A file-only record writes nothing here, and `LogSink` drops an empty write.
-            let console_result = if record.target() == tmr::logfile::FILE_ONLY_TARGET {
+            // merge. A record the console doesn't show writes nothing here, and `LogSink` drops an empty write; one of the run's own
+            // lines shows as its time and its text (TODO 105).
+            let console_result = if record.target() == tmr::logfile::SHOWN_TARGET {
+                writeln!(buf, "{}", tmr::logfile::shown_line(record))
+            } else if !shown.shows(record) {
                 Ok(())
             } else {
                 writeln!(
@@ -170,7 +174,9 @@ fn setup_logging(log_file: bool) {
             };
 
             // Also write to file without colors
-            tmr::logfile::write(record);
+            if shown.to_file(record) {
+                tmr::logfile::write(record);
+            }
 
             console_result
         })
@@ -181,10 +187,10 @@ fn setup_logging(log_file: bool) {
         .write_style(if crate::console::is_console() { env_logger::WriteStyle::Always } else { env_logger::WriteStyle::Never })
         .init();
 
-    // Log startup info
-    log::info!("TMR v{} started - console logging with colors and module info restored", tmr::BUILD.version);
+    // The banner says the version on the console; where the log is, the run's own output (TODO 105)
+    log::info!(target: tmr::logfile::FILE_ONLY_TARGET, "TMR v{} started", tmr::BUILD.version);
     if log_file {
-        log::info!("Log level: {} - detailed logs also saved to {}", log_level, log_filename.display());
+        log::info!(target: tmr::logfile::SHOWN_TARGET, "📝 Log file: {} ({})", log_filename.display(), levels.described());
     }
 }
 

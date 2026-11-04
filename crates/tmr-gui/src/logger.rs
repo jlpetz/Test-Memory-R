@@ -25,8 +25,10 @@ pub(crate) struct LogLine {
 
 /// The window's logger.
 struct GuiLogger {
-    /// The records the log file gets, from `RUST_LOG` as the CLI reads it
+    /// The most it lets through (`Levels::most`)
     level: LevelFilter,
+    /// What the log file takes and what the Log tab shows, from `RUST_LOG` as the CLI reads it
+    levels: tmr::logfile::Levels,
     lines: SyncSender<LogLine>,
     /// The lines the channel was full for
     dropped: Arc<AtomicU64>,
@@ -70,12 +72,12 @@ impl Transcript {
     }
 }
 
-/// A logger letting `level` through, and its window's side, with room for `queued` lines
-fn logger(level: LevelFilter, queued: usize) -> (GuiLogger, LogLines) {
+/// A logger taking what `levels` says, and its window's side, with room for `queued` lines
+fn logger(levels: tmr::logfile::Levels, queued: usize) -> (GuiLogger, LogLines) {
     let (tx, rx) = mpsc::sync_channel(queued);
     let dropped = Arc::new(AtomicU64::new(0));
     let transcript = Transcript { lines: tx.clone(), dropped: Arc::clone(&dropped) };
-    (GuiLogger { level, lines: tx, dropped: Arc::clone(&dropped) }, LogLines { lines: rx, dropped, transcript })
+    (GuiLogger { level: levels.most(), levels, lines: tx, dropped: Arc::clone(&dropped) }, LogLines { lines: rx, dropped, transcript })
 }
 
 impl Log for GuiLogger {
@@ -87,15 +89,26 @@ impl Log for GuiLogger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        tmr::logfile::write(record);
-        let text = format!(
-            "[{} {} {}] {}",
-            chrono::Local::now().format("%H:%M:%S"),
-            record.level(),
-            record.module_path().unwrap_or("unknown"),
-            record.args()
-        );
+        if self.levels.to_file(record) {
+            tmr::logfile::write(record);
+        }
         let alarm = record.level() <= Level::Warn && record.target() != tmr::logfile::FILE_ONLY_TARGET;
+        // The Log tab shows what the console would (TODO 105): the run's own lines as their time and text, the records at its level, a
+        // warning in the errors list whatever the level
+        let text = if record.target() == tmr::logfile::SHOWN_TARGET {
+            tmr::logfile::shown_line(record)
+        // The file-only records too (the WHEA lines, which the console shows through its ticker): the window has no ticker
+        } else if record.level() <= self.levels.shown || alarm {
+            format!(
+                "[{} {} {}] {}",
+                chrono::Local::now().format("%H:%M:%S"),
+                record.level(),
+                record.module_path().unwrap_or("unknown"),
+                record.args()
+            )
+        } else {
+            return;
+        };
         // Disconnected only once the window has gone, and then there is nothing to show
         if let Err(TrySendError::Full(_)) = self.lines.try_send(LogLine { text, alarm }) {
             self.dropped.fetch_add(1, Ordering::Relaxed);
@@ -109,10 +122,11 @@ impl Log for GuiLogger {
 /// The window's logger, at the first Start: once a process, as the `log` crate takes one logger. Returns the window's side, which the
 /// window keeps from run to run.
 pub(crate) fn install() -> LogLines {
-    let (_, level) = tmr::logfile::level();
-    let (logger, lines) = logger(level, QUEUED);
+    let levels = tmr::logfile::levels();
+    let most = levels.most();
+    let (logger, lines) = logger(levels, QUEUED);
     if log::set_boxed_logger(Box::new(logger)).is_ok() {
-        log::set_max_level(level);
+        log::set_max_level(most);
     }
     lines
 }
@@ -122,15 +136,15 @@ pub(crate) fn install() -> LogLines {
 /// the session ends (`tmr::logfile::close`).
 pub(crate) fn open_log_file() {
     let made = tmr::logfile::create_dir();
-    let (rust_log, _) = tmr::logfile::level();
+    let levels = tmr::logfile::levels();
     let path = tmr::logfile::path();
     let opened = tmr::logfile::open(&path);
-    log::info!("TMR v{} started - the log also in the window's Log tab, its warnings and errors in the errors list", tmr::BUILD.version);
+    log::info!(target: tmr::logfile::FILE_ONLY_TARGET, "TMR v{} started, in its window", tmr::BUILD.version);
     // In the errors list, where the CLI prints them on the console
     match (made, opened) {
         (Err(e), _) => log::warn!("Failed to create logs directory: {}", e),
         (Ok(()), Err(e)) => log::warn!("No log file, {}: {e}", path.display()),
-        (Ok(()), Ok(())) => log::info!("Log level: {} - detailed logs also saved to {}", rust_log, path.display()),
+        (Ok(()), Ok(())) => log::info!(target: tmr::logfile::SHOWN_TARGET, "📝 Log file: {} ({})", path.display(), levels.described()),
     }
 }
 
@@ -142,7 +156,8 @@ mod tests {
     /// counts what it drops instead of waiting (TODO 29 S6, TODO 109)
     #[test]
     fn the_log_reaches_the_window_and_a_full_channel_counts_what_it_drops() {
-        let (logger, window) = logger(LevelFilter::Info, 4);
+        let levels = tmr::logfile::Levels { rust_log: None, file: LevelFilter::Info, shown: LevelFilter::Info };
+        let (logger, window) = logger(levels, 4);
         let log = |level: Level, target: &str, text: &str| {
             logger.log(
                 &Record::builder().level(level).target(target).module_path_static(Some("tmr::tests")).args(format_args!("{text}")).build(),

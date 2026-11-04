@@ -23,9 +23,9 @@ Stage 1: Pre-allocating memory blocks...
 Stage 1: Pre-allocating memory blocks...
 ⚙️  Page Size Constraints: Regular (4KB) to Huge (1GB)
 ## the suite starts
-🎲 Pattern seed 0x0123456789abcdef (seed= replays it), transfer width 64 bits (SMBIOS)
+🎲 Pattern seed 0x0123456789abcdef (seed= replays it), transfer width 64 bits (SMBIOS), rescan on (rescan=)
 ## the suite starts, its transfer width unknown
-🎲 Pattern seed 0x0000000000000007 (seed= replays it), transfer width unknown: switch alternates 64 and 32 bits
+🎲 Pattern seed 0x0000000000000007 (seed= replays it), transfer width unknown: switch alternates 64 and 32 bits, rescan on (rescan=)
 ## a cycle of a limit
 
 🔄 Starting test cycle 2 of 3

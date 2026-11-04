@@ -71,7 +71,7 @@ pub(super) fn text(setup: &Setup) -> String {
             let _ = writeln!(text, "  Build Type: {} {}", build_icon, build_type);
         }
         Setup::StartupParams { rust_log, rust_backtrace, explicit, defaults } => {
-            let _ = writeln!(text, "  RUST_LOG: {} (logs to logs\\TMR_YYYY-MM-DD_HH-MM-SS.log beside tmr.exe, or in TMR_HOME)", rust_log);
+            let _ = writeln!(text, "  RUST_LOG: {}", rust_log);
             if let Some(rust_backtrace) = rust_backtrace {
                 let _ = writeln!(text, "  RUST_BACKTRACE: {}", rust_backtrace);
             }
@@ -199,7 +199,7 @@ pub(super) fn text(setup: &Setup) -> String {
         }
         Setup::Starting => {
             let _ = writeln!(text, "Starting comprehensive memory tests... Use CTRL+C for graceful shutdown with final report");
-            let _ = writeln!(text, "(detailed logs available with RUST_LOG=debug)");
+            let _ = writeln!(text, "(more here with RUST_LOG=info or debug; the log file takes info either way)");
             let _ = writeln!(text);
         }
         Setup::RealtimeOnEveryCpu => {

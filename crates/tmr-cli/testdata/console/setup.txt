@@ -26,11 +26,11 @@ Startup Mode & Parameters:
   Command Line: tmr.exe
   Build Type: ❌ Debug (unoptimized)
 ## the parameters, given and defaults
-  RUST_LOG: info (logs to logs\TMR_YYYY-MM-DD_HH-MM-SS.log beside tmr.exe, or in TMR_HOME)
+  RUST_LOG: info
   Explicit Parameters: memory=50%, --startup-debug
   Default Parameters: cputype=threads (default), errors=log (default)
 ## the parameters, a backtrace set and none given
-  RUST_LOG: debug (logs to logs\TMR_YYYY-MM-DD_HH-MM-SS.log beside tmr.exe, or in TMR_HOME)
+  RUST_LOG: debug
   RUST_BACKTRACE: 1
 ## cores
   CPU Type: cores (avoiding SMT/Hyperthreading)
@@ -259,5 +259,5 @@ Std Deviation                            0.000012 GHz
 📋 Plan: quick: the stability tests once
 ## the tests start
 Starting comprehensive memory tests... Use CTRL+C for graceful shutdown with final report
-(detailed logs available with RUST_LOG=debug)
+(more here with RUST_LOG=info or debug; the log file takes info either way)
 

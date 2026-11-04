@@ -388,7 +388,15 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     log::info!("TMR v{} starting - {} build on {}", crate::BUILD.version, build_type, std::env::consts::ARCH);
 
     // Check environment variables
-    let rust_log = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    // As the loggers read it (TODO 105): its value, or what the console and the log file take without it
+    let levels = crate::logfile::levels();
+    let rust_log = levels.rust_log.clone().unwrap_or_else(|| {
+        format!(
+            "not set: the console shows {}, the log file takes {}",
+            levels.shown.as_str().to_lowercase(),
+            levels.file.as_str().to_lowercase()
+        )
+    });
 
     let rust_backtrace = env::var("RUST_BACKTRACE").unwrap_or_else(|_| "not set".to_string());
     let rust_backtrace = (rust_backtrace != "not set").then_some(rust_backtrace);

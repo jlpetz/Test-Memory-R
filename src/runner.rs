@@ -1131,8 +1131,14 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         if crate::pattern::rescan_enabled() { "on" } else { "off" }
     );
     fe.event(
-        Run::SuiteStarted { progress: Arc::clone(&progress), seed, transfer_bits: beat.map(|b| b.bits()), transfer_source: beat_source }
-            .into(),
+        Run::SuiteStarted {
+            progress: Arc::clone(&progress),
+            seed,
+            transfer_bits: beat.map(|b| b.bits()),
+            transfer_source: beat_source,
+            rescan: crate::pattern::rescan_enabled(),
+        }
+        .into(),
     );
 
     let mut cycles_done = 0u32;
@@ -1406,7 +1412,9 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
                 break;
             }
         }
-        log::info!("{}", crate::test_scaffolding::step_line(test_display_name, test_name, test_config, thread_pool.span_bytes()));
+        // The run's own output, with its time: when each step started (TODO 105)
+        let line = crate::test_scaffolding::step_line(test_display_name, test_name, test_config, thread_pool.span_bytes());
+        log::info!(target: crate::logfile::SHOWN_TARGET, "{line}");
         let test_start = Instant::now();
         thread_pool.execute_test(test_name, test_func, test_config, error_mode, &step_context);
 

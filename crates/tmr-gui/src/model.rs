@@ -1730,6 +1730,7 @@ mod tests {
                 seed: 1,
                 transfer_bits: None,
                 transfer_source: "none".to_string(),
+                rescan: true,
             },
             Run::CycleStarted { cycle: 1, limit: Some(2) },
             step(1, 1, 0, Some(0), clean),
@@ -2697,6 +2698,7 @@ mod tests {
                 seed: 1,
                 transfer_bits: None,
                 transfer_source: "none".to_string(),
+                rescan: true,
             };
             for run in std::iter::once(started).chain(steps) {
                 m.apply(run.into());

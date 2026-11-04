@@ -152,7 +152,9 @@ CONFIG FILE OVERRIDES:
     tmr.exe config=test.json cycles=1 skip-cores=0 memory=4GiB
 
 LOGGING:
-  RUST_LOG=info                       # Set log level (error/warn/info/debug/trace)
+  RUST_LOG=info                       # What the console shows and the log file takes (error/warn/info/debug/trace)
+                                        # Without it: the console warnings (a debug build: info), the log file info
+                                        # The run's own lines (allocation, each step's start) show either way
                                         # Use debug for detailed per-thread logs
   Logs saved to: logs\TMR_YYYY-MM-DD_HH-MM-SS.log      (local time)
   Results saved to: results\TMR_YYYY-MM-DD_HH-MM-SS.json (same name as the log)
