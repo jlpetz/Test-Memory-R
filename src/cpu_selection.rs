@@ -201,6 +201,9 @@ pub struct Choice {
     pub cpu_list: Vec<usize>,
     /// The most threads any one core runs: a cache-sized extent is shared by them (`tests::set_active_threads_per_core`)
     pub threads_per_core: usize,
+    /// The most threads any one L3 group runs: an L3-sized extent is their share (`tests::set_active_threads_per_l3`). A multi-L3 CPU's
+    /// groups each have their own L3, so the share is one group's L3 over its threads, not over all the run's
+    pub threads_per_l3: usize,
 }
 
 /// The threads `cpus=` asks for out of `available` (at least 1), and its percent when it is a share. A share rounds to the nearest and a
@@ -299,11 +302,18 @@ pub fn choose(cores: &[Core], request: &Request) -> Result<Choice, String> {
         cpu_list.extend(siblings.take(room));
     }
     let chosen: HashSet<usize> = cpu_list.iter().copied().collect();
-    let threads_per_core = picked.iter().map(|&i| cores[i].cpus.iter().filter(|cpu| chosen.contains(cpu)).count()).max().unwrap_or(1);
+    let on_core = |i: usize| cores[i].cpus.iter().filter(|cpu| chosen.contains(cpu)).count();
+    let threads_per_core = picked.iter().map(|&i| on_core(i)).max().unwrap_or(1);
+    let mut on_l3: HashMap<L3Group, usize> = HashMap::new();
+    for &i in &picked {
+        *on_l3.entry(cores[i].l3).or_default() += on_core(i);
+    }
+    let threads_per_l3 = on_l3.into_values().max().unwrap_or(1);
 
     let mut skipped: Vec<usize> = left_out.iter().map(|&i| cores[i].id).collect();
     skipped.sort_unstable();
-    Ok(Choice { order: order.iter().map(|&i| cores[i].id).collect(), skipped, available, threads, percent, cpu_list, threads_per_core })
+    let order = order.iter().map(|&i| cores[i].id).collect();
+    Ok(Choice { order, skipped, available, threads, percent, cpu_list, threads_per_core, threads_per_l3 })
 }
 
 /// "core 3", "cores 0 and 4", "cores 0, 2 and 4", "cores 0-7", "cores 0-3 and 8": ascending, three or more in a row as their ends.
@@ -675,6 +685,19 @@ mod tests {
         assert_eq!(pick(&cores, "1", "6", None, false).threads_per_core, 2, "one core with both");
         assert_eq!(pick(&cores, "1", "100%", None, true).threads_per_core, 1);
         assert_eq!(pick(&synthetic(&R8600G, 64, 64, false), "1", "100%", None, false).threads_per_core, 1);
+    }
+
+    /// The threads an L3 group runs, which an L3-sized extent is shared by: on the m8a.4xlarge (two groups of 8 cores) all 16 put 8 in
+    /// each and half put 4, the groups taking turns; on one L3 (the 8600G) it is every thread; cputype=cores counts a core once.
+    #[test]
+    fn threads_an_l3_is_what_the_choice_puts_in_one_group() {
+        let m8a = synthetic(&[0; 16], 8, 64, false);
+        assert_eq!(pick(&m8a, "0", "100%", None, false).threads_per_l3, 8);
+        assert_eq!(pick(&m8a, "0", "50%", None, false).threads_per_l3, 4);
+        assert_eq!(pick(&m8a, "0", "3", None, false).threads_per_l3, 2, "the turns put the third in the first group");
+        let r8600g = synthetic(&R8600G, 64, 64, true);
+        assert_eq!(pick(&r8600g, "1", "100%", None, false).threads_per_l3, 10);
+        assert_eq!(pick(&r8600g, "1", "100%", None, true).threads_per_l3, 5);
     }
 
     // ---- cpu-stride= ----

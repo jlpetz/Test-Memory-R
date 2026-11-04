@@ -88,7 +88,7 @@ pub fn parse_size_string(s: &str) -> Result<usize, String> {
 ///
 /// Each tier accepts a `scale: f64` interpreted relative to that tier's natural size:
 /// - L1/L2: per-core size ÷ active SMT siblings × scale
-/// - L3: per-thread share (total L3 ÷ thread_count) × scale
+/// - L3: per-thread share (one L3 group's L3 ÷ the run's threads in a group, `l3_sharers`) × scale
 /// - DRAM: total L3 × scale (no thread divisor — each thread independently spills)
 ///
 /// `DRAMFull` is a sentinel meaning "use the full thread allocation" (no scale).
@@ -101,7 +101,7 @@ pub enum CacheTarget {
     L1 { scale: f64 },
     /// Target L2 cache (per-core, ÷ SMT siblings).
     L2 { scale: f64 },
-    /// Target L3 cache (shared, ÷ thread_count).
+    /// Target L3 cache (shared by an L3 group's threads, ÷ `l3_sharers`).
     L3 { scale: f64 },
     /// Target DRAM. Per-thread working set = total L3 × scale.
     /// No thread divisor — sharing L3 across threads would shrink the per-thread region.
@@ -156,8 +156,8 @@ impl CacheTarget {
                 (per_thread * scale) as usize
             }
             CacheTarget::L3 { scale } => {
-                // Shared across all cores — divide by thread count
-                let per_thread = calibrated / thread_count.max(1) as f64;
+                // What one thread reaches is one L3 group's: shared by the run's threads in a group, not by every thread
+                let per_thread = calibrated / l3_sharers(thread_count) as f64;
                 (per_thread * scale) as usize
             }
             CacheTarget::Dram { scale } => {
@@ -171,11 +171,12 @@ impl CacheTarget {
         };
 
         log::debug!(
-            "Calibrated extent: {:?} → {} bytes (calibrated_optimal={}, threads={}, smt={})",
+            "Calibrated extent: {:?} → {} bytes (calibrated_optimal={}, threads={}, a group's={}, smt={})",
             tier,
             size,
             calibrated,
             thread_count,
+            l3_sharers(thread_count),
             get_active_threads_per_core()
         );
 
@@ -212,11 +213,8 @@ impl CacheTarget {
                 let vm_factor = if cache_info.is_virtual_machine { 2.0 } else { 1.0 };
                 let min_l3_size = cache_info.per_core_l2 + (64 * 1024);
 
-                let per_thread = if thread_count == 1 {
-                    cache_info.l3_cache as f64 / vm_factor
-                } else {
-                    (cache_info.l3_cache as f64 / vm_factor) / thread_count as f64
-                };
+                // CPUID's L3 is one instance's, an L3 group's (leaf 4, AMD's 0x8000001D)
+                let per_thread = (cache_info.l3_cache as f64 / vm_factor) / l3_sharers(thread_count) as f64;
                 ((per_thread * scale) as usize).max(min_l3_size)
             }
             CacheTarget::Dram { scale } => {
@@ -273,11 +271,12 @@ impl CacheTarget {
                     // Calibrated: show thread count division (calibration optimal_size already captures the true L3 ceiling, so the only
                     // post-divisor is thread sharing)
                     let scale_frag = Self::format_scale(*scale);
-                    if thread_count == 1 { format!("L3{} [cal]", scale_frag) } else { format!("L3/{}{} [cal]", thread_count, scale_frag) }
+                    let sharers = l3_sharers(thread_count);
+                    if sharers == 1 { format!("L3{} [cal]", scale_frag) } else { format!("L3/{}{} [cal]", sharers, scale_frag) }
                 } else {
                     let vm_factor = if is_vm { 2 } else { 1 };
                     let scale_frag = Self::format_scale(*scale);
-                    let total_div = if thread_count == 1 { vm_factor } else { thread_count * vm_factor };
+                    let total_div = l3_sharers(thread_count) * vm_factor;
                     if total_div == 1 { format!("L3{}", scale_frag) } else { format!("L3/{}{}", total_div, scale_frag) }
                 }
             }
@@ -468,10 +467,31 @@ pub fn get_active_threads_per_core() -> usize {
     ACTIVE_THREADS_PER_CORE.load(std::sync::atomic::Ordering::Relaxed).max(1)
 }
 
+// The most threads the run puts in one L3 group (`cpu_selection::Choice::threads_per_l3`), set by the session with the threads a core;
+// 0 until then. Each run's own (TODO 109).
+static ACTIVE_THREADS_PER_L3: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Set the most threads the run puts in one L3 group (by the session, after the selection)
+pub fn set_active_threads_per_l3(count: usize) {
+    ACTIVE_THREADS_PER_L3.store(count, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The threads an L3-sized extent is shared by, for a test on `thread_count` threads: the most the run puts in one L3 group, since
+/// each group has its own L3 (a single thread, calibrated or by CPUID, reaches one group's), and no more than the test's threads.
+/// Before a session sets it, every thread shares one L3.
+pub fn l3_sharers(thread_count: usize) -> usize {
+    let thread_count = thread_count.max(1);
+    match ACTIVE_THREADS_PER_L3.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => thread_count,
+        n => n.min(thread_count),
+    }
+}
+
 /// The run's calibration and threads a core back to a new process's, for a session after another (`session::reset_run`, TODO 109)
 pub(crate) fn reset_run_settings() {
     set_calibration_data(None);
     ACTIVE_THREADS_PER_CORE.store(0, std::sync::atomic::Ordering::Relaxed);
+    ACTIVE_THREADS_PER_L3.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 pub fn get_system_info() -> &'static SystemInfo {
@@ -10494,5 +10514,40 @@ mod mirror_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod l3_share {
+    use super::*;
+
+    /// An L3-sized extent is one L3 group's L3 over the run's threads in a group, calibrated or by CPUID: on an m8a.4xlarge-like CPU
+    /// (two groups of 32 MiB, 8 threads in each) each of 16 threads gets 32 MiB / 8 x 0.5 = 2 MiB, not 32 MiB / 16 x 0.5 = 1 MiB. A test
+    /// on fewer threads than a group runs shares among its own; before a session sets the groups, every thread shares one L3.
+    #[test]
+    fn an_l3_extent_is_one_groups_share() {
+        const MIB: usize = 1 << 20;
+        let cache_info = CacheInfo { l3_cache: 32 * MIB, per_core_l2: MIB / 2, ..Default::default() };
+        let l3 = CacheTarget::L3_DEFAULT;
+        reset_run_settings();
+        assert_eq!(l3.size_bytes(&cache_info, 16), MIB, "no session: all 16 share one L3");
+        set_active_threads_per_l3(8);
+        assert_eq!(l3.size_bytes(&cache_info, 16), 2 * MIB, "by CPUID");
+        assert_eq!(l3.size_bytes(&cache_info, 4), 4 * MIB, "a test on 4 threads");
+        assert_eq!(l3.name_with_context(16, false), "L3/8/2");
+        let mut cal = crate::calibration::CalibrationResults::new(crate::calibration::CpuSignature::default());
+        cal.add_tier_result(crate::calibration::TierCalibrationResult {
+            tier: crate::calibration::CacheTier::L3,
+            optimal_size: 24 * MIB,
+            median_latency_ns: 30.0,
+            spread_ratio: 1.1,
+            probes_attempted: 1,
+            converged: true,
+            fallback_used: false,
+        });
+        set_calibration_data(Some(cal));
+        assert_eq!(l3.size_bytes(&cache_info, 16), 24 * MIB / 8 / 2, "calibrated");
+        assert_eq!(l3.name_with_context(16, false), "L3/8/2 [cal]");
+        reset_run_settings();
     }
 }

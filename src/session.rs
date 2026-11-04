@@ -542,6 +542,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     // The threads that share a core's caches: the most the selection put on one core, so cputype=threads with one thread a core
     // (cpus=50% on 2-way SMT) doesn't halve the cache-sized extents (TODO 108)
     crate::set_active_threads_per_core(choice.threads_per_core);
+    // And the threads that share an L3 group's: the most the selection put in one, which an L3-sized extent is shared by
+    crate::tests::set_active_threads_per_l3(choice.threads_per_l3);
 
     // Detect SMBIOS data for identity validation
     let smbios = crate::smbios::get_smbios();

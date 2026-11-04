@@ -98,8 +98,11 @@ Targets a **specific tier** with smarts to share that tier correctly across the 
 threads. Each tier accepts a `scale` factor (any positive decimal in `0.01..=100.0`):
 
 - **L1 / L2** (per-core): per-core size ÷ active SMT siblings × scale.
-- **L3** (shared): per-thread share = (L3 ÷ thread_count) × scale. CPUID fallback
-  also applies a `÷2` VM factor when running in a virtual machine.
+- **L3** (shared): per-thread share = (one L3 group's L3 ÷ the run's threads in a group) × scale.
+  A multi-L3 CPU (an EPYC's CCDs, a 2-CCD Ryzen) gives each group its own L3, and a single thread
+  reaches one group's, so the divisor is the most threads the run puts in one group, not all of
+  them; on one L3 the two are the same. CPUID fallback also applies a `÷2` VM factor when running
+  in a virtual machine.
 - **DRAM**: per-thread working set = total L3 × scale. **No** thread divisor — each
   thread independently spills L3, which is what guarantees DRAM access under
   multi-threaded cache competition.
@@ -108,7 +111,7 @@ threads. Each tier accepts a `scale` factor (any positive decimal in `0.01..=100
 When `tmr-cfg.json` calibration data is available, the calibrated `optimal_size` for the
 tier is used directly (not the CPUID heuristic). Calibration captures the true tier
 ceiling, so the only post-divisor in the calibrated path is the topology-sharing one
-(SMT siblings for L1/L2, thread_count for L3).
+(SMT siblings for L1/L2, the threads in an L3 group for L3).
 
 Use `cache` when you want **a precise tier** — "I want this test to fit in L2", "I want to
 spill exactly 2× L3 worth of working set per thread".
@@ -140,12 +143,12 @@ Both produce a working set sized off L3, but they differ in *which* divisors app
 
 | Target  | Per-thread size                       | Threads divisor | VM factor (CPUID) |
 | ------- | ------------------------------------- | :-------------: | :---------------: |
-| `L3*N`  | `(total_L3 / thread_count / vm) × N`  |       yes       |        yes        |
+| `L3*N`  | `(group_L3 / group_threads / vm) × N` |       yes       |        yes        |
 | `DRAM*N`| `total_L3 × N`                        |        no       |         no        |
 
 So `DRAM/2` is `total_L3 × 0.5` per thread (half of *total* L3, per thread), while
-`L3*2` is `(total_L3 / thread_count / vm_factor) × 2` per thread. On a 16-thread
-non-VM box, those differ by ~8×.
+`L3*2` is `(group_L3 / group_threads / vm_factor) × 2` per thread. On a 16-thread
+non-VM box with one L3, those differ by ~8×.
 
 ### `cache_total` — coarse, intentionally naive
 
