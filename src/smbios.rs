@@ -68,13 +68,20 @@ pub fn serials_hidden() -> bool {
 
 /// `modules` as the run shows and keeps them: without their serials under `--no-serials`
 pub fn shown_modules(modules: &[MemoryModule]) -> Vec<MemoryModule> {
-    let hidden = serials_hidden();
-    modules.iter().cloned().map(|module| if hidden { MemoryModule { serial_number: String::new(), ..module } } else { module }).collect()
+    modules_shown(modules, serials_hidden())
 }
 
 /// The system as the run shows and keeps it: without its UUID under `--no-serials`
 pub fn shown_system(system: &SystemIdentity) -> SystemIdentity {
-    if serials_hidden() { SystemIdentity { uuid: String::new(), ..system.clone() } } else { system.clone() }
+    system_shown(system, serials_hidden())
+}
+
+fn modules_shown(modules: &[MemoryModule], hidden: bool) -> Vec<MemoryModule> {
+    modules.iter().cloned().map(|module| if hidden { MemoryModule { serial_number: String::new(), ..module } } else { module }).collect()
+}
+
+fn system_shown(system: &SystemIdentity, hidden: bool) -> SystemIdentity {
+    if hidden { SystemIdentity { uuid: String::new(), ..system.clone() } } else { system.clone() }
 }
 
 /// The SMBIOS memory type's name (Type 17 offset 0x12), for the ones a DDR5 tester meets
@@ -615,6 +622,28 @@ fn parse_type17_memory(formatted: &[u8], strings: &[String]) -> Option<MemoryMod
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TODO 105: `--no-serials` leaves out the DIMMs' serials and the system's UUID, and nothing else; without it, both stay
+    #[test]
+    fn no_serials_leaves_out_the_serials_and_the_uuid_only() {
+        let module = MemoryModule {
+            locator: "DIMM_A2".to_string(),
+            manufacturer: "G Skill".to_string(),
+            serial_number: "12345678".to_string(),
+            part_number: "F5-6000J3038F16G".to_string(),
+            speed_mts: 6000,
+            capacity_bytes: 16 << 30,
+            ..Default::default()
+        };
+        let system =
+            SystemIdentity { manufacturer: "ASUS".to_string(), product_name: "PRIME".to_string(), uuid: "03000200-0400".to_string() };
+        let hidden = modules_shown(std::slice::from_ref(&module), true);
+        assert_eq!((hidden[0].serial_number.as_str(), hidden[0].part_number.as_str(), hidden[0].speed_mts), ("", "F5-6000J3038F16G", 6000));
+        assert_eq!(modules_shown(std::slice::from_ref(&module), false)[0].serial_number, "12345678");
+        let without = system_shown(&system, true);
+        assert_eq!((without.uuid.as_str(), without.product_name.as_str()), ("", "PRIME"));
+        assert_eq!(system_shown(&system, false).uuid, "03000200-0400");
+    }
 
     #[test]
     fn test_detect_smbios() {
