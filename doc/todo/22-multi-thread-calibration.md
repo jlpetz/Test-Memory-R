@@ -108,6 +108,25 @@ then 18.5 MB on the dev box in one session).
 - Decided (2026-11-05): the two-point curve stays. Next, a recheck (TODO 116), and a final run on
   the metal box (several L3 groups and NUMA nodes).
 
+## C confirms its size, and the recheck (2026-11-05)
+
+On daddy-petz a run's C took 2.6 MB a thread with 16 sharing: 42 MB, more than the chip's 32 MB
+L3 and 4 MB of L2s hold. Its finer sweep's three probes at that size had all read steady. The next
+run's recheck (`calibrate=recheck`, TODO 116) read it at 31.6 ns, past the L3, and measured again:
+1.9 MB.
+
+Since 06dbdae, C probes the size it would take three times more before taking it. The probes must
+read within 1.5x A's latency, as a recheck reads it; otherwise C tries the next smaller size. Three
+calibrations on each desktop after that:
+
+| Host | A, one thread | C, every CPU, a thread | Note |
+|---|---|---|---|
+| petz007 | 11.4, 11.4, 11.4 MB | 1.9, 1.8, 1.7 MB | |
+| daddy-petz | 21.0, 21.0, 21.0 MB | 2.4, 1.9, 1.9 MB | run 1 rejected 2.8 MB (31.0 ns) |
+
+The recheck took 5.3 s on petz007, 6.8 s on daddy-petz and 13.9 s on the dev box. Most of that is
+A's three probes at each size, up to 2 s each.
+
 ## Notes (TODO 116 has them)
 
 - The coarse sweep runs to 4x CPUID's L3, 1.9 GB here, and most of its time goes on the DRAM
