@@ -364,6 +364,7 @@ pub struct StepConfigLine {
 
 /// The run's work by thread, by logical CPU and by physical core, each with the run's WHEA total on its aggregate row. A table with no rows
 /// isn't shown.
+#[derive(Debug, Clone)]
 pub struct CpuPerformanceSummary {
     pub by_thread: PerformanceByThreadReport,
     pub by_cpu: PerformanceByCpuReport,

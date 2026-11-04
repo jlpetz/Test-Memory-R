@@ -415,6 +415,9 @@ pub struct SavedRun {
     /// The lines before the summary: how the run ended (`ending`), then which run it was (`which_run`)
     pub head: String,
     pub summary: FinalTestSummaryReport,
+    /// The run's work by thread, CPU and core, summed from its steps' thread records as the run summed them (TODO 7); `None` for a file
+    /// with no thread records (before TODO 72)
+    pub work: Option<crate::frontend::CpuPerformanceSummary>,
 }
 
 /// The results file `file`, found as `--compare-results` finds one (as given, or by its name in TMR's home's `results\`, `home::find`), as
@@ -426,7 +429,51 @@ pub fn saved_run(file: &str) -> Result<SavedRun, String> {
         .to_string();
     let result = TestRunResult::load_from_file(&found).map_err(|e| format!("{found}: {e}"))?;
     let summary = crate::reporting::converters::create_overall_stats_summary_report(&result);
-    Ok(SavedRun { head: head(&result, &summary), summary })
+    Ok(SavedRun { head: head(&result, &summary), summary, work: saved_work(&result) })
+}
+
+/// The run's work by thread, CPU and core from `result`'s thread records, summed over every step as the live run sums them (its
+/// timed milliseconds, bytes and errors), a thread with no CPU left out as there; the run's WHEA and pinning from the file
+fn saved_work(result: &TestRunResult) -> Option<crate::frontend::CpuPerformanceSummary> {
+    use crate::reporting::models::ThreadPerformance;
+    /// A thread's sums over the run's steps, and where it ran
+    #[derive(Default)]
+    struct Sums {
+        cpu: Option<usize>,
+        core: Option<usize>,
+        node: Option<u32>,
+        bytes: u64,
+        ms: f64,
+        errors: u64,
+    }
+    let mut by_thread: std::collections::BTreeMap<usize, Sums> = std::collections::BTreeMap::new();
+    for record in result.cycles.iter().flat_map(|cycle| &cycle.tests).flat_map(|test| &test.threads) {
+        let sums = by_thread.entry(record.thread).or_default();
+        (sums.cpu, sums.core, sums.node) = (sums.cpu.or(record.cpu), sums.core.or(record.core), sums.node.or(record.node));
+        (sums.bytes, sums.ms, sums.errors) = (sums.bytes + record.bytes, sums.ms + record.ms, sums.errors + record.errors);
+    }
+    let threads: Vec<ThreadPerformance> = by_thread
+        .into_iter()
+        .filter_map(|(thread_id, sums)| {
+            let cpu_id = sums.cpu?;
+            let throughput_mib_s = if sums.ms > 0.0 { (sums.bytes as f64 / (1024.0 * 1024.0)) / (sums.ms / 1000.0) } else { 0.0 };
+            Some(ThreadPerformance {
+                thread_id,
+                cpu_id,
+                physical_core_id: sums.core.unwrap_or(cpu_id),
+                numa_node: sums.node.unwrap_or(0),
+                total_time_ms: sums.ms as u128,
+                total_bytes: sums.bytes,
+                throughput_mib_s,
+                total_errors: sums.errors,
+            })
+        })
+        .collect();
+    if threads.is_empty() {
+        return None;
+    }
+    let whea = crate::whea::WheaCounts { total: result.overall_stats.whea_total, corrected: result.overall_stats.whea_corrected };
+    Some(crate::runner::cpu_performance_of(threads, whea, result.run_config.threads.pinned))
 }
 
 /// `--show-results`' lines before the summary, `summary` the run's
@@ -434,8 +481,8 @@ fn head(result: &TestRunResult, summary: &FinalTestSummaryReport) -> String {
     format!("{}\n{}", ending(result, summary.errors()), which_run(&result.metadata))
 }
 
-/// `--show-results <results.json>`, `args` the command line: how the run ended and which run it was, then its final summary, `text`'s text
-/// of it, as a run's end shows it.
+/// `--show-results <results.json>`, `args` the command line: how the run ended and which run it was, then its work by thread, CPU and
+/// core, and its final summary, `text`'s text of them, as a run's end shows them.
 fn show_results(args: &[String], out: &mut dyn Write, text: &dyn Fn(&Event) -> String) -> io::Result<RunStatus> {
     let [_, _, file] = args else {
         writeln!(out, "❌ Usage: {} --show-results <results.json>", args[0])?;
@@ -444,6 +491,9 @@ fn show_results(args: &[String], out: &mut dyn Write, text: &dyn Fn(&Event) -> S
     match saved_run(file) {
         Ok(saved) => {
             out.write_all(saved.head.as_bytes())?;
+            if let Some(work) = saved.work {
+                out.write_all(text(&Run::CpuPerformance(Box::new(work)).into()).as_bytes())?;
+            }
             out.write_all(text(&Run::FinalSummary(Box::new(saved.summary)).into()).as_bytes())?;
             Ok(RunStatus::Passed)
         }
@@ -888,6 +938,43 @@ fn format_calibration_size(bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TODO 7: `--show-results` sums each thread's records over every step, as the live run sums its totals (bytes, timed ms, errors), its
+    /// CPU, core and node from the records; a thread with no CPU isn't in the tables, as in the live run's; WHEA and pinning from the file;
+    /// and a file with no records has no tables
+    #[test]
+    fn a_saved_run_has_its_work_by_thread() {
+        use crate::results::ThreadStepRecord;
+        let mut run = crate::test_support::run_with_errors();
+        for test in run.cycles.iter_mut().flat_map(|cycle| &mut cycle.tests) {
+            test.threads.clear();
+        }
+        assert!(saved_work(&run).is_none(), "no records, no tables");
+        let record = |thread, cpu: Option<usize>, bytes, ms, errors| ThreadStepRecord {
+            thread,
+            cpu,
+            core: cpu.map(|cpu| cpu / 2),
+            node: cpu.map(|_| 0),
+            bytes,
+            ms,
+            errors,
+            ..Default::default()
+        };
+        for test in run.cycles.iter_mut().flat_map(|cycle| &mut cycle.tests) {
+            test.threads =
+                vec![record(0, Some(0), 1 << 30, 1000.0, 1), record(1, Some(2), 2 << 30, 500.0, 0), record(2, None, 1 << 30, 9.0, 0)];
+        }
+        let steps = run.cycles.iter().map(|cycle| cycle.tests.len()).sum::<usize>() as u64;
+        (run.overall_stats.whea_total, run.overall_stats.whea_corrected, run.run_config.threads.pinned) = (3, 2, false);
+        let work = saved_work(&run).expect("records");
+        let threads = &work.by_thread.threads;
+        let rows: Vec<_> =
+            threads.iter().map(|t| (t.thread_id, t.cpu_id, t.physical_core_id, t.total_bytes, t.total_time_ms, t.total_errors)).collect();
+        assert_eq!(rows, [(0, 0, 0, steps << 30, 1000 * steps as u128, steps), (1, 2, 1, (2 * steps) << 30, 500 * steps as u128, 0)]);
+        assert!((threads[1].throughput_mib_s - 4096.0).abs() < 1e-6, "2 GiB a step in 0.5 s: {}", threads[1].throughput_mib_s);
+        assert_eq!((work.by_cpu.cpus.len(), work.by_core.cores.len()), (2, 2));
+        assert_eq!((work.by_thread.whea.total, work.by_thread.whea.corrected, work.by_thread.pinned), (3, 2, false));
+    }
 
     fn args(args: &[&str]) -> Vec<String> {
         args.iter().map(|a| a.to_string()).collect()

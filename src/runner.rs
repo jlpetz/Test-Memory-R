@@ -4703,8 +4703,6 @@ fn cpu_performance_summary(
     whea: crate::whea::WheaCounts,
     pinned: bool,
 ) -> CpuPerformanceSummary {
-    use std::collections::HashMap;
-
     use crate::cpu_topology::get_cpu_topology;
     use crate::reporting::models::*;
 
@@ -4734,6 +4732,17 @@ fn cpu_performance_summary(
         }
     }
     threads.sort_by_key(|t| t.thread_id);
+    cpu_performance_of(threads, whea, pinned)
+}
+
+/// The run's work by CPU and by physical core, from each thread's (`threads`, in thread order), and the run-wide WHEA figure on each
+/// table: the live run's (`cpu_performance_summary`) and a results file's (`commands::saved_run`, TODO 7)
+pub(crate) fn cpu_performance_of(
+    threads: Vec<crate::reporting::models::ThreadPerformance>, whea: crate::whea::WheaCounts, pinned: bool,
+) -> CpuPerformanceSummary {
+    use std::collections::HashMap;
+
+    use crate::reporting::models::*;
 
     // Build PerformanceByCpuReport (aggregate by logical CPU)
     let mut cpu_aggregates: HashMap<usize, (usize, u32, u64, u128, u64)> = HashMap::new(); // (physical_core, numa, bytes, time, errors)
