@@ -80,6 +80,36 @@ idle        102.8 ns [102.5-103.1]
 full        451.7 ns [449.0-453.2]       16117  264.8 ns [263.9-265.6]       27180  
 ------------------------------------------------------------------------------------
 
+## a turnaround step: its levels, its turnaround the headline
+📊 Test report - Cycle 1 - Step 3 Lat-Turnaround-DRAM: ✅ 33.0s, 0 errors (0 test + 0 WHEA), Cycles 🔴 1/1, Time Limit 🟢
+   Test: 31.2s, 91.00 GiB @ 2987 MiB/s, 12.22B ops @ 391.68M ops/s, Turnaround +6.0 ns at 8059 MiB/s
+   Intermediate: seal fill n/a; seal check n/a; pattern fill n/a; chain build n/a
+   Config: parameter=Pairs(3), mode=-, extent=1.00 GiB, chunk=Whole
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+    Thread       L CPU      P Core     NUMA           Time       Dev T        Data       Dev D        Speed       Dev S      Cycles      Errors     Pass     
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+         2           0           0      0            31.2s       +0.0s   13.00 GiB     +0.00 B  426.7 MiB/s        +0.0           1           0      ✅       
+         4           0           0      0            31.2s       +0.0s   13.00 GiB     +0.00 B  426.7 MiB/s        +0.0           1           0      ✅       
+         6           0           0      0            31.2s       +0.0s   13.00 GiB     +0.00 B  426.7 MiB/s        +0.0           1           0      ✅       
+         8           0           0      0            31.2s       +0.0s   13.00 GiB     +0.00 B  426.7 MiB/s        +0.0           1           0      ✅       
+        10           0           0      0            31.2s       +0.0s   13.00 GiB     +0.00 B  426.7 MiB/s        +0.0           1           0      ✅       
+        12           0           0      0            31.2s       +0.0s   13.00 GiB     +0.00 B  426.7 MiB/s        +0.0           1           0      ✅       
+        14           0           0      0            31.2s       +0.0s   13.00 GiB     +0.00 B  426.7 MiB/s        +0.0           1           0      ✅       
+       Avg                                           31.2s               13.00 GiB              426.7 MiB/s                     1.0           0      ✅       
+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+🔍 Under load: thread 0 (CPU 2, core 1, node 0) measures; 7 threads load, one a core; 8 sit out
+   1.00 GiB chain in 128 B cells; 256-bit loaders in 4 KiB blocks; 1.0 s windows after 0.2 s settles; median of window means [lowest-highest]
+   Levels 25%, 50%, 75% of 16117 MiB/s (the lower flat-out peak): 4029, 8059, 12088 MiB/s; pin them with load-levels=4029,8059,12088
+----------------------------------------------------------------------------------------------------------------
+Load                    Under NT writes       MiB/s             Under reads       MiB/s             Turnaround  
+----------------------------------------------------------------------------------------------------------------
+idle             102.8 ns [102.5-103.1]                                                                         
+25% 4029 MiB/s   113.0 ns [111.9-114.2]        4027  111.6 ns [111.2-112.2]        4028  +1.4 ns [-0.3 - +3.0]  
+50% 8059 MiB/s   127.0 ns [125.1-129.9]        8051  121.2 ns [121.0-121.8]        8055  +6.0 ns [+3.9 - +8.1]  
+75% 12088 MiB/s  150.3 ns [148.9-152.0]       12085  133.1 ns [132.4-134.0]       11210            not matched  
+full             451.7 ns [449.0-453.2]       16117  264.8 ns [263.9-265.6]       27180                         
+----------------------------------------------------------------------------------------------------------------
+
 ## WHEA after the monitor's last tick
 ⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)
 ⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)

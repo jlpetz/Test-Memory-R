@@ -86,6 +86,10 @@ fn events_print_as_their_golden() {
         ("a step unsealed, ended by its time limit, with a WHEA event and repetitions", Run::StepFinished(Box::new(step()))),
         ("a loaded latency step: its rows, its loaders' timing", Run::StepFinished(Box::new(tmr::test_support::loaded_step_report()))),
         (
+            "a turnaround step: its levels, its turnaround the headline",
+            Run::StepFinished(Box::new(tmr::test_support::turnaround_step_report())),
+        ),
+        (
             "WHEA after the monitor's last tick",
             Run::LateWhea(vec![
                 "⚠️  WHEA: corrected Memory error on DIMM_A1 (Event 47)".to_string(),

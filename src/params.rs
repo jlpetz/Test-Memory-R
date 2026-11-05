@@ -243,6 +243,38 @@ impl ParamRegistry {
             parser: |v| v.to_lowercase().parse::<crate::config::MirrorMode>().map(|m| ParamValue::String(m.to_string())),
         });
 
+        // The loaded latency tests' settings (TODO 117, `loaded::Params`), as their config fields: Lat-Turnaround-DRAM's levels, either's
+        // pairs and window. Kept as the levels' text, which the session parses again.
+        params.insert("load-levels", ParamDef {
+            key: "load-levels",
+            can_override_config: true,
+            parser: |v| {
+                crate::loaded::Level::parse_list(v)
+                    .map(|levels| ParamValue::String(levels.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")))
+                    .map_err(|e| format!("Invalid load-levels '{v}': {e}"))
+            },
+        });
+        params.insert("load-pairs", ParamDef {
+            key: "load-pairs",
+            can_override_config: true,
+            parser: |v| match v.trim().parse::<u32>() {
+                Ok(n) if (1..=crate::loaded::MAX_PAIRS).contains(&n) => Ok(ParamValue::U32(n)),
+                _ => Err(format!("Invalid load-pairs '{v}'. Valid: 1 to {}", crate::loaded::MAX_PAIRS)),
+            },
+        });
+        params.insert("load-window-ms", ParamDef {
+            key: "load-window-ms",
+            can_override_config: true,
+            parser: |v| match v.trim().parse::<u32>() {
+                Ok(n) if (crate::loaded::MIN_WINDOW_MS..=crate::loaded::MAX_WINDOW_MS).contains(&n) => Ok(ParamValue::U32(n)),
+                _ => Err(format!(
+                    "Invalid load-window-ms '{v}'. Valid: {} to {} (ms)",
+                    crate::loaded::MIN_WINDOW_MS,
+                    crate::loaded::MAX_WINDOW_MS
+                )),
+            },
+        });
+
         // Pattern and repetition parameters
         params.insert("pattern-mode", ParamDef {
             key: "pattern-mode",
@@ -599,6 +631,26 @@ mod tests {
         for bad in ["Lat-[L3", "Mem-*,Lat-{L1", "Mem-{Refresh,Mirror}*"] {
             let e = kept("test", bad).unwrap_err();
             assert!(e.contains(&format!("Invalid test '{bad}': ")) && e.contains("Valid: test names or glob patterns"), "{e}");
+        }
+    }
+
+    /// TODO 117: `load-levels=` takes shares and pinned MiB/s, comma-separated, kept in the results' form; `load-pairs=` 1 to 50 and
+    /// `load-window-ms=` 10 to 60000, as the config's fields; each refuses the rest, naming itself
+    #[test]
+    fn the_loaded_latency_settings_take_their_ranges() {
+        assert_eq!(kept("load-levels", "25%, 50% ,8058").as_deref(), Ok("25%,50%,8058"));
+        for bad in ["", "0%", "150%", "fast", "1%,2%,3%,4%,5%,6%,7%,8%,9%"] {
+            let e = kept("load-levels", bad).unwrap_err();
+            assert!(e.contains(&format!("Invalid load-levels '{bad}': ")), "{e}");
+        }
+        let parsed = |key: &str, v: &str| super::parse_and_validate_args(&[format!("{key}={v}")]).map(|p| super::get_u32(&p, key, 0));
+        assert_eq!((parsed("load-pairs", "1"), parsed("load-pairs", "50")), (Ok(1), Ok(50)));
+        assert_eq!((parsed("load-window-ms", "10"), parsed("load-window-ms", "60000")), (Ok(10), Ok(60_000)));
+        for (key, bad) in
+            [("load-pairs", "0"), ("load-pairs", "51"), ("load-window-ms", "9"), ("load-window-ms", "60001"), ("load-pairs", "x")]
+        {
+            let e = parsed(key, bad).unwrap_err();
+            assert!(e.contains(&format!("Invalid {key} '{bad}'. Valid: ")), "{e}");
         }
     }
 

@@ -673,6 +673,15 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         None
     };
 
+    // The loaded latency tests' settings, if given (the parser has checked them)
+    let load_levels_override = params::has_param(&validated_params, "load-levels")
+        .then(|| crate::loaded::Level::parse_list(&params::get_string(&validated_params, "load-levels", "")).ok())
+        .flatten();
+    let load_pairs_override =
+        params::has_param(&validated_params, "load-pairs").then(|| params::get_u32(&validated_params, "load-pairs", 0));
+    let load_window_ms_override =
+        params::has_param(&validated_params, "load-window-ms").then(|| params::get_u32(&validated_params, "load-window-ms", 0));
+
     // Extract pattern-mode override if provided
     let pattern_mode_override = if params::has_param(&validated_params, "pattern-mode") {
         Some(params::get_u32(&validated_params, "pattern-mode", 0))
@@ -727,6 +736,9 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
                 seal_override: seal_override.as_deref(),
                 seal_width_override: seal_width_override.as_deref(),
                 mirror_override,
+                load_levels_override: load_levels_override.as_deref(),
+                load_pairs_override,
+                load_window_ms_override,
                 pattern_mode_override,
                 sequence_override: sequence_override.as_deref(),
                 order_override: order_override.as_deref(),

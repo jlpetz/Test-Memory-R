@@ -191,6 +191,41 @@ count is a write lost or changed between the cores: one error each.
 - **JSON config fields:** `"storm_lines": 4`, `"storm_increments": 10000`
 - The test writes none of its memory span (its lines are its own), so it takes no seal.
 
+### `load_levels: Option<Vec<Level>>`, `load_pairs: Option<u32>`, `load_window_ms: Option<u32>`
+**Used by:** Lat-Loaded-DRAM and Lat-Turnaround-DRAM (TODO 117, `src/loaded.rs`); the levels by Lat-Turnaround-DRAM alone
+
+A read's latency while the other cores load DRAM. Thread 0 (the run's top-ranked core) chases a
+chain of 128 B cells over 32 L3s or more (1 GiB at least) and times it; the first thread of each
+other physical core on its node loads, streaming NT writes or reads over its own 1 GiB; every
+other thread sits out. The step is a schedule of windows, each a 0.2 s settle and then
+`load_window_ms` timed: idle, `load_pairs` ABBA pairs flat out (NT writes then reads, reads then
+NT writes, ...), Lat-Turnaround-DRAM's `load_pairs` pairs at each level, then idle. Each window
+restarts every loader at a random 4 KiB block, so it is a fresh instance of the load.
+
+- **Lat-Loaded-DRAM** reports a read's latency idle, under flat-out NT writes and under flat-out
+  reads, each the median of its windows' means with [lowest-highest] beside the loaders' MiB/s.
+  On daddy-petz tWR 12 to 24 moved only the latency under flat-out NT writes (+6.7 ns).
+- **Lat-Turnaround-DRAM** adds the matched levels: the loaders held to the same MiB/s writing and
+  reading, a TSC deadline a 4 KiB block each (staggered, so their blocks interleave; a block more
+  than an interval late resets its deadline and counts as fallen behind, so no loader bursts to
+  catch up). A level's turnaround is the median of its pairs' differences, under writes less under
+  reads, signed; it reads `not matched` when either kind's median MiB/s is more than 3% from the
+  level. On daddy-petz tRDWR 8 to 12 moved only the turnaround (+12 ns at 50%, +24 at 75%).
+- **`load_levels`:** comma-separated, each a share of the lower of this step's two flat-out peaks
+  (`25%`, more than 0 and at most 100, to the whole MiB/s) or MiB/s pinned (`8058`, 1 to
+  1,000,000); 1 to 8 of them. A share is a different load in each setting (an overclock moved
+  daddy-petz's 50% from 8.4 to 14.1 GB/s), so the report prints the pin of the run's levels
+  (`load-levels=4029,8059,12088`) to hold another run to the same loads.
+- **Defaults:** `load_levels` `25%,50%,75%`; `load_pairs` 3 (Lat-Loaded-DRAM) and 5
+  (Lat-Turnaround-DRAM); `load_window_ms` 1000. A step takes about 10 s and 50 s.
+- **Ranges:** `load_pairs` 1 to 50, `load_window_ms` 10 to 60000
+- **JSON config fields:** `"load_levels": "25%,50%,8058"`, `"load_pairs": 20`, `"load_window_ms": 250`
+- **Command line:** `load-levels=`, `load-pairs=`, `load-window-ms=`, over a config's or the
+  built-in tests' (the levels on Lat-Turnaround-DRAM alone)
+- **Results:** the step's `loaded`: who measured, loaded and sat out, the geometry, the levels as
+  given and resolved, a row a load and every raw window; no `latency_*`. In no plan yet:
+  `plan=all` or `test=` runs them.
+
 ## SimpleTest patterns (pattern spec 2)
 
 | Where | Field | Meaning |
@@ -305,7 +340,7 @@ ID is the order the threads took; its last line says how they were ordered.
 |--------|----------------------|
 | TM5 `.cfg` file | `interpret_tm5_parameter_with_channels()` maps the raw parameter based on test function name |
 | JSON config v2.0 | Direct fields: `"parameter"` for SimpleTest's TM5-style stride, or named fields (`"mirror"`, `"stride_patterns"`, etc.) |
-| CLI override | `mirror=subblocks:4` (or `whole`, `jump:N`) sets every test's mirror mode and leaves its other parameters |
+| CLI override | `mirror=subblocks:4` (or `whole`, `jump:N`) sets every test's mirror mode and leaves its other parameters; `load-levels=`, `load-pairs=` and `load-window-ms=` the loaded latency tests' settings |
 | Default test suite | Hard-coded in `create_test_definitions()` in `runner.rs`; `plan=` (`plans.rs`, TODO 25) picks which of its tests run, keeping their settings: `stability` by default, `quick`, `widths`, `perf`, `all` |
 
 ## Validation
@@ -318,6 +353,8 @@ All parameters are validated before tests run (in `runner.rs`):
 - `exchange_share` must be `any`, `node` or `cross` and `exchange_stores` `cached` or `nt`, when the config is loaded; a test other
   than the page exchange's refuses both; `exchange_invert` is 0 to 100, on Mem-PageExchange alone
 - `storm_lines` is 1 to 4096 and `storm_increments` 1 to 16777216, on Mem-CoherenceStorm alone
+- `load_pairs` is 1 to 50 and `load_window_ms` 10 to 60000, on the loaded latency tests alone; `load_levels` is 1 to 8 levels,
+  each more than 0% and at most 100% or 1 to 1,000,000 MiB/s, on Lat-Turnaround-DRAM alone (the command line's `load-*=` the same)
 - Tests panic with a clear error message if their required parameter is missing from `parameter_context`
 
 ## Sequencing and the seal (TODO 74)

@@ -232,7 +232,7 @@ impl ThreadPool {
         let thread_count = self.senders.len();
         let barrier = Arc::new(Barrier::new(thread_count));
         // The page exchange's workers share one step (TODO 28): its tiles, claims and barrier, with each worker's node; the coherence
-        // storm's, its lines; the loaded latency tests', their roles, phase word and byte slots (TODO 117)
+        // storm's, its lines; the loaded latency tests', their roles, phase word and pace and the loaders' counts (TODO 117)
         let shared;
         let nodes = || self.cpu_assignments.iter().map(|&(_, _, node)| node).collect();
         let test_config = if crate::exchange::is_exchange(test_name) {
@@ -242,7 +242,7 @@ impl ThreadPool {
             shared = TestMemoryConfig { storm: Some(Arc::new(crate::storm::Step::new(nodes(), test_config))), ..test_config.clone() };
             &shared
         } else if crate::loaded::is_loaded(test_name) {
-            let step = crate::loaded::Step::new(&self.cpu_assignments, test_config);
+            let step = crate::loaded::Step::new(test_name, &self.cpu_assignments, test_config);
             shared = TestMemoryConfig { loaded: Some(Arc::new(step)), ..test_config.clone() };
             &shared
         } else {

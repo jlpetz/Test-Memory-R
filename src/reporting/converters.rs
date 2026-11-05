@@ -68,9 +68,12 @@ pub(crate) fn format_parameter_context(ctx: &Option<crate::config::TestParameter
             if let Some(ms) = c.wait_ms {
                 return format!("Wait({})", whole_unit(ms));
             }
-            // The loaded latency tests' (TODO 117): each load's ABBA pairs and a window's timed length
-            if c.load_pairs.is_some() || c.load_window_ms.is_some() {
+            // The loaded latency tests' (TODO 117): Lat-Turnaround-DRAM's levels, each load's ABBA pairs and a window's timed length
+            if c.load_levels.is_some() || c.load_pairs.is_some() || c.load_window_ms.is_some() {
                 let mut parts = Vec::new();
+                if let Some(levels) = &c.load_levels {
+                    parts.push(format!("Levels({})", levels.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")));
+                }
                 if let Some(pairs) = c.load_pairs {
                     parts.push(format!("Pairs({pairs})"));
                 }
@@ -746,6 +749,10 @@ mod tests {
             (shown(None, Some(250)), shown(Some(20), None), shown(None, None)),
             ("Window(250ms)".into(), "Pairs(20)".into(), "-".into())
         );
+        // Lat-Turnaround-DRAM's levels, as given
+        let levels = Some(vec![crate::loaded::Level::Percent(25.0), crate::loaded::Level::MiBs(8058.0)]);
+        let context = TestParameterContext { load_levels: levels, load_pairs: Some(5), ..Default::default() };
+        assert_eq!(format_parameter_context(&Some(context)), "Levels(25%,8058),Pairs(5)");
     }
 
     /// TODO 99: a width given is in the plan, with where it came from, and Mem-Sequence's own where it lacks that one; under auto the plan

@@ -2,7 +2,9 @@
 //! (`doc/todo/117-write-latency.md`) tWR 12 to 24 moved one figure, a read's latency under a flat-out NT-write load (+6.7 ns), and
 //! tRDWR 8 to 12 one other, the turnaround at matched load (+12 ns at 50%); the idle figures and every other Lat-* test moved with
 //! neither. Lat-Loaded-DRAM measures a read's latency idle, under flat-out NT writes (its headline) and under flat-out reads.
-//! Lat-Turnaround-DRAM, its matched levels, is the same function's other registration, to come with its pacing.
+//! Lat-Turnaround-DRAM, the same function's other registration, adds matched levels: the loaders held to 25, 50 and 75% of the lower
+//! flat-out peak (or MiB/s pinned, `load_levels`), writing and then reading at the same MiB/s, its turnaround the latency under writes
+//! less that under reads, which is what writes cost a read beyond the bus time they take.
 //!
 //! **Roles**, chosen once from the step's CPUs (`assign_roles`): thread 0, the run's top-ranked core, measures; the first thread of each
 //! other physical core on its node loads; the rest sit out (thread 0's SMT siblings, the loaders' siblings, other nodes' threads) and
@@ -19,7 +21,10 @@
 //! **A loader** fills its extent once (NT), then per 4 KiB block calls its kernel (`bandwidth_tests::load_kernels`, at the run's width),
 //! stores its running byte count to its own slot and reads the phase word. Each window it restarts at a random block, so a window is a
 //! new instance of the load: the probe's windows sat within 1 ns of each other while two runs' differed by 12. Parked (an idle window),
-//! it spins with PAUSE in C0, so the idle rows run at the loaded rows' clocks.
+//! it spins with PAUSE in C0, so the idle rows run at the loaded rows' clocks. Under a level it is held to its share (the level over
+//! the loaders) by a TSC deadline a block (`pace`): staggered, loader i's first i/L of an interval after the first's, so the blocks
+//! interleave; its debt capped at an interval, so it never bursts to catch up; and each block later than that counted as fallen behind.
+//! The levels come from this step's own flat-out pairs, which run first (`resolve`).
 //!
 //! **The schedule** is ABBA pairs (W R, R W, ...) between two idle windows, so linear drift cancels within a pair. Every raw window is
 //! kept, and `summarize` turns them into rows: a pure function, which can be changed and rerun on results already taken. The design and
@@ -60,9 +65,20 @@ pub const MATCH: f64 = 0.03;
 /// A window's length when the config gives none, and the most it may give
 pub const DEFAULT_WINDOW_MS: u32 = 1000;
 pub const MAX_WINDOW_MS: u32 = 60_000;
-/// Lat-Loaded-DRAM's ABBA pairs flat out when the config gives none, and the most it may give
+/// The fewest a config may give: a shorter window is mostly its settle's tail and a few samples (unit tests set less directly)
+pub const MIN_WINDOW_MS: u32 = 10;
+/// Lat-Loaded-DRAM's ABBA pairs flat out when the config gives none, Lat-Turnaround-DRAM's at each load, and the most either may give
 pub const LOADED_PAIRS: u32 = 3;
+pub const TURNAROUND_PAIRS: u32 = 5;
 pub const MAX_PAIRS: u32 = 50;
+/// Lat-Turnaround-DRAM's levels when the config gives none: on daddy-petz tRDWR 8 to 12 moved the turnaround +12 ns at 50% and +24 at
+/// 75%, and 25% is the near-idle end (`doc/todo/117-write-latency.md`)
+pub const DEFAULT_LEVELS: [Level; 3] = [Level::Percent(25.0), Level::Percent(50.0), Level::Percent(75.0)];
+/// The most levels a step may take: each adds its pairs' windows
+pub const MAX_LEVELS: usize = 8;
+/// A pinned level's range, MiB/s: the loaders held to 1 MiB/s between them up to about 1 TB/s, past any controller's
+pub const MIN_LEVEL_MIB_S: f64 = 1.0;
+pub const MAX_LEVEL_MIB_S: f64 = 1_000_000.0;
 /// Chained reads a sample, as the other Lat-* tests take
 const READS: usize = 1000;
 /// A loader's blocks between its progress and its stop check: 1 MiB
@@ -216,19 +232,149 @@ impl Schedule {
     }
 }
 
-/// A loaded step's settings, from its config's parameters (`load_pairs`, `load_window_ms`) or the defaults.
+/// A matched level (Lat-Turnaround-DRAM's `load_levels`): a share of the lower flat-out peak, `25%`, or MiB/s pinned, `8058`, so two
+/// settings can be compared at the same load (daddy-petz's overclock moved its 50% from 8.4 to 14.1 GB/s). Written as given in the
+/// results and on the command line.
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Level {
+    Percent(f64),
+    MiBs(f64),
+}
+
+impl Level {
+    /// One level: `N%`, more than 0 and at most 100, or MiB/s, `MIN_LEVEL_MIB_S` to `MAX_LEVEL_MIB_S`
+    pub fn parse(s: &str) -> Result<Level, String> {
+        let s = s.trim();
+        let number = |n: &str| n.trim().parse::<f64>().ok().filter(|v| v.is_finite());
+        match s.strip_suffix('%') {
+            Some(share) => match number(share) {
+                Some(p) if p > 0.0 && p <= 100.0 => Ok(Level::Percent(p)),
+                _ => Err(format!("level '{s}': a share of the lower flat-out peak is more than 0% and at most 100%")),
+            },
+            None => match number(s) {
+                Some(m) if (MIN_LEVEL_MIB_S..=MAX_LEVEL_MIB_S).contains(&m) => Ok(Level::MiBs(m)),
+                _ => Err(format!(
+                    "level '{s}': N% (a share of the lower flat-out peak) or MiB/s pinned, {MIN_LEVEL_MIB_S} to {MAX_LEVEL_MIB_S}"
+                )),
+            },
+        }
+    }
+
+    /// Levels, comma-separated (`load_levels`, `load-levels=`): 1 to `MAX_LEVELS` of them
+    pub fn parse_list(s: &str) -> Result<Vec<Level>, String> {
+        let levels = s.split(',').map(Level::parse).collect::<Result<Vec<_>, _>>()?;
+        if levels.len() > MAX_LEVELS {
+            return Err(format!("{} levels: at most {MAX_LEVELS}, each adding its pairs of windows", levels.len()));
+        }
+        Ok(levels)
+    }
+
+    /// Its MiB/s: a share of `base` to the whole MiB/s, so the pin the report prints gives it back exactly
+    pub fn mib_s(self, base: f64) -> f64 {
+        match self {
+            Level::Percent(p) => (base * p / 100.0).round().max(MIN_LEVEL_MIB_S),
+            Level::MiBs(m) => m,
+        }
+    }
+
+    pub fn is_pinned(self) -> bool {
+        matches!(self, Level::MiBs(_))
+    }
+}
+
+impl std::fmt::Display for Level {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Level::Percent(p) => write!(f, "{p}%"),
+            Level::MiBs(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+impl Serialize for Level {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Level {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Level::parse(&String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A step's matched levels as resolved (`resolve`): each as given, what a share is of, and each one's MiB/s.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Levels {
+    pub given: Vec<Level>,
+    /// The lower of the flat-out pairs' median MiB/s under NT writes and under reads (normally the writes'): what a share is of
+    pub base_mib_s: f64,
+    /// Each level's MiB/s, the loaders' between them
+    pub mib_s: Vec<f64>,
+}
+
+impl Levels {
+    /// The command line's pin of them, `4029,8059`: the same loads in another run, whatever its peaks
+    pub fn pin(&self) -> String {
+        self.mib_s.iter().map(|m| format!("{m:.0}")).collect::<Vec<_>>().join(",")
+    }
+}
+
+/// The flat-out windows' median MiB/s, (under NT writes, under reads); 0 for a kind with none
+pub fn peaks(windows: &[WindowRecord]) -> (f64, f64) {
+    let peak = |kind| median(&windows.iter().filter(|w| w.kind == kind && w.level.is_none()).map(|w| w.mib_s).collect::<Vec<_>>());
+    (peak(Kind::Writes), peak(Kind::Reads))
+}
+
+/// The levels `given` resolve to from a step's flat-out peaks: a share is of the lower of the two, so either kind can reach it
+pub fn resolve(given: &[Level], peak_writes: f64, peak_reads: f64) -> Levels {
+    let base_mib_s = peak_writes.min(peak_reads);
+    Levels { given: given.to_vec(), base_mib_s, mib_s: given.iter().map(|level| level.mib_s(base_mib_s)).collect() }
+}
+
+/// A paced block's start: its deadline `due`, the clock `now` and the pace, `interval` ticks a block. On time it waits for its deadline;
+/// late by an interval or less it starts now with its deadline kept, so the next block catches up; later than that it starts now as if
+/// due now, never bursting to make up the rest (a shortfall shows in the reached MiB/s), and has fallen behind (`true`).
+pub fn pace(due: u64, now: u64, interval: u64) -> (u64, bool) {
+    if now > due.saturating_add(interval) { (now, true) } else { (due, false) }
+}
+
+/// Loader `index` of `loaders`' first deadline when a paced load starts at `now`: `index / loaders` of an interval after the first's, so
+/// their blocks interleave and the load is steady at microsecond scale, where the probe's 1 MiB steps came in bursts
+pub fn stagger(now: u64, interval: u64, index: usize, loaders: usize) -> u64 {
+    now + interval * index as u64 / loaders.max(1) as u64
+}
+
+/// The ticks between a loader's blocks for `loaders` to move `mib_s` between them, the TSC at `ghz`: 1 at least, as 0 is flat out
+pub fn interval_ticks(mib_s: f64, loaders: usize, ghz: f64) -> u64 {
+    // A loader's share, in bytes a second
+    let share = mib_s.max(MIN_LEVEL_MIB_S) * MIB / loaders.max(1) as f64;
+    ((BLOCK as f64 * ghz * 1e9 / share).round() as u64).max(1)
+}
+
+/// A loaded step's settings, from its config's parameters (`load_levels`, `load_pairs`, `load_window_ms`) or its test's defaults.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Params {
     pub pairs: usize,
     pub window: Duration,
+    /// Lat-Turnaround-DRAM's matched levels; Lat-Loaded-DRAM has none
+    pub levels: Vec<Level>,
 }
 
 impl Params {
-    pub fn of(config: &TestMemoryConfig) -> Self {
+    /// Test `name`'s settings in `config`
+    pub fn of(name: &str, config: &TestMemoryConfig) -> Self {
         let context = config.parameter_context.as_ref();
-        let pairs = context.and_then(|c| c.load_pairs).unwrap_or(LOADED_PAIRS).clamp(1, MAX_PAIRS);
+        let turnaround = name == TURNAROUND_NAME;
+        let pairs = context.and_then(|c| c.load_pairs).unwrap_or(if turnaround { TURNAROUND_PAIRS } else { LOADED_PAIRS });
         let window_ms = context.and_then(|c| c.load_window_ms).unwrap_or(DEFAULT_WINDOW_MS).clamp(1, MAX_WINDOW_MS);
-        Params { pairs: pairs as usize, window: Duration::from_millis(window_ms.into()) }
+        let mut levels = match context.and_then(|c| c.load_levels.clone()) {
+            _ if !turnaround => Vec::new(),
+            Some(levels) if !levels.is_empty() => levels,
+            _ => DEFAULT_LEVELS.to_vec(),
+        };
+        levels.truncate(MAX_LEVELS);
+        Params { pairs: pairs.clamp(1, MAX_PAIRS) as usize, window: Duration::from_millis(window_ms.into()), levels }
     }
 
     /// The settle: `SETTLE`, or the window when it is shorter
@@ -238,14 +384,18 @@ impl Params {
 
     /// The schedule a step with `loaders` loaders runs: the idle windows alone with none
     pub fn schedule(&self, loaders: usize) -> Schedule {
-        if loaders == 0 { Schedule::idle(self.window, self.settle()) } else { Schedule::new(self.pairs, 0, self.window, self.settle()) }
+        if loaders == 0 {
+            Schedule::idle(self.window, self.settle())
+        } else {
+            Schedule::new(self.pairs, self.levels.len(), self.window, self.settle())
+        }
     }
 }
 
-/// How long a loaded step of `config` on these CPUs takes, as its schedule says: the ticker's estimate
-pub fn expected(config: &TestMemoryConfig, assignments: &[CpuAssignment]) -> Duration {
+/// How long test `name`'s step of `config` on these CPUs takes, as its schedule says: the ticker's estimate
+pub fn expected(name: &str, config: &TestMemoryConfig, assignments: &[CpuAssignment]) -> Duration {
     let loaders = loaders_of(&assign_roles(assignments, crate::cpu_topology::get_physical_core_for_cpu));
-    Duration::from_secs_f64(Params::of(config).schedule(loaders).expected_secs())
+    Duration::from_secs_f64(Params::of(name, config).schedule(loaders).expected_secs())
 }
 
 /// Where the measurer ran
@@ -282,6 +432,8 @@ pub struct LoadedPart {
     pub schedule: Schedule,
     pub windows: Vec<WindowRecord>,
     pub histograms: Vec<Histogram>,
+    /// The levels as the flat-out pairs resolved them; `None` with none, or when a stop came first
+    pub levels: Option<Levels>,
     pub chain_bytes: usize,
     pub width: crate::simd::Width,
     pub partial: bool,
@@ -363,6 +515,9 @@ pub struct LoadedSummary {
     pub block_bytes: usize,
     pub window_ms: f64,
     pub settle_ms: f64,
+    /// Lat-Turnaround-DRAM's levels, as given and resolved: absent for Lat-Loaded-DRAM, or a step a stop cut short before them
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub levels: Option<Levels>,
     pub rows: Vec<Row>,
     pub windows: Vec<WindowRecord>,
     pub partial: bool,
@@ -414,8 +569,9 @@ fn range(values: &[f64]) -> (f64, f64) {
     values.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| (lo.min(v), hi.max(v)))
 }
 
-/// The table's rows from the raw windows: idle, each of `levels` levels, then flat out. `tails` gives a cell's (P50, P99) by its
-/// histogram's index (`Window::cell`), when it has samples. Pure, so the statistic can be changed and rerun on windows already taken.
+/// The table's rows from the raw windows: idle, each of `levels` levels it has windows of, then flat out. `tails` gives a cell's (P50,
+/// P99) by its histogram's index (`Window::cell`), when it has samples. Pure, so the statistic can be changed and rerun on windows already
+/// taken.
 pub fn rows(windows: &[WindowRecord], levels: usize, tails: &dyn Fn(usize) -> Option<(f64, f64)>) -> Vec<Row> {
     let cell = |kind: Kind, level: Option<usize>| -> Option<Cell> {
         let of: Vec<&WindowRecord> = windows.iter().filter(|w| w.kind == kind && w.level == level).collect();
@@ -443,6 +599,10 @@ pub fn rows(windows: &[WindowRecord], levels: usize, tails: &dyn Fn(usize) -> Op
     }
     for level in 0..levels {
         let (writes, reads) = (cell(Kind::Writes, Some(level)), cell(Kind::Reads, Some(level)));
+        // A level a stop came before has no row
+        if writes.is_none() && reads.is_none() {
+            continue;
+        }
         let target_mib_s = windows.iter().filter(|w| w.level == Some(level)).find_map(|w| w.target_mib_s);
         let near = |c: &Option<Cell>, target: f64| c.as_ref().is_some_and(|c| (c.mib_s / target - 1.0).abs() <= MATCH);
         let matched = target_mib_s.map(|t| near(&writes, t) && near(&reads, t));
@@ -483,6 +643,7 @@ pub fn summarize(part: &LoadedPart) -> LoadedSummary {
         block_bytes: BLOCK,
         window_ms: part.schedule.window.as_secs_f64() * 1e3,
         settle_ms: part.schedule.settle.as_secs_f64() * 1e3,
+        levels: part.levels.clone(),
         rows: rows(&part.windows, part.schedule.levels, &tails),
         windows: part.windows.clone(),
         partial: part.partial,
@@ -509,30 +670,41 @@ unsafe fn build_cycle_strided(base: *mut u64, n: usize, stride: usize, seed: u64
     }
 }
 
-/// A word on a 128 B line pair of its own, so the adjacent-line prefetcher doesn't pull it in with another
+/// The measurer's words for the loaders, on a 128 B line pair of their own, so the adjacent-line prefetcher doesn't pull them in with
+/// another's: the phase (the window's number and its load) and, stored before it, the window's pace (ticks a block, 0 flat out)
 #[repr(align(128))]
-struct Slot(AtomicU64);
+struct Phase {
+    word: AtomicU64,
+    interval: AtomicU64,
+}
+
+/// A loader's running counts, on a line pair of its own: its bytes, and its blocks that fell behind their pace
+#[repr(align(128))]
+struct Counts {
+    bytes: AtomicU64,
+    behind: AtomicU64,
+}
 
 /// One loaded step, shared by its threads: their roles, the barrier the participants (the measurer and the loaders) start at, the phase
-/// word the measurer drives the schedule with, and each loader's running byte count.
+/// word and pace the measurer drives the schedule with, and each loader's running counts.
 pub struct Step {
     roles: Box<[Role]>,
     loaders: usize,
     measurer: Placement,
     barrier: Barrier,
-    phase: Slot,
-    slots: Box<[Slot]>,
+    phase: Phase,
+    counts: Box<[Counts]>,
     params: Params,
 }
 
 impl Step {
-    /// A step on the threads of `assignments` (`ThreadPool::cpu_assignments`), with `config`'s settings
-    pub fn new(assignments: &[CpuAssignment], config: &TestMemoryConfig) -> Self {
-        Step::with_cores(assignments, crate::cpu_topology::get_physical_core_for_cpu, config)
+    /// Test `name`'s step on the threads of `assignments` (`ThreadPool::cpu_assignments`), with `config`'s settings
+    pub fn new(name: &str, assignments: &[CpuAssignment], config: &TestMemoryConfig) -> Self {
+        Step::with_cores(assignments, crate::cpu_topology::get_physical_core_for_cpu, name, config)
     }
 
     /// `new`, a CPU's physical core from `core_of`
-    fn with_cores(assignments: &[CpuAssignment], core_of: impl Fn(usize) -> usize, config: &TestMemoryConfig) -> Self {
+    fn with_cores(assignments: &[CpuAssignment], core_of: impl Fn(usize) -> usize, name: &str, config: &TestMemoryConfig) -> Self {
         let roles = assign_roles(assignments, &core_of);
         let loaders = loaders_of(&roles);
         let measurer = assignments.iter().find(|&&(t, _, _)| t == 0).map_or(Placement::default(), |&(thread, cpu, node)| Placement {
@@ -546,9 +718,9 @@ impl Step {
             loaders,
             measurer,
             barrier: Barrier::new(1 + loaders),
-            phase: Slot(AtomicU64::new(phase_word(0, Kind::Park))),
-            slots: (0..loaders).map(|_| Slot(AtomicU64::new(0))).collect(),
-            params: Params::of(config),
+            phase: Phase { word: AtomicU64::new(phase_word(0, Kind::Park)), interval: AtomicU64::new(0) },
+            counts: (0..loaders).map(|_| Counts { bytes: AtomicU64::new(0), behind: AtomicU64::new(0) }).collect(),
+            params: Params::of(name, config),
         }
     }
 
@@ -557,14 +729,18 @@ impl Step {
         self.roles.get(thread).copied().unwrap_or(Role::SitsOut)
     }
 
-    /// Window `window`'s load, for the loaders (Release: what it carries is set before it)
-    fn set_phase(&self, window: u64, kind: Kind) {
-        self.phase.0.store(phase_word(window, kind), Ordering::Release);
+    /// Window `window`'s load at `interval` ticks a loader's block (0 flat out), for the loaders: the pace first, the phase word after it
+    /// (Release), so a loader that sees the phase sees its pace
+    fn set_phase(&self, window: u64, kind: Kind, interval: u64) {
+        self.phase.interval.store(interval, Ordering::Relaxed);
+        self.phase.word.store(phase_word(window, kind), Ordering::Release);
     }
 
-    /// Every loader's bytes so far
-    fn loaded_bytes(&self) -> u64 {
-        self.slots.iter().map(|s| s.0.load(Ordering::Relaxed)).sum()
+    /// Every loader's (bytes, blocks fallen behind) so far
+    fn loaded(&self) -> (u64, u64) {
+        self.counts
+            .iter()
+            .fold((0, 0), |(bytes, behind), c| (bytes + c.bytes.load(Ordering::Relaxed), behind + c.behind.load(Ordering::Relaxed)))
     }
 }
 
@@ -579,7 +755,7 @@ struct Finish<'s>(&'s Step);
 
 impl Drop for Finish<'_> {
     fn drop(&mut self) {
-        self.0.set_phase(0, Kind::Done);
+        self.0.set_phase(0, Kind::Done, 0);
     }
 }
 
@@ -612,6 +788,18 @@ pub unsafe fn lat_loaded_dram_multi(
     unsafe { run(Call { name: LOADED_NAME, blocks, thread_id, error_mode, timing, config, progress }) }
 }
 
+/// Lat-Turnaround-DRAM (TODO 117): Lat-Loaded-DRAM's rows, then a read's latency under NT writes and under reads at matched levels (25,
+/// 50 and 75% of the lower flat-out peak by default), each level's turnaround the median of its ABBA pairs' differences. Shared and
+/// called as Lat-Loaded-DRAM is.
+#[doc = include_str!("test_fn_safety.md")]
+pub unsafe fn lat_turnaround_dram_multi(
+    blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
+    progress: Option<&TestProgress>,
+) -> LatencyTestStats {
+    // SAFETY: the caller's
+    unsafe { run(Call { name: TURNAROUND_NAME, blocks, thread_id, error_mode, timing, config, progress }) }
+}
+
 /// One thread's part in a loaded step: its role's, chosen once.
 ///
 /// # Safety
@@ -621,7 +809,7 @@ unsafe fn run(call: Call) -> LatencyTestStats {
     let (step, me) = match call.config.loaded.as_deref() {
         Some(step) => (step, call.thread_id),
         None => {
-            alone = Step::with_cores(&[], |cpu| cpu, call.config);
+            alone = Step::with_cores(&[], |cpu| cpu, call.name, call.config);
             (&alone, 0)
         }
     };
@@ -660,10 +848,29 @@ unsafe fn measure(step: &Step, call: &Call) -> LatencyTestStats {
     let (window_ticks, settle_ticks) = (ticks(schedule.window), ticks(schedule.settle));
     let mut aux = 0u32;
     let mut ptr = base;
-    let mut records = Vec::with_capacity(schedule.windows.len());
+    let mut records: Vec<WindowRecord> = Vec::with_capacity(schedule.windows.len());
+    let mut levels: Option<Levels> = None;
     let mut partial = false;
     for (index, &window) in schedule.windows.iter().enumerate().take_while(|_| cells > 0) {
-        step.set_phase(index as u64 + 1, window.kind);
+        // A level's MiB/s from this step's flat-out pairs, which come before every level's
+        let target_mib_s = window.level.map(|level| {
+            let levels = levels.get_or_insert_with(|| {
+                let (writes, reads) = peaks(&records);
+                let levels = resolve(&step.params.levels, writes, reads);
+                log::debug!(
+                    "[Thread {}] {}: levels {:?} of {:.0} MiB/s (flat out: NT writes {writes:.0}, reads {reads:.0}): {:?} MiB/s",
+                    call.thread_id,
+                    call.name,
+                    levels.given,
+                    levels.base_mib_s,
+                    levels.mib_s
+                );
+                levels
+            });
+            levels.mib_s[level]
+        });
+        let interval = target_mib_s.map_or(0, |mib_s| interval_ticks(mib_s, step.loaders, ghz));
+        step.set_phase(index as u64 + 1, window.kind, interval);
         // The settle: the loaders onto their new load, untimed
         let settle_end = _rdtsc() + settle_ticks;
         loop {
@@ -673,7 +880,7 @@ unsafe fn measure(step: &Step, call: &Call) -> LatencyTestStats {
                 break;
             }
         }
-        let before = step.loaded_bytes();
+        let (before, behind_before) = step.loaded();
         let from = __rdtscp(&mut aux);
         let window_end = from + window_ticks;
         let histogram = &mut histograms[window.cell()];
@@ -692,7 +899,7 @@ unsafe fn measure(step: &Step, call: &Call) -> LatencyTestStats {
                 break;
             }
         }
-        let after = step.loaded_bytes();
+        let (after, behind_after) = step.loaded();
         let to = __rdtscp(&mut aux);
         // A window cut short isn't kept
         if partial {
@@ -704,20 +911,22 @@ unsafe fn measure(step: &Step, call: &Call) -> LatencyTestStats {
             kind: window.kind,
             level: window.level,
             pair: window.pair,
-            target_mib_s: None,
+            target_mib_s,
             mean_ns: timed as f64 / (samples as usize * READS) as f64 / ghz,
             mib_s: (after - before) as f64 / MIB / secs,
             reads: samples * READS as u64,
-            fell_behind: 0,
+            fell_behind: behind_after - behind_before,
         };
         log::debug!(
-            "[Thread {}] {} window {index} ({:?}): {:.1} ns over {} reads, the loaders at {:.0} MiB/s",
+            "[Thread {}] {} window {index} ({:?}, held to {:?} MiB/s): {:.1} ns over {} reads, the loaders at {:.0} MiB/s, {} behind",
             call.thread_id,
             call.name,
             record.kind,
+            record.target_mib_s,
             record.mean_ns,
             record.reads,
-            record.mib_s
+            record.mib_s,
+            record.fell_behind
         );
         records.push(record);
         runner.update_progress_in_cycle();
@@ -733,6 +942,7 @@ unsafe fn measure(step: &Step, call: &Call) -> LatencyTestStats {
         schedule,
         windows: records,
         histograms,
+        levels,
         chain_bytes: cells * CELL,
         width: crate::simd::test_width(),
         partial,
@@ -748,8 +958,29 @@ fn park(phase: &AtomicU64, word: u64) {
     }
 }
 
+/// The TSC now
+#[inline(always)]
+fn tsc() -> u64 {
+    // SAFETY: every x86-64 CPU has RDTSC, which reads no memory
+    unsafe { std::arch::x86_64::_rdtsc() }
+}
+
+/// A paced loader's wait for its block's start: PAUSE until the TSC reaches `start`, in C0, or until the phase word moves on (`false`)
+#[inline(always)]
+fn wait_until(start: u64, phase: &AtomicU64, word: u64) -> bool {
+    loop {
+        std::hint::spin_loop();
+        if phase.load(Ordering::Relaxed) != word {
+            return false;
+        }
+        if tsc() >= start {
+            return true;
+        }
+    }
+}
+
 /// A loader: fills its extent, waits for the others, then loads each window as the phase word says, from a random block each time,
-/// until Done.
+/// flat out or held to the window's pace, until Done.
 ///
 /// # Safety
 /// As the test functions'.
@@ -769,35 +1000,52 @@ unsafe fn load(step: &Step, index: usize, call: &Call) -> LatencyTestStats {
     runner.restart_clock();
     runner.begin_cycle();
 
-    let slot = &step.slots[index].0;
+    let counts = &step.counts[index];
+    let word = &step.phase.word;
     let mut rng = crate::pattern::fmix(call.config.epoch.key() ^ crate::pattern::fmix(index as u64 + 1)) | 1;
-    // Bytes moved, and of them those counted to the runner
-    let (mut moved, mut counted, mut acc) = (0u64, 0u64, 0u64);
+    // Bytes moved, and of them those counted to the runner; blocks fallen behind their pace
+    let (mut moved, mut counted, mut acc, mut behind) = (0u64, 0u64, 0u64, 0u64);
     let mut stopped = false;
     while blocks > 0 && !stopped {
-        let phase = step.phase.0.load(Ordering::Acquire);
+        let phase = word.load(Ordering::Acquire);
         let kernel = match kind_of(phase) {
             Kind::Done => break,
             Kind::Park => {
-                park(&step.phase.0, phase);
+                park(word, phase);
                 continue;
             }
             Kind::Writes => write,
             Kind::Reads => read,
         };
+        // Its pace, stored before the phase: ticks a block, 0 flat out (no clock read, no wait)
+        let interval = step.phase.interval.load(Ordering::Relaxed);
+        let mut due = if interval > 0 { stagger(tsc(), interval, index, step.loaders) } else { 0 };
         // A new instance of the load: from a random block
         let mut at = crate::latency_tests::below(&mut rng, blocks);
         loop {
             let mut moved_on = false;
             for _ in 0..BLOCKS_A_CHECK {
+                if interval > 0 {
+                    let now = tsc();
+                    let (start, late) = pace(due, now, interval);
+                    if late {
+                        behind += 1;
+                        counts.behind.store(behind, Ordering::Relaxed);
+                    }
+                    if now < start && !wait_until(start, word, phase) {
+                        moved_on = true;
+                        break;
+                    }
+                    due = start + interval;
+                }
                 acc ^= kernel(base.add(at * BLOCK), BLOCK);
                 moved += BLOCK as u64;
-                slot.store(moved, Ordering::Relaxed);
+                counts.bytes.store(moved, Ordering::Relaxed);
                 at += 1;
                 if at == blocks {
                     at = 0;
                 }
-                if step.phase.0.load(Ordering::Relaxed) != phase {
+                if word.load(Ordering::Relaxed) != phase {
                     moved_on = true;
                     break;
                 }
@@ -929,10 +1177,107 @@ mod tests {
         let cells: std::collections::BTreeSet<usize> = turnaround.windows.iter().map(|w| w.cell()).collect();
         assert_eq!(cells, (0..turnaround.cells()).collect::<std::collections::BTreeSet<_>>(), "a histogram a row and kind");
 
-        let idle = Params { pairs: 3, window: second }.schedule(0);
+        let idle = Params { pairs: 3, window: second, levels: DEFAULT_LEVELS.to_vec() }.schedule(0);
         assert_eq!(idle.windows, [Window::IDLE; 2]);
         // The settle is never longer than the window
-        assert_eq!(Params { pairs: 3, window: Duration::from_millis(5) }.settle(), Duration::from_millis(5));
+        assert_eq!(Params { pairs: 3, window: Duration::from_millis(5), levels: Vec::new() }.settle(), Duration::from_millis(5));
+    }
+
+    /// Each test's settings: Lat-Loaded-DRAM 3 pairs flat out and no levels, whatever the config says of them; Lat-Turnaround-DRAM 5
+    /// pairs at 25, 50 and 75%, about 50 s, or the config's; either's pairs and window the config's, within their ranges
+    #[test]
+    fn each_test_takes_its_defaults_or_the_configs() {
+        let mut config = TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: 256 * KIB }, ChunkMode::Whole);
+        let loaded = Params::of(LOADED_NAME, &config);
+        assert_eq!((loaded.pairs, loaded.window, loaded.levels.as_slice()), (3, Duration::from_secs(1), [].as_slice()));
+        let turnaround = Params::of(TURNAROUND_NAME, &config);
+        assert_eq!((turnaround.pairs, turnaround.levels.as_slice()), (5, DEFAULT_LEVELS.as_slice()));
+        let schedule = turnaround.schedule(7);
+        assert_eq!((schedule.windows.len(), schedule.levels), (42, 3));
+        assert!((schedule.expected_secs() - 50.4).abs() < 1e-9);
+
+        let pinned = vec![Level::MiBs(4029.0), Level::Percent(60.0)];
+        config.parameter_context = Some(TestParameterContext {
+            load_levels: Some(pinned.clone()),
+            load_pairs: Some(2),
+            load_window_ms: Some(250),
+            ..Default::default()
+        });
+        let turnaround = Params::of(TURNAROUND_NAME, &config);
+        assert_eq!((turnaround.pairs, turnaround.window, turnaround.levels), (2, Duration::from_millis(250), pinned));
+        assert_eq!(Params::of(LOADED_NAME, &config).levels, [], "Lat-Loaded-DRAM has no levels");
+        config.parameter_context = Some(TestParameterContext { load_pairs: Some(500), load_window_ms: Some(0), ..Default::default() });
+        let clamped = Params::of(LOADED_NAME, &config);
+        assert_eq!((clamped.pairs, clamped.window), (50, Duration::from_millis(1)));
+    }
+
+    /// A level is a share, more than 0% and at most 100%, or MiB/s pinned, 1 to 1,000,000, written back as given; a list is 1 to 8 of
+    /// them, comma-separated
+    #[test]
+    fn levels_parse_as_shares_or_pinned_mib_s() {
+        for (given, level, shown) in [
+            ("25%", Level::Percent(25.0), "25%"),
+            (" 12.5 % ", Level::Percent(12.5), "12.5%"),
+            ("100%", Level::Percent(100.0), "100%"),
+            ("8058", Level::MiBs(8058.0), "8058"),
+            ("1", Level::MiBs(1.0), "1"),
+            ("1000000", Level::MiBs(1e6), "1000000"),
+        ] {
+            assert_eq!(Level::parse(given), Ok(level), "{given}");
+            assert_eq!(level.to_string(), shown);
+            assert_eq!(Level::parse(&level.to_string()), Ok(level), "{shown} reads back");
+        }
+        for bad in ["0%", "-5%", "101%", "%", "25%%", "0", "0.5", "1000001", "fast", "", "inf", "NaN%"] {
+            assert!(Level::parse(bad).is_err(), "{bad}");
+        }
+        assert_eq!(Level::parse_list("25%,50%, 8058"), Ok(vec![Level::Percent(25.0), Level::Percent(50.0), Level::MiBs(8058.0)]));
+        assert!(Level::parse_list("25%,,50%").is_err());
+        assert!(Level::parse_list("1%,2%,3%,4%,5%,6%,7%,8%").is_ok());
+        assert!(Level::parse_list("1%,2%,3%,4%,5%,6%,7%,8%,9%").unwrap_err().contains("at most 8"));
+        let json = serde_json::to_string(&[Level::Percent(25.0), Level::MiBs(8058.0)]).unwrap();
+        assert_eq!(json, r#"["25%","8058"]"#);
+        assert_eq!(serde_json::from_str::<Vec<Level>>(&json).unwrap(), [Level::Percent(25.0), Level::MiBs(8058.0)]);
+    }
+
+    /// A share is of the lower flat-out peak (the median of each kind's flat-out windows), to the whole MiB/s; a pinned level is its own
+    #[test]
+    fn levels_resolve_against_the_lower_flat_out_peak() {
+        use Kind::{Park, Reads, Writes};
+        let full = [
+            window(0, Park, None, None, 100.0, 0.0),
+            window(1, Writes, None, Some(0), 450.0, 16_000.0),
+            window(2, Reads, None, Some(0), 264.0, 27_000.0),
+            window(3, Reads, None, Some(1), 266.0, 27_200.0),
+            window(4, Writes, None, Some(1), 454.0, 16_234.0),
+            // A level's window isn't a peak's
+            window(5, Writes, Some(0), Some(0), 113.0, 90_000.0),
+        ];
+        assert_eq!(peaks(&full), (16_117.0, 27_100.0));
+        let levels = resolve(&[Level::Percent(25.0), Level::Percent(50.0), Level::MiBs(9000.0)], 16_117.0, 27_100.0);
+        assert_eq!((levels.base_mib_s, levels.mib_s.as_slice()), (16_117.0, [4029.0, 8059.0, 9000.0].as_slice()));
+        assert_eq!(levels.pin(), "4029,8059,9000");
+        // The reads' peak the lower: a share is of it
+        assert_eq!(resolve(&[Level::Percent(50.0)], 30_000.0, 20_000.0).mib_s, [10_000.0]);
+        // No flat-out data: 1 MiB/s, never 0
+        assert_eq!(resolve(&[Level::Percent(50.0)], 0.0, 0.0).mib_s, [1.0]);
+    }
+
+    /// On time a block waits for its deadline; late by an interval or less it starts at once, its deadline kept so the next catches up;
+    /// later than that it starts now from now, never bursting, and has fallen behind. Loader i of L starts i/L of an interval in, and a
+    /// level's interval is a block over a loader's share, never 0 (flat out)
+    #[test]
+    fn pacing_waits_staggers_and_caps_its_debt() {
+        assert_eq!(pace(1000, 900, 100), (1000, false), "early: waits for its deadline");
+        assert_eq!(pace(1000, 1000, 100), (1000, false));
+        assert_eq!(pace(1000, 1100, 100), (1000, false), "an interval late: now, the next due at 1100");
+        assert_eq!(pace(1000, 1101, 100), (1101, true), "more: from now, fallen behind");
+        assert_eq!(pace(u64::MAX - 10, u64::MAX - 5, 100), (u64::MAX - 10, false), "no overflow");
+        assert_eq!([0, 1, 2, 3].map(|i| stagger(5000, 400, i, 4)), [5000, 5100, 5200, 5300]);
+        assert_eq!(stagger(5000, 400, 0, 0), 5000, "no loaders");
+        // 8058 MiB/s over 7 loaders at 3.4 GHz: 1151 MiB/s each, a block every 11,537 ticks (3.4 us)
+        assert_eq!(interval_ticks(8058.0, 7, 3.4), 11_537);
+        assert_eq!(interval_ticks(1e9, 1, 1.0), 1, "never flat out");
+        assert_eq!(interval_ticks(0.0, 1, 1.0), interval_ticks(1.0, 1, 1.0), "at least 1 MiB/s");
     }
 
     /// The chain at 16 words a cell is one cycle through every cell's first word, and every other word keeps its canary
@@ -973,6 +1318,7 @@ mod tests {
             schedule: Schedule::new(2, levels, Duration::from_secs(1), SETTLE),
             windows,
             histograms,
+            levels: None,
             chain_bytes: 1 << 30,
             width: crate::simd::Width::W256,
             partial: false,
@@ -1054,12 +1400,18 @@ mod tests {
         config
     }
 
-    /// The step's four threads on CPUs 0-3 (thread 1 the measurer's sibling), each on its own region, `during` run on the test's
-    /// thread while they work; their results by thread
-    fn run_step(window_ms: u32, during: impl FnOnce(&[std::thread::ScopedJoinHandle<'_, LatencyTestStats>])) -> Vec<LatencyTestStats> {
+    type TestFn =
+        unsafe fn(&[AllocationBlock], usize, ErrorMode, &TestTiming, &TestMemoryConfig, Option<&TestProgress>) -> LatencyTestStats;
+
+    /// Test `name`'s step of `config` on four threads on CPUs 0-3 (thread 1 the measurer's sibling), each on its own region, `during`
+    /// run on the test's thread while they work; their results by thread
+    fn run_step(
+        name: &str, config: TestMemoryConfig, during: impl FnOnce(&[std::thread::ScopedJoinHandle<'_, LatencyTestStats>]),
+    ) -> Vec<LatencyTestStats> {
+        let test: TestFn = if name == TURNAROUND_NAME { lat_turnaround_dram_multi } else { lat_loaded_dram_multi };
         let assignments = threads(&[0, 1, 2, 3], |_| 0);
-        let step = Arc::new(Step::with_cores(&assignments, |cpu| STEP_CORES[cpu], &config(window_ms)));
-        let config = TestMemoryConfig { loaded: Some(step), ..config(window_ms) };
+        let step = Arc::new(Step::with_cores(&assignments, |cpu| STEP_CORES[cpu], name, &config));
+        let config = TestMemoryConfig { loaded: Some(step), ..config };
         let regions: Vec<Region> = (0..4).map(|_| Region::new(&[256 * KIB])).collect();
         let stats = std::thread::scope(|s| {
             let handles: Vec<_> = regions
@@ -1068,7 +1420,7 @@ mod tests {
                 .map(|(t, region)| {
                     let (blocks, config) = (&region.blocks, &config);
                     // SAFETY: each thread's own region, live for the scope
-                    s.spawn(move || unsafe { lat_loaded_dram_multi(blocks, t, ErrorMode::Log, &config.timing, config, None) })
+                    s.spawn(move || unsafe { test(blocks, t, ErrorMode::Log, &config.timing, config, None) })
                 })
                 .collect();
             during(&handles);
@@ -1082,7 +1434,7 @@ mod tests {
     /// load, and every role finishes with the schedule
     #[test]
     fn a_step_measures_every_row_of_lat_loaded_dram() {
-        let stats = run_step(20, |_| {});
+        let stats = run_step(LOADED_NAME, config(20), |_| {});
         let part = stats[0].loaded.as_deref().expect("the measurer's part");
         assert_eq!(part.roles, [Role::Measures, Role::SitsOut, Role::Loads { index: 0 }, Role::Loads { index: 1 }]);
         assert!(!part.partial);
@@ -1108,11 +1460,104 @@ mod tests {
         assert!(stats[2..].iter().all(|s| s.basic_stats.bytes_processed > 0), "each loader loads");
     }
 
+    /// Lat-Turnaround-DRAM's step at one pair a load: its flat-out pairs first, then each default level (25, 50 and 75% of the lower
+    /// flat-out peak, to the whole MiB/s) with its windows held to it, the loaders never past it but for the two blocks each its debt
+    /// allows, and a row a level between idle and full. (Under it, a loader the scheduler took off its CPU, which only loses blocks; on a
+    /// busy machine a whole flat-out window can lose its loaders, and its level's figures with it. The pacing's lower bound is
+    /// `a_paced_loader_holds_its_pace_and_counts_what_falls_behind`'s.)
+    #[test]
+    fn a_step_holds_the_loaders_to_each_level_of_lat_turnaround_dram() {
+        let mut config = config(20);
+        config.parameter_context.as_mut().unwrap().load_pairs = Some(1);
+        let stats = run_step(TURNAROUND_NAME, config, |_| {});
+        let part = stats[0].loaded.as_deref().expect("the measurer's part");
+        assert!(!part.partial);
+        assert_eq!(part.windows.len(), 1 + 2 + 3 * 2 + 1, "idle, a pair flat out, a pair a level, idle");
+        let levels = part.levels.as_ref().expect("the levels, resolved");
+        let (writes, reads) = peaks(&part.windows);
+        assert_eq!(levels, &resolve(&DEFAULT_LEVELS, writes, reads), "from this step's flat-out pairs");
+        // Two blocks a loader over a window, in MiB/s (the TSC taken as 1 GHz, as the measurer takes it)
+        let slack = (2 * 2 * BLOCK) as f64 / MIB / part.schedule.window.as_secs_f64();
+        for w in &part.windows {
+            assert_eq!(w.target_mib_s, w.level.map(|l| levels.mib_s[l]), "window {}", w.index);
+            if let Some(target) = w.target_mib_s {
+                // Never past its pace: its debt is an interval at most
+                assert!(w.mib_s <= 1.05 * target + slack, "window {}: {:.1} MiB/s held to {target:.0}", w.index, w.mib_s);
+            }
+        }
+        let held: f64 = part.windows.iter().filter(|w| w.level.is_some()).map(|w| w.mib_s).sum();
+        assert!(held > 0.0, "the loaders moved nothing at any level");
+        assert_eq!(part.histograms.len(), 9, "idle, flat out and three levels, a kind each");
+        let summary = summarize(part);
+        let loads: Vec<Load> = summary.rows.iter().map(|r| r.load).collect();
+        assert_eq!(loads, [Load::Idle, Load::Level(0), Load::Level(1), Load::Level(2), Load::Full]);
+        assert!(summary.rows[1..4].iter().all(|r| r.turnaround.as_ref().is_some_and(|t| t.pairs.len() == 1)), "{:?}", summary.rows);
+        assert_eq!(summary.levels.as_ref(), Some(levels));
+        assert!(summary.headline().starts_with("Turnaround "), "{}", summary.headline());
+        assert!(stats.iter().all(|s| s.basic_stats.cycles_completed == 1));
+    }
+
+    /// One loader held to a pace moves a block an interval, within 5% over 100 ms, and never more: its debt is an interval at most; held
+    /// to more than it can move, every block counts as fallen behind; and it ends on Done. The test's thread drives the phase word as the
+    /// measurer does, the loader at a run's worker priority. The scheduler can still take it off its CPU (for a quantum, near 190 ms on
+    /// Windows Server, with nextest running a process a CPU; a hypervisor's steal), which only loses blocks, so every window is held to
+    /// the upper bound and the best of up to 20 to the lower.
+    #[test]
+    fn a_paced_loader_holds_its_pace_and_counts_what_falls_behind() {
+        let config = config(5);
+        // Thread 0 (the test's thread) and thread 1, the loader, on cores 0 and 1
+        let step = Step::with_cores(&threads(&[0, 1], |_| 0), |cpu| cpu, TURNAROUND_NAME, &config);
+        let region = Region::new(&[256 * KIB]);
+        let call = Call {
+            name: TURNAROUND_NAME,
+            blocks: &region.blocks,
+            thread_id: 1,
+            error_mode: ErrorMode::Log,
+            timing: &config.timing,
+            config: &config,
+            progress: None,
+        };
+        let interval = 40_000u64;
+        let (held, (late_blocks, late), stats) = std::thread::scope(|s| {
+            // SAFETY: the region's blocks, live for the scope
+            let loader = s.spawn(|| {
+                // As a run's workers (`priority=high`), so another process's threads don't take its CPU
+                crate::runner::ThreadPriority::High.apply().expect("the loader's priority");
+                unsafe { load(&step, 0, &call) }
+            });
+            step.barrier.wait();
+            step.set_phase(1, Kind::Reads, interval);
+            std::thread::sleep(Duration::from_millis(20));
+            // Each window's bytes over those its ticks allow, and its blocks fallen behind
+            let mut held: Vec<(f64, u64)> = Vec::new();
+            while held.len() < 20 && !held.iter().any(|&(h, _)| h > 0.95) {
+                let ((from, behind_from), t0) = (step.loaded(), tsc());
+                std::thread::sleep(Duration::from_millis(100));
+                let ((to, behind_to), t1) = (step.loaded(), tsc());
+                held.push(((to - from) as f64 / ((t1 - t0) / interval * BLOCK as u64) as f64, behind_to - behind_from));
+            }
+            // A pace no loader can hold
+            step.set_phase(2, Kind::Writes, 1);
+            std::thread::sleep(Duration::from_millis(5));
+            let (bytes_before, behind_before) = step.loaded();
+            std::thread::sleep(Duration::from_millis(20));
+            let (bytes_after, behind_after) = step.loaded();
+            step.set_phase(0, Kind::Done, 0);
+            let stats = loader.join().expect("the loader");
+            (held, ((bytes_after - bytes_before) / BLOCK as u64, behind_after - behind_before), stats)
+        });
+        assert!(held.iter().all(|&(h, _)| h < 1.05), "past its pace, a block every {interval} ticks: {held:?}");
+        assert!(held.iter().any(|&(h, _)| h > 0.95), "short of its pace, a block every {interval} ticks: {held:?} (held, behind)");
+        assert!(late_blocks > 0 && late as f64 >= 0.9 * late_blocks as f64, "{late} of {late_blocks} blocks behind");
+        assert_eq!(stats.basic_stats.cycles_completed, 1);
+        assert!(region.guards_intact());
+    }
+
     /// A thread that sits out returns at once, waiting for no one: alone here, it would wait forever at the participants' barrier
     #[test]
     fn a_sit_out_returns_at_once() {
         let assignments = threads(&[0, 1, 2, 3], |_| 0);
-        let step = Arc::new(Step::with_cores(&assignments, |cpu| STEP_CORES[cpu], &config(5)));
+        let step = Arc::new(Step::with_cores(&assignments, |cpu| STEP_CORES[cpu], LOADED_NAME, &config(5)));
         let config = TestMemoryConfig { loaded: Some(step), ..config(5) };
         let region = Region::new(&[64 * KIB]);
         // SAFETY: the region's blocks, live for the call
@@ -1142,7 +1587,7 @@ mod tests {
     /// threads end, should a session in the same process (`cargo test`) clear it under them.
     #[test]
     fn a_stop_ends_every_role_with_a_partial_result() {
-        let stats = run_step(1000, |handles| {
+        let stats = run_step(LOADED_NAME, config(1000), |handles| {
             std::thread::sleep(Duration::from_millis(50));
             while !handles.iter().all(|h| h.is_finished()) {
                 crate::runner::request_stop();

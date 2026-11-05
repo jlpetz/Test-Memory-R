@@ -264,6 +264,12 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  mirror=whole                        # Mirror tests: one mirror over each chunk (the default)")?;
     writeln!(out, "  mirror=subblocks:4                  #   ...each chunk in 2 or 4 parts, mirrored in lockstep")?;
     writeln!(out, "  mirror=jump:510                     #   ...128 B swaps every (N+1) x 128 B (TM5 MirrorMove128)")?;
+    writeln!(out, "  load-levels=25%,50%,75%             # Lat-Turnaround-DRAM's matched loads (the default): shares of")?;
+    writeln!(out, "                                      #   the lower flat-out peak, or MiB/s pinned, 1-8 of them; its report")?;
+    writeln!(out, "                                      #   prints the pin of a run's (load-levels=4029,8059,12088)")?;
+    writeln!(out, "  load-pairs=5                        # The loaded latency tests' ABBA pairs at each load, 1-50 (default")?;
+    writeln!(out, "                                      #   3 for Lat-Loaded-DRAM, 5 for Lat-Turnaround-DRAM)")?;
+    writeln!(out, "  load-window-ms=1000                 # Their timed window, each after a 0.2 s settle: 10-60000 ms")?;
     writeln!(out, "  pattern-mode=0                      # Pattern mode: 0-2 (TM5's), 10, 11, 13, 20, 30 (TMR's), or a native")?;
     writeln!(out, "                                      #   family alone on SimpleTest: 15 ident, 16 random, 17 linepair,")?;
     writeln!(out, "                                      #   21 lines, 31 switch, 32 quiet, 33 header; unset, SimpleTest runs")?;

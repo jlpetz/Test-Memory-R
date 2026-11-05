@@ -1623,7 +1623,22 @@ impl ReportFormatter for DefaultFormatter {
         }
         how.push(format!("{} windows after {} settles", window_length(s.window_ms), window_length(s.settle_ms)));
         how.push("median of window means [lowest-highest]".to_string());
-        vec![format!("🔍 Under load: {}", who.join("; ")), format!("   {}", how.join("; "))]
+        let mut lines = vec![format!("🔍 Under load: {}", who.join("; ")), format!("   {}", how.join("; "))];
+        // Lat-Turnaround-DRAM's levels as resolved, and how to hold another run to the same loads
+        if let Some(levels) = &s.levels {
+            let mib_s = levels.mib_s.iter().map(|m| format!("{m:.0}")).collect::<Vec<_>>().join(", ");
+            lines.push(if levels.given.iter().all(|level| level.is_pinned()) {
+                format!("   Levels pinned at {mib_s} MiB/s; the lower flat-out peak {:.0} MiB/s", levels.base_mib_s)
+            } else {
+                let given = levels.given.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+                format!(
+                    "   Levels {given} of {:.0} MiB/s (the lower flat-out peak): {mib_s} MiB/s; pin them with load-levels={}",
+                    levels.base_mib_s,
+                    levels.pin()
+                )
+            });
+        }
+        lines
     }
 
     fn loaded_warnings(&self, s: &LoadedSummary) -> Vec<String> {
@@ -1660,9 +1675,14 @@ impl ReportFormatter for DefaultFormatter {
                 // An idle window's latency is under no load: the row's one figure, in the first column
                 Load::Idle => vec!["idle".to_string(), ns(&row.idle), String::new(), String::new(), String::new()],
                 Load::Level(_) | Load::Full => {
-                    let load = match row.target_mib_s {
-                        Some(target) => format!("{target:.0} MiB/s"),
-                        None => "full".to_string(),
+                    // A level given as a share shows it before its MiB/s
+                    let given = |level: usize| s.levels.as_ref().and_then(|l| l.given.get(level).copied()).filter(|l| !l.is_pinned());
+                    let load = match (row.load, row.target_mib_s) {
+                        (Load::Level(level), Some(target)) => match given(level) {
+                            Some(share) => format!("{share} {target:.0} MiB/s"),
+                            None => format!("{target:.0} MiB/s"),
+                        },
+                        _ => "full".to_string(),
                     };
                     vec![load, ns(&row.writes), mib_s(&row.writes), ns(&row.reads), mib_s(&row.reads)]
                 }

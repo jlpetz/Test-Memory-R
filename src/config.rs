@@ -649,6 +649,16 @@ pub struct TestConfig {
     /// Mem-CoherenceStorm: a thread's bumps between its checks, 1 to 16777216, 1000 by default (GSAT's `--cc_inc_count`) (TODO 28).
     #[serde(default)]
     pub storm_increments: Option<u32>,
+    /// Lat-Turnaround-DRAM: its matched levels, comma-separated, each a share of the lower flat-out peak (`25%`) or MiB/s pinned
+    /// (`8058`), 1 to 8 of them; `25%,50%,75%` by default (TODO 117, `loaded::Level`).
+    #[serde(default)]
+    pub load_levels: Option<String>,
+    /// The loaded latency tests (Lat-Loaded-DRAM, Lat-Turnaround-DRAM): their ABBA pairs at each load, 1 to 50 (3 and 5 by default),
+    /// and each window's timed length in ms, 10 to 60000 (1000 by default) (TODO 117).
+    #[serde(default)]
+    pub load_pairs: Option<u32>,
+    #[serde(default)]
+    pub load_window_ms: Option<u32>,
 
     // Per-chunk repetition: how long each chunk is worked (TODO 79 B2). Unset is the test's own default; loading a TM5 `.cfg` fills them
     // from `Time (%)`.
@@ -796,8 +806,9 @@ pub struct TestParameterContext {
     /// Mem-CoherenceStorm: its shared structures and a thread's bumps a check (TODO 28); `None` is GSAT's default.
     pub storm_lines: Option<u32>,
     pub storm_increments: Option<u32>,
-    /// The loaded latency tests: their ABBA pairs at each load, and each window's timed length in ms (TODO 117, `loaded::Params`);
-    /// `None` is the test's default
+    /// The loaded latency tests: Lat-Turnaround-DRAM's matched levels, their ABBA pairs at each load, and each window's timed length
+    /// in ms (TODO 117, `loaded::Params`); `None` is the test's default
+    pub load_levels: Option<Vec<crate::loaded::Level>>,
     pub load_pairs: Option<u32>,
     pub load_window_ms: Option<u32>,
 }
@@ -1156,6 +1167,29 @@ impl ModernConfig {
                 _ => {}
             }
         }
+        let loaded = crate::loaded::is_loaded(&test.function);
+        let loaded_names = crate::loaded::NAMES.join(" and ");
+        for (value, field, (min, max)) in [
+            (test.load_pairs, "load_pairs", (1, crate::loaded::MAX_PAIRS)),
+            (test.load_window_ms, "load_window_ms", (crate::loaded::MIN_WINDOW_MS, crate::loaded::MAX_WINDOW_MS)),
+        ] {
+            match value {
+                Some(_) if !loaded => return Err(Self::test_error(i, test, format!("only {loaded_names} read \"{field}\""))),
+                Some(n) if !(min..=max).contains(&n) => {
+                    return Err(Self::test_error(i, test, format!("\"{field}\" is {min} to {max}, not {n}")));
+                }
+                _ => {}
+            }
+        }
+        if test.load_levels.is_some() && test.function != crate::loaded::TURNAROUND_NAME {
+            return Err(Self::test_error(i, test, format!("only {} reads \"load_levels\"", crate::loaded::TURNAROUND_NAME)));
+        }
+        let load_levels = test
+            .load_levels
+            .as_deref()
+            .map(crate::loaded::Level::parse_list)
+            .transpose()
+            .map_err(|e| Self::test_error(i, test, format!("\"load_levels\": {e}")))?;
         let exchange_share =
             test.exchange_share.as_deref().map(crate::exchange::Share::parse).transpose().map_err(|e| Self::test_error(i, test, e))?;
         let exchange_stores =
@@ -1204,6 +1238,9 @@ impl ModernConfig {
             || test.exchange_invert.is_some()
             || test.storm_lines.is_some()
             || test.storm_increments.is_some()
+            || load_levels.is_some()
+            || test.load_pairs.is_some()
+            || test.load_window_ms.is_some()
         {
             let ctx = config.parameter_context.get_or_insert(TestParameterContext::default());
             if let Some(v) = test.stride_patterns {
@@ -1231,6 +1268,9 @@ impl ModernConfig {
             ctx.exchange_invert = test.exchange_invert.or(ctx.exchange_invert);
             ctx.storm_lines = test.storm_lines.or(ctx.storm_lines);
             ctx.storm_increments = test.storm_increments.or(ctx.storm_increments);
+            ctx.load_levels = load_levels.or(ctx.load_levels.take());
+            ctx.load_pairs = test.load_pairs.or(ctx.load_pairs);
+            ctx.load_window_ms = test.load_window_ms.or(ctx.load_window_ms);
         }
         if let Some(ms) = test.wait_ms
             && !(test.function.starts_with("Mem-Refresh") || test.function == "RefreshStable")
@@ -2188,6 +2228,44 @@ mod tests {
         assert!(
             load(TestConfig { storm_lines: Some(2), ..entry("Mem-PageExchange") }).unwrap_err().contains("only Mem-CoherenceStorm reads")
         );
+    }
+
+    /// The loaded latency tests' settings load in their ranges (TODO 117): the levels on Lat-Turnaround-DRAM alone, as shares or MiB/s,
+    /// 1 to 8 of them; the pairs (1 to 50) and the window (10 to 60000 ms) on either; any of them refused on another test
+    #[test]
+    fn loaded_latency_entries() {
+        use crate::loaded::{LOADED_NAME, Level, TURNAROUND_NAME};
+        let mut modern = legacy(100, vec![test(1, "SimpleTest", 100, 16)]).to_modern_config().unwrap();
+        let entry = |function: &str| TestConfig { enabled: true, function: function.to_string(), ..Default::default() };
+        let mut load = |t: TestConfig| {
+            modern.test_sequence[0] = t;
+            modern.get_test_configs().map(|c| c[0].1.clone())
+        };
+        let turnaround =
+            TestConfig { load_levels: Some("25%, 8058".into()), load_pairs: Some(20), load_window_ms: Some(250), ..entry(TURNAROUND_NAME) };
+        let ctx = load(turnaround).unwrap().parameter_context.expect("its settings");
+        assert_eq!(ctx.load_levels, Some(vec![Level::Percent(25.0), Level::MiBs(8058.0)]));
+        assert_eq!((ctx.load_pairs, ctx.load_window_ms), (Some(20), Some(250)));
+        let ctx = load(TestConfig { load_window_ms: Some(3000), ..entry(LOADED_NAME) }).unwrap().parameter_context.unwrap();
+        assert_eq!((ctx.load_levels, ctx.load_window_ms), (None, Some(3000)));
+        for (bad, says) in [
+            (TestConfig { load_levels: Some("50%".into()), ..entry(LOADED_NAME) }, "only Lat-Turnaround-DRAM reads \"load_levels\""),
+            (TestConfig { load_levels: Some("150%".into()), ..entry(TURNAROUND_NAME) }, "\"load_levels\": level '150%'"),
+            (TestConfig { load_levels: Some("".into()), ..entry(TURNAROUND_NAME) }, "\"load_levels\": level ''"),
+            (TestConfig { load_pairs: Some(0), ..entry(TURNAROUND_NAME) }, "\"load_pairs\" is 1 to 50, not 0"),
+            (TestConfig { load_pairs: Some(51), ..entry(LOADED_NAME) }, "\"load_pairs\" is 1 to 50, not 51"),
+            (TestConfig { load_window_ms: Some(5), ..entry(LOADED_NAME) }, "\"load_window_ms\" is 10 to 60000, not 5"),
+            (TestConfig { load_window_ms: Some(60_001), ..entry(TURNAROUND_NAME) }, "is 10 to 60000"),
+            (
+                TestConfig { load_pairs: Some(3), ..entry("Lat-DRAM-Read") },
+                "only Lat-Loaded-DRAM and Lat-Turnaround-DRAM read \"load_pairs\"",
+            ),
+            (TestConfig { load_levels: Some("50%".into()), ..entry("Mem-Sequence") }, "only Lat-Turnaround-DRAM reads"),
+        ] {
+            let function = bad.function.clone();
+            let e = load(bad).unwrap_err();
+            assert!(e.contains(says), "{function}: {e}");
+        }
     }
 
     /// The audit's verification-free settings are refused: a correctness test that never verifies, or never runs a round, reports nothing.

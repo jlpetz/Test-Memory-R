@@ -108,6 +108,11 @@ pub struct TestRunOverrides<'a> {
     pub seal_width_override: Option<&'a str>,
     /// Override every mirror test's mode (`mirror=`).
     pub mirror_override: Option<crate::config::MirrorMode>,
+    /// Override the loaded latency tests' settings (TODO 117): Lat-Turnaround-DRAM's levels (`load-levels=`), either's pairs
+    /// (`load-pairs=`) and window (`load-window-ms=`).
+    pub load_levels_override: Option<&'a [crate::loaded::Level]>,
+    pub load_pairs_override: Option<u32>,
+    pub load_window_ms_override: Option<u32>,
     /// Override the pattern-generation mode.
     pub pattern_mode_override: Option<u32>,
     /// Override Mem-Sequence's passes and default order (`sequence=`, `order=`).
@@ -263,6 +268,26 @@ impl std::fmt::Display for MemoryEffect {
             MemoryEffect::Preserves => write!(f, "Preserves"),
             MemoryEffect::Destroys => write!(f, "Destroys"),
         }
+    }
+}
+
+/// The command line's `load-levels=`, `load-pairs=` and `load-window-ms=` (TODO 117): each sets its one field on the loaded latency
+/// tests, a config's or the built-in ones, leaving the rest of each test's parameters; the levels on Lat-Turnaround-DRAM alone, the only
+/// one that reads them.
+fn apply_load_overrides(defs: &mut [TestDefinition], levels: Option<&[crate::loaded::Level]>, pairs: Option<u32>, window_ms: Option<u32>) {
+    if levels.is_none() && pairs.is_none() && window_ms.is_none() {
+        return;
+    }
+    log::info!("🔧 Applying CLI loaded-latency overrides: levels {levels:?}, pairs {pairs:?}, window {window_ms:?} ms");
+    for def in defs.iter_mut().filter(|d| crate::loaded::is_loaded(d.actual_name)) {
+        let context = def.config.parameter_context.get_or_insert_with(Default::default);
+        if def.actual_name == crate::loaded::TURNAROUND_NAME
+            && let Some(levels) = levels
+        {
+            context.load_levels = Some(levels.to_vec());
+        }
+        context.load_pairs = pairs.or(context.load_pairs);
+        context.load_window_ms = window_ms.or(context.load_window_ms);
     }
 }
 
@@ -711,6 +736,9 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         seal_override: _,
         seal_width_override: _,
         mirror_override,
+        load_levels_override,
+        load_pairs_override,
+        load_window_ms_override,
         pattern_mode_override,
         sequence_override,
         order_override,
@@ -806,6 +834,9 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
             def.config.parameter_context.get_or_insert_with(Default::default).mirror = Some(mirror);
         }
     }
+
+    // The loaded latency tests' overrides: each sets its one field, the levels on Lat-Turnaround-DRAM alone (TODO 117)
+    apply_load_overrides(&mut test_definitions, load_levels_override, load_pairs_override, load_window_ms_override);
 
     if let Some(mode) = pattern_mode_override {
         log::info!("Applying CLI pattern-mode override: {}", mode);
@@ -1354,7 +1385,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         let step_label = test_def.step_label(tm5);
         // A loaded latency test's length is its schedule's (TODO 117)
         let expected = if crate::loaded::is_loaded(test_name) {
-            Some(crate::loaded::expected(test_config, thread_pool.get_cpu_assignments()))
+            Some(crate::loaded::expected(test_name, test_config, thread_pool.get_cpu_assignments()))
         } else {
             test_config.timing.duration_secs.map(|secs| Duration::from_secs(secs.into()))
         };
@@ -2900,6 +2931,16 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
         (
             crate::loaded::LOADED_NAME,
             TestFunction::Latency(crate::loaded::lat_loaded_dram_multi),
+            TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: crate::loaded::extent_bytes(cache_info.l3_cache) }, ChunkMode::Whole)
+                .with_timing(TestTiming::cycles_only(1))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
+        ),
+        // Write turnaround (TODO 117): Lat-Loaded-DRAM's rows, then a read's latency under NT writes and under reads at matched levels (25,
+        // 50 and 75% of the lower flat-out peak, load_levels=), the loaders paced, a level's turnaround the first less the second
+        (
+            crate::loaded::TURNAROUND_NAME,
+            TestFunction::Latency(crate::loaded::lat_turnaround_dram_multi),
             TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: crate::loaded::extent_bytes(cache_info.l3_cache) }, ChunkMode::Whole)
                 .with_timing(TestTiming::cycles_only(1))
                 .with_tsc(tsc_freq)
@@ -6107,6 +6148,33 @@ mod tests {
             ran += 1;
         }
         assert!(ran >= 100, "only {ran} latency tests ran");
+    }
+
+    /// TODO 117: the command line's load settings land on the loaded latency tests alone, the levels on Lat-Turnaround-DRAM's alone, and
+    /// its schedule takes them
+    #[test]
+    fn the_load_overrides_set_the_loaded_tests_alone() {
+        use crate::loaded::{LOADED_NAME, Level, TURNAROUND_NAME};
+        let mut defs = create_test_definitions(&CacheInfo::default());
+        let levels = [Level::MiBs(4029.0), Level::Percent(60.0)];
+        apply_load_overrides(&mut defs, Some(&levels), Some(2), Some(250));
+        for def in &defs {
+            let c = def.config.parameter_context.as_ref();
+            let set = (c.and_then(|c| c.load_levels.clone()), c.and_then(|c| c.load_pairs), c.and_then(|c| c.load_window_ms));
+            match def.actual_name {
+                TURNAROUND_NAME => assert_eq!(set, (Some(levels.to_vec()), Some(2), Some(250))),
+                LOADED_NAME => assert_eq!(set, (None, Some(2), Some(250))),
+                other => assert_eq!(set, (None, None, None), "{other}"),
+            }
+        }
+        let turnaround = defs.iter().find(|d| d.actual_name == TURNAROUND_NAME).expect("Lat-Turnaround-DRAM is registered");
+        let schedule = crate::loaded::Params::of(TURNAROUND_NAME, &turnaround.config).schedule(7);
+        assert_eq!((schedule.windows.len(), schedule.window), (1 + 4 + 2 * 4 + 1, Duration::from_millis(250)));
+        // Only a pair given: the levels stay the defaults
+        let mut defs = create_test_definitions(&CacheInfo::default());
+        apply_load_overrides(&mut defs, None, Some(3), None);
+        let turnaround = defs.iter().find(|d| d.actual_name == TURNAROUND_NAME).unwrap();
+        assert_eq!(crate::loaded::Params::of(TURNAROUND_NAME, &turnaround.config).levels, crate::loaded::DEFAULT_LEVELS);
     }
 
     /// Why `subdivisions` is capped at 512: past it, Mem-Stride's shift no longer divides a 4 KiB multiple of a chunk, and the tail of each

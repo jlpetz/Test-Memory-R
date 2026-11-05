@@ -838,8 +838,8 @@ pub struct TestMemoryConfig {
     /// The coherence storm's step, its shared lines (TODO 28, `storm::Step`): set per dispatch by the worker pool for
     /// Mem-CoherenceStorm, `None` for every other test and outside a run.
     pub storm: Option<std::sync::Arc<crate::storm::Step>>,
-    /// The loaded latency tests' step (TODO 117, `loaded::Step`): the roles, the phase word and the loaders' byte slots, set per
-    /// dispatch by the worker pool for Lat-Loaded-DRAM, `None` for every other test and outside a run.
+    /// The loaded latency tests' step (TODO 117, `loaded::Step`): the roles, the phase word and pace and the loaders' counts, set per
+    /// dispatch by the worker pool for Lat-Loaded-DRAM and Lat-Turnaround-DRAM, `None` for every other test and outside a run.
     pub loaded: Option<std::sync::Arc<crate::loaded::Step>>,
 }
 

@@ -325,7 +325,7 @@ What sets them apart:
 | `Spd-{DRAMSmall,DRAMFull}-{Read,Write,Copy}-Auto` | `bandwidth_tests.rs` (NT stores for Write/Copy) | `TestStats` |
 | `Lat-{L1,L2,L3,DRAM,DRAMFull}-{Read,Write,Copy}` (15) | `latency_tests.rs` (v1) | `LatencyTestStats` |
 | `Lat-V2-*`, `Lat-V2P-*`, `Lat-NTW-*` | `latency_tests_v2.rs` | `LatencyTestStats` |
-| `Lat-Loaded-DRAM` (TODO 117) | `loaded.rs`, its threads sharing a step (§8) | `LatencyTestStats`, the measurer's with its windows (`loaded`) |
+| `Lat-Loaded-DRAM`, `Lat-Turnaround-DRAM` (TODO 117) | `loaded.rs`, its threads sharing a step (§8) | `LatencyTestStats`, the measurer's with its windows (`loaded`) |
 
 ---
 
@@ -355,13 +355,14 @@ table has both. The coordinator-and-jobs model this section used to describe was
 these tests don't need it. The settled rule stands: individual loads and stores are never routed
 through a queue; a thread claims a whole work item and works it in its own loop.
 
-`Lat-Loaded-DRAM` (TODO 117, §6's table) shares `loaded::Step` (`TestMemoryConfig::loaded`),
-and each thread takes a role in it once, from the step's CPUs: thread 0 measures, the first
-thread of each other physical core on its node loads, and the rest sit out and return at once.
-The measurer and the loaders meet at its barrier, and the measurer drives the loaders' load
-window by window through a phase word, which they read once a 4 KiB block. Its latencies are the
-measurer's rows, a load each (`TestSummary::loaded`), never one P50 merged over its threads, and
-its timing table is its loaders'.
+`Lat-Loaded-DRAM` and `Lat-Turnaround-DRAM` (TODO 117, §6's table) share `loaded::Step`
+(`TestMemoryConfig::loaded`), and each thread takes a role in it once, from the step's CPUs:
+thread 0 measures, the first thread of each other physical core on its node loads, and the rest
+sit out and return at once. The measurer and the loaders meet at its barrier, and the measurer
+drives the loaders' load window by window through a phase word, which they read once a 4 KiB
+block, and under a turnaround level a pace stored before it, a TSC deadline a block. Its
+latencies are the measurer's rows, a load each (`TestSummary::loaded`), never one P50 merged over
+its threads, and its timing table is its loaders'.
 
 ---
 
