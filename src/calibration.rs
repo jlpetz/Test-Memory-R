@@ -439,29 +439,32 @@ fn page_size_str(page: PageSizeLevel) -> &'static str {
 }
 
 /// A calibration's own memory: `size` bytes at `page`, else at the next smaller page size where it can't have them, down to 4 KiB; with the
-/// page size it got. The cache calibration's probes and the seal's calibration both take theirs from here.
-fn allocate_calibration_buffer(size: usize, page: PageSizeLevel) -> Result<(MemoryBuffer, PageSizeLevel), String> {
+/// page size it got; on NUMA node `node` where given (strictly for large pages, preferred for 4 KiB). The cache calibration's probes and
+/// the seal's calibration both take theirs from here.
+fn allocate_calibration_buffer(size: usize, page: PageSizeLevel, node: Option<u32>) -> Result<(MemoryBuffer, PageSizeLevel), String> {
     let allocator = MemoryAllocator::new(BackendType::Auto)?;
-    allocate_stepping_down(size, page, |config| allocator.allocate(config))
+    allocate_stepping_down(size, page, node, |config| allocator.allocate(config))
 }
 
 /// `allocate_calibration_buffer`'s requests, each made by `allocate`. Each is strict (`Require`), so the one granted proves its page size:
 /// a `Prefer` request falls back inside the backend, which doesn't say to what, and a page size can't be read back after the fact. Each
 /// large-page request carries its page's alignment, which is how it gets that page size (without it the kernel silently gives smaller
-/// pages, TODO 87); 4 KiB needs none.
+/// pages, TODO 87); 4 KiB needs none. A `node` is named strictly (the backend leaves 4 KiB preferred): a smaller page on the node is
+/// worth more to a calibration than a larger one on another, whose latencies are a remote node's.
 fn allocate_stepping_down<T>(
-    size: usize, page: PageSizeLevel, mut allocate: impl FnMut(&AllocationConfig) -> Result<T, crate::memory::backend::AllocError>,
+    size: usize, page: PageSizeLevel, node: Option<u32>,
+    mut allocate: impl FnMut(&AllocationConfig) -> Result<T, crate::memory::backend::AllocError>,
 ) -> Result<(T, PageSizeLevel), String> {
     let mut refused = Vec::new();
     for level in [PageSizeLevel::Huge, PageSizeLevel::Large, PageSizeLevel::Regular].into_iter().filter(|&l| l <= page) {
         let config = AllocationConfig {
             size,
-            numa_node: None,
+            numa_node: node,
             page_size: PageSizePreference::Require(level),
             memory_type: MemoryType::WriteBack,
             zero_memory: false,
             alignment: (level != PageSizeLevel::Regular).then(|| level.bytes()),
-            numa_strict: false,
+            numa_strict: node.is_some(),
         };
         match allocate(&config) {
             Ok(buffer) => {
@@ -516,14 +519,14 @@ impl ProbeEngine {
         self.page_obtained
     }
 
-    /// Initialize with a specific page size preference
+    /// Initialize with a specific page size preference, on NUMA node `node` (`allocate_calibration_buffer`)
     /// page_size_str: "regular"/"4kb", "large"/"2mb", "huge"/"1gb"
-    pub fn initialize_with_page_size(&mut self, max_size: usize, page_size_str: &str) -> Result<(), String> {
+    pub fn initialize_with_page_size(&mut self, max_size: usize, page_size_str: &str, node: u32) -> Result<(), String> {
         if self.initialized {
             return Ok(());
         }
 
-        match allocate_calibration_buffer(max_size, calibration_page_size(page_size_str)) {
+        match allocate_calibration_buffer(max_size, calibration_page_size(page_size_str), Some(node)) {
             Ok((buffer, obtained)) => {
                 self.page_obtained = Some(obtained);
                 // No chain over the whole buffer: each probe lays its own, its size's (`probe`). One here cost about 6 s on the dev box's
@@ -735,11 +738,17 @@ impl FineProbe {
 // Calibration Test (Orchestrator)
 // ============================================================================
 
-/// The CPUs the calibration runs on (TODO 22): anchor A's, the first CPU of the top-ranked core (Windows' preferred); B's, the SMT pair of
-/// the first core in that order that has one; C's, every logical CPU, and the most of them one L3 group has.
+/// The CPUs the calibration runs on (TODO 22): anchor A's, the first CPU of the top-ranked core (Windows' preferred), and its NUMA node;
+/// B's, the SMT pair of the first core in that order on the node that has one; C's, every logical CPU of the node, and the most of them
+/// one L3 group has. One node's, as a run's thread uses its own node's memory: the calibration measures on memory on `node`, and on an
+/// Intel CPU with SNC each node's memory is cached in that node's part of the L3 alone. On the m8i.metal-48xl (SNC3, 2026-11-05) A read
+/// the L3 at 37 ns on its own node's memory and 57 ns on another's, and C on every CPU put all 192 in one node's L3.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CalibrationCpus {
     pub single: usize,
+    pub node: u32,
+    /// The machine's NUMA nodes
+    pub nodes: usize,
     pub pair: Option<[usize; 2]>,
     pub all: Vec<usize>,
     pub per_l3: usize,
@@ -749,16 +758,25 @@ impl CalibrationCpus {
     /// From the cores the selection ranks (`cpu_selection::cores`)
     pub fn of(cores: &[crate::cpu_selection::Core]) -> Self {
         let order = crate::cpu_selection::rank(cores);
-        let ranked = || order.iter().map(|&i| &cores[i]);
-        let single = ranked().next().map_or(0, |core| core.cpus[0]);
-        let pair = ranked().find(|core| core.cpus.len() >= 2).map(|core| [core.cpus[0], core.cpus[1]]);
-        let mut all: Vec<usize> = cores.iter().flat_map(|core| core.cpus.iter().copied()).collect();
+        let (single, node) = order.first().map_or((0, 0), |&i| (cores[i].cpus[0], cores[i].numa_node));
+        // The node's cores, ranked
+        let on_node: Vec<&crate::cpu_selection::Core> = order.iter().map(|&i| &cores[i]).filter(|core| core.numa_node == node).collect();
+        let pair = on_node.iter().find(|core| core.cpus.len() >= 2).map(|core| [core.cpus[0], core.cpus[1]]);
+        let mut all: Vec<usize> = on_node.iter().flat_map(|core| core.cpus.iter().copied()).collect();
         all.sort_unstable();
         let mut on_l3: HashMap<crate::cpu_topology::L3Group, usize> = HashMap::new();
-        for core in cores {
+        for core in &on_node {
             *on_l3.entry(core.l3).or_default() += core.cpus.len();
         }
-        Self { single, pair, all, per_l3: on_l3.into_values().max().unwrap_or(1) }
+        let mut nodes: Vec<u32> = cores.iter().map(|core| core.numa_node).collect();
+        nodes.sort_unstable();
+        nodes.dedup();
+        Self { single, node, nodes: nodes.len(), pair, all, per_l3: on_l3.into_values().max().unwrap_or(1) }
+    }
+
+    /// C's CPUs as the output names them: every CPU, or with more than one node, every CPU of A's
+    fn every(&self) -> String {
+        if self.nodes > 1 { format!("Every CPU of NUMA node {}", self.node) } else { "Every CPU".to_string() }
     }
 
     /// This machine's
@@ -1033,7 +1051,7 @@ impl CalibrationTest {
         let cpus = CalibrationCpus::detect();
         let bytes = self.memory_needed(&cpus);
         let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
-        probe_engine.initialize_with_page_size(bytes, &self.config.page_size)?;
+        probe_engine.initialize_with_page_size(bytes, &self.config.page_size, cpus.node)?;
         let page = probe_engine.page_obtained();
         let mut results = self.measure(probe_engine, &cpus, bytes)?;
         // The page size the buffer got, else the one asked for
@@ -1117,7 +1135,7 @@ impl CalibrationTest {
             push("one thread", size, ns, inside);
         }
 
-        // C: every CPU, when it was measured
+        // C: every CPU of A's node, when it was measured
         if let Some(SharedReach { l3_loaded: Some(loaded), .. }) = &stored.shared
             && cpus.all.len() > 1
         {
@@ -1207,18 +1225,19 @@ impl CalibrationTest {
             );
         }
 
-        // C: every logical CPU
+        // C: every logical CPU of A's node
         let mut l3_loaded = None;
         let mut l3_loaded_ns = 0.0;
         if cpus.all.len() > 1 {
-            log::info!(target: SHOWN_TARGET, "═══ Every CPU at once ({}, {} sharing each L3) ═══", cpus.all.len(), cpus.per_l3);
+            log::info!(target: SHOWN_TARGET, "═══ {} at once ({}, {} sharing each L3) ═══", cpus.every(), cpus.all.len(), cpus.per_l3);
             let own = if cpus.pair.is_some() { l2_smt.unwrap_or(a_l2 / 2) } else { a_l2 };
             let loaded = Loaded { cpus: &cpus.all, sharers: cpus.per_l3, own, label: "every CPU".to_string() };
             if let Some((size, ns)) = self.loaded_reach(results, &loaded, base, bytes) {
                 (l3_loaded, l3_loaded_ns) = (Some(size), ns);
             }
             log::info!(target: SHOWN_TARGET,
-                "Every CPU at once: L3 {} a thread ({} alone)",
+                "{} at once: L3 {} a thread ({} alone)",
+                cpus.every(),
                 l3_loaded.map_or("not found".to_string(), format_size),
                 format_size(a_l3)
             );
@@ -1291,14 +1310,16 @@ impl CalibrationTest {
 
     /// TODO 22's check of the curve (`--calibrate-curve`, which saves nothing): the calibration, then the L3 a thread reaches with `k` in
     /// each L3 group running, one thread a core (k = 1 up to a group's cores) and both of each core's (k = 2 up to all its CPUs), each
-    /// against the curve's reach(k). Allocates its own memory. Every group runs its `k` at once, as a run's threads do.
+    /// against the curve's reach(k). Allocates its own memory. Every group of A's NUMA node runs its `k` at once, as a run's threads do
+    /// (one node's, as C's: `CalibrationCpus`).
     pub fn run_curve(&self) -> Result<(CalibrationResults, Vec<CurvePoint>), String> {
         let cores = crate::cpu_selection::cores(crate::cpu_topology::get_cpu_topology());
         let results = self.run()?;
         let cpus = CalibrationCpus::of(&cores);
+        let cores: Vec<crate::cpu_selection::Core> = cores.into_iter().filter(|core| core.numa_node == cpus.node).collect();
         let bytes = self.memory_needed(&cpus);
         let mut probe_engine = ProbeEngine::new(self.tsc_frequency_ghz);
-        probe_engine.initialize_with_page_size(bytes, &self.config.page_size)?;
+        probe_engine.initialize_with_page_size(bytes, &self.config.page_size, cpus.node)?;
         let base = probe_engine.get_base_ptr();
         let (a_l2, l2_smt) = (
             results.tiers.get(&CacheTier::L2).map_or(self.cache_info.per_core_l2, |t| t.optimal_size),
@@ -2097,7 +2118,7 @@ pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCal
         SEAL_RUNS
     );
 
-    let (buffer, obtained) = allocate_calibration_buffer(bytes, page)?;
+    let (buffer, obtained) = allocate_calibration_buffer(bytes, page, None)?;
     let (ptr, words) = (buffer.as_mut_ptr() as *mut u64, bytes / 8);
     // Per kernel, the seconds of each timed fill and each timed check
     let mut times: Vec<(Vec<f64>, Vec<f64>)> = vec![(Vec::new(), Vec::new()); kernels.len()];
@@ -2376,9 +2397,9 @@ mod tests {
         // The page size got, and the requests made: each its page size and alignment
         let allocate = |page, granted: &[PageSizeLevel]| {
             let mut asked = Vec::new();
-            let got = allocate_stepping_down(SIZE, page, |config| {
+            let got = allocate_stepping_down(SIZE, page, None, |config| {
                 let PageSizePreference::Require(level) = config.page_size else { panic!("not strict: {:?}", config.page_size) };
-                assert_eq!((config.size, config.numa_node), (SIZE, None));
+                assert_eq!((config.size, config.numa_node, config.numa_strict), (SIZE, None, false));
                 asked.push((level, config.alignment));
                 if granted.contains(&level) { Ok(()) } else { Err(AllocError::other("refused")) }
             });
@@ -2461,7 +2482,32 @@ mod tests {
         let r8600g = CalibrationCpus::of(&synthetic(&[3, 2, 1, 4, 0, 4], 64, 64, true));
         assert_eq!((r8600g.single, r8600g.pair, r8600g.all.len(), r8600g.per_l3), (6, Some([6, 7]), 12, 12));
         let m8a = CalibrationCpus::of(&synthetic(&[0; 16], 8, 64, false));
-        assert_eq!((m8a.single, m8a.pair, m8a.all, m8a.per_l3), (0, None, (0..16).collect::<Vec<_>>(), 8));
+        assert_eq!((m8a.single, m8a.pair, &m8a.all, m8a.per_l3), (0, None, &(0..16).collect::<Vec<_>>(), 8));
+        assert_eq!((m8a.node, m8a.nodes, m8a.every()), (0, 1, "Every CPU".to_string()));
+    }
+
+    /// TODO 22: on more than one NUMA node, B and C take A's node's CPUs alone. The m8i.metal-48xl (SNC3): 96 cores, 32 a node and an L3
+    /// group, SMT: A on CPU 0, C on node 0's 64 CPUs, 64 sharing its L3, not all 192 in it. The buffer is asked for on the node,
+    /// strictly.
+    #[test]
+    fn the_calibration_takes_one_numa_nodes_cpus() {
+        use crate::cpu_selection::synthetic;
+        let snc3 = CalibrationCpus::of(&synthetic(&[0; 96], 32, 32, true));
+        assert_eq!((snc3.single, snc3.node, snc3.nodes, snc3.pair), (0, 0, 3, Some([0, 1])));
+        assert_eq!((&snc3.all, snc3.per_l3), (&(0..64).collect::<Vec<_>>(), 64));
+        assert_eq!(snc3.every(), "Every CPU of NUMA node 0");
+        // With node 0 left out (not the machine's), all of it moves to the node A is on
+        let nodes_1_2: Vec<_> = synthetic(&[0; 96], 32, 32, true).into_iter().filter(|core| core.numa_node != 0).collect();
+        let node1 = CalibrationCpus::of(&nodes_1_2);
+        assert_eq!((node1.single, node1.node, node1.nodes, node1.pair), (64, 1, 2, Some([64, 65])));
+        assert_eq!((node1.all, node1.per_l3), ((64..128).collect::<Vec<_>>(), 64));
+
+        let mut asked = Vec::new();
+        let got = allocate_stepping_down(64 << 20, PageSizeLevel::Large, Some(1), |config| {
+            asked.push((config.numa_node, config.numa_strict));
+            Ok::<(), crate::memory::backend::AllocError>(())
+        });
+        assert_eq!((got.map(|((), level)| level), asked), (Ok(PageSizeLevel::Large), vec![(Some(1), true)]));
     }
 
     /// TODO 22: a thread's L3 reach with k sharing, from anchors A and C: one thread's 64 MiB and 9 MiB a thread with 8 sharing give the

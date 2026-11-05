@@ -355,6 +355,12 @@ pointer chase whose latency shows where a tier ends:
   reaches with every CPU in its group running. The edge is the first step of 1.4x past the L3's
   own latency, and the size is the largest steady one still within 1.25x of A's L3 latency.
 
+With more than one NUMA node, all three take A's node: B and C its CPUs alone, and the memory is
+that node's (a run's own span on it, or `--calibrate-cache`'s buffer, asked for there), as a run's
+thread uses its own node's memory. On an Intel CPU with SNC each node's memory is cached in that
+node's part of the L3 alone: on another node's memory the m8i.metal-48xl read its L3 at 57 ns, not
+37, and every CPU on one node's memory shared that node's L3 (2026-11-05).
+
 An L3 test takes its `scale` of a thread's reach with the run's threads in its L3 group running,
 on the curve through A and C: reach(k) = own + split / k, which both fix. It never goes inside the
 thread's L2 share plus 64 KiB. L1 and L2 tests with two threads a core take B's sizes. On the dev

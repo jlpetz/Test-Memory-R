@@ -1010,6 +1010,17 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     let requests: usize = spans.iter().map(|s| s.commits.len()).sum();
     let refused = spans.iter().flat_map(|s| &s.commits).filter(|c| c.refused).count();
 
+    // The threads whose span is wholly on the calibration's NUMA node, for a calibration or recheck to measure on (TODO 22): its CPUs are
+    // that node's (`calibration::CalibrationCpus`), as a run's thread uses its own node's memory. The largest span alone picked any
+    // thread's, all of them the same size: on the m8i.metal-48xl (SNC3, 2026-11-05) one on another node read the L3 at 57 ns, not 37, and
+    // its sweep lost the L3's edge and took 475 MB.
+    let calibration_local: Vec<usize> = if calibrate_first.is_some() {
+        let node = crate::calibration::CalibrationCpus::detect().node;
+        spans.iter().filter(|span| span.numa_node == Some(node) && span.remote_bytes() == 0).map(|span| span.thread_id).collect()
+    } else {
+        Vec::new()
+    };
+
     // The allocation report (TODO 81). The request record goes with it.
     let report = crate::reporting::converters::create_allocation_report(spans, elapsed, numa_nodes);
     fe.event(Run::Allocated(Box::new(report)).into());
@@ -1018,7 +1029,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     // A recheck first, when that is all it asks (TODO 116): a calibration that holds is the run's as it is
     let measure = match calibrate_first {
         Some(CalibrateFirst::Recheck) => {
-            let rechecked = recheck_on_allocation(&mut allocated_blocks, cache_info);
+            let rechecked = recheck_on_allocation(&mut allocated_blocks, &calibration_local, cache_info);
             let held = matches!(&rechecked, Ok(recheck) if recheck.held);
             fe.event(Run::Rechecked(rechecked.map(Box::new)).into());
             !held
@@ -1027,7 +1038,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         None => false,
     };
     if measure {
-        let calibrated = calibrate_on_allocation(&mut allocated_blocks, cache_info, &page_mix);
+        let calibrated = calibrate_on_allocation(&mut allocated_blocks, &calibration_local, cache_info, &page_mix);
         if let Ok(now) = &calibrated {
             crate::tests::set_calibration_data(Some(now.results.clone()));
         }
@@ -4725,27 +4736,28 @@ fn convert_to_latency_level_summary(
 }
 
 /// Every thread's share, from the stitched allocator: one contiguous VA span per thread.
-/// The stored cache calibration rechecked on a run's own memory, before its tests (TODO 116), on its largest span, as
-/// `calibrate_on_allocation` measures one there
+/// The stored cache calibration rechecked on a run's own memory, before its tests (TODO 116), on its largest span on the calibration's
+/// node (`calibration_span`), as `calibrate_on_allocation` measures one there
 fn recheck_on_allocation(
-    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, cache_info: &CacheInfo,
+    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, local: &[usize], cache_info: &CacheInfo,
 ) -> Result<crate::frontend::Recheck, String> {
     let stored = crate::tests::get_calibration_data().ok_or("no stored calibration")?;
-    let block = blocks.values_mut().flatten().max_by_key(|block| block.buffer.size()).ok_or("the run has no memory")?;
+    let block = calibration_block(blocks, local)?;
     let (base, bytes) = (block.buffer.as_mut_ptr() as *mut u64, block.buffer.size());
     let test = crate::calibration::CalibrationTest::with_config(cache_info.clone(), crate::calibration::CalibrationConfig::default());
     // SAFETY: as `calibrate_on_allocation`'s: the run's span, not yet a worker's, and no worker yet to be pinned to the probes' CPUs
     unsafe { test.recheck_on(&stored, base, bytes) }
 }
 
-/// The cache calibration on a run's own memory, before its tests (TODO 22): its largest span, the workers not yet started and nothing
+/// The cache calibration on a run's own memory, before its tests (TODO 22): its largest span on the calibration's node
+/// (`calibration_span`), the workers not yet started and nothing
 /// written there yet, on the CPUs the calibration takes (`calibration::CalibrationCpus`), on the run's pages; saved to tmr-cfg.json as
 /// `--calibrate-cache` saves it, stamped with this machine.
 fn calibrate_on_allocation(
-    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, cache_info: &CacheInfo, pages: &crate::run_context::PageSizeMix,
+    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, local: &[usize], cache_info: &CacheInfo, pages: &crate::run_context::PageSizeMix,
 ) -> Result<crate::frontend::CalibratedNow, String> {
     use crate::memory::allocator::PageSizeLevel;
-    let block = blocks.values_mut().flatten().max_by_key(|block| block.buffer.size()).ok_or("the run has no memory")?;
+    let block = calibration_block(blocks, local)?;
     let (base, bytes) = (block.buffer.as_mut_ptr() as *mut u64, block.buffer.size());
     // The run's pages: what most of its memory is on
     let page = [
@@ -4768,6 +4780,33 @@ fn calibrate_on_allocation(
     let mut table = Vec::new();
     let _ = crate::calibration::CalibrationTest::display_results(&results, cache_info, &mut table);
     Ok(crate::frontend::CalibratedNow { results, table: String::from_utf8_lossy(&table).into_owned(), saved })
+}
+
+/// The block a calibration or recheck measures on (`calibration_span`)
+fn calibration_block<'a>(blocks: &'a mut HashMap<usize, Vec<AllocationBlock>>, local: &[usize]) -> Result<&'a mut AllocationBlock, String> {
+    let sizes: Vec<(usize, usize, usize)> =
+        blocks.iter().flat_map(|(&thread, list)| list.iter().enumerate().map(move |(i, block)| (thread, i, block.buffer.size()))).collect();
+    let (thread, i) = calibration_span(&sizes, local).ok_or("the run has no memory")?;
+    if !local.contains(&thread) {
+        log::warn!(
+            "No span of the run's is wholly on the calibration's NUMA node: it measures on another node's, whose latencies are remote"
+        );
+    }
+    blocks.get_mut(&thread).and_then(|list| list.get_mut(i)).ok_or_else(|| "the run's block is gone".to_string())
+}
+
+/// Which of the run's blocks, each `(thread, index, bytes)`, a calibration measures on (TODO 22): the largest of the threads `local`
+/// (those wholly on the calibration's NUMA node), else the largest; a tie to the highest thread, so the pick doesn't hang on a map's
+/// order.
+fn calibration_span(sizes: &[(usize, usize, usize)], local: &[usize]) -> Option<(usize, usize)> {
+    let largest = |only_local: bool| {
+        sizes
+            .iter()
+            .filter(|(thread, ..)| !only_local || local.contains(thread))
+            .max_by_key(|&&(thread, i, bytes)| (bytes, thread, i))
+            .map(|&(thread, i, _)| (thread, i))
+    };
+    largest(true).or_else(|| largest(false))
 }
 
 fn allocate_all_blocks_new(
@@ -5278,6 +5317,18 @@ mod tests {
 
     /// A word no test pattern writes, to find extent words a test never touched
     const UNTOUCHED: u64 = 0x5AF0_0FA5_C3D2_1E87;
+
+    /// TODO 22: a calibration measures on the largest span on its own node, whatever a map's order: of three threads' equal spans, the
+    /// local one; of two local ones, the larger; with none local, the largest of all, a tie to the highest thread
+    #[test]
+    fn a_calibration_takes_the_largest_span_on_its_node() {
+        const GB: usize = 1 << 30;
+        let equal = [(0, 0, 3 * GB), (1, 0, 3 * GB), (2, 0, 3 * GB)];
+        assert_eq!(calibration_span(&equal, &[1]), Some((1, 0)));
+        assert_eq!(calibration_span(&[(0, 0, GB), (1, 0, 3 * GB), (2, 0, 2 * GB)], &[0, 2]), Some((2, 0)));
+        assert_eq!(calibration_span(&equal, &[]), Some((2, 0)));
+        assert_eq!(calibration_span(&[], &[0]), None);
+    }
 
     /// The built-in suite, set up to run once on a test region (one thread, 64 B lines)
     fn suite() -> Vec<(TestDefinition, TestFunctionMultiBlock)> {
