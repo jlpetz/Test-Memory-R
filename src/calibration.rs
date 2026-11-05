@@ -1373,9 +1373,9 @@ impl CalibrationTest {
     }
 
     /// TODO 22's check of the curve (`--calibrate-curve`, which saves nothing): the calibration, then the L3 a thread reaches with `k` in
-    /// each L3 group running, one thread a core (k = 1 up to a group's cores) and both of each core's (k = 2 up to all its CPUs), each
-    /// against the curve's reach(k). Allocates its own memory. Every group of A's NUMA node runs its `k` at once, as a run's threads do
-    /// (one node's, as C's: `CalibrationCpus`).
+    /// each L3 group running, one thread a core (k from 1 up to a group's cores, `curve_counts`: every count in a group of up to 8, past
+    /// that a sample) and both of each core's (k twice those), each against the curve's reach(k). Allocates its own memory. Every group of
+    /// A's NUMA node runs its `k` at once, as a run's threads do (one node's, as C's: `CalibrationCpus`).
     pub fn run_curve(&self) -> Result<(CalibrationResults, Vec<CurvePoint>), String> {
         let cores = crate::cpu_selection::cores(crate::cpu_topology::get_cpu_topology());
         let results = self.run()?;

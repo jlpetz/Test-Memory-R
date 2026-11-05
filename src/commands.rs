@@ -148,8 +148,12 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     )?;
     writeln!(
         out,
-        "  {} --calibrate-curve                # Check the calibration's curve: the L3 at every thread count, against it (saves nothing)",
+        "  {} --calibrate-curve                # Check the calibration's curve: the L3 at thread counts, against it (saves nothing)",
         program_name
+    )?;
+    writeln!(
+        out,
+        "                                          #   (an L3 of up to 8 cores: every count; a larger one: 1-4, 6, 8, 12, 16, 24 ... all)"
     )?;
     writeln!(
         out,
@@ -196,7 +200,7 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "             (errors=panic aborts on the first error)")?;
     writeln!(out)?;
     writeln!(out, "COMMAND LINE PARAMETERS:")?;
-    writeln!(out, "  memory=20%                           # Reserve 20% of system memory")?;
+    writeln!(out, "  memory=20%                          # Reserve 20% of the memory available now (as 20%-from-available)")?;
     writeln!(out, "  memory=2GiB                         # Reserve 2 GiB")?;
     writeln!(out, "  memory=2048MB                       # TM5-compatible allocation (2048MB from available)")?;
     writeln!(out, "  memory=10%-from-available           # Reserve 10% from currently available memory")?;
@@ -225,6 +229,12 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  largefloor=16MiB                    # Smallest 2MB-page request (16MiB-1GiB)")?;
     writeln!(out, "  blkroundtarget=1GiB                 # Round each thread's share to a multiple of this (of largefloor)")?;
     writeln!(out, "  blkround=up                         # ...up (default; a smaller step rather than pass available), down, or nearest")?;
+    writeln!(out, "  minpage=regular                     # Smallest page the run takes: regular (4KB), large (2MB, the default)")?;
+    writeln!(out, "                                      #   or huge (1GB); 2MB and 1GB pages need the large-page privilege")?;
+    writeln!(out, "  maxpage=large                       # Largest page it asks for: regular, large or huge (the default)")?;
+    writeln!(out, "                                      #   (minpage=regular maxpage=regular: 4KB pages, without asking)")?;
+    writeln!(out, "  channels=2                          # Memory channels, for TM5 SimpleTest's stride (channels x Parameter - 1")?;
+    writeln!(out, "                                      #   lines); default: the config's, else 2")?;
     writeln!(out, "  errors=halt                         # Error handling (log/halt/panic)")?;
     writeln!(out, "  seal=tmr                            # Seal: check and reseal around every chunk (tmr, the default; tm5; off)")?;
     writeln!(out, "  seal-width=auto                     # Seal kernels' SIMD width (auto, 128, 256, 512); unset, width='s;")?;
@@ -317,7 +327,7 @@ fn usage(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  {} --disable-pinning            # Disable CPU pinning (default: enabled)", program_name)?;
     writeln!(out, "  {} errors=halt                  # Stop on first error", program_name)?;
     writeln!(out, "  {} config=test.json             # Load comprehensive JSON config", program_name)?;
-    writeln!(out, "  {} config=legacy.cfg            # Auto-convert TM5 config + add stuck bit test", program_name)?;
+    writeln!(out, "  {} config=legacy.cfg            # Run a TM5 config: its own tests, Test0 as the seal", program_name)?;
     writeln!(out, "  {} --create-demo-configs        # Create demo configurations", program_name)?;
     writeln!(out, "  {} --compare-results old.json new.json # Compare results from results\\", program_name)?;
     Ok(())
@@ -332,7 +342,7 @@ fn demo_configs(out: &mut dyn Write) -> io::Result<RunStatus> {
     writeln!(out, "In {}:", crate::home::configs().display())?;
     writeln!(out, "✅ Created demo_comprehensive_test.json - Modern comprehensive memory testing")?;
     writeln!(out, "   Features: Full memory stuck bit test + timed stress tests")?;
-    writeln!(out, "   Timing: 3 cycles, ~2-3 minutes per cycle with comprehensive coverage")?;
+    writeln!(out, "   Timing: 1 cycle, each test once")?;
     writeln!(out, "   Memory: Uses full allocation for critical tests, optimized windows for others")?;
     writeln!(out)?;
     writeln!(out, "✅ Created demo_tm5_compatible.json - TM5-compatible configuration")?;
@@ -678,7 +688,8 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
         writeln!(out, "❌ {e}")?;
         return Ok(RunStatus::NotRun);
     }
-    // TODO 22's curve check: the calibration, then the L3 at every thread count between, against its curve; it saves nothing
+    // TODO 22's curve check: the calibration, then the L3 at thread counts up to a group's cores (`curve_counts`), against its curve; it
+    // saves nothing
     if command == "--calibrate-curve" {
         writeln!(out, "🔬 TMR Calibration Curve Check (saves nothing)")?;
         writeln!(out, "=============================================\n")?;
@@ -1010,6 +1021,20 @@ mod tests {
         assert!((threads[1].throughput_mib_s - 4096.0).abs() < 1e-6, "2 GiB a step in 0.5 s: {}", threads[1].throughput_mib_s);
         assert_eq!((work.by_cpu.cpus.len(), work.by_core.cores.len()), (2, 2));
         assert_eq!((work.by_thread.whea.total, work.by_thread.whea.corrected, work.by_thread.pinned), (3, 2, false));
+    }
+
+    /// `--help` has a line for every parameter and flag a run takes, as the guide and the README say it does: minpage=, maxpage= and
+    /// channels=, which the large-page warnings and a .cfg's stride send users to, had none
+    #[test]
+    fn every_parameter_has_a_help_line() {
+        let mut out = Vec::new();
+        help(&mut out, "tmr.exe").unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let starts: Vec<&str> = text.lines().map(str::trim_start).map(|line| line.strip_prefix("tmr.exe ").unwrap_or(line)).collect();
+        for key in crate::params::get_registry().all_keys() {
+            let named = if key.starts_with("--") { format!("{key} ") } else { format!("{key}=") };
+            assert!(starts.iter().any(|line| line.starts_with(&named)), "--help has no line for {key}");
+        }
     }
 
     fn args(args: &[&str]) -> Vec<String> {

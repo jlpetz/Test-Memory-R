@@ -91,9 +91,10 @@ takes the privilege away again (from you, or from the `Group:` or `User:` named)
   `window.json` beside tmr.exe: the chart shown or hidden, the theme, whether a run starts as it
   opens (`tmr --gui --start` does that once), whether serial numbers are kept, the last run's
   parameters, its size and colours. Settings, in its `•••` menu, sets the theme, starting on open
-  and the serial numbers. The line under the box says what cache calibration a run finds; the
-  first run on a machine measures one before its tests (about 2 minutes), or Calibrate the
-  caches and the seal, in the same menu, measures it now, with the seal's fastest width.
+  and the serial numbers. The line above the box, the header's last, says before a run what
+  cache calibration it finds; the first run on a machine measures one before its tests (about 2
+  minutes), or Calibrate the caches and the seal, in the same menu, measures it now, with the
+  seal's fastest width.
 - **From a console**, type `tmr`. On its own it runs the stability plan, 3 cycles of it; press
   Ctrl+C to stop it sooner, and it stops at its next checkpoint and writes its report. Some
   settings:

@@ -611,6 +611,11 @@ mod tests {
         assert!(matches!(AllocationMode::parse("20%-from-available"), Ok(AllocationMode::ReserveFromAvailable { .. })));
         assert!(matches!(AllocationMode::parse("16GiB-target"), Ok(AllocationMode::AllocateTarget { .. })));
         assert!(matches!(AllocationMode::parse("2048MB"), Ok(AllocationMode::LegacyTM5 { reserve_mb: 2048 })));
+        // A bare share reserves it from the memory available now, as --help says
+        assert!(matches!(
+            AllocationMode::parse("20%"),
+            Ok(AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Percentage(20.0) })
+        ));
     }
 
     fn mem_info_55_25_gib_available() -> SystemMemoryInfo {

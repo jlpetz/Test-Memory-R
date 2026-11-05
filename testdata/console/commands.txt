@@ -20,7 +20,8 @@ USAGE:
                                           #   (DOMAIN\name, or .\name for this PC's; quote a name with spaces)
   tmr.exe --remove-large-pages             # Remove it from you, or from the Group:<name> or User:<name> given
   tmr.exe --calibrate-cache                # Measure the cache tiers' sizes, finer around each edge; saved to tmr-cfg.json after a prompt
-  tmr.exe --calibrate-curve                # Check the calibration's curve: the L3 at every thread count, against it (saves nothing)
+  tmr.exe --calibrate-curve                # Check the calibration's curve: the L3 at thread counts, against it (saves nothing)
+                                          #   (an L3 of up to 8 cores: every count; a larger one: 1-4, 6, 8, 12, 16, 24 ... all)
   tmr.exe --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto
                                           #   then runs the fastest (a narrower one if it is as fast)
   tmr.exe --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)
@@ -46,7 +47,7 @@ EXIT STATUS: 0 passed, 1 tests failed or found errors, 2 stopped before or inste
              (errors=panic aborts on the first error)
 
 COMMAND LINE PARAMETERS:
-  memory=20%                           # Reserve 20% of system memory
+  memory=20%                          # Reserve 20% of the memory available now (as 20%-from-available)
   memory=2GiB                         # Reserve 2 GiB
   memory=2048MB                       # TM5-compatible allocation (2048MB from available)
   memory=10%-from-available           # Reserve 10% from currently available memory
@@ -75,6 +76,12 @@ COMMAND LINE PARAMETERS:
   largefloor=16MiB                    # Smallest 2MB-page request (16MiB-1GiB)
   blkroundtarget=1GiB                 # Round each thread's share to a multiple of this (of largefloor)
   blkround=up                         # ...up (default; a smaller step rather than pass available), down, or nearest
+  minpage=regular                     # Smallest page the run takes: regular (4KB), large (2MB, the default)
+                                      #   or huge (1GB); 2MB and 1GB pages need the large-page privilege
+  maxpage=large                       # Largest page it asks for: regular, large or huge (the default)
+                                      #   (minpage=regular maxpage=regular: 4KB pages, without asking)
+  channels=2                          # Memory channels, for TM5 SimpleTest's stride (channels x Parameter - 1
+                                      #   lines); default: the config's, else 2
   errors=halt                         # Error handling (log/halt/panic)
   seal=tmr                            # Seal: check and reseal around every chunk (tmr, the default; tm5; off)
   seal-width=auto                     # Seal kernels' SIMD width (auto, 128, 256, 512); unset, width='s;
@@ -153,7 +160,7 @@ Quick Usage Examples:
   tmr.exe --disable-pinning            # Disable CPU pinning (default: enabled)
   tmr.exe errors=halt                  # Stop on first error
   tmr.exe config=test.json             # Load comprehensive JSON config
-  tmr.exe config=legacy.cfg            # Auto-convert TM5 config + add stuck bit test
+  tmr.exe config=legacy.cfg            # Run a TM5 config: its own tests, Test0 as the seal
   tmr.exe --create-demo-configs        # Create demo configurations
   tmr.exe --compare-results old.json new.json # Compare results from results\
 ## --compare-results without its files: NotRun
