@@ -127,6 +127,41 @@ calibrations on each desktop after that:
 The recheck took 5.3 s on petz007, 6.8 s on daddy-petz and 13.9 s on the dev box. Most of that is
 A's three probes at each size, up to 2 s each.
 
+## One NUMA node: the Intel metal box (2026-11-05, 0a8467d)
+
+No m8a.metal-48xl capacity all day, so the metal box ran as an m8i.metal-48xl: the dev box's Xeon
+6975P-C, 96 cores / 192 threads, SNC3 (3 NUMA nodes, 3 L3 groups of 64 CPUs, 160 MB of L3 each;
+CPUID says 480 MB, the package's). 99f4337's in-run calibration took the run's largest span, but
+every thread's span was 3.6 GB, so the pick fell to a hash map's order: any thread's, on any node.
+A stays on the top-ranked core, on node 0. With SNC a node's memory is cached in that node's L3
+slices alone, so:
+
+| Run | A's span | A's L3 | Saved |
+|---|---|---|---|
+| cal_measure | local | 156.9 MB at 36.8 ns, DRAM 125 ns | right (160 MB a node) |
+| cal_recheck_1 | remote | flat at 54-57 ns to 138 MB, then a gradual climb to 130 ns | 475 MB at 110 ns |
+
+On remote memory no step from L3 to DRAM reached the edge's 1.4x over the three before it (at most
+1.34x), so the sweep fell back to CPUID's 480 MB, and the finer sweep there took its largest steady
+size, deep in DRAM. The next recheck held it: it compares against the stored latency. C ran all
+192 CPUs on one node's memory: one node's L3 shared by 192, not 64.
+
+The x105 runs that followed sized their L3 tests from that 475 MB: 7.42 MiB a thread, 237 MB a
+group. With one thread a core each also has its core's 2 MiB L2, so a group holds 160 MB of L3 and
+64 MB of L2s, and that mostly fit: Spd-L3 read 1,248-1,263 GB/s (DRAM reads 574 at most), the
+fixed calibration's 3.11-3.20 MiB 1,193-1,213, and a5de854's 2.5 MiB (CPUID's 480 MB over all 96
+threads, not a group's 32) 1,555. Half a thread's reach (`scale`) is mostly L2 on a part like this:
+2 of the 3.2 MiB.
+
+Since 0a8467d the calibration keeps to A's node: B and C take its CPUs alone (as the owner first
+put C: "full node load"), the in-run calibration and the recheck the largest span wholly on it, and
+`--calibrate-cache` asks for its buffer there, strictly for large pages. On one node nothing
+changes.
+
+Left: A's edge test misses a gradual climb. On local memory the step was sharp enough, but a
+fallback to CPUID's L3 is the package's on an SNC part; a cap on the latency the finer sweep may
+take (as C's 1.25x of A's) would stop it taking DRAM sizes.
+
 ## Notes (TODO 116 has them)
 
 - The coarse sweep runs to 4x CPUID's L3, 1.9 GB here, and most of its time goes on the DRAM
