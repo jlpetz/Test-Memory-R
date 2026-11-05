@@ -821,6 +821,21 @@ impl Recheck {
     }
 }
 
+/// The cores a group runs at each point of the curve check (`run_curve`): every count up to 8 (a desktop's group, an EPYC CCX), and
+/// past that a sample, 1, 2, 3, 4, 6, 8, 12, 16 and so on by halves of a power of two, the group's whole last. A Xeon's group is its
+/// socket, 48 cores on an m8i.metal-48xl: every count, both layouts, would be about 96 points, half an hour.
+fn curve_counts(per_group: usize) -> Vec<usize> {
+    if per_group <= 8 {
+        return (1..=per_group).collect();
+    }
+    let mut counts: Vec<usize> =
+        (0..usize::BITS - 2).flat_map(|shift| [1usize << shift, 3usize << shift]).filter(|&n| n < per_group).collect();
+    counts.sort_unstable();
+    counts.dedup();
+    counts.push(per_group);
+    counts
+}
+
 /// One point of TODO 22's curve check (`CalibrationTest::run_curve`): the L3 a thread reached with `k` threads in its L3 group running,
 /// one a core or both of a core's, its latency, and what the curve through anchors A and C says for `k`
 #[derive(Debug, Clone, PartialEq)]
@@ -1305,7 +1320,7 @@ impl CalibrationTest {
             if both && !smt {
                 continue;
             }
-            for used in 1..=per_group {
+            for used in curve_counts(per_group) {
                 let k = if both { 2 * used } else { used };
                 let chosen: Vec<usize> = groups
                     .iter()
@@ -2427,6 +2442,15 @@ mod tests {
                 && recheck.text().contains("it has drifted: measured again")
                 && recheck.text().contains("(> 43.6 ns) ⚠️ it isn't")
         );
+    }
+
+    /// TODO 22: the curve check measures every count up to 8 cores a group, and samples past that, the whole group last
+    #[test]
+    fn the_curve_check_samples_a_large_group() {
+        assert_eq!(curve_counts(6), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(curve_counts(8), (1..=8).collect::<Vec<_>>());
+        assert_eq!(curve_counts(48), [1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48]);
+        assert_eq!(curve_counts(12), [1, 2, 3, 4, 6, 8, 12]);
     }
 
     /// TODO 22: the calibration's CPUs. On the 8600G (one L3, SMT) A takes the top-ranked core's first CPU and B that core's pair, C all
