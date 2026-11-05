@@ -164,7 +164,7 @@ the crates exist.
 
 ## winget
 
-- A manifest per release in `microsoft/winget-pkgs` (a pull request), `Petz.TMR`, schema 1.12:
+- A manifest per release in `microsoft/winget-pkgs` (a pull request), `Petz.TMR`, schema 1.28 (1.12 until the 0.1.1 submission, moved because winget-pkgs' template asks for the current one):
   three files (version, defaultLocale, installer). `InstallerType: inno`, the release's
   `tmr-<version>-setup.exe` and its SHA-256 (`SHA256SUMS.txt` in the release), listed twice, `Scope:
   machine` with `InstallerSwitches: Custom: /ALLUSERS` and `Scope: user` with `/CURRENTUSER`, and
