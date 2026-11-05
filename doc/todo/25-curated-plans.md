@@ -54,12 +54,17 @@ StuckBit, Refresh, SimpleV2, MirrorV2 at 128, 256, 512 and Auto (scalar too unti
 and Auto. 24 tests, about 7 min a cycle. A CPU without AVX-512 drops the four fixed 512-bit ones
 (they'd return empty results), logged; Auto is then 256.
 
-**`perf`** (1 cycle, about 6.5 min): the original latency tests (pointer chasing, one dependent
-access at a time: the figure other tools report) at L1, L2, L3, DRAM, DRAMFull × Read, Write, Copy;
-then Lat-Loaded-DRAM and Lat-Turnaround-DRAM (TODO 117: a read's latency while the other cores
-load the memory, and its write turnaround; about 60 s together; added 2026-11-05, 0.1.1, once
-three runs each on petz007, daddy-petz and m8i repeated, turnaround within 1 ns, 1 ns and 11 ns);
-the 15 bandwidth tests at the same levels (Auto); Lat-NTW-DRAM-Write-Auto. 33 tests. No V2P (the
+**`perf`** (1 cycle, about 5.5 min): the original latency tests (pointer chasing, one dependent
+access at a time: the figure other tools report), a read's at L1, L2, L3, DRAM and DRAMFull, and
+DRAM's and DRAMFull's write; then Lat-Loaded-DRAM and Lat-Turnaround-DRAM (TODO 117: a read's
+latency while the other cores load the memory, and its write turnaround; about 60 s together;
+added 2026-11-05, 0.1.1, once three runs each on petz007, daddy-petz and m8i repeated, turnaround
+within 1 ns, 1 ns and 11 ns); the 15 bandwidth tests at the same levels (Auto);
+Lat-NTW-DRAM-Write-Auto. 25 tests. No cache Write or Copy latency, and no Copy (the owner,
+2026-11-05, 0.1.1): they time the same read chain beside stores that hit the cache, so they read as
+the read does (m8i: L1 543.1 GiB/s both, L2 159.4 against 157.0); in DRAM the stores' line fetches
+add (126 against 103 ns on daddy-petz at 2133), and Copy adds nothing Write doesn't. AIDA64 also
+reports one latency a tier. No V2P (the
 owner, 2026-10-16): its effects are on the cache side and converge at DRAM, measured on Intel only.
 
 **`all`**: every test in the suite, in its order, as a plain run did before.

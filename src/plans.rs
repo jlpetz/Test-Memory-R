@@ -38,11 +38,13 @@ const WIDTHS: &[&str] = &[
     "Mem-MirrorV2-Auto",
 ];
 
-/// Unloaded latency (one dependent access at a time, the figure other tools report), then a read's latency while the other cores keep the
-/// memory busy and its write turnaround (TODO 117, about a minute together), bandwidth, and the write that skips the cache.
+/// Unloaded latency (one dependent access at a time, the figure other tools report): a read's at each tier, and DRAM's write too; then a
+/// read's latency while the other cores keep the memory busy and its write turnaround (TODO 117, about a minute together), bandwidth, and
+/// the write that skips the cache. No cache Write or Copy latency (the owner, 2026-11-05): they time the read chain beside stores that hit
+/// the cache, so they read as the read does (the m8i metal box: L1 543.1 GiB/s for both, L2 159.4 against 157.0); in DRAM the stores'
+/// line fetches add (126 against 103 ns on daddy-petz at 2133), and Copy says nothing Write doesn't. They run by name.
 const PERF: &[&str] = &[
-    "Lat-L1-Read", "Lat-L1-Write", "Lat-L1-Copy", "Lat-L2-Read", "Lat-L2-Write", "Lat-L2-Copy", "Lat-L3-Read", "Lat-L3-Write",
-    "Lat-L3-Copy", "Lat-DRAM-Read", "Lat-DRAM-Write", "Lat-DRAM-Copy", "Lat-DRAMFull-Read", "Lat-DRAMFull-Write", "Lat-DRAMFull-Copy",
+    "Lat-L1-Read", "Lat-L2-Read", "Lat-L3-Read", "Lat-DRAM-Read", "Lat-DRAM-Write", "Lat-DRAMFull-Read", "Lat-DRAMFull-Write",
     "Lat-Loaded-DRAM", "Lat-Turnaround-DRAM", "Spd-L1-Read-Auto", "Spd-L1-Write-Auto", "Spd-L1-Copy-Auto", "Spd-L2-Read-Auto",
     "Spd-L2-Write-Auto", "Spd-L2-Copy-Auto", "Spd-L3-Read-Auto", "Spd-L3-Write-Auto", "Spd-L3-Copy-Auto", "Spd-DRAMSmall-Read-Auto",
     "Spd-DRAMSmall-Write-Auto", "Spd-DRAMSmall-Copy-Auto", "Spd-DRAMFull-Read-Auto", "Spd-DRAMFull-Write-Auto", "Spd-DRAMFull-Copy-Auto",
@@ -124,12 +126,16 @@ mod tests {
         assert!(!names.iter().any(|n| n.contains("CacheBust") || n.contains("Flush")));
     }
 
-    /// Perf takes the loaded latency tests (TODO 117), after the unloaded latency tests and before the bandwidth ones
+    /// Perf takes the loaded latency tests (TODO 117), after the unloaded latency tests and before the bandwidth ones; of the unloaded
+    /// ones a read's at each tier and DRAM's write, no cache Write or Copy and no Copy (the owner, 2026-11-05)
     #[test]
     fn perf_takes_the_loaded_latency_between_the_unloaded_and_the_bandwidth() {
         let loaded = PERF.iter().position(|&n| n == "Lat-Loaded-DRAM").expect("perf takes Lat-Loaded-DRAM");
-        assert!(PERF[..loaded].iter().all(|n| n.starts_with("Lat-")) && PERF[..loaded].contains(&"Lat-DRAMFull-Copy"), "{PERF:?}");
+        assert!(PERF[..loaded].iter().all(|n| n.starts_with("Lat-")) && PERF[..loaded].contains(&"Lat-DRAMFull-Write"), "{PERF:?}");
         assert_eq!(PERF[loaded + 1], "Lat-Turnaround-DRAM");
+        assert_eq!(PERF[..loaded], [
+            "Lat-L1-Read", "Lat-L2-Read", "Lat-L3-Read", "Lat-DRAM-Read", "Lat-DRAM-Write", "Lat-DRAMFull-Read", "Lat-DRAMFull-Write"
+        ]);
         assert!(PERF[loaded + 2].starts_with("Spd-"), "{PERF:?}");
     }
 
