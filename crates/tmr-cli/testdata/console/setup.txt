@@ -117,11 +117,11 @@ TMR will exit now.
 ## the cache calibration
   Calibration: Loaded (2026-10-20 09:05)
 ## no cache calibration
-  Calibration: none stored: measured on this run's memory before its tests, about 2 minutes (calibrate=auto)
+  Calibration: none stored: measured on this run's memory before its tests, about 2 minutes
 ## another machine's cache calibration
-  Calibration: the one stored is another machine's: measured before the tests, about 2 minutes (calibrate=auto)
+  Calibration: the one stored is another machine's: measured before the tests, about 2 minutes
 ## one measured one thread only
-  Calibration: the one stored measured one thread only: measured again with the others running, before the tests (calibrate=auto)
+  Calibration: the one stored measured one thread only: measured again with the others running, before the tests
 ## calibrate=always
   Calibration: measured before the tests, about 2 minutes (calibrate=always)
 ## calibrate=recheck

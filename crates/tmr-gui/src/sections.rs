@@ -134,9 +134,9 @@ impl Sections {
 fn measuring(why: tmr::frontend::MeasureWhy) -> &'static str {
     use tmr::frontend::MeasureWhy;
     match why {
-        MeasureWhy::NoneStored => "none stored, measured before the tests (calibrate=auto)",
-        MeasureWhy::OtherHardware => "the one stored is another machine's, measured before the tests (calibrate=auto)",
-        MeasureWhy::OneThreadOnly => "the one stored measured one thread only, measured again before the tests (calibrate=auto)",
+        MeasureWhy::NoneStored => "none stored, measured before the tests",
+        MeasureWhy::OtherHardware => "the one stored is another machine's, measured before the tests",
+        MeasureWhy::OneThreadOnly => "the one stored measured one thread only, measured again before the tests",
         MeasureWhy::Always => "measured before the tests (calibrate=always)",
     }
 }

@@ -572,37 +572,37 @@ impl ProbeEngine {
     }
 
     /// Setup random pointer-chasing pattern in memory
-    /// Each u64 location stores the address of the next random location
+    /// Each u64 location stores the address of the next random location, in one cycle through all `len` of them
     /// This creates a random walk through memory that defeats prefetchers
+    ///
+    /// Laid in place, with no index array the working set's size beside it: a run's calibration lays it after the run's allocation,
+    /// up to four times CPUID's L3 (1.9 GB on a 480 MB L3), and that much heap beside it paged, or at the commit limit aborted the
+    /// process. Each slot takes its index, Sattolo's shuffle (a swap with a slot below, never itself) makes them one cycle, slot i
+    /// holding the index of the one after it, and each index becomes its slot's address. A uniform random cycle, as the
+    /// shuffle-then-link before it was.
     unsafe fn setup_pointer_chase(base: *mut u64, len: usize, thread_id: usize) {
         if len == 0 {
             return;
         }
+        // SAFETY: the caller's `len` u64s at `base`, nothing else using them meanwhile
+        let slots = unsafe { std::slice::from_raw_parts_mut(base, len) };
+        for (i, slot) in slots.iter_mut().enumerate() {
+            *slot = i as u64;
+        }
 
-        // Create array of indices
-        let mut indices: Vec<usize> = (0..len).collect();
-
-        // Fisher-Yates shuffle using XorShift RNG
+        // Sattolo's shuffle using XorShift RNG
         let mut rng_state = 0x123456789ABCDEFu64.wrapping_add(thread_id as u64);
         for i in (1..len).rev() {
             rng_state ^= rng_state << 13;
             rng_state ^= rng_state >> 17;
             rng_state ^= rng_state << 5;
-            let j = (rng_state as usize) % (i + 1);
-            indices.swap(i, j);
+            slots.swap(i, (rng_state as usize) % i);
         }
 
-        // Link: each location points to next in shuffled order
-        for i in 0..len - 1 {
-            let current_addr = base.add(indices[i]);
-            let next_addr = base.add(indices[i + 1]) as usize as u64;
-            *current_addr = next_addr;
+        // Each slot's next, an index below `len`, as its address
+        for slot in slots.iter_mut() {
+            *slot = base.wrapping_add(*slot as usize) as usize as u64;
         }
-
-        // Loop back to start
-        let last_addr = base.add(indices[len - 1]);
-        let first_addr = base.add(indices[0]) as usize as u64;
-        *last_addr = first_addr;
     }
 
     /// Run a probe at the specified workload size
@@ -804,9 +804,9 @@ impl RecheckProbe {
 }
 
 /// What a recheck found: its probes, the stored L3 latency they're measured against, whether the stored calibration holds (every
-/// probe as it should be), and how long it took. The limits leave room for noise: a stored size reads inside at 1.5x the stored L3
-/// latency, a size half as big again reads past it at 1.25x, the latency anchor C takes its size at. On one, a recheck read C's
-/// size at 43.6 ns against 43.6 (2026-11-05, the dev box), a coin toss.
+/// probe as it should be; with none fitting the run's memory it is kept unchecked), and how long it took. The limits leave room for
+/// noise: a stored size reads inside at 1.5x the stored L3 latency, a size half as big again reads past it at 1.25x, the latency anchor
+/// C takes its size at. On one, a recheck read C's size at 43.6 ns against 43.6 (2026-11-05, the dev box), a coin toss.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Recheck {
     pub probes: Vec<RecheckProbe>,
@@ -816,8 +816,13 @@ pub struct Recheck {
 }
 
 impl Recheck {
-    /// The console's lines: the verdict, then each probe
+    /// The console's lines: the verdict, then each probe; with no probe (none fits a thread's memory), that it wasn't rechecked
     pub fn text(&self) -> String {
+        if self.probes.is_empty() {
+            return "🔁 Cache calibration not rechecked: none of its probes fits a thread's memory (a larger memory= gives them room); the \
+                    stored one is kept\n"
+                .to_string();
+        }
         let verdict = if self.held { "holds" } else { "has drifted: measured again" };
         let mut text = format!(
             "🔁 Cache calibration rechecked in {:.1} s: it {verdict} (its L3 latency {:.1} ns)\n",
@@ -1014,6 +1019,14 @@ fn probe_shared(slots: &[Slot], size: usize, tsc_ghz: f64, time: std::time::Dura
 const SMT_PROBE_TIME: std::time::Duration = std::time::Duration::from_millis(50);
 const LOADED_PROBE_TIME: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// A stop asked for (a first Ctrl+C, the window's Stop: `runner::request_stop`), which a run's calibration, before its tests, would
+/// otherwise sit through, about 2 minutes: each sweep checks it before each probe and ends there, and a stopped calibration is an
+/// error, `STOPPED`, so nothing partial is saved
+fn stopped() -> bool {
+    crate::runner::SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+const STOPPED: &str = "stopped before it finished; nothing saved";
+
 /// Main calibration test that orchestrates tier calibration
 pub struct CalibrationTest {
     /// Cache information from system detection
@@ -1060,12 +1073,24 @@ impl CalibrationTest {
         Ok(results)
     }
 
-    /// The calibration on a run's own memory, its pages `page`, before its tests (TODO 22): the `bytes` at `base`, as much as it needs.
+    /// The calibration on a run's own memory, its pages `page`, before its tests (TODO 22): the `bytes` at `base`, as much as it needs,
+    /// refused on less than twice CPUID's L3.
     ///
     /// # Safety
     /// As `ProbeEngine::initialize_from_region`'s: the memory is the caller's alone for the call, and no thread of the caller's is pinned
     /// to the calibration's CPUs meanwhile (it would be measured too).
     pub unsafe fn run_on(&self, base: *mut u64, bytes: usize, page: PageSizeLevel) -> Result<CalibrationResults, String> {
+        // A's sweep must pass the L3's edge, a gradual one 1.52x past it (`find_gradual_edge`), and its DRAM tier is read from twice the
+        // L3. On less, each size past the span measures the span (`ProbeEngine::probe` clamps to it), inside the L3, no edge shows, and
+        // the L3 would be saved at about CPUID's size as measured: a 10 MB span under the 8600G's 16 MB L3, about 16 MB.
+        let least = self.get_tier_size(CacheTier::Dram);
+        if bytes < least {
+            return Err(format!(
+                "a thread's memory, {}, is less than the {} it needs, twice the L3: a larger memory= gives it room; nothing saved",
+                format_size(bytes),
+                format_size(least)
+            ));
+        }
         let start = Instant::now();
         let cpus = CalibrationCpus::detect();
         let bytes = bytes.min(self.memory_needed(&cpus)) / crate::test_memory::GRANULE * crate::test_memory::GRANULE;
@@ -1083,7 +1108,8 @@ impl CalibrationTest {
     /// A) and the one a thread reaches with every CPU running (C), each probed three times at its size, where it should still read
     /// inside the L3, and at one and a half times it, where it shouldn't. It holds when every probe reads as it should; otherwise the L3
     /// has shrunk or grown since (a VM's neighbours, a BIOS setting), and the run measures it again. L1 and L2 are the hardware's, and a
-    /// hardware change already makes the stored calibration another machine's. A probe the memory can't hold is left out.
+    /// hardware change already makes the stored calibration another machine's. A probe the memory can't hold is left out; with none left
+    /// the stored one is kept unchecked.
     ///
     /// # Safety
     /// As `run_on`'s.
@@ -1175,6 +1201,10 @@ impl CalibrationTest {
         let base = probe_engine.get_base_ptr();
         // The engine's memory, `bytes` long, which nothing else uses, and which it keeps until after
         results.shared = Some(self.run_shared(&results, cpus, base, bytes));
+        // A stop during B or C (A's ends `run_calibration`)
+        if stopped() {
+            return Err(STOPPED.to_string());
+        }
         Ok(results)
     }
 
@@ -1269,6 +1299,10 @@ impl CalibrationTest {
         let mut probe = |size: usize| probe_shared(&loaded_slots, size, tsc, LOADED_PROBE_TIME);
         let low = (own + own / 10).max(4096);
         let sweep = self.run_sweep(&mut probe, low, block, &format!("Sweep, {label}"));
+        // A stop ended it early: not that it found no edge
+        if stopped() {
+            return None;
+        }
         let l3_ns = results.tiers.get(&CacheTier::L3).map_or(0.0, |t| t.median_latency_ns);
         let Some(edge) =
             self.find_tipping_points(&sweep).into_iter().find(|&(_, before, _)| before >= 0.8 * l3_ns).map(|(size, _, _)| size)
@@ -1296,6 +1330,9 @@ impl CalibrationTest {
         // (within 1.5x A's latency), else the next smaller. On daddy-petz a run's C took 2.6 MB a thread with 16 sharing, 42 MB in a
         // 32 MB L3: something brief let all three of its finer probes read steady, and the next run's recheck read it at 31.6 ns.
         for &(size, ns) in candidates.iter().take(4) {
+            if stopped() {
+                break;
+            }
             let medians: Vec<f64> = (0..3).filter_map(|_| probe(size).map(|stats| stats.median_ns)).collect();
             let confirmed = if medians.is_empty() { f64::INFINITY } else { median(&medians) };
             if confirmed <= 1.5 * l3_ns {
@@ -1429,6 +1466,10 @@ impl CalibrationTest {
         let fine_l1 = self.run_fine_sweep(&mut probe, l1_cap / 2, l1_cap, fine_step, repeats, "L1→L2");
         let fine_l2 = self.run_fine_sweep(&mut probe, l2_cap / 2, l2_cap, fine_step, repeats, "L2→L3");
         let fine_l3 = self.run_fine_sweep(&mut probe, l3_cap / 2, l3_cap, fine_step, repeats, "L3→DRAM");
+        // A stop ended the sweeps early: no tier from them, nor their warnings, nor B and C after
+        if stopped() {
+            return Err(STOPPED.to_string());
+        }
 
         // The tiers from the finer sweeps
         let cpu_signature = CpuSignature::from_cache_info(&self.cache_info);
@@ -1582,7 +1623,7 @@ impl CalibrationTest {
         Ok(results)
     }
 
-    /// Run fine-grain sweep around a tipping point with multiple repeats per size
+    /// Run fine-grain sweep around a tipping point with multiple repeats per size, ended early by a stop (`stopped`)
     fn run_fine_sweep(
         &self, probe: &mut dyn FnMut(usize) -> Option<ProbeStatistics>, min_size: usize, max_size: usize, step_factor: f64, repeats: u32,
         label: &str,
@@ -1600,7 +1641,7 @@ impl CalibrationTest {
         );
         log::info!(target: SHOWN_TARGET, "  {:>10} {:>8} {:>6} {:>10} {:>10} {:>10}", "Size", "Median", "Stbl", "Worst Spr", "Consistency", "Latencies");
 
-        while current_size <= max_size {
+        while current_size <= max_size && !stopped() {
             let mut median_latencies = Vec::new();
             let mut stable_count = 0u32;
             let mut worst_spread = 0.0f64;
@@ -1670,7 +1711,7 @@ impl CalibrationTest {
         fine_probes.iter().filter(|fp| fp.is_reliable() && fp.worst_spread < max_spread).max_by_key(|fp| fp.size).cloned()
     }
 
-    /// Run a continuous sweep from small to large sizes
+    /// Run a continuous sweep from small to large sizes, ended early by a stop (`stopped`)
     /// Collects comprehensive stats for each probe to enable accurate tier detection
     fn run_sweep(
         &self, probe: &mut dyn FnMut(usize) -> Option<ProbeStatistics>, min_size: usize, max_size: usize, label: &str,
@@ -1702,7 +1743,7 @@ impl CalibrationTest {
         let mut recent_latencies: Vec<f64> = Vec::new();
         const WINDOW_SIZE: usize = 5;
 
-        while current_size <= max_size {
+        while current_size <= max_size && !stopped() {
             probe_num += 1;
 
             if let Some(stats) = probe(current_size) {
@@ -2485,6 +2526,97 @@ mod tests {
                 && recheck.text().contains("it has drifted: measured again")
                 && recheck.text().contains("(> 43.6 ns) ⚠️ it isn't")
         );
+        assert_eq!(
+            Recheck { probes: vec![], l3_ns: 34.9, held: true, time_ms: 0 }.text(),
+            "🔁 Cache calibration not rechecked: none of its probes fits a thread's memory (a larger memory= gives them room); the stored \
+             one is kept\n",
+            "no probe is no recheck, not one that holds"
+        );
+    }
+
+    /// TODO 116: a recheck on a thread's memory too small for every probe, 4 MiB against a stored 8 MB L3 (A's at 8 and 12 MB) with
+    /// no C, runs none, touches nothing, and keeps the stored one
+    #[test]
+    fn a_recheck_with_no_room_for_its_probes_runs_none() {
+        let mut stored = CalibrationResults::new(CpuSignature::default());
+        stored.add_tier_result(TierCalibrationResult {
+            tier: CacheTier::L3,
+            optimal_size: 8 << 20,
+            median_latency_ns: 34.9,
+            spread_ratio: 1.1,
+            probes_attempted: 1,
+            converged: true,
+            fallback_used: false,
+        });
+        let test = CalibrationTest::with_config(CacheInfo::default(), CalibrationConfig::default());
+        let mut memory = vec![std::simd::u64x8::splat(0); (4 << 20) / 64];
+        // SAFETY: the test's own memory, 64-byte aligned, which no probe reaches
+        let recheck = unsafe { test.recheck_on(&stored, memory.as_mut_ptr() as *mut u64, 4 << 20) }.unwrap();
+        assert!(recheck.probes.is_empty() && recheck.held, "{recheck:?}");
+        assert!(recheck.text().contains("not rechecked"));
+    }
+
+    /// TODO 22: a run's calibration refuses a thread's memory under twice CPUID's L3, before it probes: A's sweep, cut short inside
+    /// the L3, would save about CPUID's size as measured. CacheInfo's default L3 is 8 MB.
+    #[test]
+    fn a_calibration_refuses_memory_under_twice_the_l3() {
+        let test = CalibrationTest::with_config(CacheInfo::default(), CalibrationConfig::default());
+        let mut memory = vec![std::simd::u64x8::splat(0); (4 << 20) / 64];
+        // SAFETY: the test's own memory, 64-byte aligned, refused before anything probes it
+        let e = unsafe { test.run_on(memory.as_mut_ptr() as *mut u64, 4 << 20, PageSizeLevel::Regular) }.unwrap_err();
+        assert!(e.contains("4.0 MB") && e.contains("16.0 MB") && e.contains("nothing saved"), "{e}");
+    }
+
+    /// The stop (a first Ctrl+C, the window's Stop) ends a sweep and a finer one at the next probe, and a calibration it reaches before
+    /// its first probe is an error, so nothing is saved. The flag is the process's: nextest's one process a test keeps it to this one.
+    #[test]
+    fn a_stop_ends_the_calibrations_sweeps() {
+        let test = CalibrationTest::with_config(CacheInfo::default(), CalibrationConfig::default());
+        let calls = std::cell::Cell::new(0);
+        let mut probe = |_: usize| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 3 {
+                crate::runner::request_stop();
+            }
+            Some(ProbeStatistics { median_ns: 1.0, spread_ratio: 1.0 })
+        };
+        let sweep = test.run_sweep(&mut probe, 4096, 1 << 30, "stopped");
+        crate::runner::clear_stop();
+        assert_eq!(sweep.len(), 3);
+        calls.set(0);
+        let fine = test.run_fine_sweep(&mut probe, 4096, 1 << 30, 1.05, 3, "stopped");
+        crate::runner::clear_stop();
+        assert_eq!(fine.len(), 1, "the size whose third repeat stopped it");
+
+        // A short probe time, should the flag be cleared under it (`cargo test` runs sessions beside it, which clear it)
+        let short = CalibrationConfig { max_probe_time_ms: 1, ..CalibrationConfig::default() };
+        let test = CalibrationTest::with_config(CacheInfo::default(), short);
+        let mut memory = vec![std::simd::u64x8::splat(0); (16 << 20) / 64];
+        crate::runner::request_stop();
+        // SAFETY: the test's own memory, 64-byte aligned
+        let stopped = unsafe { test.run_on(memory.as_mut_ptr() as *mut u64, 16 << 20, PageSizeLevel::Regular) };
+        crate::runner::clear_stop();
+        assert_eq!(stopped.unwrap_err(), STOPPED);
+    }
+
+    /// The pointer chase is one cycle through every slot, back at the first after `len` steps, laid in place
+    #[test]
+    fn a_pointer_chase_is_one_cycle_through_every_slot() {
+        for len in [1, 2, 3, 4103] {
+            let mut memory = vec![0u64; len];
+            let base = memory.as_mut_ptr();
+            // SAFETY: the test's own `len` u64s
+            unsafe { ProbeEngine::setup_pointer_chase(base, len, 3) };
+            let mut seen = vec![false; len];
+            let mut at = base as usize;
+            for _ in 0..len {
+                let i = (at - base as usize) / 8;
+                assert!(!seen[i], "slot {i} of {len} twice");
+                seen[i] = true;
+                at = memory[i] as usize;
+            }
+            assert_eq!(at, base as usize, "back at the first after {len}");
+        }
     }
 
     /// TODO 22: a gradual L3 edge, from two sweeps of the m8i.metal-48xl (2026-11-05) past its L2 edge at 1.8 MB, each probe's size (MB)

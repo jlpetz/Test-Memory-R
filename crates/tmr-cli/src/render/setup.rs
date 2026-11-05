@@ -277,11 +277,9 @@ fn machine_text(
 pub(crate) fn measuring(why: tmr::frontend::MeasureWhy) -> &'static str {
     use tmr::frontend::MeasureWhy;
     match why {
-        MeasureWhy::NoneStored => "none stored: measured on this run's memory before its tests, about 2 minutes (calibrate=auto)",
-        MeasureWhy::OtherHardware => "the one stored is another machine's: measured before the tests, about 2 minutes (calibrate=auto)",
-        MeasureWhy::OneThreadOnly => {
-            "the one stored measured one thread only: measured again with the others running, before the tests (calibrate=auto)"
-        }
+        MeasureWhy::NoneStored => "none stored: measured on this run's memory before its tests, about 2 minutes",
+        MeasureWhy::OtherHardware => "the one stored is another machine's: measured before the tests, about 2 minutes",
+        MeasureWhy::OneThreadOnly => "the one stored measured one thread only: measured again with the others running, before the tests",
         MeasureWhy::Always => "measured before the tests, about 2 minutes (calibrate=always)",
     }
 }

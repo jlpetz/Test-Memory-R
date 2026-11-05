@@ -232,11 +232,12 @@ pub enum CacheCalibrationState {
 /// Why a run measures the cache calibration before its tests (`calibrate=`, TODO 22)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeasureWhy {
-    /// `calibrate=auto`, and none stored
+    /// `calibrate=auto` or `recheck`, and none stored
     NoneStored,
-    /// `calibrate=auto`, and the one stored is another machine's
+    /// `calibrate=auto` or `recheck`, and the one stored is another machine's
     OtherHardware,
-    /// `calibrate=auto`, and the one stored was measured one thread only, before the shared anchors: used until the new one is in
+    /// `calibrate=auto` or `recheck`, and the one stored was measured one thread only, before the shared anchors: used until the new one
+    /// is in
     OneThreadOnly,
     /// `calibrate=always`
     Always,

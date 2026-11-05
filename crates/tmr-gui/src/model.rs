@@ -1076,7 +1076,12 @@ impl Model {
                 self.position = format!("The cache calibration failed ({e}): the tests size from CPUID");
                 self.errors.push(self.position.clone());
             }
-            // A recheck that held ends the calibration; one that didn't, or that failed, a measure follows (TODO 116)
+            // A recheck that held ends the calibration, as one none of whose probes fit does, the stored one kept unchecked; one that
+            // didn't, or that failed, a measure follows (TODO 116)
+            Run::Rechecked(Ok(recheck)) if recheck.probes.is_empty() => {
+                self.calibrating = false;
+                self.position = "Calibration not rechecked: too little memory a thread, the stored one kept".to_string();
+            }
             Run::Rechecked(Ok(recheck)) if recheck.held => {
                 self.calibrating = false;
                 self.position = "Calibration rechecked: it holds".to_string();
@@ -1743,8 +1748,8 @@ mod tests {
         assert!(!m.calibrating() && m.session_over() && m.takes_parameters());
     }
 
-    /// TODO 116: a recheck says it takes about 15 s, not a measure's 2 minutes, and a failed one that a measure follows; a failed
-    /// calibration says so, in the errors too
+    /// TODO 116: a recheck says it takes about 15 s, not a measure's 2 minutes, a failed one that a measure follows, and one with no
+    /// probe that it didn't recheck; a failed calibration says so, in the errors too
     #[test]
     fn the_position_line_says_a_recheck_and_a_failed_calibration() {
         use tmr::frontend::CacheCalibrationState::{Measuring, Rechecking};
@@ -1761,6 +1766,16 @@ mod tests {
         assert_eq!(m.position, "The cache calibration failed (the run has no memory): the tests size from CPUID");
         assert!(!m.calibrating());
         assert_eq!(m.errors, ["The cache calibration failed (the run has no memory): the tests size from CPUID"]);
+
+        // A recheck none of whose probes fit a thread's memory ends the calibration, the stored one kept, and says it didn't recheck
+        let mut m = model();
+        m.start();
+        m.apply(Setup::CacheCalibration(Rechecking { at: chrono::Utc::now() }).into());
+        m.apply(allocated());
+        let unchecked = tmr::frontend::Recheck { probes: Vec::new(), l3_ns: 34.9, held: true, time_ms: 0 };
+        m.apply(Run::Rechecked(Ok(Box::new(unchecked))).into());
+        assert_eq!(m.position, "Calibration not rechecked: too little memory a thread, the stored one kept");
+        assert!(!m.calibrating());
 
         let mut m = model();
         m.start();
@@ -2682,7 +2697,7 @@ mod tests {
             "Limits: 2 cycles, no time limit", "SIMD: SSE, AVX2"
         ]);
         assert_eq!(outline(&s.system), [
-            "Cache calibration: none stored, measured before the tests (calibrate=auto)",
+            "Cache calibration: none stored, measured before the tests",
             "System Information",
             "table CPU Information",
             "table Cache Architecture (raw_cpuid leaf 4)",

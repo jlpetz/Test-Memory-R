@@ -375,10 +375,13 @@ later runs load it, also when B or C found nothing (no SMT pair, a single CPU, n
 15 s (TODO 116): the L3 one thread reaches and the one a thread reaches with every CPU running, each
 at its stored size, where it must still read within 1.5x the stored L3 latency, and at 1.5x the
 size, where it must read past 1.25x it. If any probe reads otherwise the L3 has shrunk or grown
-since (a VM's neighbours, a BIOS setting), and the run measures it again. `calibrate=always`
-measures before every run's tests. `calibrate=off` takes none (CPUID sizes, and the seal's width
-from its rule). `--calibrate-cache` measures on its own allocation, without a test, and asks before
-saving over a stored one.
+since (a VM's neighbours, a BIOS setting), and the run measures it again. A probe a thread's memory
+can't hold is left out; with none left, the run says it couldn't recheck and keeps the stored one.
+`calibrate=always` measures before every run's tests. A run's calibration needs a thread's memory
+to hold twice CPUID's L3, for A's sweep to pass the L3's edge; with less it measures nothing, saves
+nothing, and says so, as it does when the run is stopped during it. `calibrate=off` takes none
+(CPUID sizes, and the seal's width from its rule). `--calibrate-cache` measures on its own
+allocation, without a test, and asks before saving over a stored one.
 
 ### The seal's width under `auto` (TODO 99)
 
