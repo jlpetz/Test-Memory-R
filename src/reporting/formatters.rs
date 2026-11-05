@@ -1750,7 +1750,7 @@ impl ReportFormatter for DefaultFormatter {
         // -18 ns at 75%)
         if levels {
             table = table.with_footer(
-                "Turnaround: under NT writes less under reads, at the same MiB/s; negative when reads cost a read more than writes did",
+                r"Turnaround: under NT writes less under reads at the same MiB/s, what switching the bus costs a read; negative when reads cost it more (docs\tests\loaded-latency.md)",
             );
         }
         table

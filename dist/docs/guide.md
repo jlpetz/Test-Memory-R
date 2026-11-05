@@ -116,11 +116,19 @@ takes the privilege away again (from you, or from the `Group:` or `User:` named)
 The run ends with a verdict: no errors, or the errors found and where. A script can read it from
 the exit code: 0 passed, 1 failed or found errors, 2 stopped before testing, 3 interrupted.
 
+## What each test does
+
+`docs\tests\` beside this guide (on GitHub, `dist/docs/tests/`) has a page for each family of tests:
+what it catches or measures, how it runs, which plans run it, and how to read its report.
+[README.md](tests/README.md) there lists every test.
+
 ## Latency under load
 
 Two tests measure what a memory setting does to a read's latency while the other cores keep the
-memory busy, which the other latency tests, measured idle, don't see. `plan=perf` runs them after
-those; on their own, run them by name: `tmr test=Lat-Loaded-DRAM,Lat-Turnaround-DRAM`.
+memory busy, which the other latency tests, unloaded, don't see. How to read their table, what the
+turnaround's sign means and why their chart steps: [tests/loaded-latency.md](tests/loaded-latency.md).
+`plan=perf` runs them after those; on their own, run them by name:
+`tmr test=Lat-Loaded-DRAM,Lat-Turnaround-DRAM`.
 
 - **Lat-Loaded-DRAM** (about 10 s a cycle) times a read idle, while every other core writes to
   memory as fast as it can, and while they read as fast as they can. On a Ryzen 7 5700X, raising

@@ -20,7 +20,7 @@ idle             102.8 ns [102.5-103.1]
 75% 12088 MiB/s  150.3 ns [148.9-152.0]       12085  133.1 ns [132.4-134.0]       11210            not matched  
 full             451.7 ns [449.0-453.2]       16117  264.8 ns [263.9-265.6]       27180                         
 ----------------------------------------------------------------------------------------------------------------
-Turnaround: under NT writes less under reads, at the same MiB/s; negative when reads cost a read more than writes did
+Turnaround: under NT writes less under reads at the same MiB/s, what switching the bus costs a read; negative when reads cost it more (docs\tests\loaded-latency.md)
 ## no loaders: idle only
 🔍 Under load: thread 0 (CPU 2, core 1, node 0) measures; no other core on its node loads, so idle only
    1.00 GiB chain in 128 B cells; 1.0 s windows after 0.2 s settles; median of window means [lowest-highest]

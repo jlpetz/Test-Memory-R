@@ -290,7 +290,9 @@ mod tests {
         assert_eq!(rows.headers.last().map(|h| h.text.as_str()), Some("Turnaround"));
         assert_eq!(
             rows.footer.as_deref(),
-            Some("Turnaround: under NT writes less under reads, at the same MiB/s; negative when reads cost a read more than writes did")
+            Some(
+                r"Turnaround: under NT writes less under reads at the same MiB/s, what switching the bus costs a read; negative when reads cost it more (docs\tests\loaded-latency.md)"
+            )
         );
     }
 
