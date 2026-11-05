@@ -8,9 +8,19 @@ who was kind enough to fix a broken link on his website that gave me TM5's origi
 I then used Claude AI (with a little bit of Astra/Codex) to reimplement TM5 in Rust for modern Windows
 and hardware, with DDR5 systems in mind.
 
-**Status: 0.1, the first public release.** TMR works, but it is young: its settings and files may
+**Status: 0.1.1, an early release.** TMR works, but it is young: its settings and files may
 change between versions until 1.0. **An unstable overclock can freeze, crash or restart your PC
 while TMR runs**, as any memory test can: save your work and close other programs first.
+
+## Screenshots
+
+The window, during a stability run: the throughput chart, each finished step, and a step's report.
+
+![TMR's window during a stability run: progress, the throughput chart, the steps done and one step's report](doc/images/tmr_gui.PNG)
+
+The console, with its progress ticker at the bottom.
+
+![TMR in a console: each step's report, its threads' table, and the progress ticker](doc/images/tmr_cli.PNG)
 
 ## Install and run
 
@@ -54,7 +64,7 @@ and serial numbers) and the motherboard's system UUID, so mind that before you p
   (non-temporal stores, CLFLUSHOPT) so they read DRAM.
 - **Patterns aimed at the memory bus**, alongside TM5's. A switching family inverts each beat of a
   burst at the bus's own width, so every data line toggles on every transfer, the most switching
-  noise the data can make: 64-bit for DDR4 and earlier, 32-bit for DDR5's subchannels, 16-bit for
+  noise the data can make: 64-bit for DDR4, 32-bit for DDR5's subchannels, 16-bit for
   LPDDR4/5, picked from the memory type SMBIOS reports, and models of LPDDR6's 12-bit and DDR6's
   24-bit, chosen with `beat=`. A random family feeds every line every short bit sequence, which DDR5's receive
   equalisers react to. Both aim to make a marginal overclock fail sooner.
@@ -99,7 +109,7 @@ bus width (see Key changes):
 
 | Memory type | Bus width the switching patterns flip at |
 |---|---|
-| DDR, DDR2, DDR3, DDR4 | 64-bit: one channel per DIMM |
+| DDR4 (and DDR3L, on some 6th and 7th gen Core boards) | 64-bit: one channel per DIMM |
 | DDR5 | 32-bit: two subchannels per DIMM |
 | LPDDR3 | 32-bit |
 | LPDDR4, LPDDR5 | 16-bit |
