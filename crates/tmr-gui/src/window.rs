@@ -260,13 +260,19 @@ impl Window {
                 self.model.start();
                 listen(Feeds { events: rx, log }, None, self.priority, context);
             }
-            Err(e) => self.model.ended(Err(format!("the engine's thread didn't start: {e}"))),
+            // As calibrate()'s: the logger's side waits for the next run, and the log file is done with
+            Err(e) => {
+                self.log = Some(log);
+                tmr::logfile::close();
+                self.model.ended(Err(format!("the engine's thread didn't start: {e}")));
+            }
         }
     }
 
     /// The ••• menu's Calibrate (TODO 110): `--calibrate-all --yes` on a thread of its own, the caches then the seal's width (the fastest
     /// here, which `seal-width=auto` takes), as the console runs it, what it writes and logs in the Log tab and a log file of its own; it
-    /// saves what it measured (the menu item was the request), and the info line says the new one once it ends. Start waits for it.
+    /// saves what it measured (the menu item was the request), and the position line says how it did. Before a run the info line says
+    /// the new one once it ends; after one it keeps that run's facts, and Run again reads the new one. Start waits for it.
     fn calibrate(&mut self, context: &ComponentContext<Self>) {
         tmr::session::reset_run();
         let log = self.log.take().unwrap_or_else(logger::install);
@@ -317,8 +323,13 @@ impl Window {
         self.model.logged(log, dropped);
         self.model.tick(snapshot, whea);
         if closed && !ended {
-            // A panic ends the thread before it says how the session went (a release build aborts)
-            self.model.ended(Err("the session's thread ended without a result: the log file has why".to_string()));
+            // A panic ends the thread before it says how it went (a release build aborts). Whose thread: the window's own calibration's
+            // feed is the only one read while the box takes parameters (before a run, or after one); a session's is read with it not
+            if self.model.takes_parameters() {
+                self.model.calibration_ended(Err("its thread ended without a result: the log file has why".to_string()));
+            } else {
+                self.model.ended(Err("the session's thread ended without a result: the log file has why".to_string()));
+            }
             ended = true;
         }
         // Raised at setup's selection, normal again as the session ends: here, as the model changes it, and before the log file closes
@@ -471,6 +482,8 @@ impl Component for Window {
             // In this window (TODO 109): a new run's model, the Compare tab's files kept, and the engine readied as a new process's
             Message::RunAgain if self.model.session_over() && !self.model.calibrating() => {
                 self.model = self.model.again();
+                // Read again, not carried over: the run, or the window's Calibrate after it, may have saved a new one
+                self.model.stored_calibration = Some(crate::model::stored_calibration_text(tmr::session::stored_calibration().as_ref()));
                 self.settings.parameters = Some(self.model.args.clone());
                 self.save_settings();
                 self.start(context);

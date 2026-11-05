@@ -559,8 +559,10 @@ pub struct Model {
     window_priority: ThreadPriority,
     /// A calibration runs: the run's, once it has allocated, before its tests (`calibrate=`, TODO 22), or the window's own (TODO 110)
     calibrating: bool,
-    /// The cache calibration tmr-cfg.json holds, as the info line says it before a run (TODO 110); the window reads it as it opens and
-    /// after its own calibration
+    /// The run's calibration is a recheck of the stored one (`calibrate=recheck`, TODO 116): about 15 s, not 2 minutes
+    rechecking: bool,
+    /// The cache calibration tmr-cfg.json holds, as the info line says it before a run (TODO 110); the window reads it as it opens, at Run
+    /// again and after its own calibration
     pub stored_calibration: Option<String>,
 }
 
@@ -607,6 +609,7 @@ impl Model {
             session_over: false,
             window_priority: ThreadPriority::Normal,
             calibrating: false,
+            rechecking: false,
             stored_calibration: None,
         }
     }
@@ -708,8 +711,15 @@ impl Model {
         .into_iter()
         .flatten()
         .collect();
-        // Before a run, after the command: what calibration the run finds (TODO 110)
-        let stored = self.stored_calibration.as_deref().map_or(String::new(), |stored| format!(" · {stored}"));
+        // Before a run, after the command: what calibration the run finds (TODO 110), as the last calibrate= in the box has it, which is
+        // the one session.rs reads
+        let calibrate = args_of(&self.args).iter().rev().find_map(|a| a.strip_prefix("calibrate=").map(str::to_ascii_lowercase));
+        let stored = match (calibrate.as_deref(), self.stored_calibration.as_deref()) {
+            (_, None) => String::new(),
+            (Some("off"), _) => " · cache calibration off: the tests size from CPUID".to_string(),
+            (Some("always"), _) => " · the run measures a cache calibration first, about 2 minutes".to_string(),
+            (_, Some(stored)) => format!(" · {stored}"),
+        };
         if !facts.is_empty() {
             facts.join(" · ")
         } else if self.args.trim().is_empty() {
@@ -748,6 +758,7 @@ impl Model {
             Setup::CacheCalibration(state) => {
                 use tmr::frontend::CacheCalibrationState::{Measuring, Rechecking};
                 self.calibrating = matches!(state, Measuring(_) | Rechecking { .. });
+                self.rechecking = matches!(state, Rechecking { .. });
             }
             Setup::LargePageCheck => self.position = "Checking large pages".to_string(),
             // After the dialog's grant
@@ -1046,20 +1057,34 @@ impl Model {
             Run::AllocationStarting { .. } => self.position = "Allocating memory".to_string(),
             Run::Allocated(report) => {
                 self.facts.allocation = Some(allocation_fact(&report));
-                // The calibration comes next when the run measures one (TODO 22): about 2 minutes, its sweeps in the Log tab
-                self.position =
-                    if self.calibrating { "Measuring the cache calibration, about 2 minutes (Log tab)" } else { "Allocated" }.to_string();
+                // The calibration comes next when the run measures one (TODO 22): about 2 minutes, its sweeps in the Log tab; a recheck
+                // (TODO 116) about 15 s
+                self.position = match (self.calibrating, self.rechecking) {
+                    (true, true) => "Rechecking the cache calibration, about 15 seconds (Log tab)",
+                    (true, false) => "Measuring the cache calibration, about 2 minutes (Log tab)",
+                    (false, _) => "Allocated",
+                }
+                .to_string();
             }
-            Run::Calibrated(_) => {
+            Run::Calibrated(Ok(_)) => {
                 self.calibrating = false;
                 self.position = "Calibrated".to_string();
             }
-            // A recheck that held ends the calibration; one that didn't, a measure follows (TODO 116)
+            // As the console says it; in the errors too, since the suite's start replaces the position line at once
+            Run::Calibrated(Err(e)) => {
+                self.calibrating = false;
+                self.position = format!("The cache calibration failed ({e}): the tests size from CPUID");
+                self.errors.push(self.position.clone());
+            }
+            // A recheck that held ends the calibration; one that didn't, or that failed, a measure follows (TODO 116)
             Run::Rechecked(Ok(recheck)) if recheck.held => {
                 self.calibrating = false;
                 self.position = "Calibration rechecked: it holds".to_string();
             }
-            Run::Rechecked(_) => self.position = "The calibration has drifted: measuring it again, about 2 minutes".to_string(),
+            Run::Rechecked(Ok(_)) => self.position = "The calibration has drifted: measuring it again, about 2 minutes".to_string(),
+            Run::Rechecked(Err(e)) => {
+                self.position = format!("The calibration's recheck failed ({e}): measuring it again, about 2 minutes")
+            }
             Run::SuiteStarted { progress, .. } => {
                 self.progress = Some(progress);
                 self.position = "Starting the suite".to_string();
@@ -1181,6 +1206,8 @@ impl Model {
     /// The session's thread ended: how the session did, or the error that stopped it
     pub fn ended(&mut self, result: Result<SessionEnd, String>) {
         self.session_over = true;
+        // A calibration the session announced ends with it: one stopped before allocating never ran
+        self.calibrating = false;
         self.window_priority = ThreadPriority::Normal;
         let mut position = "Stopped before testing";
         match &result {
@@ -1682,6 +1709,64 @@ mod tests {
         assert_eq!((m.calibrating(), m.position.as_str()), (false, "Calibrated: the next run sizes its tests from it"));
         m.calibration_ended(Ok(RunStatus::NotRun));
         assert_eq!(m.position, "The calibration failed: the Log tab says why");
+
+        // The box's calibrate=, its last as the run reads it: off takes none, always measures whatever is stored
+        m.args = "calibrate=off".to_string();
+        assert_eq!(m.info_line(), "tmr calibrate=off · cache calibration off: the tests size from CPUID");
+        m.args = "calibrate=auto calibrate=Always".to_string();
+        assert_eq!(m.info_line(), "tmr calibrate=auto calibrate=Always · the run measures a cache calibration first, about 2 minutes");
+        m.args = "calibrate=off calibrate=recheck".to_string();
+        assert_eq!(
+            m.info_line(),
+            "tmr calibrate=off calibrate=recheck · no cache calibration: the first run measures one, about 2 minutes"
+        );
+    }
+
+    /// A calibration the session announced, which it stopped before running (a config error, no test matching, allocation failing):
+    /// the window isn't left on Calibrating…, so Run again and Calibrate can start
+    #[test]
+    fn a_session_that_ends_before_its_calibration_ends_it() {
+        use tmr::frontend::CacheCalibrationState::{Measuring, Rechecking};
+        let mut m = model();
+        m.start();
+        m.apply(Setup::CacheCalibration(Measuring(tmr::frontend::MeasureWhy::NoneStored)).into());
+        assert!(m.calibrating());
+        m.apply(Run::NotRun(NotRun::NoTestMatches { filter: "Mem-Nope".to_string(), plan: None }).into());
+        m.ended(Ok(ran(RunStatus::NotRun)));
+        assert!(!m.calibrating() && m.session_over() && m.takes_parameters());
+
+        let mut m = model();
+        m.start();
+        m.apply(Setup::CacheCalibration(Rechecking { at: chrono::Utc::now() }).into());
+        assert!(m.calibrating());
+        m.ended(Err("bad value".to_string()));
+        assert!(!m.calibrating() && m.session_over() && m.takes_parameters());
+    }
+
+    /// TODO 116: a recheck says it takes about 15 s, not a measure's 2 minutes, and a failed one that a measure follows; a failed
+    /// calibration says so, in the errors too
+    #[test]
+    fn the_position_line_says_a_recheck_and_a_failed_calibration() {
+        use tmr::frontend::CacheCalibrationState::{Measuring, Rechecking};
+        let allocated = || Event::from(Run::Allocated(Box::new(tmr::test_support::allocation_report_one_node())));
+        let mut m = model();
+        m.start();
+        m.apply(Setup::CacheCalibration(Rechecking { at: chrono::Utc::now() }).into());
+        m.apply(allocated());
+        assert_eq!(m.position, "Rechecking the cache calibration, about 15 seconds (Log tab)");
+        m.apply(Run::Rechecked(Err("the run has no memory".to_string())).into());
+        assert_eq!(m.position, "The calibration's recheck failed (the run has no memory): measuring it again, about 2 minutes");
+        assert!(m.calibrating());
+        m.apply(Run::Calibrated(Err("the run has no memory".to_string())).into());
+        assert_eq!(m.position, "The cache calibration failed (the run has no memory): the tests size from CPUID");
+        assert!(!m.calibrating());
+        assert_eq!(m.errors, ["The cache calibration failed (the run has no memory): the tests size from CPUID"]);
+
+        let mut m = model();
+        m.start();
+        m.apply(Setup::CacheCalibration(Measuring(tmr::frontend::MeasureWhy::NoneStored)).into());
+        m.apply(allocated());
+        assert_eq!(m.position, "Measuring the cache calibration, about 2 minutes (Log tab)");
     }
 
     fn model() -> Model {
