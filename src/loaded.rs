@@ -1,7 +1,8 @@
 //! The loaded latency tests (TODO 117): a read's latency while the other cores load DRAM, which no unloaded test sees. On daddy-petz
-//! (`doc/todo/117-write-latency.md`) tWR 12 to 24 moved one figure, a read's latency under a flat-out NT-write load (+6.7 ns), and
-//! tRDWR 8 to 12 one other, the turnaround at matched load (+12 ns at 50%); the idle figures and every other Lat-* test moved with
-//! neither. Lat-Loaded-DRAM measures a read's latency idle, under flat-out NT writes (its headline) and under flat-out reads.
+//! (`doc/todo/117-write-latency.md`, one timing at a time, three runs a setting, two baselines) tRDWR 8 to 12 moved the turnaround at
+//! matched load (+12 ns at 50%, +24 at 75%, against 0.3 ns between boots), and tRRD_L 4 to 6 the flat-out reads row (356-392 ns against
+//! 302-350); tWR, tFAW and tWTR moved nothing past the flat-out rows' 10-15% swing between boots, and the idle figures and every other
+//! Lat-* test moved with none. Lat-Loaded-DRAM measures a read's latency idle, under flat-out NT writes and under flat-out reads.
 //! Lat-Turnaround-DRAM, the same function's other registration, adds matched levels: the loaders held to 25, 50 and 75% of the lower
 //! flat-out peak (or MiB/s pinned, `load_levels`), writing and then reading at the same MiB/s, its turnaround the latency under writes
 //! less that under reads, which is what writes cost a read beyond the bus time they take.

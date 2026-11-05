@@ -46,10 +46,10 @@ Medians, [lowest-highest] of 2 probe runs (each a median of 7) or 3 TMR runs:
 cycles=1 calibrate=off memory=50% cputype=cores cpus=100% skip-cores=0`, 0a8467d.)
 
 What it shows:
-- tWR moved one figure, a read's latency under a flat-out write load, by its own 6.7 ns: with the
-  banks kept busy by writes, each row a write closed waits the longer recovery, and a read behind it
-  pays. Every idle write figure, TMR's three included, stayed flat: the controller acknowledges a
-  write when it is queued.
+- (Retracted 2026-11-06, see "TMR's tests, one timing at a time" below.) The probe's flat-out
+  write row read +6.7 ns with tWR 24; the same row reads 214-246 ns across boots at tWR 12, so that
+  was boot-to-boot spread, not tWR. Every idle write figure, TMR's three included, stayed flat: the
+  controller acknowledges a write when it is queued.
 - The three write figures (W-nt+sf, RAW-nt less R, W-fl less R) moved alike from 2133 to 3600
   (-25 to -26%); W-nt+sf and RAW-nt less R stayed about 9 ns apart at both, a check on each other.
   CLWB differs by CPU (Zen 4 evicts the line anyway; Zen 3 is cheaper than a flush).
@@ -77,6 +77,46 @@ Each of the two measures sees a different timing, and no test TMR has sees eithe
 latency under a flat-out write load only, tRDWR in turnaround at matched load only, 5-10 times its
 own 2.2 ns (a read waits behind many read-to-write switches). Flat out the bus is nearly all writes
 and seldom switches, so tRDWR vanishes there.
+
+## TMR's tests, one timing at a time (2026-11-05 to 06, 545e7e2)
+
+With the two tests built, the owner changed one timing at a time in the BIOS on daddy-petz (DDR4-3600
+CL14 1T, 4 DR DIMMs) and petz007 (DDR5-6000 CL34), each a reboot. Each setting: Lat-Loaded-DRAM and
+Lat-Turnaround-DRAM x3 (the plan's settings), the probe v3 x2, the ZenTimings snapshot; a baseline
+before and a second one after on a fresh boot, to measure the spread between boots
+(`hw-pass/timing-capture.sh`, results in `baselines\2026-11-05-timings\`).
+
+Spread between boots at the same settings (two baselines, and the steps that moved nothing):
+
+| daddy-petz row | Range | | petz007 row | Range |
+|---|---|---|---|---|
+| turnaround 50% / 75% | 7.3-7.5 / 15.2-15.7 ns | | turnaround 50% / 75% | -4.1 to -5.0 / -17.8 to -19.9 ns |
+| reads under flat-out reads | 302-350 ns | | reads under flat-out reads | 305-357 ns (357 a fresh power-on) |
+| reads under flat-out writes | 175-211 ns | | reads under flat-out writes | 121-132 ns |
+| probe, reads under flat-out writes | 214-246 ns | | | |
+
+| Change | daddy-petz | petz007 |
+|---|---|---|
+| tFAW 16 to 24 / 32 to 48 | nothing | under reads 306-329 ns: inside petz007's spread (read as a tFAW effect at first, retracted) |
+| tRRD_L 4 to 6 / 8 to 12 | **under reads 356-392 ns, above all 15 runs at other settings** (and its MiB/s down 1-5%) | nothing |
+| tWTR_L 8 to 12 / 18 to 24 | nothing (under reads 329-334, inside) | nothing |
+| tWRRD 4 to 6 / tWTR_S 4 to 8 | nothing | nothing |
+
+With the afternoon's tRDWR result (+12 / +24 ns in the turnaround, against 0.3 ns between boots):
+- The turnaround is the precise measure, and it sees the read-to-write switch (tRDWR). The
+  write-to-read timings (tWTR_L, tWTR_S, tWRRD) left it flat, likely because the controller drains
+  writes in batches and so turns back to reads seldom (an inference).
+- The flat-out rows swing 10-15% between boots: training, where each run's memory lands, what else
+  runs, and the first run after the machine sat idle reading highest. They show a timing that limits
+  the whole controller (tRRD_L throttling row openings), not a small one. tWR is not shown.
+- The probe's flat-out rows don't serve: its helpers read in long streams that seldom open rows, so
+  tRRD_L didn't move its under-reads row (149-157 ns throughout), and its under-writes row has the
+  widest spread (214-246).
+- PHYRDL (training's read delay) differed between boots on daddy-petz (28/26, 26/26); idle latency
+  didn't move with it (65.4 against 65.5 ns).
+
+Next for the tests: steadier flat-out rows (a measured chain over more of the memory; a warm-up
+window), so a change of a few percent can be read; then which rows join a summary grid.
 
 ## Other hosts (v3, 2 runs each)
 

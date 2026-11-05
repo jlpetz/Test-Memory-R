@@ -204,7 +204,10 @@ restarts every loader at a random 4 KiB block, so it is a fresh instance of the 
 
 - **Lat-Loaded-DRAM** reports a read's latency idle, under flat-out NT writes and under flat-out
   reads, each the median of its windows' means with [lowest-highest] beside the loaders' MiB/s.
-  On daddy-petz tWR 12 to 24 moved only the latency under flat-out NT writes (+6.7 ns).
+  Its loaded rows swing 10-15% between boots at the same settings (daddy-petz: 175-211 ns under
+  writes, 302-350 under reads), so they show only a timing that limits the whole controller:
+  tRRD_L 4 to 6 lifted reads under reads to 356-392 ns (TODO 117; tWR, tFAW and tWTR moved nothing
+  past that spread).
 - **Lat-Turnaround-DRAM** adds the matched levels: the loaders held to the same MiB/s writing and
   reading, a TSC deadline a 4 KiB block each (staggered, so their blocks interleave; a block more
   than an interval late resets its deadline and counts as fallen behind, so no loader bursts to

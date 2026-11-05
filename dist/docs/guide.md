@@ -131,13 +131,15 @@ turnaround's sign means and why their chart steps: [tests/loaded-latency.md](tes
 `tmr test=Lat-Loaded-DRAM,Lat-Turnaround-DRAM`.
 
 - **Lat-Loaded-DRAM** (about 10 s a cycle) times a read idle, while every other core writes to
-  memory as fast as it can, and while they read as fast as they can. On a Ryzen 7 5700X, raising
-  tWR moved the second of these, and no other test.
+  memory as fast as it can, and while they read as fast as they can. Its two loaded rows swing 10-15%
+  between boots, so they show only large changes: on a Ryzen 7 5700X (DDR4, two DIMMs a channel)
+  raising tRRD_L from 4 to 6 lifted reads under flat-out reads to 356-392 ns, above all 15 runs at
+  other settings (302-350). Compare several runs.
 - **Lat-Turnaround-DRAM** (about 50 s) does the same, then holds the other cores to 25%, 50% and
   75% of the lower of those two speeds, writing and then reading at the same speed. Its
   turnaround at each level is the latency under writes less that under reads: what writes cost a
-  read beyond the time they take. There, raising tRDWR moved the turnaround at 50% and 75%, and no
-  other test.
+  read beyond the time they take. It holds within about 0.3 ns from boot to boot there, and raising
+  tRDWR from 8 to 12 moved it 12 ns at 50% and 24 ns at 75%, and no other test.
 
 Each figure is a median (a turnaround's taken so that a slow drift, as the memory warms, cancels),
 with the lowest and highest in brackets: a change is real when it clears them. A level's share is

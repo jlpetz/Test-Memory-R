@@ -19,25 +19,28 @@ The [user guide](../guide.md)'s "Latency under load" has the short version.
 
 A memory controller reports a write as done as soon as the write is in its queue. A read of a line
 that was just written is answered from that queue. So a DRAM write timing reaches an app's read
-only when writes keep the DRAM's banks busy. The probe these tests were built from showed this on a
-Ryzen 7 5700X at DDR4-3600, one timing changed at a time:
+only when the traffic keeps the DRAM busy. On a Ryzen 7 5700X at DDR4-3600 (two dual-rank DIMMs a
+channel) and a Ryzen 5 8600G at DDR5-6000, one timing was changed at a time in the BIOS, each a
+reboot, and these tests were run three times at each setting, beside two baselines on different
+boots:
 
-| Change | What moved | What didn't |
+| Change | What moved | |
 |---|---|---|
-| tWR 12 to 24 | a read's latency under a flat-out write load: +6.7 ns (see below) | everything else |
-| tRDWR 8 to 12 | the turnaround: +12 ns at 50%, +24 ns at 75% | everything else, the flat-out rows too |
+| tRDWR 8 to 12 (5700X) | the turnaround: +12 ns at 50%, +24 ns at 75% | real: the turnaround holds within 0.3 ns between boots |
+| tRRD_L 4 to 6 (5700X) | reads under flat-out reads: 356-392 ns, against 302-350 in 15 runs at other settings | real, but near the boot spread |
+| tWR, tFAW, tWTR_L, tWRRD (5700X); tFAW, tRRD_L, tWTR_L, tWTR_S (8600G) | nothing beyond the spread between boots | |
 
-The tWR figure is the less certain of the two. On that machine the flat-out write row can sit in a
-slower state for a while, mostly in the first run after a boot (175 ns settled, about 207 ns in the
-slow state), and both tWR readings came from a first run after a reboot. The tRDWR rise is larger and
-the matched-load rows don't flip. A re-test with these tests themselves, setting aside the first run
-after each boot, is planned.
-
-Neither change moved a figure taken without that load: not the probe's idle read or write
-latency, and not TMR's unloaded latency tests run beside them. So Lat-Loaded-DRAM's flat-out write
-row is where write recovery (tWR) shows up, and Lat-Turnaround-DRAM's turnaround is where switching
-the bus between writes and reads shows up (tRDWR, tWTR, tWRRD, and the controller draining its
-write queue).
+Nothing moved a figure taken without that load: not the idle read or write latency, and not TMR's
+unloaded latency tests. Two things follow:
+- **The turnaround is the precise one.** It changes by less than a nanosecond from boot to boot, so
+  a few nanoseconds' change is real. It is where switching the bus from reads to writes shows up:
+  tRDWR moved it a lot, while the write-to-read timings (tWTR_L, tWTR_S, tWRRD) didn't, likely
+  because the controller drains writes in batches and so turns back to reads seldom.
+- **The flat-out rows are blunt.** They swing 10-15% between boots (on the 5700X, 175-211 ns under
+  writes and 302-350 under reads at the same settings; on the 8600G, 305-357 under reads), from
+  training, from where each run's memory lands, and from what else runs. They show a timing that
+  limits the whole controller (tRRD_L, which throttles row openings), not a small one. Run them
+  several times, on more than one boot, before reading a change under about 10%.
 
 ## How they work
 
@@ -215,10 +218,11 @@ for either test keeps the test's own memory size and length, and refuses an `ext
 
 ## Comparing two settings
 
-1. **Run each setting about three times** (three runs, or `cycles=3`) and compare the medians. A
-   flat-out write row can sit in a slower controller state for a while: in one 5700X run, flat-out
-   writes began at 207.8 ns, then held 174 (the next step's range, [174.4-206.3], shows the state
-   ending).
+1. **Run each setting about three times** (three runs, or `cycles=3`) and compare the medians. For
+   the flat-out rows, do it on more than one boot too: each setting in the BIOS is a reboot, and
+   those rows swing 10-15% from boot to boot at the same settings. The first run after the machine
+   has been idle reads highest (on a 5700X, flat-out writes 207 ns, then 196 and 175). The
+   turnaround rows don't swing: on the same machine they held within 0.3 ns across boots.
 2. **Pin the levels.** A share is of each run's own peak, which a faster setting raises: an
    overclock moved the 5700X's 50% from 8.4 to 14.1 GB/s. Give the second run the `load-levels=`
    the first one's report prints, so both load at the same MiB/s.
