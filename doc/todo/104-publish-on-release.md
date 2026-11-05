@@ -168,7 +168,8 @@ the crates exist.
   three files (version, defaultLocale, installer). `InstallerType: inno`, the release's
   `tmr-<version>-setup.exe` and its SHA-256 (`SHA256SUMS.txt` in the release), listed twice, `Scope:
   machine` with `InstallerSwitches: Custom: /ALLUSERS` and `Scope: user` with `/CURRENTUSER`, and
-  `ElevationRequirement: elevatesSelf` (Inno asks UAC itself for all users). winget's silent
+  `ElevationRequirement: elevatesSelf` on the machine one only (Inno asks UAC itself for all users; at the top level it
+  made winget promise a prompt for the user one too, which never elevates, 2026-11-06). winget's silent
   switches for Inno are its defaults. `Commands: [tmr]`, `Moniker: tmr`, `MinimumOSVersion:
   10.0.20348.0`, `ProductCode` the installer's AppId (`{A1BC7167-67F4-461D-BE00-B57FBAF0B53C}_is1`).
 - `Dependencies: PackageDependencies`: `Microsoft.VCRedist.2015+.x64`, and

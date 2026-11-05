@@ -6,7 +6,6 @@ InstallerLocale: en-US
 MinimumOSVersion: 10.0.20348.0
 InstallerType: inno
 UpgradeBehavior: install
-ElevationRequirement: elevatesSelf
 Commands:
 - tmr
 ReleaseDate: 2026-10-26
@@ -36,6 +35,7 @@ Installers:
   InstallerSha256: 20ACC1FA5E0F3760087D0AB3590107F11D977CE0756ACB4174CE99463F855636
   InstallerSwitches:
     Custom: /ALLUSERS
+  ElevationRequirement: elevatesSelf
   InstallationMetadata:
     DefaultInstallLocation: '%ProgramFiles%\TMR'
 ManifestType: installer
