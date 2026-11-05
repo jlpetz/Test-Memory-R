@@ -18,9 +18,24 @@ The window, during a stability run: the throughput chart, each finished step, an
 
 ![TMR's window during a stability run: progress, the throughput chart, the steps done and one step's report](doc/images/tmr_gui.PNG)
 
+The window is WinUI 3, through [Reactor](https://github.com/microsoft/windows-rs/blob/master/crates/libs/reactor/readme.md)
+(`windows-reactor`, from Microsoft's windows-rs). It was chosen because it proved very light in
+testing, even in a VM with no GPU, so it leaves the machine to the test. The trade-off is that
+Reactor is young: some things the window would like, such as monospaced text in its controls and a
+log that follows its end, aren't there yet. The window will gain that polish as Reactor does.
+
 The console, with its progress ticker at the bottom.
 
 ![TMR in a console: each step's report, its threads' table, and the progress ticker](doc/images/tmr_cli.PNG)
+
+The console looks best in a modern terminal, which shows its emoji and table lines in a font such as
+Cascadia Mono: [Windows Terminal](https://aka.ms/terminal) (it ships the Cascadia fonts) with
+[PowerShell](https://aka.ms/powershell) 7.6 or later. Both install with winget:
+
+```
+winget install --id Microsoft.WindowsTerminal --source winget
+winget install --id Microsoft.PowerShell --source winget
+```
 
 ## Install and run
 
@@ -70,11 +85,6 @@ and serial numbers) and the motherboard's system UUID, so mind that before you p
   equalisers react to. Both aim to make a marginal overclock fail sooner.
 - **Built-in test plans** (`plan=`; `stability` by default), **results as JSON** saved during the
   run and comparable between runs, and a console (CLI) and a window (GUI) in one `tmr.exe`.
-- **The window is WinUI 3, through [Reactor](https://github.com/microsoft/windows-rs/blob/master/crates/libs/reactor/readme.md)**
-  (`windows-reactor`, from Microsoft's windows-rs). It was chosen because it proved very light in
-  testing, even in a VM with no GPU, so it leaves the machine to the test. The trade-off is that
-  Reactor is young: some things the window would like, such as monospaced text in its controls and
-  a log that follows its end, aren't there yet. The window will gain that polish as Reactor does.
 
 ## Supported Windows OSes
 
