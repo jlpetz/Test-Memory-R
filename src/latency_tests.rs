@@ -34,6 +34,9 @@ pub struct LatencyTestStats {
 
     // Spread ratio (P95/P5) - high values suggest cache level spills
     pub spread_ratio: f64,
+
+    /// A loaded latency test's measurer's windows and rows (TODO 117, `loaded::LoadedPart`); `None` for every other test and thread
+    pub loaded: Option<Box<crate::loaded::LoadedPart>>,
 }
 
 impl LatencyTestStats {
@@ -55,6 +58,7 @@ impl LatencyTestStats {
                 p99_ns: 0.0,
                 p99_9_ns: 0.0,
                 spread_ratio: 0.0,
+                loaded: None,
             };
         }
 
@@ -90,6 +94,7 @@ impl LatencyTestStats {
             p99_ns: p99,
             p99_9_ns: p99_9,
             spread_ratio,
+            loaded: None,
         }
     }
 }
@@ -118,6 +123,24 @@ pub(crate) unsafe fn build_cycle_u64(base: *mut u64, n: usize, seed: u64) {
         *base.add(i) = *earlier;
         *earlier = base.add(i) as u64;
     }
+}
+
+/// One timed sample of a pointer chase: `reads` chained loads from `ptr`, each waiting on the one before, between two RDTSCPs, each fenced
+/// (SeqCst). Returns where the chase stopped, for the next sample to continue from, and the two TSC stamps. Inlined, so its callers'
+/// loop is a bare chain of loads (Lat-*-Read's, and the loaded tests' measurer, `crate::loaded`, TODO 117).
+#[inline(always)]
+pub(crate) unsafe fn chase(ptr: *mut u64, reads: usize) -> (*mut u64, u64, u64) {
+    fence(Ordering::SeqCst);
+    let mut aux = 0u32;
+    let start = __rdtscp(&mut aux);
+    let mut p = ptr;
+    for _ in 0..reads {
+        let addr = *p; // Read address of next location
+        p = addr as *mut u64; // Jump to that location
+    }
+    let end = __rdtscp(&mut aux);
+    fence(Ordering::SeqCst);
+    (p, start, end)
 }
 
 /// Read Latency Test - Uses pointer chasing for true random-access latency
@@ -165,17 +188,8 @@ pub unsafe fn read_latency_multi(
     loop {
         runner.begin_cycle();
 
-        fence(Ordering::SeqCst);
-        let mut aux = 0u32;
-        let start_cycles = __rdtscp(&mut aux);
-
-        for _ in 0..iterations {
-            let addr = *ptr; // Read address of next location
-            ptr = addr as *mut u64; // Jump to that location
-        }
-
-        let end_cycles = __rdtscp(&mut aux);
-        fence(Ordering::SeqCst);
+        let (next, start_cycles, end_cycles) = chase(ptr, iterations);
+        ptr = next;
 
         // Use result to prevent optimization
         std::hint::black_box(ptr);

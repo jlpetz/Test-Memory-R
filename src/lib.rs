@@ -73,6 +73,7 @@ mod latency_histogram; // TODO 105 (1): the latency tests' percentiles from a hi
 mod latency_tests; // Latency measurement tests
 mod latency_tests_v2; // v2 latency tests: Layout A/B reads + NT write saturation PoC
 mod layout;
+mod loaded; // Lat-Loaded-DRAM: a read's latency while the other cores load DRAM, NT writes or reads (TODO 117)
 mod memory;
 mod ops; // the work around a test, by operation: seal fills and checks, fills (TODO 90)
 mod params; // Centralized parameter registry

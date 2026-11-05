@@ -838,6 +838,9 @@ pub struct TestMemoryConfig {
     /// The coherence storm's step, its shared lines (TODO 28, `storm::Step`): set per dispatch by the worker pool for
     /// Mem-CoherenceStorm, `None` for every other test and outside a run.
     pub storm: Option<std::sync::Arc<crate::storm::Step>>,
+    /// The loaded latency tests' step (TODO 117, `loaded::Step`): the roles, the phase word and the loaders' byte slots, set per
+    /// dispatch by the worker pool for Lat-Loaded-DRAM, `None` for every other test and outside a run.
+    pub loaded: Option<std::sync::Arc<crate::loaded::Step>>,
 }
 
 impl TestMemoryConfig {
@@ -867,6 +870,7 @@ impl TestMemoryConfig {
             epoch: crate::pattern::StepEpoch::default(),         // Set per dispatch by the runner
             exchange: None,                                      // Set per dispatch by the worker pool, for the page exchange
             storm: None,                                         // Set per dispatch by the worker pool, for the coherence storm
+            loaded: None,                                        // Set per dispatch by the worker pool, for the loaded latency tests
         }
     }
 
@@ -8020,6 +8024,8 @@ pub(crate) fn picked_width(test_name: &str) -> Option<crate::simd::Width> {
     let numbered = ["Bench-Init-TM5-", "Bench-Init-TMR-", "Bench-Verify-TM5-", "Bench-Verify-TMR-"];
     match test_name {
         "Mem-Sequence" => Some(sequence_width(crate::simd::test_width())),
+        // Their loaders' kernels (TODO 117)
+        s if crate::loaded::is_loaded(s) => Some(crate::simd::test_width()),
         "Bench-Init-Seal-TMR" | "Bench-Verify-Seal-TMR" | "Bench-Init-Seal-TM5" | "Bench-Verify-Seal-TM5" => {
             bench_seal_width(crate::seal::SealWidth::Auto).ok().and_then(crate::simd::Width::of_seal)
         }

@@ -796,6 +796,10 @@ pub struct TestParameterContext {
     /// Mem-CoherenceStorm: its shared structures and a thread's bumps a check (TODO 28); `None` is GSAT's default.
     pub storm_lines: Option<u32>,
     pub storm_increments: Option<u32>,
+    /// The loaded latency tests: their ABBA pairs at each load, and each window's timed length in ms (TODO 117, `loaded::Params`);
+    /// `None` is the test's default
+    pub load_pairs: Option<u32>,
+    pub load_window_ms: Option<u32>,
 }
 
 /// Interpret TM5 Parameter correctly based on test function name.

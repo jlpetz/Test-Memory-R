@@ -57,11 +57,13 @@ from collections import defaultdict
 
 # The test modules, as they appear in v0 symbols (`3tmr` + length + name)
 MODULES = ["5tests", "8sequence", "4seal", "15bandwidth_tests", "13latency_tests", "16latency_tests_v2",
-           "12test_harness", "7pattern", "11pattern_gen", "16pattern_switch24", "5xform", "8exchange", "5storm"]
+           "12test_harness", "7pattern", "11pattern_gen", "16pattern_switch24", "5xform", "8exchange", "5storm", "6loaded"]
 # Functions in them that run off the hot path: on an error, once per test, or at load time
 COLD = ["rescan", "parse", "percentiles", "finalize_stats", "TestRunner", "scale_or", "bad_byte",
         # Mem-TileTransform's set-up (once a test) and tier 2's helpers (TODO 102)
-        "PatternSet", "Matrices", "distinct_odd", "gen_patterns", "self_test", "group_checksum", "still_wrong", "signature"]
+        "PatternSet", "Matrices", "distinct_odd", "gen_patterns", "self_test", "group_checksum", "still_wrong", "signature",
+        # The loaded latency tests' roles, schedule and summary (TODO 117), once a step, as v0 names them
+        "12assign_roles", "6Params", "9summarize", "6median", "6loaded4rows"]
 # Calls a hot-shaped loop may make off its hot path, by symbol substring: timing (once a chunk), error and panic paths, the
 # bookkeeping and allocation around a chunk, formatting, a one-time initialisation
 COLD_CALLS = {

@@ -1352,11 +1352,17 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
 
         let test_start = Instant::now();
         let step_label = test_def.step_label(tm5);
+        // A loaded latency test's length is its schedule's (TODO 117)
+        let expected = if crate::loaded::is_loaded(test_name) {
+            Some(crate::loaded::expected(test_config, thread_pool.get_cpu_assignments()))
+        } else {
+            test_config.timing.duration_secs.map(|secs| Duration::from_secs(secs.into()))
+        };
         progress.start_test(
             test_idx + 1,
             &step_label,
             test_start,
-            test_config.timing.duration_secs.map(|secs| Duration::from_secs(secs.into())),
+            expected,
             // Every test publishes through its TestRunner, the latency tests too (TODO 76)
             true,
         );
@@ -1557,6 +1563,11 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
             }
         }
         thread_records.sort_by_key(|record| record.thread);
+        // A loaded latency test's figures (TODO 117): its measurer's rows, in one line for now
+        if let Some(part) = latency_results.iter().find_map(|(_, _, stats)| stats.loaded.as_deref()) {
+            let summary = crate::loaded::summarize(part);
+            log::info!(target: crate::logfile::SHOWN_TARGET, "{test_display_name}: {}", summary.headline());
+        }
 
         // Attribute WHEA events that landed while this test ran. A non-zero count here is a real failure signal even when every thread
         // reported zero errors: the fault was either corrected before our verify read could see it, or it happened during a test that does
@@ -2865,6 +2876,16 @@ pub(crate) fn registered_tests(cache_info: &CacheInfo) -> Vec<(&'static str, Tes
             TestFunction::Latency(copy_latency_multi),
             TestMemoryConfig::new(ExtentMode::Cache { target: CacheTarget::DRAM_FULL_DEFAULT }, ChunkMode::Whole)
                 .with_timing(TestTiming::duration_only(10))
+                .with_tsc(tsc_freq)
+                .with_memory_type(None),
+        ),
+        // Latency under load (TODO 117): a read's latency idle and while every other core on its node streams NT writes or reads, flat
+        // out, over a chain of 128 B cells 32 L3s long (1 GiB at least). One schedule a step, which sets its length (crate::loaded)
+        (
+            crate::loaded::LOADED_NAME,
+            TestFunction::Latency(crate::loaded::lat_loaded_dram_multi),
+            TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: crate::loaded::extent_bytes(cache_info.l3_cache) }, ChunkMode::Whole)
+                .with_timing(TestTiming::cycles_only(1))
                 .with_tsc(tsc_freq)
                 .with_memory_type(None),
         ),
@@ -6030,9 +6051,20 @@ mod tests {
             def.config.timing = TestTiming::cycles_only(1);
             def.config.thread_count = 1;
             def.config.tsc_frequency_ghz = 1.0;
+            let loaded = crate::loaded::is_loaded(def.actual_name);
+            if loaded {
+                // Its windows 1 ms long: alone, with no step, it measures the idle ones
+                def.config.parameter_context = Some(crate::config::TestParameterContext { load_window_ms: Some(1), ..Default::default() });
+            }
             let stats = unsafe { test_fn(&region.blocks, 0, ErrorMode::Log, &def.config.timing, &def.config, None) };
-            assert_eq!(stats.sample_count, 1, "{} took no sample", def.display_name);
-            assert!(stats.basic_stats.bytes_processed > 0, "{} counted nothing", def.display_name);
+            if loaded {
+                let part = stats.loaded.as_deref().unwrap_or_else(|| panic!("{} has no measurer's part", def.display_name));
+                let idle = part.windows.iter().filter(|w| w.kind == crate::loaded::Kind::Park && w.reads > 0).count();
+                assert_eq!((part.windows.len(), idle), (2, 2), "{}: the idle windows", def.display_name);
+            } else {
+                assert_eq!(stats.sample_count, 1, "{} took no sample", def.display_name);
+                assert!(stats.basic_stats.bytes_processed > 0, "{} counted nothing", def.display_name);
+            }
             assert!(region.guards_intact(), "{} wrote outside the region", def.display_name);
             ran += 1;
         }

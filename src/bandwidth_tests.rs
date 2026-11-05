@@ -79,7 +79,8 @@ macro_rules! spd_write_hot {
 // ============================================================================
 
 /// 4x unrolled SIMD read loop with 4 independent accumulators to avoid
-/// serial dependency chains. XOR accumulate prevents dead-code elimination.
+/// serial dependency chains. XOR accumulate prevents dead-code elimination. Its value is the XOR of every vector read (the loaders' read
+/// block returns it, TODO 117); the Spd-Read tests drop it.
 macro_rules! spd_read_hot {
     ($base_ptr:expr, $byte_len:expr, $arch_type:ty, $load_fn:path, $xor_fn:path, $setzero_fn:path) => {{
         let mut p = $base_ptr as *const $arch_type;
@@ -113,7 +114,7 @@ macro_rules! spd_read_hot {
         acc0 = $xor_fn(acc0, acc1);
         acc2 = $xor_fn(acc2, acc3);
         acc0 = $xor_fn(acc0, acc2);
-        std::hint::black_box(acc0);
+        std::hint::black_box(acc0)
     }};
 }
 
@@ -375,6 +376,102 @@ macro_rules! spd_copy_impl {
 }
 
 // ============================================================================
+// LOAD BLOCKS — the loaded latency tests' loaders (TODO 117, `crate::loaded`)
+// ============================================================================
+
+/// The loaders' write pattern: `STATIC_PATTERN` varied across a vector's u64 lanes, lane `k` (of up to 8) holding `LOAD_PATTERN[k]`.
+pub(crate) static LOAD_PATTERN: [u64; 8] = {
+    let mut lanes = [0; 8];
+    let mut k = 0;
+    while k < 8 {
+        lanes[k] = STATIC_PATTERN ^ (k as u64 * 0x0101_0101_0101_0101);
+        k += 1;
+    }
+    lanes
+};
+
+/// A loader's block (TODO 117): `len` bytes at `ptr`, a multiple of 4 vectors and aligned to one, written or read. A write block stores
+/// `LOAD_PATTERN` non-temporally and fences once (SFENCE) and returns 0; a read block returns the XOR of every u64 it read. One type for
+/// both, so a loader calls whichever its window's load is through one pointer, and its loop over blocks is the same for each.
+pub(crate) type LoadBlock = unsafe fn(*mut u8, usize) -> u64;
+
+/// A width's load blocks, `$write_fn` and `$read_fn`, from Spd-Write-NT's and Spd-Read's loops (`spd_write_hot!`, `spd_read_hot!`): NT
+/// stores of the lane-varied pattern, and loads into 4 independent XOR accumulators.
+macro_rules! load_block_impl {
+    (
+        $write_fn:ident, $read_fn:ident,
+        $target_feature:literal,
+        $arch_type:ty,
+        $stream_fn:path,
+        $load_fn:path,
+        $xor_fn:path,
+        $setzero_fn:path
+    ) => {
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        unsafe fn $write_fn(ptr: *mut u8, len: usize) -> u64 {
+            let pattern = std::ptr::read_unaligned(LOAD_PATTERN.as_ptr() as *const $arch_type);
+            spd_write_hot!(ptr, len, pattern, $arch_type, $stream_fn);
+            std::arch::x86_64::_mm_sfence();
+            0
+        }
+
+        #[target_feature(enable = $target_feature)]
+        #[inline(never)]
+        unsafe fn $read_fn(ptr: *mut u8, len: usize) -> u64 {
+            let acc = spd_read_hot!(ptr as *const u8, len, $arch_type, $load_fn, $xor_fn, $setzero_fn);
+            // The vector's lanes folded: the XOR of every word read
+            let mut words = [0u64; 8];
+            std::ptr::write_unaligned(words.as_mut_ptr() as *mut $arch_type, acc);
+            words.iter().fold(0, |all, w| all ^ w)
+        }
+    };
+}
+
+load_block_impl!(
+    nt_write_block_128,
+    read_block_128,
+    "sse4.2,sse4.1,ssse3,sse3,sse2,popcnt",
+    std::arch::x86_64::__m128i,
+    std::arch::x86_64::_mm_stream_si128,
+    std::arch::x86_64::_mm_load_si128,
+    std::arch::x86_64::_mm_xor_si128,
+    std::arch::x86_64::_mm_setzero_si128
+);
+
+load_block_impl!(
+    nt_write_block_256,
+    read_block_256,
+    "avx2,avx,fma,bmi1,bmi2",
+    std::arch::x86_64::__m256i,
+    std::arch::x86_64::_mm256_stream_si256,
+    std::arch::x86_64::_mm256_load_si256,
+    std::arch::x86_64::_mm256_xor_si256,
+    std::arch::x86_64::_mm256_setzero_si256
+);
+
+load_block_impl!(
+    nt_write_block_512,
+    read_block_512,
+    "avx512f,avx512bw,avx512cd,avx512dq,avx512vl,avx2,avx,fma,bmi1,bmi2",
+    std::arch::x86_64::__m512i,
+    std::arch::x86_64::_mm512_stream_si512,
+    std::arch::x86_64::_mm512_load_si512,
+    std::arch::x86_64::_mm512_xor_si512,
+    std::arch::x86_64::_mm512_setzero_si512
+);
+
+/// The load blocks at `width`, (write, read): a loader takes them once, at the run's width (`simd::test_width`), which the CPU has.
+pub(crate) fn load_kernels(width: crate::simd::Width) -> (LoadBlock, LoadBlock) {
+    use crate::simd::Width;
+    match width {
+        Width::W128 => (nt_write_block_128, read_block_128),
+        Width::W256 => (nt_write_block_256, read_block_256),
+        Width::W512 => (nt_write_block_512, read_block_512),
+    }
+}
+
+// ============================================================================
 // WRITE — Cached variants (for L1/L2/L3 cache bandwidth measurement)
 // Regular stores go through cache hierarchy — measures cache write bandwidth.
 // ============================================================================
@@ -595,6 +692,43 @@ crate::auto_dispatch!(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TODO 117: each width's load blocks the CPU has: a write block stores the lane-varied pattern over exactly its bytes, lane `k` of
+    /// each vector `LOAD_PATTERN[k]`, and a read block returns the XOR of every word it read, at a loader's 4 KiB and at the shortest
+    /// length, one step of 4 vectors.
+    #[test]
+    fn load_blocks_write_the_pattern_and_read_the_xor() {
+        use crate::simd::Width;
+        const FILLER: u64 = 0x3C3C_C3C3_3C3C_C3C3;
+        let guard = 64usize;
+        for width in [Width::W128, Width::W256, Width::W512].into_iter().filter(|w| w.check().is_ok()) {
+            let (write, read) = load_kernels(width);
+            let lanes = width.bits() as usize / 64;
+            for bytes in [4 * lanes * 8, 4096] {
+                let words = bytes / 8 + 2 * guard;
+                let mut buffer = vec![std::simd::u64x8::splat(0); words / 8];
+                let b = buffer.as_mut_ptr() as *mut u64;
+                unsafe {
+                    for i in 0..words {
+                        *b.add(i) = FILLER;
+                    }
+                    assert_eq!(write(b.add(guard) as *mut u8, bytes), 0, "{width:?}, {bytes} bytes");
+                    for i in 0..words {
+                        let written = (guard..guard + bytes / 8).contains(&i);
+                        let want = if written { LOAD_PATTERN[(i - guard) % lanes] } else { FILLER };
+                        assert_eq!(*b.add(i), want, "{width:?}, {bytes} bytes: word {i}");
+                    }
+                    // A distinct value at every word, so a word left out or read twice shows
+                    let word = |i: usize| (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xA55A_A55A_A55A_A55A;
+                    for i in 0..words {
+                        *b.add(i) = word(i);
+                    }
+                    let want = (guard..guard + bytes / 8).fold(0, |all, i| all ^ word(i));
+                    assert_eq!(read(b.add(guard) as *mut u8, bytes), want, "{width:?}, {bytes} bytes");
+                }
+            }
+        }
+    }
 
     /// TODO 99: each width's copy chunk, cached and NT, copies exactly its chunk, each vector to its own place, over lengths that take its
     /// steps of 4 vectors (and the compiler's unrolling of them), each tail of 1-3 and L1 size, and writes nothing else.
