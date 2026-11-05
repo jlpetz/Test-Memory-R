@@ -431,6 +431,18 @@ nothing, and says so, as it does when the run is stopped during it. `calibrate=o
 (CPUID sizes, and the seal's width from its rule). `--calibrate-cache` measures on its own
 allocation, without a test, and asks before saving over a stored one.
 
+A run's setup shows the calibration it took beside CPUID's sizes: the System Information block's
+cache table (the console's, and the window's System tab) gains a Calibrated and a Latency column,
+the size and latency A found of each tier (L1 beside a core's L1, L2 likewise, L3 beside the whole
+L3, as the calibration's own table pairs them), and DRAM and FullDRAM rows; under it, when and on
+which pages it was measured, B's sizes, and the L3 a thread reaches alone and with its group's CPUs
+sharing it, which the L3 tests size from. Under `calibrate=off`, or with none of this machine's
+stored, the table is CPUID's alone; one a run measures shows in its own table after allocation.
+`tmr.exe --show-calibration` shows what `tmr-cfg.json` holds and measures nothing: the cache
+calibration's table as `--calibrate-cache` shows it, its date and pages in place of its time, and
+the seal's widths as `--calibrate-seal` shows them, each saying whether it is this machine's (the
+check below) and what a run does with it; with none stored, what measures one.
+
 ### The seal's width under `auto` (TODO 99)
 
 `seal-width=auto` runs the width of this machine's seal calibration, else the rule's (256 with

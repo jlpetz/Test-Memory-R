@@ -30,7 +30,7 @@ use chrono::{DateTime, Utc};
 
 pub use crate::ErrorMode;
 // `Selection`'s skip, and the words for its cores, which both frontends' skip lines use
-pub use crate::calibration::{Recheck, RecheckProbe};
+pub use crate::calibration::{CalibrationResults, Recheck, RecheckProbe};
 pub use crate::cpu_selection::{SkipSpec, core_list};
 use crate::failing_bits::FailingBits;
 // A loaded latency test's latencies, a step's (`TestSummary::loaded`, TODO 117)

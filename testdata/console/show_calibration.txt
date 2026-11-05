@@ -1,0 +1,105 @@
+## none stored
+🔍 TMR's Calibrations, from <home>\tmr-cfg.json
+===============================================
+
+Cache calibration: none stored: a run measures one before its tests (calibrate=auto, the default; about 2 minutes), or tmr.exe --calibrate-cache measures it now
+
+Seal calibration: none stored: seal-width=auto runs the rule's width (256 bits with AVX2, else 128) until tmr.exe --calibrate-seal measures one (--calibrate-all measures both)
+## this machine's
+🔍 TMR's Calibrations, from <home>\tmr-cfg.json
+===============================================
+
+Cache calibration: this machine's: a run's cache-sized extents take their sizes from it
+
+📊 Cache Calibration Results
+═══════════════════════════════════════════════════════════════════════════════
+Tier           CPU Size   Calibrated        %      Latency     Spread       Status
+───────────────────────────────────────────────────────────────────────────────
+L1              32.0 KB      32.0 KB     100%        0.9ns       1.03x     ✅ Stable
+L2               1.0 MB     992.0 KB      97%        3.1ns       1.06x     ✅ Stable
+L3              16.0 MB      14.5 MB      91%       11.3ns       1.08x     ✅ Stable
+DRAM            32.0 MB      64.0 MB     200%       84.6ns       1.12x     ✅ Stable
+FullDRAM        64.0 MB     256.0 MB     400%       91.3ns       1.11x     ✅ Stable
+───────────────────────────────────────────────────────────────────────────────
+Measured 2026-11-03 14:22 on 2MB large pages
+Two threads on one core: L1 16.0 KB, L2 480.0 KB a thread
+Every CPU at once (12 sharing each L3): L3 2.5 MB a thread at 13.4ns
+L3 a thread: 14.5 MB alone, 2.5 MB with 12 sharing; a run's L3 tests size from the curve through them
+ℹ️  DRAM and FullDRAM show similar latency (84.6ns vs 91.3ns).
+    This is expected with large pages (2MB+) which minimize TLB pressure.
+    Use maxpage=regular to test with 4KB pages for TLB comparison.
+ℹ️  Calibration used 2MB large pages.
+    Use maxpage=regular with --calibrate-cache to test with 4KB pages for TLB comparison.
+
+Seal calibration: this machine's, measured 2026-11-03 14:31: seal-width=auto runs its 128 bits
+
+📊 Seal Width Calibration (tmr, 1 thread, 512.0 MB, 32 × L3, 2MB large pages; median of 5 runs after a warm-up)
+═══════════════════════════════════════════════════════════════════════════════
+Width             Fill         Check                 Fill + check
+───────────────────────────────────────────────────────────────────────────────
+128        20000 MiB/s   30000 MiB/s         40.0 ms [39.0..41.0]
+256        20000 MiB/s   30000 MiB/s         40.5 ms [39.5..41.5]
+───────────────────────────────────────────────────────────────────────────────
+Seal width: 128, the fastest
+
+## this machine's by one thread alone, no seal calibration
+🔍 TMR's Calibrations, from <home>\tmr-cfg.json
+===============================================
+
+Cache calibration: this machine's, but measured by one thread alone, before TMR measured two threads a core and every CPU at once, so a run measures one before its tests (calibrate=auto, the default; about 2 minutes), or tmr.exe --calibrate-cache measures it now
+
+📊 Cache Calibration Results
+═══════════════════════════════════════════════════════════════════════════════
+Tier           CPU Size   Calibrated        %      Latency     Spread       Status
+───────────────────────────────────────────────────────────────────────────────
+L1              32.0 KB      32.0 KB     100%        0.9ns       1.03x     ✅ Stable
+L2               1.0 MB     992.0 KB      97%        3.1ns       1.06x     ✅ Stable
+L3              16.0 MB      14.5 MB      91%       11.3ns       1.08x     ✅ Stable
+DRAM            32.0 MB      64.0 MB     200%       84.6ns       1.12x     ✅ Stable
+FullDRAM        64.0 MB     256.0 MB     400%       91.3ns       1.11x     ✅ Stable
+───────────────────────────────────────────────────────────────────────────────
+Measured 2026-11-03 14:22 on 2MB large pages
+ℹ️  DRAM and FullDRAM show similar latency (84.6ns vs 91.3ns).
+    This is expected with large pages (2MB+) which minimize TLB pressure.
+    Use maxpage=regular to test with 4KB pages for TLB comparison.
+ℹ️  Calibration used 2MB large pages.
+    Use maxpage=regular with --calibrate-cache to test with 4KB pages for TLB comparison.
+
+Seal calibration: none stored: seal-width=auto runs the rule's width (256 bits with AVX2, else 128) until tmr.exe --calibrate-seal measures one (--calibrate-all measures both)
+## another machine's
+🔍 TMR's Calibrations, from <home>\tmr-cfg.json
+===============================================
+
+Cache calibration: not this machine's: measured on AMD Ryzen 7 5700X 8-Core Processor, and the CPU, its BIOS, the memory or the TSC's rate differs here, so a run measures one before its tests (calibrate=auto, the default; about 2 minutes), or tmr.exe --calibrate-cache measures it now. CPU Size is that machine's
+
+📊 Cache Calibration Results
+═══════════════════════════════════════════════════════════════════════════════
+Tier           CPU Size   Calibrated        %      Latency     Spread       Status
+───────────────────────────────────────────────────────────────────────────────
+L1              32.0 KB      32.0 KB     100%        0.9ns       1.03x     ✅ Stable
+L2             512.0 KB     992.0 KB     194%        3.1ns       1.06x     ✅ Stable
+L3              32.0 MB      14.5 MB      45%       11.3ns       1.08x     ✅ Stable
+DRAM            64.0 MB      64.0 MB     100%       84.6ns       1.12x     ✅ Stable
+FullDRAM       128.0 MB     256.0 MB     200%       91.3ns       1.11x     ✅ Stable
+───────────────────────────────────────────────────────────────────────────────
+Measured 2026-11-03 14:22 on 2MB large pages
+Two threads on one core: L1 16.0 KB, L2 480.0 KB a thread
+Every CPU at once (12 sharing each L3): L3 2.5 MB a thread at 13.4ns
+L3 a thread: 14.5 MB alone, 2.5 MB with 12 sharing; a run's L3 tests size from the curve through them
+ℹ️  DRAM and FullDRAM show similar latency (84.6ns vs 91.3ns).
+    This is expected with large pages (2MB+) which minimize TLB pressure.
+    Use maxpage=regular to test with 4KB pages for TLB comparison.
+ℹ️  Calibration used 2MB large pages.
+    Use maxpage=regular with --calibrate-cache to test with 4KB pages for TLB comparison.
+
+Seal calibration: not this machine's: measured 2026-11-03 14:31 on hardware that has changed since, so seal-width=auto runs the rule's width (256 bits with AVX2, else 128) until tmr.exe --calibrate-seal measures it again
+
+📊 Seal Width Calibration (tmr, 1 thread, 512.0 MB, 64 × L3, 2MB large pages; median of 5 runs after a warm-up)
+═══════════════════════════════════════════════════════════════════════════════
+Width             Fill         Check                 Fill + check
+───────────────────────────────────────────────────────────────────────────────
+128        20000 MiB/s   30000 MiB/s         40.0 ms [39.0..41.0]
+256        20000 MiB/s   30000 MiB/s         40.5 ms [39.5..41.5]
+───────────────────────────────────────────────────────────────────────────────
+Seal width: 128, the fastest
+

@@ -1896,6 +1896,7 @@ mod tests {
                 std_dev_ghz: 0.001,
                 converged: true,
             },
+            calibration: None,
         }
     }
 
@@ -2746,6 +2747,38 @@ mod tests {
             "Memory channels: 2, which set SimpleTest's stride: (channels × parameter − 1) × the 64 B cache line",
             "table Test Configuration"
         ]);
+    }
+
+    /// With this machine's cache calibration stored (TODO 22), the System tab's cache table has its sizes and latencies beside CPUID's, the
+    /// engine's table as the console's (crates/tmr-cli's report_system_info_calibrated golden): its DRAM rows, and under it when it was
+    /// measured and what a thread reaches with others running
+    #[test]
+    fn the_system_tab_shows_the_calibration_beside_cpuids_sizes() {
+        let mut m = model();
+        let report = SystemInfoReport { calibration: Some(tmr::test_support::cache_calibration()), ..system_info() };
+        m.apply(
+            Setup::SystemInfo {
+                report: Box::new(report),
+                memory_modules: Vec::new(),
+                system: Default::default(),
+                bios: Default::default(),
+                hypervisor: None,
+            }
+            .into(),
+        );
+        let caches = m.sections.system.iter().find_map(|block| match block {
+            crate::report::Block::Table(table) if table.title.as_deref() == Some("Cache Architecture (raw_cpuid leaf 4)") => Some(table),
+            _ => None,
+        });
+        let caches = caches.expect("the cache table");
+        let headers: Vec<&str> = caches.headers.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(headers, ["Cache Level", "Total Size", "Per Core", "Calibrated", "Latency"]);
+        let row = |level: &str| caches.rows.iter().find(|row| row[0] == level).cloned().unwrap_or_default();
+        assert_eq!(row("L3 (Shared)"), ["L3 (Shared)", "16.00 MiB", "-", "14.50 MiB", "11.3 ns"]);
+        assert_eq!(row("FullDRAM"), ["FullDRAM", "-", "-", "256.00 MiB", "91.3 ns"]);
+        let footer = caches.footer.as_deref().unwrap_or_default();
+        assert!(footer.starts_with("Calibrated: one thread alone, measured 2026-11-03 14:22 on 2MB large pages"), "{footer}");
+        assert!(footer.contains("\nL3 a thread: 14.50 MiB alone, 2.50 MiB with 12 sharing;"), "{footer}");
     }
 
     /// The ticker's golden (crates/tmr-cli's `testdata/console/ticker.txt`), each `## case` and its lines. Read when the test runs, not

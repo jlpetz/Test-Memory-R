@@ -41,8 +41,8 @@ impl<R: Renderer> Reporter<R> {
         let cpu_table = self.formatter.prepare_cpu_info_table(&report.cpu_info);
         self.renderer.render_table(&cpu_table)?;
 
-        // Cache info
-        let cache_table = self.formatter.prepare_cache_info_table(&report.cache_info);
+        // Cache info, and the calibration's sizes beside CPUID's
+        let cache_table = self.formatter.prepare_cache_info_table(&report.cache_info, report.calibration.as_ref());
         self.renderer.render_table(&cache_table)?;
 
         // TSC calibration info

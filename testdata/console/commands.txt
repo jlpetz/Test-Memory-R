@@ -32,6 +32,8 @@ USAGE:
   tmr.exe --calibrate-cache --yes          #   any calibration: --yes saves without asking, --no-save keeps what is
                                           #   stored; with neither it asks, and saves if no answer can come
   tmr.exe --calibrate-all --output x.json  #   --calibrate-cache or -all: also writes the cache tiers it measured to x.json, here
+  tmr.exe --show-calibration               # What the calibrations stored (the cache tiers, the seal's widths), and whether
+                                          #   each is this machine's, which a run takes
   tmr.exe plan=stability                   # The default: the stability tests at the widest width (or width=)
   tmr.exe plan=quick                       # The stability tests once
   tmr.exe plan=widths                      # Every width of the tests that have them, side by side

@@ -396,6 +396,48 @@ pub fn turnaround_step_report() -> crate::frontend::StepReport {
     }
 }
 
+/// A stored cache calibration (TODO 22) of the CLI's 6-core 8600G (`system_info_report` there, 32 KiB of L1 and 1 MiB of L2 a core, 16 MiB
+/// of L3): every tier one thread reaches alone (anchor A), L1 and L2 a thread with its sibling (B), and the L3 a thread reaches with all
+/// 12 CPUs sharing it (C), measured at 2026-11-03 14:22 on 2 MiB pages, as tmr-cfg.json gives it back (no time: it isn't saved).
+pub fn cache_calibration() -> crate::calibration::CalibrationResults {
+    use chrono::TimeZone;
+
+    use crate::calibration::{CacheTier, CalibrationResults, CpuSignature, SharedReach, TierCalibrationResult};
+    const KIB: usize = 1 << 10;
+    let mut calibration = CalibrationResults::new(CpuSignature {
+        vendor: "AuthenticAMD".to_string(),
+        brand: "AMD Ryzen 5 8600G w/ Radeon 760M Graphics".to_string(),
+        l1d_size: 32 * KIB,
+        l2_size: 1024 * KIB,
+        l3_size: 16384 * KIB,
+        ..Default::default()
+    });
+    calibration.timestamp = chrono::Utc.with_ymd_and_hms(2026, 11, 3, 14, 22, 0).unwrap();
+    #[rustfmt::skip]
+    let tiers = [(CacheTier::L1, 32 * KIB, 0.94, 1.03), (CacheTier::L2, 992 * KIB, 3.12, 1.06), (CacheTier::L3, 14_848 * KIB, 11.27, 1.08),
+        (CacheTier::Dram, 65_536 * KIB, 84.6, 1.12), (CacheTier::FullDram, 262_144 * KIB, 91.3, 1.11)];
+    for (tier, optimal_size, median_latency_ns, spread_ratio) in tiers {
+        let result = TierCalibrationResult {
+            tier,
+            optimal_size,
+            median_latency_ns,
+            spread_ratio,
+            probes_attempted: 84,
+            converged: true,
+            fallback_used: false,
+        };
+        calibration.add_tier_result(result);
+    }
+    calibration.shared = Some(SharedReach {
+        l1_smt: Some(16 * KIB),
+        l2_smt: Some(480 * KIB),
+        l3_loaded: Some(2560 * KIB),
+        l3_loaded_ns: 13.4,
+        l3_sharers: 12,
+    });
+    calibration
+}
+
 /// The final summary of two sealed cycles: a test run twice a cycle, a latency step, a step's errors and bits in the second cycle, a final
 /// check's error, the seal's work and a step's, and a WHEA event. Every table it has shows.
 pub fn final_summary_report() -> FinalTestSummaryReport {

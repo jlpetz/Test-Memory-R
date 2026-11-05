@@ -250,6 +250,31 @@ impl CalibrationResults {
             _ => r1 / k,
         })
     }
+
+    /// When it was measured and on which pages, as its reports give it: "2026-11-03 14:22 on 2MB large pages"
+    pub fn when_and_pages(&self) -> String {
+        format!("{} on {} pages", self.timestamp.format("%Y-%m-%d %H:%M"), page_size_name(&self.page_size))
+    }
+
+    /// Anchor B's line (TODO 22), L1 and L2 a thread with its SMT sibling chasing too, each size as `size` gives it; none without B
+    pub fn two_threads_a_core(&self, size: &dyn Fn(usize) -> String) -> Option<String> {
+        let shared = self.shared.as_ref().filter(|shared| shared.l1_smt.is_some() || shared.l2_smt.is_some())?;
+        let named = |bytes: Option<usize>| bytes.map_or("none steady".to_string(), size);
+        Some(format!("Two threads on one core: L1 {}, L2 {} a thread", named(shared.l1_smt), named(shared.l2_smt)))
+    }
+
+    /// The L3 a thread reaches alone and with its group's CPUs sharing it (`l3_reach`), which a run's L3 tests size from, each size as
+    /// `size` gives it; none without an L3, or with no CPUs to share one (anchor C's `l3_sharers`)
+    pub fn l3_a_thread(&self, size: &dyn Fn(usize) -> String) -> Option<String> {
+        let (one, shared) = (self.l3_reach(1)?, self.shared.as_ref().filter(|shared| shared.l3_sharers > 1)?);
+        let all = self.l3_reach(shared.l3_sharers).unwrap_or(one);
+        Some(format!(
+            "L3 a thread: {} alone, {} with {} sharing; a run's L3 tests size from the curve through them",
+            size(one as usize),
+            size(all as usize),
+            shared.l3_sharers
+        ))
+    }
 }
 
 // ============================================================================
@@ -1965,13 +1990,18 @@ impl CalibrationTest {
         }
 
         writeln!(out, "───────────────────────────────────────────────────────────────────────────────")?;
-        writeln!(out, "Total calibration time: {}ms", results.total_time_ms)?;
+        // Its time isn't saved: a stored one's (`--show-calibration`) has when it was measured, and on what pages, in its place
+        if results.total_time_ms > 0 {
+            writeln!(out, "Total calibration time: {}ms", results.total_time_ms)?;
+        } else {
+            writeln!(out, "Measured {}", results.when_and_pages())?;
+        }
         // TODO 22: anchors B and C, and the L3 a group splits, which a run's L3 tests take their share of
+        if let Some(line) = results.two_threads_a_core(&format_size) {
+            writeln!(out, "{line}")?;
+        }
         if let Some(shared) = &results.shared {
             let size = |bytes: Option<usize>| bytes.map_or("none steady".to_string(), format_size);
-            if shared.l1_smt.is_some() || shared.l2_smt.is_some() {
-                writeln!(out, "Two threads on one core: L1 {}, L2 {} a thread", size(shared.l1_smt), size(shared.l2_smt))?;
-            }
             // C ran: A sized it (an L1, an L2 and an L3) and CPUs share an L3, which one CPU alone doesn't
             let c_ran =
                 shared.l3_sharers > 1 && [CacheTier::L1, CacheTier::L2, CacheTier::L3].iter().all(|tier| results.tiers.contains_key(tier));
@@ -1987,17 +2017,8 @@ impl CalibrationTest {
                 None => {}
             }
         }
-        if let (Some(one), Some(shared)) = (results.l3_reach(1), &results.shared)
-            && shared.l3_sharers > 1
-        {
-            let all = results.l3_reach(shared.l3_sharers).unwrap_or(one);
-            writeln!(
-                out,
-                "L3 a thread: {} alone, {} with {} sharing; a run's L3 tests size from the curve through them",
-                format_size(one as usize),
-                format_size(all as usize),
-                shared.l3_sharers
-            )?;
+        if let Some(line) = results.l3_a_thread(&format_size) {
+            writeln!(out, "{line}")?;
         }
 
         // Check if DRAM and FullDRAM have similar latencies

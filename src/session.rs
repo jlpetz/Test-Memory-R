@@ -29,11 +29,11 @@ pub(crate) const CACHE_LATENCY_FILTER: &str = "Lat-L1-*,Lat-L2-*,Lat-L3-*,Lat-DR
 /// The flags that pick a mode's defaults, which `run` takes out before it looks for a one-shot command (`logfile::wanted` too)
 pub(crate) const MODE_FLAGS: [&str; 3] = ["--ram-latency", "--cache-latency", "--quick-test"];
 /// Every flag a session takes, exactly: any other is refused before anything runs (`Stopped::UnknownFlags`); `--help` names each
-pub(crate) const KNOWN_FLAGS: [&str; 25] = [
+pub(crate) const KNOWN_FLAGS: [&str; 26] = [
     "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-curve", "--calibrate-seal", "--calibrate-all",
-    "--output", "--yes", "--no-save", "--create-demo-configs", "--compare-results", "--show-results", "--debug-topology",
-    "--show-topology", "--setup-large-pages", "--remove-large-pages", "--startup-debug", "--disable-pinning", "--no-serials", "--help",
-    "-h", "-?", "--version", "-v",
+    "--show-calibration", "--output", "--yes", "--no-save", "--create-demo-configs", "--compare-results", "--show-results",
+    "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages", "--startup-debug", "--disable-pinning",
+    "--no-serials", "--help", "-h", "-?", "--version", "-v",
 ];
 
 /// How a session ended. An error that stops it is `run`'s `Err`.
@@ -617,7 +617,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     {
         use crate::reporting::system_info_builder::build_system_info_report;
 
-        let report = build_system_info_report(system_info, &simd_caps);
+        // With the cache calibration the run took, this machine's (none under calibrate=off), beside CPUID's sizes
+        let report = build_system_info_report(system_info, &simd_caps, crate::tests::get_calibration_data().as_deref());
         // Every hypervisor CPUID reports, a VM's or the one VBS runs on a desktop, and what made it a VM (TODO 115)
         let hypervisor = (cache_info.is_virtual_machine || cache_info.hypervisor_name.is_some()).then(|| crate::frontend::Hypervisor {
             name: cache_info.hypervisor_name.clone().unwrap_or_else(|| "unidentified".to_string()),

@@ -3,6 +3,7 @@ use std::time::Duration;
 /// Formatting logic for transforming raw data into presentation-ready format
 /// This layer handles all the "how to format" decisions
 use super::models::*;
+use crate::calibration::{CacheTier, CalibrationResults};
 use crate::constants::BYTES_PER_MIB;
 use crate::loaded::LoadedSummary;
 use crate::whea::WheaCounts;
@@ -28,8 +29,8 @@ pub trait ReportFormatter: Send + Sync {
     /// Prepare CPU info table
     fn prepare_cpu_info_table(&self, cpu_info: &CpuInfo) -> TableData;
 
-    /// Prepare cache info table
-    fn prepare_cache_info_table(&self, cache_info: &CacheInfo) -> TableData;
+    /// Prepare cache info table: CPUID's sizes, and with a cache calibration (TODO 22) its sizes and latencies beside them
+    fn prepare_cache_info_table(&self, cache_info: &CacheInfo, calibration: Option<&CalibrationResults>) -> TableData;
 
     /// Prepare TSC calibration info table
     fn prepare_tsc_info_table(&self, tsc_info: &TscCalibrationInfo) -> TableData;
@@ -410,21 +411,69 @@ impl ReportFormatter for DefaultFormatter {
             .add_row(vec!["SIMD Support".to_string(), cpu_info.simd_capabilities.join(", ")])
     }
 
-    fn prepare_cache_info_table(&self, cache_info: &CacheInfo) -> TableData {
-        TableData::new()
+    fn prepare_cache_info_table(&self, cache_info: &CacheInfo, calibration: Option<&CalibrationResults>) -> TableData {
+        // A row's CPUID cells, then with a calibration the size and latency it measured of the row's tier, paired as its own table pairs
+        // them (`CalibrationTest::display_results`: L1 with the L1 a core has, L2 likewise, L3 with the whole L3), or none
+        let row = |cells: [String; 3], tier: Option<CacheTier>| {
+            let mut row = cells.to_vec();
+            if let Some(calibration) = calibration {
+                match tier.and_then(|tier| calibration.tiers.get(&tier)) {
+                    Some(t) => row.extend([self.format_bytes(t.optimal_size as u64), format!("{:.1} ns", t.median_latency_ns)]),
+                    None => row.extend(["-".to_string(), "-".to_string()]),
+                }
+            }
+            row
+        };
+        let none = || "-".to_string();
+        let mut rows = vec![
+            row(
+                ["L1 Data".to_string(), self.format_bytes(cache_info.l1_data_total), self.format_bytes(cache_info.per_core_l1d)],
+                Some(CacheTier::L1),
+            ),
+            row(
+                [
+                    "L1 Instruction".to_string(),
+                    self.format_bytes(cache_info.l1_instruction_total),
+                    self.format_bytes(cache_info.per_core_l1i),
+                ],
+                None,
+            ),
+            row(["L2".to_string(), self.format_bytes(cache_info.l2_total), self.format_bytes(cache_info.per_core_l2)], Some(CacheTier::L2)),
+            row(["L3 (Shared)".to_string(), self.format_bytes(cache_info.l3_total), none()], Some(CacheTier::L3)),
+        ];
+        // The DRAM tiers, which CPUID has no size of
+        let dram =
+            [CacheTier::Dram, CacheTier::FullDram].into_iter().filter(|tier| calibration.is_some_and(|c| c.tiers.contains_key(tier)));
+        rows.extend(dram.map(|tier| row([tier.name().to_string(), none(), none()], Some(tier))));
+        rows.push(row(["Cache Line Size".to_string(), format!("{} bytes", cache_info.cache_line_size), none()], None));
+
+        let mut table = TableData::new()
             .with_title(format!("Cache Architecture ({})", cache_info.detection_method))
             .add_header("Cache Level", ColumnAlignment::Left)
             .add_header("Total Size", ColumnAlignment::Right)
-            .add_header("Per Core", ColumnAlignment::Right)
-            .add_row(vec!["L1 Data".to_string(), self.format_bytes(cache_info.l1_data_total), self.format_bytes(cache_info.per_core_l1d)])
-            .add_row(vec![
-                "L1 Instruction".to_string(),
-                self.format_bytes(cache_info.l1_instruction_total),
-                self.format_bytes(cache_info.per_core_l1i),
-            ])
-            .add_row(vec!["L2".to_string(), self.format_bytes(cache_info.l2_total), self.format_bytes(cache_info.per_core_l2)])
-            .add_row(vec!["L3 (Shared)".to_string(), self.format_bytes(cache_info.l3_total), "-".to_string()])
-            .add_row(vec!["Cache Line Size".to_string(), format!("{} bytes", cache_info.cache_line_size), "-".to_string()])
+            .add_header("Per Core", ColumnAlignment::Right);
+        if calibration.is_some() {
+            table = table.add_header("Calibrated", ColumnAlignment::Right).add_header("Latency", ColumnAlignment::Right);
+        }
+        for row in rows {
+            table = table.add_row(row);
+        }
+        let Some(calibration) = calibration else { return table };
+        // When and how it was measured, then what a thread reaches with others running (TODO 22: anchors B and C), which the L1, L2 and
+        // L3 tests size from
+        let size = |bytes: usize| self.format_bytes(bytes as u64);
+        let lines: Vec<String> = [
+            Some(format!(
+                "Calibrated: one thread alone, measured {} (tmr.exe --show-calibration shows all of it)",
+                calibration.when_and_pages()
+            )),
+            calibration.two_threads_a_core(&size),
+            calibration.l3_a_thread(&size),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        table.with_footer(lines.join("\n"))
     }
 
     fn prepare_tsc_info_table(&self, tsc_info: &TscCalibrationInfo) -> TableData {

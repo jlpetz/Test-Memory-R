@@ -1,8 +1,8 @@
 //! The one-shot commands (TODO 29): `--help`, `--version`, `--create-demo-configs`, `--compare-results`, `--show-results`,
-//! `--debug-topology`, `--show-topology`, `--setup-large-pages`, `--remove-large-pages` and the calibrations. A session that is handed one
-//! returns it (`session::SessionEnd::Command`), past the parameters every session reads first (`core-priority=` types the topology the
-//! topology commands show); its caller runs it here, writing to a writer of its own. The CLI does, on the console; the window doesn't offer
-//! them.
+//! `--debug-topology`, `--show-topology`, `--setup-large-pages`, `--remove-large-pages`, the calibrations and `--show-calibration`, what
+//! they stored. A session that is handed one returns it (`session::SessionEnd::Command`), past the parameters every session reads first
+//! (`core-priority=` types the topology the topology commands show); its caller runs it here, writing to a writer of its own. The CLI does,
+//! on the console; the window doesn't offer them.
 //!
 //! A calibration asks whether to save what it measured over what tmr-cfg.json holds. That question is the caller's to put: it passes
 //! `confirm`, which gets the question and says yes or no, unless the command line has answered it already (`--yes`, `--no-save`:
@@ -38,6 +38,9 @@ pub enum Command {
     /// `--calibrate-cache`, `--calibrate-seal`, `--calibrate-all`: the command line, the exe's name first, then
     /// the command
     Calibrate(Vec<String>),
+    /// `--show-calibration`: the cache and seal calibrations tmr-cfg.json holds, and whether each is this machine's: the command line, the
+    /// exe's name first
+    ShowCalibration(Vec<String>),
     /// `--help`: the exe's name, as the usage lines give it
     Help(String),
     /// `--version`
@@ -62,6 +65,7 @@ impl Command {
                 "--calibrate-cache" | "--calibrate-seal" | "--calibrate-all" | "--calibrate-curve" => {
                     return Some(Command::Calibrate(args.to_vec()));
                 }
+                "--show-calibration" => return Some(Command::ShowCalibration(args.to_vec())),
                 "--help" | "-h" | "/?" | "-?" => return Some(Command::Help(args[0].clone())),
                 "--version" | "-v" => return Some(Command::Version),
                 _ => {}
@@ -105,6 +109,7 @@ pub fn run(
             return run(Change::Remove, args, &mut ThisMachine::new(), out);
         }
         Command::Calibrate(args) => return calibrate(args, out, confirm),
+        Command::ShowCalibration(args) => show_calibration(args, out)?,
         Command::Help(program_name) => help(out, program_name)?,
         Command::Version => {
             writeln!(out, "Test Memory R (TMR) version {}", crate::BUILD.version)?;
@@ -189,6 +194,12 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
         "  {} --calibrate-all --output x.json  #   --calibrate-cache or -all: also writes the cache tiers it measured to x.json, here",
         program_name
     )?;
+    writeln!(
+        out,
+        "  {} --show-calibration               # What the calibrations stored (the cache tiers, the seal's widths), and whether",
+        program_name
+    )?;
+    writeln!(out, "                                          #   each is this machine's, which a run takes")?;
     writeln!(
         out,
         "  {} plan=stability                   # The default: the stability tests at the widest width (or width=)",
@@ -867,6 +878,100 @@ fn calibrate_seal(
     }
 }
 
+/// `--show-calibration`, `args` the command line: the calibrations tmr-cfg.json holds (`write_calibrations`), each checked against this
+/// machine as a run checks it (`AppConfig::is_calibration_valid`, `valid_seal_calibration`). It reads CPUID, the TSC's rate and SMBIOS,
+/// which the check compares, and measures nothing.
+fn show_calibration(args: &[String], out: &mut dyn Write) -> io::Result<()> {
+    // Serials out of what it logs (`--no-serials`), before SMBIOS is first read and logged, as a session has it (TODO 105)
+    crate::smbios::hide_serials(args.iter().any(|a| a == "--no-serials"));
+    let path = crate::app_config::AppConfig::default_path();
+    let config = crate::app_config::AppConfig::load(&path);
+    let (system_info, smbios) = (crate::tests::get_system_info(), crate::smbios::get_smbios());
+    // Each checked only when there is one: the check logs what differs
+    let ours = Ours {
+        cache: config.calibration.is_some() && config.is_calibration_valid(system_info, smbios),
+        seal: config.valid_seal_calibration(system_info, smbios).is_some(),
+    };
+    write_calibrations(&config, &path.display().to_string(), system_info.get_cache_info(), ours, out)
+}
+
+/// Whether each calibration stored is this machine's
+#[derive(Clone, Copy)]
+struct Ours {
+    cache: bool,
+    seal: bool,
+}
+
+/// What `--show-calibration` writes of `config`, the tmr-cfg.json at `path`, on a machine whose caches CPUID gives as `cache_info`: for
+/// each calibration, whether it is this machine's (`ours`) and what a run does with it, then its table as its calibration showed it
+/// (`CalibrationTest::display_results`, which gives a stored one's date and pages in place of its time; `display_seal_calibration`); or,
+/// with none stored, what measures one.
+fn write_calibrations(
+    config: &crate::app_config::AppConfig, path: &str, cache_info: &crate::cache::CacheInfo, ours: Ours, out: &mut dyn Write,
+) -> io::Result<()> {
+    use crate::cache::CacheInfo;
+    writeln!(out, "🔍 TMR's Calibrations, from {path}")?;
+    writeln!(out, "===============================================\n")?;
+    let measure = "a run measures one before its tests (calibrate=auto, the default; about 2 minutes), or tmr.exe --calibrate-cache \
+                   measures it now";
+    match &config.calibration {
+        // A blank line after it, as after a table
+        None => writeln!(out, "Cache calibration: none stored: {measure}\n")?,
+        Some(cal) => {
+            let (line, sizes) = match (ours.cache, cal.shared.is_some()) {
+                (true, true) => ("this machine's: a run's cache-sized extents take their sizes from it".to_string(), cache_info.clone()),
+                (true, false) => (
+                    format!(
+                        "this machine's, but measured by one thread alone, before TMR measured two threads a core and every CPU at \
+                         once, so {measure}"
+                    ),
+                    cache_info.clone(),
+                ),
+                // Beside the sizes CPUID gave where it was measured, which it records
+                (false, _) => (
+                    format!(
+                        "not this machine's: measured on {}, and the CPU, its BIOS, the memory or the TSC's rate differs here, so \
+                         {measure}. CPU Size is that machine's",
+                        cal.cpu_signature.brand.trim()
+                    ),
+                    CacheInfo {
+                        per_core_l1d: cal.cpu_signature.l1d_size,
+                        per_core_l2: cal.cpu_signature.l2_size,
+                        l3_cache: cal.cpu_signature.l3_size,
+                        ..Default::default()
+                    },
+                ),
+            };
+            writeln!(out, "Cache calibration: {line}")?;
+            crate::calibration::CalibrationTest::display_results(cal, &sizes, out)?;
+        }
+    }
+    let rule = "the rule's width (256 bits with AVX2, else 128)";
+    match &config.seal_calibration {
+        None => writeln!(
+            out,
+            "Seal calibration: none stored: seal-width=auto runs {rule} until tmr.exe --calibrate-seal measures one (--calibrate-all \
+             measures both)"
+        )?,
+        Some(seal) => {
+            let at = seal.timestamp.format("%Y-%m-%d %H:%M");
+            // Its buffer as a multiple of this machine's L3 only when it was measured here
+            let (line, l3) = if ours.seal {
+                (format!("this machine's, measured {at}: seal-width=auto runs its {} bits", seal.width_bits), cache_info.clone())
+            } else {
+                let line = format!(
+                    "not this machine's: measured {at} on hardware that has changed since, so seal-width=auto runs {rule} until \
+                     tmr.exe --calibrate-seal measures it again"
+                );
+                (line, CacheInfo::default())
+            };
+            writeln!(out, "Seal calibration: {line}")?;
+            crate::calibration::display_seal_calibration(seal, &l3, out)?;
+        }
+    }
+    Ok(())
+}
+
 /// Compare new calibration results with existing and ask `save` whether to save them.
 /// Returns true if the new results should be saved.
 /// If no existing results, saves automatically (no question), unless `--no-save`.
@@ -1135,6 +1240,46 @@ mod tests {
         crate::test_support::check("commands", &text);
     }
 
+    /// `--show-calibration`'s text, each case after a `## case` line: none stored, and what measures each; this machine's cache
+    /// calibration (`test_support::cache_calibration`), its date and pages in place of its time, and its seal calibration; this machine's
+    /// measured by one thread alone, before anchors B and C, which a run measures again; and another machine's of each, the cache
+    /// calibration beside the sizes CPUID gave there, the seal's buffer not as a multiple of this machine's L3
+    #[test]
+    fn the_stored_calibrations_show_as_their_golden() {
+        use chrono::TimeZone;
+
+        use crate::app_config::AppConfig;
+        const MIB: usize = 1 << 20;
+        let here = crate::cache::CacheInfo { per_core_l1d: 32 << 10, per_core_l2: MIB, l3_cache: 16 * MIB, ..Default::default() };
+        let mut seal = crate::calibration::test_seal_calibration(128);
+        seal.timestamp = chrono::Utc.with_ymd_and_hms(2026, 11, 3, 14, 31, 0).unwrap();
+        let both =
+            AppConfig { calibration: Some(crate::test_support::cache_calibration()), seal_calibration: Some(seal), ..Default::default() };
+        let mut one_thread = AppConfig { seal_calibration: None, ..both.clone() };
+        if let Some(calibration) = &mut one_thread.calibration {
+            calibration.shared = None;
+        }
+        // Measured on a Ryzen 7 5700X: 512 KiB of L2 a core and 32 MiB of L3
+        let mut elsewhere = both.clone();
+        if let Some(calibration) = &mut elsewhere.calibration {
+            let signature = &mut calibration.cpu_signature;
+            (signature.brand, signature.l2_size, signature.l3_size) = ("AMD Ryzen 7 5700X 8-Core Processor".to_string(), MIB / 2, 32 * MIB);
+        }
+        let cases = [
+            ("none stored", AppConfig::default(), Ours { cache: false, seal: false }),
+            ("this machine's", both, Ours { cache: true, seal: true }),
+            ("this machine's by one thread alone, no seal calibration", one_thread, Ours { cache: true, seal: false }),
+            ("another machine's", elsewhere, Ours { cache: false, seal: false }),
+        ];
+        let mut text = String::new();
+        for (case, config, ours) in cases {
+            let mut out = Vec::new();
+            write_calibrations(&config, r"<home>\tmr-cfg.json", &here, ours, &mut out).unwrap();
+            text += &format!("## {case}\n{}", String::from_utf8(out).unwrap());
+        }
+        crate::test_support::check("show_calibration", &text);
+    }
+
     /// TODO 72: `--show-results`' lines before the summary, each case's after a `## case` line: how the run ended, each outcome with each
     /// verdict it has, a last cycle cut short, a file saved mid-run, a file older than the outcome's record (the pre-TODO 72 fixture, which
     /// has no build or run ID either), and keys this build doesn't know; then which run it was, by this build or not.
@@ -1219,6 +1364,9 @@ mod tests {
         assert!(crate::logfile::wanted(&args(&line)), "--remove-large-pages keeps a log file");
         let line = ["tmr.exe", "--calibrate-all", "maxpage=regular"];
         assert!(matches!(parse(&line), Some(Command::Calibrate(given)) if given == args(&line)));
+        let line = ["tmr.exe", "--show-calibration", "--no-serials"];
+        assert!(matches!(parse(&line), Some(Command::ShowCalibration(given)) if given == args(&line)));
+        assert!(!crate::logfile::wanted(&args(&line)), "--show-calibration keeps no log file: it changes nothing");
         let line = ["tmr.exe", "--compare-results", "a.json", "b.json"];
         assert!(matches!(parse(&line), Some(Command::Compare(given)) if given == args(&line)));
         let line = ["tmr.exe", "--show-results", "a.json"];

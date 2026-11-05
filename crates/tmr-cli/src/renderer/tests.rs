@@ -31,6 +31,17 @@ fn system_info() {
     check("report_system_info", &text);
 }
 
+/// The same box with its cache calibration (TODO 22, `tmr::test_support::cache_calibration`): the cache table's Calibrated and Latency
+/// columns beside CPUID's, its L1, L2 and L3 paired as the calibration's own table pairs them, its DRAM and FullDRAM rows, and under it
+/// when and on what pages it was measured, two threads a core, and the L3 a thread reaches alone and with 12 sharing it.
+#[test]
+fn system_info_calibrated() {
+    let report = SystemInfoReport { calibration: Some(test_support::cache_calibration()), ..system_info_report() };
+    let (result, text) = rendered(|reporter| reporter.report_system_info(&report));
+    result.unwrap();
+    check("report_system_info_calibrated", &text);
+}
+
 /// `system_info`'s: a 6-core box with SMT. Setup's event has it too (`render`'s goldens).
 pub(crate) fn system_info_report() -> SystemInfoReport {
     SystemInfoReport {
@@ -66,6 +77,7 @@ pub(crate) fn system_info_report() -> SystemInfoReport {
             std_dev_ghz: 0.000_012,
             converged: true,
         },
+        calibration: None,
     }
 }
 

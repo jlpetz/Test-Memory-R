@@ -156,7 +156,7 @@ Beside `tmr.exe`, in its folder:
 | `configs\` | your configs, and the examples |
 | `results\` | one `TMR_<date>_<time>.json` a run, saved as the run goes, so a crash keeps the cycles saved so far |
 | `logs\` | one `TMR_<date>_<time>.log` a run, the same name as its results file |
-| `tmr-cfg.json` | what TMR's calibrations (`tmr --calibrate-all`) measured, and of which system |
+| `tmr-cfg.json` | what TMR's calibrations (`tmr --calibrate-all`) measured, and of which system; `tmr --show-calibration` shows it, and whether it is this machine's |
 
 The run's last lines say where its results file went. `tmr --compare-results <one> <other>`
 compares two results files, by their names in `results\` or by their paths. It matches the two
