@@ -1174,7 +1174,7 @@ impl CalibrationTest {
         let mut results = results?;
         let base = probe_engine.get_base_ptr();
         // The engine's memory, `bytes` long, which nothing else uses, and which it keeps until after
-        results.shared = self.run_shared(&results, cpus, base, bytes);
+        results.shared = Some(self.run_shared(&results, cpus, base, bytes));
         Ok(results)
     }
 
@@ -1192,16 +1192,20 @@ impl CalibrationTest {
     }
 
     /// Anchors B and C (TODO 22), after A's `results`: B, L1 and L2 a thread with its SMT sibling chasing on the same core (none without
-    /// SMT); C, the L3 a thread reaches with every logical CPU chasing. Each thread chases its own block of the `bytes` at `base`. None
-    /// when neither finds anything.
+    /// SMT); C, the L3 a thread reaches with every logical CPU chasing. Each thread chases its own block of the `bytes` at `base`. Every
+    /// field none when neither finds anything (no SMT pair, one CPU, no L3 edge) or A found no L1, L2 or L3 to size them from: still a
+    /// calibration measured with them, which calibrate=auto loads (a `shared` of none is one from before them).
     ///
     /// The ranges come from A's: B sweeps from an eighth of A's L1 to one and a half of its L2, C from just past the thread's L2 (B's
     /// with SMT, every CPU running) to twice what it could reach. Each takes the edges as A does: the sweep's tipping points, then a
     /// finer sweep below each.
-    fn run_shared(&self, results: &CalibrationResults, cpus: &CalibrationCpus, base: *mut u64, bytes: usize) -> Option<SharedReach> {
+    fn run_shared(&self, results: &CalibrationResults, cpus: &CalibrationCpus, base: *mut u64, bytes: usize) -> SharedReach {
         let tsc = self.tsc_frequency_ghz;
         let size_of = |tier: CacheTier| results.tiers.get(&tier).map(|t| t.optimal_size);
-        let (a_l1, a_l2, a_l3) = (size_of(CacheTier::L1)?, size_of(CacheTier::L2)?, size_of(CacheTier::L3)?);
+        let (Some(a_l1), Some(a_l2), Some(a_l3)) = (size_of(CacheTier::L1), size_of(CacheTier::L2), size_of(CacheTier::L3)) else {
+            log::warn!("Anchors B and C not measured: one thread found no L1, L2 or L3 to size them from");
+            return SharedReach { l1_smt: None, l2_smt: None, l3_loaded: None, l3_loaded_ns: 0.0, l3_sharers: cpus.per_l3 };
+        };
         let (repeats, fine_step, stable_spread) = (3u32, 1.05, 1.5);
 
         // B: the SMT pair
@@ -1243,13 +1247,7 @@ impl CalibrationTest {
             );
         }
 
-        (l1_smt.is_some() || l2_smt.is_some() || l3_loaded.is_some()).then_some(SharedReach {
-            l1_smt,
-            l2_smt,
-            l3_loaded,
-            l3_loaded_ns,
-            l3_sharers: cpus.per_l3,
-        })
+        SharedReach { l1_smt, l2_smt, l3_loaded, l3_loaded_ns, l3_sharers: cpus.per_l3 }
     }
 
     /// The L3 a thread reaches with `cpus` all chasing at once, `sharers` of them in an L3 group (anchor C's measure, TODO 22), each on
@@ -1904,6 +1902,9 @@ impl CalibrationTest {
             if shared.l1_smt.is_some() || shared.l2_smt.is_some() {
                 writeln!(out, "Two threads on one core: L1 {}, L2 {} a thread", size(shared.l1_smt), size(shared.l2_smt))?;
             }
+            // C ran: A sized it (an L1, an L2 and an L3) and CPUs share an L3, which one CPU alone doesn't
+            let c_ran =
+                shared.l3_sharers > 1 && [CacheTier::L1, CacheTier::L2, CacheTier::L3].iter().all(|tier| results.tiers.contains_key(tier));
             match shared.l3_loaded {
                 Some(_) => writeln!(
                     out,
@@ -1912,10 +1913,13 @@ impl CalibrationTest {
                     size(shared.l3_loaded),
                     shared.l3_loaded_ns
                 )?,
-                None => writeln!(out, "Every CPU at once ({} sharing each L3): no L3 edge found", shared.l3_sharers)?,
+                None if c_ran => writeln!(out, "Every CPU at once ({} sharing each L3): no L3 edge found", shared.l3_sharers)?,
+                None => {}
             }
         }
-        if let (Some(one), Some(shared)) = (results.l3_reach(1), &results.shared) {
+        if let (Some(one), Some(shared)) = (results.l3_reach(1), &results.shared)
+            && shared.l3_sharers > 1
+        {
             let all = results.l3_reach(shared.l3_sharers).unwrap_or(one);
             writeln!(
                 out,
@@ -2588,6 +2592,37 @@ mod tests {
         assert_eq!(cal.l3_reach(8), Some(64.0 * MIB), "C past A: no split");
         cal.shared = Some(loaded(None));
         assert_eq!(cal.l3_reach(8), Some(8.0 * MIB), "C found no edge: A alone");
+    }
+
+    /// TODO 22: anchors B and C that found nothing are still a calibration measured with them, which calibrate=auto loads (a `shared`
+    /// of none is one from before them): A with no tier to size them from, and one CPU, with no SMT pair for B and none to share for C,
+    /// each give an empty `SharedReach`; and the table doesn't say C found no edge where it never ran. Neither probes memory.
+    #[test]
+    fn the_shared_anchors_are_kept_when_they_find_nothing() {
+        let tier = |tier, optimal_size| TierCalibrationResult {
+            tier,
+            optimal_size,
+            median_latency_ns: 10.0,
+            spread_ratio: 1.1,
+            probes_attempted: 1,
+            converged: true,
+            fallback_used: false,
+        };
+        let cache_info = crate::tests::get_cache_info();
+        let test = CalibrationTest::with_config(cache_info.clone(), CalibrationConfig::default());
+        let one_cpu = CalibrationCpus { single: 0, node: 0, nodes: 1, pair: None, all: vec![0], per_l3: 1 };
+        let nothing = SharedReach { l1_smt: None, l2_smt: None, l3_loaded: None, l3_loaded_ns: 0.0, l3_sharers: 1 };
+        let mut cal = CalibrationResults::new(CpuSignature::default());
+        assert_eq!(test.run_shared(&cal, &one_cpu, std::ptr::null_mut(), 0), nothing, "A found no tier");
+        for (t, size) in [(CacheTier::L1, 48 << 10), (CacheTier::L2, 1 << 20), (CacheTier::L3, 32 << 20)] {
+            cal.add_tier_result(tier(t, size));
+        }
+        assert_eq!(test.run_shared(&cal, &one_cpu, std::ptr::null_mut(), 0), nothing, "one CPU: neither B nor C");
+        cal.shared = Some(nothing);
+        let mut table = Vec::new();
+        CalibrationTest::display_results(&cal, cache_info, &mut table).unwrap();
+        let table = String::from_utf8(table).unwrap();
+        assert!(!table.contains("Every CPU at once") && !table.contains("sharing;"), "C claimed on one CPU:\n{table}");
     }
 
     /// TODO 22: two threads, each chasing its own 64 KiB block of a heap buffer at once, give a latency and a spread

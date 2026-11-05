@@ -369,8 +369,9 @@ doesn't split evenly there, which a single-thread measure divided by the threads
 about 2 minutes, 15-20 s of it B and C.
 
 `calibrate=auto` (the default) measures one on the run's own memory before its tests, after
-allocation, when there is none of this machine's with B and C stored, and saves it; later runs load
-it. `calibrate=recheck` loads it too, then probes it on the run's memory before the tests, about
+allocation, when none of this machine's is stored or the one stored predates B and C, and saves it;
+later runs load it, also when B or C found nothing (no SMT pair, a single CPU, no L3 edge).
+`calibrate=recheck` loads it too, then probes it on the run's memory before the tests, about
 15 s (TODO 116): the L3 one thread reaches and the one a thread reaches with every CPU running, each
 at its stored size, where it must still read within 1.5x the stored L3 latency, and at 1.5x the
 size, where it must read past 1.25x it. If any probe reads otherwise the L3 has shrunk or grown
