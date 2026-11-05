@@ -124,6 +124,9 @@ impl Sections {
             Run::Calibrated(Err(e)) => self.system.push(Block::Text(format!("Cache calibration: failed ({e}), sizes from CPUID"))),
             Run::Rechecked(Ok(recheck)) => self.system.push(Block::Text(recheck.text().trim_end().to_string())),
             Run::Rechecked(Err(e)) => self.system.push(Block::Text(format!("Cache calibration: the recheck failed ({e}), measured again"))),
+            Run::NoMemoryOnCalibrationNode { node, stored } => {
+                self.system.push(Block::Text(tmr::frontend::no_memory_on_calibration_node(*node, *stored)))
+            }
             _ => {}
         }
     }

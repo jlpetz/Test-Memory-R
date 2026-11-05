@@ -52,6 +52,7 @@ impl Frontend for Recording {
             Run::Allocated(_) => "Allocated".to_string(),
             Run::Calibrated(_) => "Calibrated".to_string(),
             Run::Rechecked(_) => "Rechecked".to_string(),
+            Run::NoMemoryOnCalibrationNode { .. } => "NoMemoryOnCalibrationNode".to_string(),
             Run::SuiteStarted { .. } => "SuiteStarted".to_string(),
             Run::CycleStarted { cycle, .. } => format!("CycleStarted {cycle}"),
             Run::CycleFinished { cycle, .. } => format!("CycleFinished {cycle}"),

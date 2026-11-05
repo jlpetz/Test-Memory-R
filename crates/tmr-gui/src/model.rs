@@ -1090,6 +1090,12 @@ impl Model {
             Run::Rechecked(Err(e)) => {
                 self.position = format!("The calibration's recheck failed ({e}): measuring it again, about 2 minutes")
             }
+            // Neither measured nor rechecked (TODO 22): it ends the calibration, and is in the errors too, as a failed one is
+            Run::NoMemoryOnCalibrationNode { node, stored } => {
+                self.calibrating = false;
+                self.position = tmr::frontend::no_memory_on_calibration_node(node, stored);
+                self.errors.push(self.position.clone());
+            }
             Run::SuiteStarted { progress, .. } => {
                 self.progress = Some(progress);
                 self.position = "Starting the suite".to_string();
@@ -1782,6 +1788,29 @@ mod tests {
         m.apply(Setup::CacheCalibration(Measuring(tmr::frontend::MeasureWhy::NoneStored)).into());
         m.apply(allocated());
         assert_eq!(m.position, "Measuring the cache calibration, about 2 minutes (Log tab)");
+
+        // TODO 22: none of the run's memory on the calibration's node ends the calibration, says so and what the tests size from, in
+        // the errors too
+        let not_on_node = "No cache calibration on the run's memory: none of it is on NUMA node 0, the calibration's, so the stored one is \
+                           kept (--calibrate-cache measures one)";
+        let mut m = model();
+        m.start();
+        m.apply(Setup::CacheCalibration(Rechecking { at: chrono::Utc::now() }).into());
+        m.apply(allocated());
+        m.apply(Run::NoMemoryOnCalibrationNode { node: 0, stored: true }.into());
+        assert!(!m.calibrating());
+        assert_eq!(m.position, not_on_node);
+        assert_eq!(m.errors, [not_on_node]);
+        let mut m = model();
+        m.start();
+        m.apply(Setup::CacheCalibration(Measuring(tmr::frontend::MeasureWhy::NoneStored)).into());
+        m.apply(allocated());
+        m.apply(Run::NoMemoryOnCalibrationNode { node: 2, stored: false }.into());
+        assert!(!m.calibrating());
+        assert_eq!(m.errors, [
+            "No cache calibration on the run's memory: none of it is on NUMA node 2, the calibration's, so the tests size from CPUID \
+             (--calibrate-cache measures one)"
+        ]);
     }
 
     fn model() -> Model {

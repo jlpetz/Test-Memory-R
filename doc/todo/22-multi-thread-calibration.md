@@ -156,7 +156,11 @@ threads, not a group's 32) 1,555. Half a thread's reach (`scale`) is mostly L2 o
 Since 0a8467d the calibration keeps to A's node: B and C take its CPUs alone (as the owner first
 put C: "full node load"), the in-run calibration and the recheck the largest span wholly on it, and
 `--calibrate-cache` asks for its buffer there, strictly for large pages. On one node nothing
-changes.
+changes. The review after it: a span counts as the node's when its thread is, and the calibration
+takes the one with the most from its start on the node, those bytes alone (wholly on it fell to any
+node's span when the node was short of large pages); with no span on the node (`cpus=`) the run
+neither measures nor rechecks, and says so; and the buffer's large pages come from any node before
+4 KiB when the node has none (a 2990WX in NUMA mode, a vNUMA VM).
 
 Left: A's edge test misses a gradual climb. On local memory the step was sharp enough, but a
 fallback to CPUID's L3 is the package's on an SNC part; a cap on the latency the finer sweep may

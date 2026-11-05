@@ -22,6 +22,10 @@ Stage 1: Pre-allocating memory blocks...
 ## allocation between other page sizes
 Stage 1: Pre-allocating memory blocks...
 ⚙️  Page Size Constraints: Regular (4KB) to Huge (1GB)
+## no memory on the calibration's node, one stored
+⚠️ No cache calibration on the run's memory: none of it is on NUMA node 0, the calibration's, so the stored one is kept (--calibrate-cache measures one)
+## no memory on the calibration's node, none stored
+⚠️ No cache calibration on the run's memory: none of it is on NUMA node 1, the calibration's, so the tests size from CPUID (--calibrate-cache measures one)
 ## the suite starts
 🎲 Pattern seed 0x0123456789abcdef (seed= replays it), transfer width 64 bits (SMBIOS), rescan on (rescan=)
 ## the suite starts, its transfer width unknown

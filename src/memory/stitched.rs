@@ -286,6 +286,12 @@ impl ThreadSpan {
         self.runs.iter().filter(|r| r.page != PageSizeLevel::Regular && r.numa_node != self.numa_node).map(|r| r.len).sum()
     }
 
+    /// Bytes from `base` on the thread's own node: its runs up to the first from another node, 4 KiB runs counting as its own, as in
+    /// `remote_bytes`. A calibration on the run's memory measures on these alone (TODO 22).
+    pub fn local_prefix(&self) -> usize {
+        self.runs.iter().take_while(|r| r.page == PageSizeLevel::Regular || r.numa_node == self.numa_node).map(|r| r.len).sum()
+    }
+
     pub fn bytes_at(&self, page: PageSizeLevel) -> usize {
         self.runs.iter().filter(|r| r.page == page).map(|r| r.len).sum()
     }
@@ -1463,6 +1469,18 @@ mod tests {
         ]);
         let remote: Vec<usize> = spans.iter().map(ThreadSpan::remote_bytes).collect();
         assert_eq!(remote, vec![GIB, GIB + 512 * MIB, 0, 0]);
+        // What a calibration may measure on (TODO 22): each span's bytes from its start up to its first remote run
+        let local: Vec<usize> = spans.iter().map(ThreadSpan::local_prefix).collect();
+        assert_eq!(local, vec![GIB, 512 * MIB, 2 * GIB, 2 * GIB]);
+        // 4 KiB runs count as the thread's own, which they only prefer
+        let mut span = spans[1].clone();
+        span.runs = vec![
+            run(0, 512 * MIB, PageSizeLevel::Large, 0),
+            run(512 * MIB, 512 * MIB, PageSizeLevel::Regular, 1),
+            run(GIB, GIB, PageSizeLevel::Huge, 1),
+            run(2 * GIB, GIB, PageSizeLevel::Large, 0),
+        ];
+        assert_eq!(span.local_prefix(), GIB);
     }
 
     /// The user's 2026-10-02 case, small: node 0's 1 GiB pages split 2/2/1/1 and its 2 MiB pages end in a 512 MiB and a 256 MiB piece,

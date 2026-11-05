@@ -1008,16 +1008,14 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     let requests: usize = spans.iter().map(|s| s.commits.len()).sum();
     let refused = spans.iter().flat_map(|s| &s.commits).filter(|c| c.refused).count();
 
-    // The threads whose span is wholly on the calibration's NUMA node, for a calibration or recheck to measure on (TODO 22): its CPUs are
+    // The calibration's NUMA node, and the memory on it a calibration or recheck measures on (`calibration_span`, TODO 22): its CPUs are
     // that node's (`calibration::CalibrationCpus`), as a run's thread uses its own node's memory. The largest span alone picked any
     // thread's, all of them the same size: on the m8i.metal-48xl (SNC3, 2026-11-05) one on another node read the L3 at 57 ns, not 37, and
     // its sweep lost the L3's edge and took 475 MB.
-    let calibration_local: Vec<usize> = if calibrate_first.is_some() {
+    let calibration_on = calibrate_first.map(|first| {
         let node = crate::calibration::CalibrationCpus::detect().node;
-        spans.iter().filter(|span| span.numa_node == Some(node) && span.remote_bytes() == 0).map(|span| span.thread_id).collect()
-    } else {
-        Vec::new()
-    };
+        (first, node, calibration_span(&spans, node))
+    });
 
     // The allocation report (TODO 81). The request record goes with it.
     let report = crate::reporting::converters::create_allocation_report(spans, elapsed, numa_nodes);
@@ -1025,18 +1023,24 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
 
     // The cache calibration on the run's own memory, before anything sizes from it (TODO 22): the plan's extents, the steps'
     // A recheck first, when that is all it asks (TODO 116): a calibration that holds is the run's as it is
-    let measure = match calibrate_first {
-        Some(CalibrateFirst::Recheck) => {
-            let rechecked = recheck_on_allocation(&mut allocated_blocks, &calibration_local, cache_info);
+    let measure_on = match calibration_on {
+        // None of the run's memory on the calibration's node (`cpus=` or `skip-cores=` left its CPUs out): measured on another's, a remote
+        // node's latencies would be saved, or held up against the stored ones
+        Some((_, node, None)) => {
+            fe.event(Run::NoMemoryOnCalibrationNode { node, stored: crate::tests::get_calibration_data().is_some() }.into());
+            None
+        }
+        Some((CalibrateFirst::Recheck, _, Some(on))) => {
+            let rechecked = recheck_on_allocation(&mut allocated_blocks, on, cache_info);
             let held = matches!(&rechecked, Ok(recheck) if recheck.held);
             fe.event(Run::Rechecked(rechecked.map(Box::new)).into());
-            !held
+            (!held).then_some(on)
         }
-        Some(CalibrateFirst::Measure(_)) => true,
-        None => false,
+        Some((CalibrateFirst::Measure(_), _, on)) => on,
+        None => None,
     };
-    if measure {
-        let calibrated = calibrate_on_allocation(&mut allocated_blocks, &calibration_local, cache_info, &page_mix);
+    if let Some(on) = measure_on {
+        let calibrated = calibrate_on_allocation(&mut allocated_blocks, on, cache_info, &page_mix);
         if let Ok(now) = &calibrated {
             crate::tests::set_calibration_data(Some(now.results.clone()));
         }
@@ -4733,30 +4737,27 @@ fn convert_to_latency_level_summary(
     LatencyLevelSummary { total_samples, per_thread_results, consolidated }
 }
 
-/// Every thread's share, from the stitched allocator: one contiguous VA span per thread.
-/// The stored cache calibration rechecked on a run's own memory, before its tests (TODO 116), on its largest span on the calibration's
-/// node (`calibration_span`), as `calibrate_on_allocation` measures one there
+/// The stored cache calibration rechecked on a run's own memory, before its tests (TODO 116), on the memory `on` on the calibration's node
+/// (`calibration_span`), as `calibrate_on_allocation` measures one there
 fn recheck_on_allocation(
-    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, local: &[usize], cache_info: &CacheInfo,
+    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, on: (usize, usize), cache_info: &CacheInfo,
 ) -> Result<crate::frontend::Recheck, String> {
     let stored = crate::tests::get_calibration_data().ok_or("no stored calibration")?;
-    let block = calibration_block(blocks, local)?;
-    let (base, bytes) = (block.buffer.as_mut_ptr() as *mut u64, block.buffer.size());
+    let (base, bytes) = calibration_memory(blocks, on)?;
     let test = crate::calibration::CalibrationTest::with_config(cache_info.clone(), crate::calibration::CalibrationConfig::default());
     // SAFETY: as `calibrate_on_allocation`'s: the run's span, not yet a worker's, and no worker yet to be pinned to the probes' CPUs
     unsafe { test.recheck_on(&stored, base, bytes) }
 }
 
-/// The cache calibration on a run's own memory, before its tests (TODO 22): its largest span on the calibration's node
+/// The cache calibration on a run's own memory, before its tests (TODO 22): the memory `on` on the calibration's node
 /// (`calibration_span`), the workers not yet started and nothing
 /// written there yet, on the CPUs the calibration takes (`calibration::CalibrationCpus`), on the run's pages; saved to tmr-cfg.json as
 /// `--calibrate-cache` saves it, stamped with this machine.
 fn calibrate_on_allocation(
-    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, local: &[usize], cache_info: &CacheInfo, pages: &crate::run_context::PageSizeMix,
+    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, on: (usize, usize), cache_info: &CacheInfo, pages: &crate::run_context::PageSizeMix,
 ) -> Result<crate::frontend::CalibratedNow, String> {
     use crate::memory::allocator::PageSizeLevel;
-    let block = calibration_block(blocks, local)?;
-    let (base, bytes) = (block.buffer.as_mut_ptr() as *mut u64, block.buffer.size());
+    let (base, bytes) = calibration_memory(blocks, on)?;
     // The run's pages: what most of its memory is on
     let page = [
         (pages.huge_1gib_gib, PageSizeLevel::Huge),
@@ -4780,33 +4781,28 @@ fn calibrate_on_allocation(
     Ok(crate::frontend::CalibratedNow { results, table: String::from_utf8_lossy(&table).into_owned(), saved })
 }
 
-/// The block a calibration or recheck measures on (`calibration_span`)
-fn calibration_block<'a>(blocks: &'a mut HashMap<usize, Vec<AllocationBlock>>, local: &[usize]) -> Result<&'a mut AllocationBlock, String> {
-    let sizes: Vec<(usize, usize, usize)> =
-        blocks.iter().flat_map(|(&thread, list)| list.iter().enumerate().map(move |(i, block)| (thread, i, block.buffer.size()))).collect();
-    let (thread, i) = calibration_span(&sizes, local).ok_or("the run has no memory")?;
-    if !local.contains(&thread) {
-        log::warn!(
-            "No span of the run's is wholly on the calibration's NUMA node: it measures on another node's, whose latencies are remote"
-        );
-    }
-    blocks.get_mut(&thread).and_then(|list| list.get_mut(i)).ok_or_else(|| "the run's block is gone".to_string())
+/// The memory a calibration or recheck measures on, `(thread, bytes)` (`calibration_span`): the start of the thread's span, its one block
+/// (`stitched::into_allocation_blocks`), and as many bytes of it
+fn calibration_memory(
+    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, (thread, bytes): (usize, usize),
+) -> Result<(*mut u64, usize), String> {
+    let block = blocks.get_mut(&thread).and_then(|list| list.first_mut()).ok_or("the run's block is gone")?;
+    Ok((block.buffer.as_mut_ptr() as *mut u64, bytes.min(block.buffer.size())))
 }
 
-/// Which of the run's blocks, each `(thread, index, bytes)`, a calibration measures on (TODO 22): the largest of the threads `local`
-/// (those wholly on the calibration's NUMA node), else the largest; a tie to the highest thread, so the pick doesn't hang on a map's
-/// order.
-fn calibration_span(sizes: &[(usize, usize, usize)], local: &[usize]) -> Option<(usize, usize)> {
-    let largest = |only_local: bool| {
-        sizes
-            .iter()
-            .filter(|(thread, ..)| !only_local || local.contains(thread))
-            .max_by_key(|&&(thread, i, bytes)| (bytes, thread, i))
-            .map(|&(thread, i, _)| (thread, i))
-    };
-    largest(true).or_else(|| largest(false))
+/// Which of the run's spans a calibration or recheck measures on, and how much of it, `(thread, bytes)` (TODO 22): of those on `node`, the
+/// calibration's NUMA node, the one with the most bytes on it from its start (`ThreadSpan::local_prefix`), which are all it measures on;
+/// a tie to the highest thread, so the pick doesn't hang on the spans' order. None with no span on the node: another's memory would read a
+/// remote node's latencies. Requiring a span wholly on the node fell to any node's when each on it was short of its large pages.
+fn calibration_span(spans: &[crate::memory::stitched::ThreadSpan], node: u32) -> Option<(usize, usize)> {
+    spans
+        .iter()
+        .filter(|span| span.numa_node == Some(node))
+        .map(|span| (span.thread_id, span.local_prefix()))
+        .max_by_key(|&(thread, bytes)| (bytes, thread))
 }
 
+/// Every thread's share, from the stitched allocator: one contiguous VA span per thread.
 fn allocate_all_blocks_new(
     thread_blocks: &HashMap<usize, Vec<BlockInfo>>, runtime_config: &RuntimeConfig,
 ) -> Result<crate::memory::stitched::StitchedAllocation, String> {
@@ -5316,16 +5312,51 @@ mod tests {
     /// A word no test pattern writes, to find extent words a test never touched
     const UNTOUCHED: u64 = 0x5AF0_0FA5_C3D2_1E87;
 
-    /// TODO 22: a calibration measures on the largest span on its own node, whatever a map's order: of three threads' equal spans, the
-    /// local one; of two local ones, the larger; with none local, the largest of all, a tie to the highest thread
+    /// TODO 22: a calibration measures on the span on its own node with the most bytes on it from its start, and on those alone, whatever
+    /// the spans' order: of equal spans, the highest thread's on the node; a span with a remote tail its bytes up to it, 4 KiB ones
+    /// counting as the node's, where requiring a span wholly on the node fell to another node's; with no span on the node, none
     #[test]
     fn a_calibration_takes_the_largest_span_on_its_node() {
+        use crate::memory::allocator::PageSizeLevel::{self, Huge, Large, Regular};
+        use crate::memory::stitched::{Run, ThreadSpan};
         const GB: usize = 1 << 30;
-        let equal = [(0, 0, 3 * GB), (1, 0, 3 * GB), (2, 0, 3 * GB)];
-        assert_eq!(calibration_span(&equal, &[1]), Some((1, 0)));
-        assert_eq!(calibration_span(&[(0, 0, GB), (1, 0, 3 * GB), (2, 0, 2 * GB)], &[0, 2]), Some((2, 0)));
-        assert_eq!(calibration_span(&equal, &[]), Some((2, 0)));
-        assert_eq!(calibration_span(&[], &[0]), None);
+        // A thread's span on `node`, its runs each (bytes, page, the node they came from) from its start
+        let span = |thread_id: usize, node: u32, runs: &[(usize, PageSizeLevel, u32)]| {
+            let mut offset = 0;
+            let runs: Vec<Run> = runs
+                .iter()
+                .map(|&(len, page, from)| {
+                    offset += len;
+                    Run { offset: offset - len, len, page, numa_node: Some(from) }
+                })
+                .collect();
+            ThreadSpan {
+                thread_id,
+                numa_node: Some(node),
+                base: thread_id * 4 * GB,
+                len: offset,
+                target: offset,
+                runs,
+                commits: Vec::new(),
+            }
+        };
+        let equal: Vec<ThreadSpan> = [0, 1, 1].iter().enumerate().map(|(t, &node)| span(t, node, &[(3 * GB, Huge, node)])).collect();
+        assert_eq!(calibration_span(&equal, 1), Some((2, 3 * GB)));
+        assert_eq!(calibration_span(&equal, 0), Some((0, 3 * GB)));
+        // Node 0 short of its large pages: no span wholly on it, and the most from its start is thread 0's first GB
+        let short = [
+            span(0, 0, &[(GB, Huge, 0), (GB, Huge, 1)]),
+            span(1, 0, &[(GB / 2, Large, 0), (GB / 2, Large, 1), (GB, Huge, 1)]),
+            span(2, 1, &[(2 * GB, Huge, 1)]),
+        ];
+        assert_eq!(calibration_span(&short, 0), Some((0, GB)));
+        // 4 KiB pages count as the node's (they only prefer it)
+        let regular =
+            [span(0, 0, &[(GB, Huge, 0), (GB, Huge, 1)]), span(1, 0, &[(GB / 2, Large, 0), (3 * GB / 2, Regular, 0), (GB, Huge, 1)])];
+        assert_eq!(calibration_span(&regular, 0), Some((1, 2 * GB)));
+        // No span on the node (cpus= left its CPUs out)
+        assert_eq!(calibration_span(&short, 2), None);
+        assert_eq!(calibration_span(&[], 0), None);
     }
 
     /// The built-in suite, set up to run once on a test region (one thread, 64 B lines)

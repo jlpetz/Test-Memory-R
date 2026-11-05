@@ -439,8 +439,8 @@ fn page_size_str(page: PageSizeLevel) -> &'static str {
 }
 
 /// A calibration's own memory: `size` bytes at `page`, else at the next smaller page size where it can't have them, down to 4 KiB; with the
-/// page size it got; on NUMA node `node` where given (strictly for large pages, preferred for 4 KiB). The cache calibration's probes and
-/// the seal's calibration both take theirs from here.
+/// page size it got; on NUMA node `node` where given (strictly for large pages, then from any node where it has none, preferred for 4 KiB).
+/// The cache calibration's probes and the seal's calibration both take theirs from here.
 fn allocate_calibration_buffer(size: usize, page: PageSizeLevel, node: Option<u32>) -> Result<(MemoryBuffer, PageSizeLevel), String> {
     let allocator = MemoryAllocator::new(BackendType::Auto)?;
     allocate_stepping_down(size, page, node, |config| allocator.allocate(config))
@@ -450,37 +450,48 @@ fn allocate_calibration_buffer(size: usize, page: PageSizeLevel, node: Option<u3
 /// a `Prefer` request falls back inside the backend, which doesn't say to what, and a page size can't be read back after the fact. Each
 /// large-page request carries its page's alignment, which is how it gets that page size (without it the kernel silently gives smaller
 /// pages, TODO 87); 4 KiB needs none. A `node` is named strictly (the backend leaves 4 KiB preferred): a smaller page on the node is
-/// worth more to a calibration than a larger one on another, whose latencies are a remote node's.
+/// worth more to a calibration than a larger one on another, whose latencies are a remote node's. With no large page on it, the same
+/// sizes from any node come before 4 KiB: a node with no memory of its own (a Threadripper 2990WX's in NUMA mode, a vNUMA VM's) refuses
+/// every strict request, and its 4 KiB pages come from another node anyway.
 fn allocate_stepping_down<T>(
     size: usize, page: PageSizeLevel, node: Option<u32>,
     mut allocate: impl FnMut(&AllocationConfig) -> Result<T, crate::memory::backend::AllocError>,
 ) -> Result<(T, PageSizeLevel), String> {
+    let large: Vec<PageSizeLevel> = [PageSizeLevel::Huge, PageSizeLevel::Large].into_iter().filter(|&l| l <= page).collect();
+    let mut requests: Vec<(PageSizeLevel, Option<u32>)> = large.iter().map(|&level| (level, node)).collect();
+    if node.is_some() {
+        requests.extend(large.iter().map(|&level| (level, None)));
+    }
+    requests.push((PageSizeLevel::Regular, node));
+    // Where a request's pages come from, where it says: its node, when strict, or any node, when it dropped the one given
+    let place = |level: PageSizeLevel, at: Option<u32>| match (node, at) {
+        (Some(_), None) => " from any NUMA node".to_string(),
+        (_, Some(n)) if level != PageSizeLevel::Regular => format!(" on NUMA node {n}"),
+        _ => String::new(),
+    };
     let mut refused = Vec::new();
-    for level in [PageSizeLevel::Huge, PageSizeLevel::Large, PageSizeLevel::Regular].into_iter().filter(|&l| l <= page) {
+    for (level, at) in requests {
         let config = AllocationConfig {
             size,
-            numa_node: node,
+            numa_node: at,
             page_size: PageSizePreference::Require(level),
             memory_type: MemoryType::WriteBack,
             zero_memory: false,
             alignment: (level != PageSizeLevel::Regular).then(|| level.bytes()),
-            numa_strict: node.is_some(),
+            numa_strict: at.is_some(),
         };
+        let name = page_size_name(page_size_str(level));
+        let pages = format!("{name} pages{}", place(level, at));
         match allocate(&config) {
             Ok(buffer) => {
                 if refused.is_empty() {
-                    log::info!(target: SHOWN_TARGET, "Calibration buffer: {} bytes on {} pages", size, page_size_name(page_size_str(level)));
+                    log::info!(target: SHOWN_TARGET, "Calibration buffer: {} bytes on {name} pages", size);
                 } else {
-                    log::warn!(
-                        "Calibration buffer: {} bytes on {} pages, after {} refused",
-                        size,
-                        page_size_name(page_size_str(level)),
-                        refused.join("; ")
-                    );
+                    log::warn!("Calibration buffer: {} bytes on {pages}, after {} refused", size, refused.join("; "));
                 }
                 return Ok((buffer, level));
             }
-            Err(e) => refused.push(format!("{} pages ({e})", page_size_name(page_size_str(level)))),
+            Err(e) => refused.push(format!("{pages} ({e})")),
         }
     }
     Err(format!("Failed to allocate calibration buffer: {}", refused.join("; ")))
@@ -1086,7 +1097,8 @@ impl CalibrationTest {
         let least = self.get_tier_size(CacheTier::Dram);
         if bytes < least {
             return Err(format!(
-                "a thread's memory, {}, is less than the {} it needs, twice the L3: a larger memory= gives it room; nothing saved",
+                "a thread's memory on its own node, {}, is less than the {} it needs, twice the L3: a larger memory= gives it room; \
+                 nothing saved",
                 format_size(bytes),
                 format_size(least)
             ));
@@ -1811,9 +1823,6 @@ impl CalibrationTest {
         results
     }
 
-    /// Find tipping points where latency jumps significantly
-    /// A true tipping point is where we transition from one stable latency region to another
-    /// We expect 3-4 real transitions: L1→L2, L2→L3, L3→DRAM, (optionally DRAM→HighTLB)
     /// A gradual edge past `after` (the L2's), for anchor A when `find_tipping_points` finds no L3 edge (TODO 22): the first probe reading
     /// at least 1.4x the one three before it (a size 1.52x as big, the sweep stepping 1.15x), the edge at that earlier probe, the last
     /// before the climb; three times `after` or more, as `find_tipping_points` keeps its edges apart. Without it A took CPUID's L3 and the
@@ -1826,6 +1835,9 @@ impl CalibrationTest {
             .map(|i| (sweep[i - 3].size, sweep[i - 3].median_ns, sweep[i].median_ns))
     }
 
+    /// Find tipping points where latency jumps significantly
+    /// A true tipping point is where we transition from one stable latency region to another
+    /// We expect 3-4 real transitions: L1→L2, L2→L3, L3→DRAM, (optionally DRAM→HighTLB)
     fn find_tipping_points(&self, sweep: &[SweepProbe]) -> Vec<(usize, f64, f64)> {
         let mut tipping_points = Vec::new();
 
@@ -2690,12 +2702,34 @@ mod tests {
         assert_eq!((node1.single, node1.node, node1.nodes, node1.pair), (64, 1, 2, Some([64, 65])));
         assert_eq!((node1.all, node1.per_l3), ((64..128).collect::<Vec<_>>(), 64));
 
-        let mut asked = Vec::new();
-        let got = allocate_stepping_down(64 << 20, PageSizeLevel::Large, Some(1), |config| {
-            asked.push((config.numa_node, config.numa_strict));
-            Ok::<(), crate::memory::backend::AllocError>(())
-        });
-        assert_eq!((got.map(|((), level)| level), asked), (Ok(PageSizeLevel::Large), vec![(Some(1), true)]));
+        // Its buffer on the node, strictly; with no large page there (a node with no memory of its own: a Threadripper 2990WX's in NUMA
+        // mode, a vNUMA VM's), the same sizes from any node, then 4 KiB on it. The page size got, and each request's (page, node, strict).
+        use PageSizeLevel::{Huge, Large, Regular};
+        let allocate = |page, granted: fn(PageSizeLevel, Option<u32>) -> bool| {
+            let mut asked = Vec::new();
+            let got = allocate_stepping_down(64 << 20, page, Some(1), |config| {
+                let PageSizePreference::Require(level) = config.page_size else { panic!("not strict: {:?}", config.page_size) };
+                asked.push((level, config.numa_node, config.numa_strict));
+                if granted(level, config.numa_node) { Ok(()) } else { Err(crate::memory::backend::AllocError::other("refused")) }
+            });
+            (got.map(|((), level)| level), asked)
+        };
+        assert_eq!(allocate(Large, |_, _| true), (Ok(Large), vec![(Large, Some(1), true)]));
+        let (on_node, anywhere) = ([(Huge, Some(1), true), (Large, Some(1), true)], [(Huge, None, false), (Large, None, false)]);
+        assert_eq!(allocate(Huge, |level, _| level == Large), (Ok(Large), on_node.to_vec()));
+        assert_eq!(allocate(Huge, |_, node| node.is_none()), (Ok(Huge), [&on_node[..], &anywhere[..1]].concat()));
+        assert_eq!(allocate(Huge, |level, node| level == Large && node.is_none()), (Ok(Large), [on_node, anywhere].concat()));
+        let regular = [(Regular, Some(1), true)];
+        assert_eq!(allocate(Huge, |level, _| level == Regular), (Ok(Regular), [&on_node[..], &anywhere[..], &regular[..]].concat()));
+        assert_eq!(
+            allocate(Large, |level, _| level == Regular),
+            (Ok(Regular), vec![(Large, Some(1), true), (Large, None, false), (Regular, Some(1), true)])
+        );
+        assert_eq!(allocate(Regular, |_, _| true), (Ok(Regular), vec![(Regular, Some(1), true)]));
+        let (refused, _) = allocate(Large, |_, _| false);
+        assert!(refused.unwrap_err().contains(
+            "2MB large pages on NUMA node 1 (refused); 2MB large pages from any NUMA node (refused); 4KB regular pages (refused)"
+        ));
     }
 
     /// TODO 22: a thread's L3 reach with k sharing, from anchors A and C: one thread's 64 MiB and 9 MiB a thread with 8 sharing give the

@@ -61,6 +61,8 @@ fn events_print_as_their_golden() {
         ("allocation between the default page sizes", Run::AllocationStarting { min: PageSizeLevel::Large, max: PageSizeLevel::Huge }),
         ("allocation of one page size", Run::AllocationStarting { min: PageSizeLevel::Regular, max: PageSizeLevel::Regular }),
         ("allocation between other page sizes", Run::AllocationStarting { min: PageSizeLevel::Regular, max: PageSizeLevel::Huge }),
+        ("no memory on the calibration's node, one stored", Run::NoMemoryOnCalibrationNode { node: 0, stored: true }),
+        ("no memory on the calibration's node, none stored", Run::NoMemoryOnCalibrationNode { node: 1, stored: false }),
         ("the suite starts", suite(0x0123_4567_89ab_cdef, Some(64), "SMBIOS")),
         ("the suite starts, its transfer width unknown", suite(7, None, "none")),
         ("a cycle of a limit", Run::CycleStarted { cycle: 2, limit: Some(3) }),

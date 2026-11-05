@@ -311,6 +311,10 @@ pub enum Run {
     /// The stored cache calibration rechecked on the run's memory (`calibrate=recheck`, TODO 116): each probe and whether it holds, or
     /// why it couldn't recheck. When it doesn't hold, `Calibrated` comes next.
     Rechecked(Result<Box<Recheck>, String>),
+    /// None of the run's memory is on `node`, the cache calibration's NUMA node (`cpus=` or `skip-cores=` left its CPUs out), so the run
+    /// neither measures nor rechecks one, which on another node's memory would read a remote node's latencies (TODO 22): its tests size
+    /// from the stored one (`stored`), else from CPUID. `--calibrate-cache` measures one. In place of `Rechecked` and `Calibrated`.
+    NoMemoryOnCalibrationNode { node: u32, stored: bool },
     /// The suite's clock started: where it stands from now on, for a frontend that reads it on its own timer (the GUI; the CLI reads it on
     /// `tick`), the native patterns' seed, and the transfer width they take and where it came from, `None` when it is unknown
     SuiteStarted { progress: Arc<ProgressTracker>, seed: u64, transfer_bits: Option<u32>, transfer_source: String, rescan: bool },
@@ -334,6 +338,15 @@ pub enum Run {
     FinalSummary(Box<FinalTestSummaryReport>),
     /// The results file was saved, at the end of the run: once, after the final save. The saves between cycles are silent.
     ResultsSaved { path: String },
+}
+
+/// What `Run::NoMemoryOnCalibrationNode` says, on the console and in the window
+pub fn no_memory_on_calibration_node(node: u32, stored: bool) -> String {
+    let kept = if stored { "the stored one is kept" } else { "the tests size from CPUID" };
+    format!(
+        "No cache calibration on the run's memory: none of it is on NUMA node {node}, the calibration's, so {kept} (--calibrate-cache \
+         measures one)"
+    )
 }
 
 /// Why a run stops before testing.

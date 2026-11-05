@@ -86,6 +86,9 @@ pub(super) fn text(run: &Run) -> (String, Written) {
         Run::Rechecked(Ok(recheck)) => (recheck.text(), Written::Plain),
         Run::Rechecked(Err(e)) => (line(format!("⚠️ The cache calibration's recheck failed ({e}): measured again")), Written::Plain),
         Run::Calibrated(Err(e)) => (line(format!("⚠️ The cache calibration failed ({e}): the tests size from CPUID")), Written::Plain),
+        Run::NoMemoryOnCalibrationNode { node, stored } => {
+            (line(format!("⚠️ {}", tmr::frontend::no_memory_on_calibration_node(*node, *stored))), Written::Plain)
+        }
         // The CLI reads the suite's progress on the monitor's ticks
         Run::SuiteStarted { progress: _, seed, transfer_bits, transfer_source, rescan } => (
             line(format!(
