@@ -69,6 +69,12 @@ impl Command {
         }
         None
     }
+
+    /// A command `args` names past the first argument, where `parse` doesn't look: the session refuses it rather than run the tests
+    /// (`tmr memory=50% --help`)
+    pub(crate) fn named_later(args: &[String]) -> Option<&str> {
+        args.iter().skip(2).map(String::as_str).find(|arg| Self::parse(&[String::new(), arg.to_string()]).is_some())
+    }
 }
 
 /// Runs `command`, writing what it shows to `out`; a calibration asks `confirm` whether to save what it measured, and `--show-results` has
@@ -644,6 +650,12 @@ impl Save<'_> {
     }
 }
 
+/// Whether calibration `command` checks it can write tmr-cfg.json before it measures: unless it won't save, by `--no-save` (`choice`) or as
+/// the curve check (`--calibrate-curve`), which saves nothing and ran only where the file could be written
+fn checks_the_save(command: &str, choice: SaveChoice) -> bool {
+    command != "--calibrate-curve" && choice != SaveChoice::Keep
+}
+
 /// The calibration commands: `--calibrate-cache` (the cache tiers), `--calibrate-seal` (the seal's width, TODO
 /// 99) and `--calibrate-all` (the cache tiers as `--calibrate-cache` measures them, then the seal's width). Each part measures, shows what
 /// it found and saves it to tmr-cfg.json if `confirm` (or `--yes` / `--no-save`) says to; a failure stops it before any more runs.
@@ -658,14 +670,14 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
             return Ok(RunStatus::NotRun);
         }
     };
+    let command = args[1].as_str();
     // Where it saves (tmr-cfg.json, in TMR's home), checked before it measures, unless it won't save (TODO 104): not found out after
-    if !matches!(save.choice, SaveChoice::Keep)
+    if checks_the_save(command, save.choice)
         && let Err(e) = crate::home::can_save(&crate::app_config::AppConfig::default_path())
     {
         writeln!(out, "❌ {e}")?;
         return Ok(RunStatus::NotRun);
     }
-    let command = args[1].as_str();
     // TODO 22's curve check: the calibration, then the L3 at every thread count between, against its curve; it saves nothing
     if command == "--calibrate-curve" {
         writeln!(out, "🔬 TMR Calibration Curve Check (saves nothing)")?;
@@ -1131,7 +1143,7 @@ mod tests {
     }
 
     /// A command is the first argument: each of its spellings names it, it takes the command line it needs, and anything else (a parameter,
-    /// a run mode like `--ram-latency`, no argument) is none.
+    /// a run mode like `--ram-latency`, no argument) is none. One named later is found, for the session to refuse.
     #[test]
     fn the_first_argument_names_the_command() {
         let parse = |line: &[&str]| Command::parse(&args(line));
@@ -1160,10 +1172,16 @@ mod tests {
         for none in [&["tmr.exe"][..], &["tmr.exe", "memory=50%", "--help"], &["tmr.exe", "--startup-debug"]] {
             assert!(parse(none).is_none(), "{none:?}");
         }
+        assert_eq!(Command::named_later(&args(&["tmr.exe", "memory=50%", "--help"])), Some("--help"));
+        assert_eq!(Command::named_later(&args(&["tmr.exe", "--startup-debug", "--show-topology"])), Some("--show-topology"));
+        assert_eq!(Command::named_later(&args(&["tmr.exe", "memory=50%", "--ram-latency"])), None, "a run mode is no command");
+        assert_eq!(Command::named_later(&args(&["tmr.exe", "memory=50%"])), None);
+        assert_eq!(Command::named_later(&args(&["tmr.exe", "--help"])), None, "the first argument is parse's");
     }
 
     /// A calibration's save: `--yes` saves and `--no-save` keeps, each without asking and saying so after the question; with neither,
-    /// `confirm` answers it. Both together are refused. With nothing stored yet it saves without a question, unless `--no-save`.
+    /// `confirm` answers it. Both together are refused. With nothing stored yet it saves without a question, unless `--no-save`. Where it
+    /// saves is checked first unless it won't save: `--no-save`, or the curve check, which saves nothing.
     #[test]
     fn a_calibrations_save_takes_the_command_lines_answer() {
         let choice = |line: &[&str]| SaveChoice::of(&args(line));
@@ -1171,6 +1189,12 @@ mod tests {
         assert_eq!(choice(&["tmr.exe", "--calibrate-seal", "--yes"]), Ok(SaveChoice::Save));
         assert_eq!(choice(&["tmr.exe", "--calibrate-all", "maxpage=regular", "--no-save"]), Ok(SaveChoice::Keep));
         assert!(choice(&["tmr.exe", "--calibrate-cache", "--yes", "--no-save"]).is_err());
+        // Whether it checks tmr-cfg.json can be written before measuring: not for --no-save, nor for the curve check, which saves nothing
+        assert!(!checks_the_save("--calibrate-curve", SaveChoice::Ask));
+        assert!(!checks_the_save("--calibrate-curve", SaveChoice::Save));
+        assert!(checks_the_save("--calibrate-cache", SaveChoice::Ask));
+        assert!(checks_the_save("--calibrate-seal", SaveChoice::Save));
+        assert!(!checks_the_save("--calibrate-all", SaveChoice::Keep));
 
         for (choice, confirms, answer, shown) in [
             (SaveChoice::Ask, true, true, ""),

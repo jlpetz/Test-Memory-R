@@ -132,16 +132,12 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         }
     }
 
-    // Inject cycles=1 default when test= filter is used (for quick targeted runs)
-    // This only applies if cycles= was not explicitly specified
+    // A test= filter's runs are quick targeted ones: one cycle, unless cycles= or duration= limits the run
     if test_filter_param.is_some() {
-        let has_explicit_cycles = args.iter().any(|a| a.starts_with("cycles="));
-        if !has_explicit_cycles {
-            args.push("cycles=1".to_string());
-        }
+        default_cycles(&mut args, 1);
     }
 
-    // plan= (TODO 25): its cycles when none are given. --quick-test names it below; a run that
+    // plan= (TODO 25): its cycles when neither cycles= nor duration= is given. --quick-test names it below; a run that
     // names no plan, config or filter takes the default when the tests are chosen.
     let mut plan_param: Option<&'static crate::plans::Plan> = None;
     for arg in &args {
@@ -149,28 +145,24 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
             plan_param = Some(crate::plans::find(name)?);
         }
     }
-    if let Some(cycles) = plan_param.and_then(|p| p.cycles)
-        && !args.iter().any(|a| a.starts_with("cycles="))
-    {
-        args.push(format!("cycles={cycles}"));
+    if let Some(cycles) = plan_param.and_then(|p| p.cycles) {
+        default_cycles(&mut args, cycles);
     }
 
     // Validate that all -- flags are recognized before processing
     // This catches typos and deprecated flags early with helpful error messages
     let known_flags = [
         "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-curve", "--calibrate-seal",
-        "--calibrate-all", "--calibration-file", "--output", "--yes", "--no-save", "--create-demo-configs", "--compare-results",
-        "--show-results", "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages", "--startup-debug",
-        "--disable-pinning", "--no-serials", "--help", "-h", "-?", "--version", "-v",
+        "--calibrate-all", "--output", "--yes", "--no-save", "--create-demo-configs", "--compare-results", "--show-results",
+        "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages", "--startup-debug", "--disable-pinning",
+        "--no-serials", "--help", "-h", "-?", "--version", "-v",
     ];
 
     let unknown_flags: Vec<String> = args
         .iter()
         .filter(|arg| arg.starts_with("--") || arg.starts_with("-"))
-        .filter(|arg| {
-            // Check if it matches any known flag (handle --flag=value style)
-            !known_flags.iter().any(|known| arg.starts_with(known) || arg == known)
-        })
+        // Exactly: no flag takes a value (`--flag=value`), and a prefix let a typo through (`--quick-tests` ran the stability plan)
+        .filter(|arg| !known_flags.contains(&arg.as_str()))
         .cloned()
         .collect();
 
@@ -192,7 +184,6 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         let mut ram_latency_defaults = vec![
             ("memory", "10%-from-available"),
             ("cpus", "50%"), // Multi-threaded for realistic DRAM behavior
-            ("cycles", "1"), // Single cycle for quick latency measurement
         ];
 
         for (key, default_value) in ram_latency_defaults.drain(..) {
@@ -201,6 +192,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
                 args.push(format!("{}={}", key, default_value));
             }
         }
+        // Single cycle for quick latency measurement, unless cycles= or duration= limits the run
+        default_cycles(&mut args, 1);
 
         test_filter = Some(RAM_LATENCY_FILTER.to_string());
     }
@@ -215,8 +208,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         // Inject cache-latency defaults: single thread for clean measurements
         let mut cache_latency_defaults = vec![
             ("memory", "10%-from-available"),
-            ("cpus", "1"),   // Single physical core for diagnostic-quality measurements
-            ("cycles", "1"), // Single cycle for quick latency measurement
+            ("cpus", "1"), // Single physical core for diagnostic-quality measurements
         ];
 
         for (key, default_value) in cache_latency_defaults.drain(..) {
@@ -225,6 +217,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
                 args.push(format!("{}={}", key, default_value));
             }
         }
+        // Single cycle for quick latency measurement, unless cycles= or duration= limits the run
+        default_cycles(&mut args, 1);
 
         test_filter = Some(CACHE_LATENCY_FILTER.to_string());
     }
@@ -236,8 +230,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         fe.event(Setup::QuickTest.into());
 
         // Inject quick-test defaults (only if not already specified)
-        let mut quick_defaults =
-            vec![("memory", "60%-from-available"), ("cycles", "1"), ("skip-cores", "1"), ("cpus", "100%"), ("plan", "quick")];
+        let mut quick_defaults = vec![("memory", "60%-from-available"), ("skip-cores", "1"), ("cpus", "100%"), ("plan", "quick")];
         if !args.iter().any(|a| a.starts_with("plan=")) {
             plan_param = crate::plans::find("quick").ok();
         }
@@ -249,6 +242,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
                 args.push(format!("{}={}", key, default_value));
             }
         }
+        default_cycles(&mut args, 1);
 
         // Remove --quick-test flag (it's not a real parameter)
         args.retain(|a| a != "--quick-test");
@@ -257,6 +251,13 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     // Check for special commands
     if let Some(command) = Command::parse(&args) {
         return Ok(SessionEnd::Command(command));
+    }
+    // One named later, where parse doesn't look, is refused, not dropped for a run of the tests (tmr memory=50% --help ran them)
+    if let Some(flag) = Command::named_later(&args) {
+        return Ok(SessionEnd::Stopped(Stopped::Invalid(format!(
+            "❌ {flag} is a command: give it first, as in {} {flag}. Nothing was run.",
+            args[0]
+        ))));
     }
     // TMR's home and its folders, which a run writes its results and log to (TODO 104): one it can't write to stops it here, before it
     // allocates, rather than at the end with no results file
@@ -455,7 +456,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         if !args.iter().any(|a| a.starts_with("errors=")) {
             default_params.push("errors=log (default)".to_string());
         }
-        if !args.iter().any(|a| a.starts_with("cycles=")) {
+        // duration= alone runs unlimited cycles until its clock
+        if !args.iter().any(|a| a.starts_with("cycles=") || a.starts_with("duration=")) {
             default_params.push("cycles=3 (default)".to_string());
         }
     }
@@ -743,6 +745,14 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     Ok(SessionEnd::Ran { status, elapsed: start_time.elapsed(), plan_only })
 }
 
+/// Gives `args` a mode's or a plan's `cycles=N` (`cycles`), unless they already limit the run: by `cycles=`, or by `duration=`, which a
+/// cycle count would cut short (`test=Mem-* duration=3600` ran one cycle)
+fn default_cycles(args: &mut Vec<String>, cycles: u32) {
+    if !args.iter().any(|a| a.starts_with("cycles=") || a.starts_with("duration=")) {
+        args.push(format!("cycles={cycles}"));
+    }
+}
+
 /// Why `args` can't be run, if they give `--yes` or `--no-save` to anything but a calibration (`commands::Command::Calibrate` takes them
 /// first): they answer its save question, which nothing else asks.
 fn calibration_flag_without_calibration(args: &[String]) -> Option<String> {
@@ -805,13 +815,13 @@ fn build_config_from_validated_params(validated: &HashMap<String, params::ParamV
         _ => ErrorMode::Log,
     };
 
-    // Build test suite timing
-    let suite_timing = if params::has_param(validated, "cycles") {
-        let cycles = params::get_u32(validated, "cycles", 3);
-        TestSuiteTiming::cycles_only(cycles)
-    } else if params::has_param(validated, "duration") {
-        let duration = params::get_u32(validated, "duration", 0);
-        TestSuiteTiming::duration_only(duration)
+    // The suite's limits: cycles=, duration= or both, whichever is reached first (the runner checks each between cycles), else 3 cycles
+    let (cycles, duration) = (params::has_param(validated, "cycles"), params::has_param(validated, "duration"));
+    let suite_timing = if cycles || duration {
+        TestSuiteTiming {
+            global_cycles: cycles.then(|| params::get_u32(validated, "cycles", 3)),
+            global_duration_secs: duration.then(|| params::get_u32(validated, "duration", 0)),
+        }
     } else {
         TestSuiteTiming::default()
     };
@@ -940,6 +950,68 @@ mod tests {
             assert!(e.starts_with(flag) && e.contains("--calibrate-all"), "{e}");
         }
         assert!(matches!(Command::parse(&args(&["tmr", "--calibrate-seal", "--yes"])), Some(Command::Calibrate(_))));
+    }
+
+    /// A frontend that shows nothing and answers the large-page question with quit
+    struct Quiet;
+    impl Frontend for Quiet {
+        fn event(&self, _: crate::frontend::Event) {}
+        fn ask_large_pages(&self, _: &LargePageQuestion) -> LargePageAnswer {
+            LargePageAnswer::Quit
+        }
+    }
+
+    /// cycles= and duration= together limit a run to whichever is reached first, as a config's timing does (`cycles=5 duration=600` ran
+    /// 5 cycles, the clock dropped); duration= alone runs unlimited cycles, and neither 3. A mode's or a plan's cycle count (test=,
+    /// plan=quick, --quick-test, --ram-latency, --cache-latency) is added only when neither is given: `test=Mem-* duration=3600` ran one
+    /// cycle.
+    #[test]
+    fn cycles_and_duration_limit_a_run_together() {
+        let args = |line: &[&str]| line.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let timing = |line: &[&str]| {
+            let (_, _, timing, ..) = build_config_from_validated_params(&params::parse_and_validate_args(&args(line)).unwrap(), &Quiet);
+            (timing.global_cycles, timing.global_duration_secs)
+        };
+        assert_eq!(timing(&["cycles=5", "duration=600"]), (Some(5), Some(600)), "both, whichever first");
+        assert_eq!(timing(&["duration=60"]), (None, Some(60)), "the clock alone");
+        assert_eq!(timing(&["cycles=2"]), (Some(2), None), "cycles alone");
+        assert_eq!(timing(&[]), (Some(3), None), "neither");
+
+        let defaulted = |line: &[&str]| {
+            let mut line = args(line);
+            default_cycles(&mut line, 1);
+            line
+        };
+        assert_eq!(defaulted(&["tmr", "test=Mem-*"]), args(&["tmr", "test=Mem-*", "cycles=1"]));
+        assert_eq!(defaulted(&["tmr", "test=Mem-*", "duration=60"]), args(&["tmr", "test=Mem-*", "duration=60"]), "the clock limits it");
+        assert_eq!(defaulted(&["tmr", "cycles=5"]), args(&["tmr", "cycles=5"]));
+    }
+
+    /// A command past the first argument, a misspelled flag and a flag nothing reads each stop the session before anything runs: they were
+    /// dropped and the tests ran (`tmr memory=50% --help` ran the stability plan, as `--quick-tests` did, not the quick one), or, for
+    /// `--calibration-file`, passed and were ignored. Each stops before TMR's home is prepared or anything is allocated.
+    #[test]
+    fn a_misplaced_command_or_an_unknown_flag_runs_nothing() {
+        let session = |line: &[&str]| run(line.iter().map(|s| s.to_string()).collect(), Arc::new(Quiet)).unwrap();
+        // Each a parameter or flag, then the command
+        for (first, command) in [
+            ("cycles=1", "--help"),
+            ("memory=50%", "--setup-large-pages"),
+            ("config=x.cfg", "--version"),
+            ("--startup-debug", "--show-topology"),
+        ] {
+            let refused = |e: &str| e.contains(&format!("{command} is a command: give it first"));
+            assert!(
+                matches!(session(&["tmr", first, command]), SessionEnd::Stopped(Stopped::Invalid(e)) if refused(&e)),
+                "{first} {command}"
+            );
+        }
+        for flag in ["--helpme", "--versions", "--quick-tests"] {
+            assert!(matches!(session(&["tmr", flag]), SessionEnd::Stopped(Stopped::UnknownFlags(f)) if f == [flag]), "{flag}");
+        }
+        let line = ["tmr", "--calibrate-cache", "--calibration-file", "my.json"];
+        assert!(matches!(session(&line), SessionEnd::Stopped(Stopped::UnknownFlags(f)) if f == ["--calibration-file"]));
+        assert!(matches!(session(&["tmr", "--calibrate-cache", "--output", "x.json"]), SessionEnd::Command(Command::Calibrate(_))));
     }
 
     /// The workers' priority is `priority=`'s, else the config's, else High, and the window's is `window-priority=`'s, else the workers'

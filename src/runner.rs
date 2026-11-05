@@ -644,12 +644,10 @@ impl Default for TestSuiteTiming {
 }
 
 impl TestSuiteTiming {
+    /// `cycles` cycles and no time limit: the tests' timing (a session takes its limits from the command line or the config)
+    #[cfg(any(test, feature = "test-support"))]
     pub fn cycles_only(cycles: u32) -> Self {
         Self { global_cycles: Some(cycles), global_duration_secs: None }
-    }
-
-    pub fn duration_only(duration_secs: u32) -> Self {
-        Self { global_cycles: None, global_duration_secs: Some(duration_secs) }
     }
 }
 
