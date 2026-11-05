@@ -321,7 +321,8 @@ fn handle_test_errors(stats: &crate::tests::TestStats, error_mode: ErrorMode, te
             return Err(format!("Test halted due to {} errors + {} seal in {}", stats.error_count, stats.seal_errors, test_name));
         }
         ErrorMode::Log => {
-            log::error!(
+            // Debug only (the owner, 0.1.1): the step report gives the count, and each bad word, reread and rescan has its own error line
+            log::debug!(
                 "[Thread {}] {} errors + {} seal detected in {} (continuing)",
                 stats.thread_id,
                 stats.error_count,

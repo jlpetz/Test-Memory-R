@@ -17,8 +17,6 @@ Runtime: <hms> | Cycle 1/1 (<hms>, 25%) | 0 errors (0 test + 0 seal + 0 WHEA) | 
 [31m[<stamp> ERROR tmr::tests][0m Error found by Bench-Verify-TMR-10 in step 2 (Bench-Verify-TMR-10), cycle 1, thread 0, idx 1000 (address <addr>): expected 0xdeadbeefdeadbd07, got 0xdeadbeefdeafbd07, XOR 0x0000000000020000 (1 bits)
 [31m[<stamp> ERROR tmr::tests][0m Error found by Bench-Verify-TMR-10 in step 2 (Bench-Verify-TMR-10), cycle 1, thread 0, idx 1000: 4 of 4 rereads still wrong; after flushing its line, wrong (0xdeadbeefdeafbd07)
 [31m[<stamp> ERROR tmr::tests][0m Error found by Bench-Verify-TMR-10 in step 2 (Bench-Verify-TMR-10), cycle 1, thread 0 in idx 0..524288: 1 bad words on rescan, their differences ORed 0x0000000000020000; the check's differences, ORed: 0x0000000000020000 (1 bits)
-[31m[<stamp> ERROR tmr::thread_pool][0m [Thread 0] 1 errors + 0 seal detected in Bench-Verify-TMR-10 (continuing)
-[31m[<stamp> ERROR tmr::runner][0m Thread 0 reported 1 memory errors in test 'Bench-Verify-TMR-10' (1 failed checks, 0 not reproduced on rescan)
 📊 Test report - Cycle 1 - Step 2 Bench-Verify-TMR-10: ❌ #s, 1 error (1 test + 0 seal + 0 WHEA), Cycles 🔴 1/1, Time Limit 🟢
    Failing bits: test (bit 17)
    Test: #s, 0.02 GiB @ # MiB/s, 3.15M ops @ # ops/s

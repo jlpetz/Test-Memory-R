@@ -1579,7 +1579,9 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
 
                     if result.total_errors > 0 {
                         success.store(false, Ordering::Relaxed);
-                        log::error!(
+                        // Debug only (the owner, 0.1.1): the step report gives the count, and each rescan line says whether its check
+                        // reproduced
+                        log::debug!(
                             "Thread {} reported {} memory errors in test '{}' ({} failed checks, {} not reproduced on rescan)",
                             result.thread_id,
                             result.total_errors,
