@@ -111,7 +111,7 @@ A window's MiB/s is the loaders' bytes over exactly the timed window. Its ns is 
 
 The design does that:
 1. **Every window is a new instance.** The phase changes, the loaders restart at random offsets and staggered deadlines, and a 200 ms settle keeps the switch and the queues filling outside the timed window.
-2. **ABBA pairs at every level and flat out.** Writes and reads alternate W R R W, so linear drift cancels within a pair: DIMM heating, DDR5's doubled refresh above 85 C, boost decay. Turnaround is the median of the pair differences, shown with [lowest-highest], so a timing change reads as real only when it clears that range.
+2. **ABBA pairs at every level and flat out.** Writes and reads alternate W R R W, so a linear drift (DIMM heating, DDR5's doubled refresh above 85 C, boost decay) lowers a W-first pair's difference by a window's drift and raises an R-first pair's by as much. Turnaround is the mean of the two orders' medians of the pair differences, so the drift cancels between them, shown with [lowest-highest] over every pair, so a timing change reads as real only when it clears that range. (As first written, the median of all the pair differences, which keeps the drift whole when one order has more pairs, 3 of the default 5. Corrected at the build's review, 2026-11-05.)
 3. **Robust figures.** A cell is the median of its window means, so one window hit by a DPC or SMI doesn't move it. P50/P99 of the 1000-read samples go to the JSON for the tail.
 4. **No cache artifact.** One chain cell per 128 B pair over 32 x L3 or more means no L3 hits and no adjacent-line-prefetch hits in any state. Writes and reads then differ only in their DRAM traffic, not in what they evict. The 8 B-slot chain would have about 25% hits at 4 x L3 single-thread, and only the read load would take them away.
 5. **Fixed geometry.** The measurer is always the top-ranked core with no busy sibling; loaders are one a physical core on its node; the chain has a fixed size and seed. All of it is recorded in the header and the JSON, so a comparison can confirm it.
@@ -160,7 +160,7 @@ Units are TMR's one form: MiB/s for bandwidth, x.x ns, and [lowest-highest] for 
 - The step's throughput_mib_s is defined as before (the loaders' bytes over the step's timed time), so it is a mix of the phases. The rows carry the per-phase figures. The run compare and the final summary's per-test MiB/s mean little for these steps until the compare learns the rows, a follow-on after the owner picks the headline.
 
 **The turnaround figure:**
-- turnaround(L) = median over the ABBA pairs at level L of (window mean under NT writes - window mean under reads), at reached MiB/s matched within 3%.
+- turnaround(L) = the mean of two medians over the ABBA pairs at level L of (window mean under NT writes - window mean under reads): of the pairs that ran writes first and of those that ran reads first, so a linear drift cancels (Stability, 2); at reached MiB/s matched within 3%.
 - It is signed: negative means reads queue worse behind reads than behind writes (petz007: -3.7/-11.3 at 25/50%).
 - The headline level, and the statistic, are the owner's to decide after the overclock result. Keeping the raw windows lets either be recomputed for old runs, by summarize() or by hw-pass.
 
@@ -269,7 +269,7 @@ Each state reports the median of its 1 s window means with [lowest-highest], P50
 - **Sits out:** thread 0's SMT siblings, the loaders' siblings and other nodes' threads. They return at once and wait in the worker's recv, so the measurer's core has no busy sibling and other controllers stay idle.
 - Each loader picks its block kernels at the run's width (simd::test_width) once.
 
-**Extent:** ExtentMode::Absolute{max(1 GiB, 32 x CPUID's L3 instance)}, set at registration from cache_info. That is 1 GiB on the 5700X and the 8600G, 3 GiB on an X3D. It is capped at the span; under 16 x L3 the header warns.
+**Extent:** ExtentMode::Absolute{max(1 GiB, 32 x CPUID's L3 instance)}, set at registration from cache_info. That is 1 GiB on the 5700X and the 8600G, 3 GiB on an X3D. It is capped at the span; under 16 x L3 the header warns. A config file's entry takes the registration's extent, chunk and timing too, whatever its default_extent and default timing, and refuses its own extent, chunk, cycles and durations (the build's review: a default_extent of the whole allocation made the chain the whole span, and default cycles of 3 read 'Cycles 1/3' in red).
 - The measurer chains one cell per 128 B line pair (build_cycle_strided, Sattolo, stride 16 words). Each cell comes round once a cycle and the adjacent-line prefetcher never fetches a chain cell. At 1 GiB on 2 MiB pages that is 512 TLB entries; on 1 GiB pages, one.
 - Loaders stream over the same extent of their own span, filled once with an NT pass (setup_done(PatternFill), which also faults 4 KiB pages in).
 - ChunkMode::Whole, TestTiming::cycles_only(1): one schedule pass a step.
@@ -300,6 +300,7 @@ Provisional defaults, to be settled after the overclock result:
 
 **Reported:** The Under load table with a row per level between idle and full. A level row has its writes and reads cells (each with its reached MiB/s) and a Turnaround cell: the median of its ABBA pair differences, with [lowest pair - highest pair].
 - The cell reads 'not matched' when either kind's median reached MiB/s is more than 3% under the target.
+- As built, the Turnaround cell is the mean of the two orders' medians of the pair differences (Stability, 2), its range over every pair.
 - Test: line headline: 'Turnaround +6.0 ns at 8058 MiB/s'. The provisional rule is the highest level both kinds matched; the owner settles it after the overclock result.
 - The header prints the resolved levels and the load-levels= to pin them.
 - JSON: as A, plus the levels and each row's pairs.

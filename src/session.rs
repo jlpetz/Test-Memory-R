@@ -673,14 +673,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         None
     };
 
-    // The loaded latency tests' settings, if given (the parser has checked them)
-    let load_levels_override = params::has_param(&validated_params, "load-levels")
-        .then(|| crate::loaded::Level::parse_list(&params::get_string(&validated_params, "load-levels", "")).ok())
-        .flatten();
-    let load_pairs_override =
-        params::has_param(&validated_params, "load-pairs").then(|| params::get_u32(&validated_params, "load-pairs", 0));
-    let load_window_ms_override =
-        params::has_param(&validated_params, "load-window-ms").then(|| params::get_u32(&validated_params, "load-window-ms", 0));
+    let (load_levels_override, load_pairs_override, load_window_ms_override) = load_overrides(&validated_params);
 
     // Extract pattern-mode override if provided
     let pattern_mode_override = if params::has_param(&validated_params, "pattern-mode") {
@@ -755,6 +748,17 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     );
 
     Ok(SessionEnd::Ran { status, elapsed: start_time.elapsed(), plan_only })
+}
+
+/// The loaded latency tests' settings, each if given (the parser has checked them): `load-levels=`, `load-pairs=`, `load-window-ms=`
+/// (TODO 117)
+fn load_overrides(validated: &HashMap<String, params::ParamValue>) -> (Option<Vec<crate::loaded::Level>>, Option<u32>, Option<u32>) {
+    let levels = params::has_param(validated, "load-levels")
+        .then(|| crate::loaded::Level::parse_list(&params::get_string(validated, "load-levels", "")).ok())
+        .flatten();
+    let pairs = params::has_param(validated, "load-pairs").then(|| params::get_u32(validated, "load-pairs", 0));
+    let window_ms = params::has_param(validated, "load-window-ms").then(|| params::get_u32(validated, "load-window-ms", 0));
+    (levels, pairs, window_ms)
 }
 
 /// Gives `args` a mode's or a plan's `cycles=N` (`cycles`), unless they already limit the run: by `cycles=`, or by `duration=`, which a
@@ -997,6 +1001,22 @@ mod tests {
         assert_eq!(defaulted(&["tmr", "test=Mem-*"]), args(&["tmr", "test=Mem-*", "cycles=1"]));
         assert_eq!(defaulted(&["tmr", "test=Mem-*", "duration=60"]), args(&["tmr", "test=Mem-*", "duration=60"]), "the clock limits it");
         assert_eq!(defaulted(&["tmr", "cycles=5"]), args(&["tmr", "cycles=5"]));
+    }
+
+    /// TODO 117: the command line's load-levels=, load-pairs= and load-window-ms= reach the run's overrides as given, each alone, and
+    /// none of them unless given
+    #[test]
+    fn the_load_settings_reach_the_runs_overrides() {
+        use crate::loaded::Level;
+        let overrides = |line: &[&str]| {
+            let args: Vec<String> = line.iter().map(|s| s.to_string()).collect();
+            load_overrides(&params::parse_and_validate_args(&args).unwrap())
+        };
+        let all = overrides(&["load-levels=4029,60%", "load-pairs=2", "load-window-ms=250"]);
+        assert_eq!(all, (Some(vec![Level::MiBs(4029.0), Level::Percent(60.0)]), Some(2), Some(250)));
+        assert_eq!(overrides(&["load-pairs=20"]), (None, Some(20), None));
+        assert_eq!(overrides(&["load-window-ms=3000"]), (None, None, Some(3000)));
+        assert_eq!(overrides(&["cycles=1"]), (None, None, None));
     }
 
     /// A command past the first argument, a misspelled flag and a flag nothing reads each stop the session before anything runs: they were

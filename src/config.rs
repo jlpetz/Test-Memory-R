@@ -1181,6 +1181,26 @@ impl ModernConfig {
                 _ => {}
             }
         }
+        // A loaded test's extent is its chain's and its schedule sets its length: its registration's, which the run takes whatever the
+        // config's defaults say (`runner::create_test_definitions_from_config`), so its figures don't move with memory= or the threads
+        for (given, field) in [
+            (test.extent.is_some(), "extent"),
+            (test.chunk.is_some(), "chunk"),
+            (test.cycles.is_some(), "cycles"),
+            (test.duration_secs.is_some(), "duration_secs"),
+            (test.min_duration_secs.is_some(), "min_duration_secs"),
+        ] {
+            if given && loaded {
+                return Err(Self::test_error(
+                    i,
+                    test,
+                    format!(
+                        "takes no \"{field}\": its chain is 32 L3s, 1 GiB at least, and its schedule (\"load_pairs\", \"load_window_ms\") \
+                         sets its length"
+                    ),
+                ));
+            }
+        }
         if test.load_levels.is_some() && test.function != crate::loaded::TURNAROUND_NAME {
             return Err(Self::test_error(i, test, format!("only {} reads \"load_levels\"", crate::loaded::TURNAROUND_NAME)));
         }
@@ -2231,7 +2251,8 @@ mod tests {
     }
 
     /// The loaded latency tests' settings load in their ranges (TODO 117): the levels on Lat-Turnaround-DRAM alone, as shares or MiB/s,
-    /// 1 to 8 of them; the pairs (1 to 50) and the window (10 to 60000 ms) on either; any of them refused on another test
+    /// 1 to 8 of them; the pairs (1 to 50) and the window (10 to 60000 ms) on either; any of them refused on another test, and an extent,
+    /// a chunk or a length of an entry's own refused on these two
     #[test]
     fn loaded_latency_entries() {
         use crate::loaded::{LOADED_NAME, Level, TURNAROUND_NAME};
@@ -2261,6 +2282,12 @@ mod tests {
                 "only Lat-Loaded-DRAM and Lat-Turnaround-DRAM read \"load_pairs\"",
             ),
             (TestConfig { load_levels: Some("50%".into()), ..entry("Mem-Sequence") }, "only Lat-Turnaround-DRAM reads"),
+            // Its chain's size and its length are its own
+            (TestConfig { extent: Some(ExtentSpec::full_allocation()), ..entry(LOADED_NAME) }, "takes no \"extent\": its chain is 32 L3s"),
+            (TestConfig { chunk: Some(ChunkSpec::auto()), ..entry(TURNAROUND_NAME) }, "takes no \"chunk\""),
+            (TestConfig { cycles: Some(3), ..entry(LOADED_NAME) }, "takes no \"cycles\""),
+            (TestConfig { duration_secs: Some(60), ..entry(TURNAROUND_NAME) }, "takes no \"duration_secs\""),
+            (TestConfig { min_duration_secs: Some(60), ..entry(LOADED_NAME) }, "its schedule (\"load_pairs\", \"load_window_ms\") sets"),
         ] {
             let function = bad.function.clone();
             let e = load(bad).unwrap_err();

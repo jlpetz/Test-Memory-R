@@ -131,9 +131,10 @@ run them by name: `tmr test=Lat-Loaded-DRAM,Lat-Turnaround-DRAM`.
   read beyond the time they take. There, raising tRDWR moved the turnaround at 50% and 75%, and no
   other test.
 
-Each figure is a median, with the lowest and highest in brackets: a change is real when it clears
-them. A level's share is of each run's own speed, which a faster setting raises, so to compare two
-settings at the same load, give the second run the `load-levels=` the first one's report prints.
+Each figure is a median (a turnaround's taken so that a slow drift, as the memory warms, cancels),
+with the lowest and highest in brackets: a change is real when it clears them. A level's share is
+of each run's own speed, which a faster setting raises, so to compare two settings at the same
+load, give the second run the `load-levels=` the first one's report prints.
 `load-pairs=` and `load-window-ms=` set how many windows they take and how long; `tmr --help`
 explains each. Each thread tests 1 GiB of its memory (more on a CPU with a large L3), and the
 figures compare only between runs on the same page size (large pages, which TMR takes when it

@@ -208,9 +208,12 @@ restarts every loader at a random 4 KiB block, so it is a fresh instance of the 
 - **Lat-Turnaround-DRAM** adds the matched levels: the loaders held to the same MiB/s writing and
   reading, a TSC deadline a 4 KiB block each (staggered, so their blocks interleave; a block more
   than an interval late resets its deadline and counts as fallen behind, so no loader bursts to
-  catch up). A level's turnaround is the median of its pairs' differences, under writes less under
-  reads, signed; it reads `not matched` when either kind's median MiB/s is more than 3% from the
-  level. On daddy-petz tRDWR 8 to 12 moved only the turnaround (+12 ns at 50%, +24 at 75%).
+  catch up). A level's turnaround is from its pairs' differences, under writes less under reads,
+  signed: the mean of the median of the pairs that ran writes first and that of those that ran
+  reads first, so a drift from window to window (the DIMMs warming), which lowers the one order's
+  differences and raises the other's, cancels. It reads `not matched` when either kind's median
+  MiB/s is more than 3% from the level. On daddy-petz tRDWR 8 to 12 moved only the turnaround
+  (+12 ns at 50%, +24 at 75%).
 - **`load_levels`:** comma-separated, each a share of the lower of this step's two flat-out peaks
   (`25%`, more than 0 and at most 100, to the whole MiB/s) or MiB/s pinned (`8058`, 1 to
   1,000,000); 1 to 8 of them. A share is a different load in each setting (an overclock moved
@@ -219,7 +222,10 @@ restarts every loader at a random 4 KiB block, so it is a fresh instance of the 
 - **Defaults:** `load_levels` `25%,50%,75%`; `load_pairs` 3 (Lat-Loaded-DRAM) and 5
   (Lat-Turnaround-DRAM); `load_window_ms` 1000. A step takes about 10 s and 50 s.
 - **Ranges:** `load_pairs` 1 to 50, `load_window_ms` 10 to 60000
-- **JSON config fields:** `"load_levels": "25%,50%,8058"`, `"load_pairs": 20`, `"load_window_ms": 250`
+- **JSON config fields:** `"load_levels": "25%,50%,8058"`, `"load_pairs": 20`, `"load_window_ms": 250`.
+  An entry takes the test's own extent (its chain), chunk and length (its schedule), whatever the
+  config's `default_extent` and default timing say, and refuses an `extent`, `chunk`, `cycles`,
+  `duration_secs` or `min_duration_secs` of its own: the run's cycles repeat the schedule.
 - **Command line:** `load-levels=`, `load-pairs=`, `load-window-ms=`, over a config's or the
   built-in tests' (the levels on Lat-Turnaround-DRAM alone)
 - **Results:** the step's `loaded`: who measured, loaded and sat out, the geometry, the levels as
@@ -354,7 +360,8 @@ All parameters are validated before tests run (in `runner.rs`):
   than the page exchange's refuses both; `exchange_invert` is 0 to 100, on Mem-PageExchange alone
 - `storm_lines` is 1 to 4096 and `storm_increments` 1 to 16777216, on Mem-CoherenceStorm alone
 - `load_pairs` is 1 to 50 and `load_window_ms` 10 to 60000, on the loaded latency tests alone; `load_levels` is 1 to 8 levels,
-  each more than 0% and at most 100% or 1 to 1,000,000 MiB/s, on Lat-Turnaround-DRAM alone (the command line's `load-*=` the same)
+  each more than 0% and at most 100% or 1 to 1,000,000 MiB/s, on Lat-Turnaround-DRAM alone (the command line's `load-*=` the same);
+  either refuses an entry's own `extent`, `chunk`, `cycles`, `duration_secs` and `min_duration_secs`
 - Tests panic with a clear error message if their required parameter is missing from `parameter_context`
 
 ## Sequencing and the seal (TODO 74)

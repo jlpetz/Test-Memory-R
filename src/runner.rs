@@ -4505,8 +4505,18 @@ fn create_test_definitions_from_config(
     let plan = config.plan()?;
     let built_in = create_test_definitions(cache_info);
     let mut tests = Vec::new();
-    for (test_index, test) in plan.tests.into_iter().enumerate() {
+    for (test_index, mut test) in plan.tests.into_iter().enumerate() {
         let test_name = test.function;
+        // A loaded latency test's extent, chunk and length are its registration's, whatever the config's defaults say (TODO 117): its
+        // chain is 32 L3s, 1 GiB at least, and its schedule sets its length, so its figures don't move with memory= or the threads (an
+        // entry's own `ModernConfig::build_test` refuses)
+        if crate::loaded::is_loaded(test_name)
+            && let Some(registered) = built_in.iter().find(|d| d.actual_name == test_name)
+        {
+            test.config.extent_mode = registered.config.extent_mode.clone();
+            test.config.chunk_mode = registered.config.chunk_mode.clone();
+            test.config.timing = registered.config.timing.clone();
+        }
         // Look up function by name: the aliases first, then the built-in suite
         let test_function = crate::tests::get_test_function_by_name(test_name)
             .or_else(|| {
@@ -6075,6 +6085,31 @@ mod tests {
         assert!(names.contains(&"Lat-L1-Copy") && names.contains(&"Spd-L1-Read-Auto"));
     }
 
+    /// TODO 117: a config's loaded latency tests take their registrations' extent (the chain's 32 L3s, 1 GiB at least), chunk and length
+    /// (one schedule a step), whatever the config's defaults say: the whole allocation, 3 cycles and a minute here, which made the chain
+    /// the whole span and the step read "Cycles 1/3" in red
+    #[test]
+    fn a_configs_loaded_tests_keep_their_own_extent_and_length() {
+        let cache_info = crate::tests::get_cache_info();
+        let mut config = crate::config::ModernConfig::create_demo_config();
+        assert_eq!(config.system.memory_strategy.default_extent.mode, "full_allocation");
+        (config.system.timing.default_test_cycles, config.system.timing.default_test_duration_secs) = (Some(3), Some(60));
+        config.test_sequence = crate::loaded::NAMES
+            .iter()
+            .map(|name| crate::config::TestConfig { enabled: true, function: name.to_string(), ..Default::default() })
+            .collect();
+        let (steps, _) = create_test_definitions_from_config(&config, cache_info).unwrap();
+        assert_eq!(steps.iter().map(|d| d.actual_name).collect::<Vec<_>>(), crate::loaded::NAMES);
+        let chain = crate::loaded::extent_bytes(cache_info.l3_cache);
+        for step in &steps {
+            let name = step.actual_name;
+            assert!(matches!(step.config.extent_mode, ExtentMode::Absolute { size_bytes } if size_bytes == chain), "{name}");
+            assert!(matches!(step.config.chunk_mode, ChunkMode::Whole), "{name}");
+            let timing = &step.config.timing;
+            assert_eq!((timing.cycles, timing.duration_secs, timing.min_duration_secs), (Some(1), None, None), "{name}");
+        }
+    }
+
     /// TODO 92: each latency shortcut runs the tests its help text names, no more.
     #[test]
     fn latency_shortcuts_select_the_tests_they_name() {
@@ -6175,6 +6210,48 @@ mod tests {
         apply_load_overrides(&mut defs, None, Some(3), None);
         let turnaround = defs.iter().find(|d| d.actual_name == TURNAROUND_NAME).unwrap();
         assert_eq!(crate::loaded::Params::of(TURNAROUND_NAME, &turnaround.config).levels, crate::loaded::DEFAULT_LEVELS);
+    }
+
+    /// TODO 117: the run's entry point applies the load overrides to the tests it picked: the plan `--startup-debug` prints (on the
+    /// goldens' layout, `GoldenRun`) shows each loaded test's parameter as the command line set it, the levels on Lat-Turnaround-DRAM's
+    /// alone
+    #[test]
+    fn the_run_applies_the_load_overrides_to_its_plan() {
+        use crate::frontend::{Event, LargePageAnswer, LargePageQuestion};
+        use crate::loaded::Level;
+        /// Each step of the plan, its name and its parameter
+        struct Planned(Mutex<Vec<(String, String)>>);
+        impl Frontend for Planned {
+            fn event(&self, event: Event) {
+                if let Event::Run(Run::TestPlan(plan)) = event {
+                    let mut steps = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+                    steps.extend(plan.tests.iter().map(|t| (t.name.clone(), t.parameter.clone())));
+                }
+            }
+            fn ask_large_pages(&self, _: &LargePageQuestion) -> LargePageAnswer {
+                LargePageAnswer::Quit
+            }
+        }
+        static LEVELS: [Level; 2] = [Level::MiBs(4029.0), Level::Percent(60.0)];
+        let overrides = TestRunOverrides {
+            single_test_filter: Some("Lat-Loaded-DRAM,Lat-Turnaround-DRAM,Lat-DRAM-Read"),
+            load_levels_override: Some(&LEVELS),
+            load_pairs_override: Some(2),
+            load_window_ms_override: Some(250),
+            plan_only: true,
+            ..Default::default()
+        };
+        let planned = Arc::new(Planned(Mutex::new(Vec::new())));
+        let fe: Arc<dyn Frontend> = planned.clone();
+        assert_eq!(test_support::GoldenRun::new(overrides).run(&fe), RunStatus::Passed);
+        let mut steps = planned.0.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        steps.sort();
+        let step = |name: &str, parameter: &str| (name.to_string(), parameter.to_string());
+        assert_eq!(steps, [
+            step("Lat-DRAM-Read", "-"),
+            step("Lat-Loaded-DRAM", "Pairs(2),Window(250ms)"),
+            step("Lat-Turnaround-DRAM", "Levels(4029,60%),Pairs(2),Window(250ms)"),
+        ]);
     }
 
     /// Why `subdivisions` is capped at 512: past it, Mem-Stride's shift no longer divides a 4 KiB multiple of a chunk, and the tail of each

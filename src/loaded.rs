@@ -26,9 +26,10 @@
 //! interleave; its debt capped at an interval, so it never bursts to catch up; and each block later than that counted as fallen behind.
 //! The levels come from this step's own flat-out pairs, which run first (`resolve`).
 //!
-//! **The schedule** is ABBA pairs (W R, R W, ...) between two idle windows, so linear drift cancels within a pair. Every raw window is
-//! kept, and `summarize` turns them into rows: a pure function, which can be changed and rerun on results already taken. The design and
-//! its reasons: `doc/todo/117-loaded-latency-design.md`.
+//! **The schedule** is ABBA pairs (W R, R W, ...) between two idle windows: a drift from window to window lowers a W R pair's difference
+//! by a window's drift and raises an R W pair's by as much, so a level's turnaround, the mean of the two orders' medians, cancels it
+//! (`turnaround_ns`). Every raw window is kept, and `summarize` turns them into rows: a pure function, which can be changed and rerun on
+//! results already taken. The design and its reasons: `doc/todo/117-loaded-latency-design.md`.
 
 use std::sync::Barrier;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -58,14 +59,15 @@ pub fn is_loaded(name: &str) -> bool {
 pub const BLOCK: usize = 4096;
 /// The measurer's chain cell: a 128 B line pair, so the adjacent-line prefetcher never brings in another cell
 pub const CELL: usize = 128;
-/// Each window's untimed chase before its timed one, while the loaders' new load settles (no longer than the window)
+/// Each window's untimed chase before its timed one, while the loaders' new load settles, whatever the window's length (`Params::settle`)
 pub const SETTLE: Duration = Duration::from_millis(200);
 /// How near its target a level's reached MiB/s must be, each kind's, for its row to be matched
 pub const MATCH: f64 = 0.03;
 /// A window's length when the config gives none, and the most it may give
 pub const DEFAULT_WINDOW_MS: u32 = 1000;
 pub const MAX_WINDOW_MS: u32 = 60_000;
-/// The fewest a config may give: a shorter window is mostly its settle's tail and a few samples (unit tests set less directly)
+/// The fewest a config or the command line may give: a shorter window holds only a few samples. Unit tests set less directly, and their
+/// windows settle for their own length, so they run fast
 pub const MIN_WINDOW_MS: u32 = 10;
 /// Lat-Loaded-DRAM's ABBA pairs flat out when the config gives none, Lat-Turnaround-DRAM's at each load, and the most either may give
 pub const LOADED_PAIRS: u32 = 3;
@@ -203,7 +205,7 @@ pub struct Schedule {
 
 impl Schedule {
     /// An idle window, `pairs` ABBA pairs flat out, `pairs` at each of `levels` levels, and an idle window: a pair is W R, the next R W,
-    /// and so on, so linear drift cancels over two
+    /// and so on, so a drift between windows moves the two orders' differences opposite ways (`turnaround_ns`)
     pub fn new(pairs: usize, levels: usize, window: Duration, settle: Duration) -> Self {
         let mut windows = vec![Window::IDLE];
         for level in std::iter::once(None).chain((0..levels).map(Some)) {
@@ -377,9 +379,10 @@ impl Params {
         Params { pairs: pairs.clamp(1, MAX_PAIRS) as usize, window: Duration::from_millis(window_ms.into()), levels }
     }
 
-    /// The settle: `SETTLE`, or the window when it is shorter
+    /// The settle: `SETTLE` for every window a config or the command line can give; a unit test's shorter one (under `MIN_WINDOW_MS`, set
+    /// directly) settles for its own length
     pub fn settle(&self) -> Duration {
-        SETTLE.min(self.window)
+        if self.window < Duration::from_millis(MIN_WINDOW_MS.into()) { self.window } else { SETTLE }
     }
 
     /// The schedule a step with `loaders` loaders runs: the idle windows alone with none
@@ -461,7 +464,9 @@ pub struct Cell {
     pub windows: usize,
 }
 
-/// A level's turnaround: the median of its pairs' differences (under writes less under reads), signed, with [lowest-highest].
+/// A level's turnaround from its pairs' differences (under writes less under reads), signed: the mean of the median of those that ran
+/// writes first and that of those that ran reads first (`turnaround_ns`), with [lowest-highest] over every pair, which `pairs` holds in
+/// order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Turnaround {
     pub ns: f64,
@@ -606,18 +611,19 @@ pub fn rows(windows: &[WindowRecord], levels: usize, tails: &dyn Fn(usize) -> Op
         let target_mib_s = windows.iter().filter(|w| w.level == Some(level)).find_map(|w| w.target_mib_s);
         let near = |c: &Option<Cell>, target: f64| c.as_ref().is_some_and(|c| (c.mib_s / target - 1.0).abs() <= MATCH);
         let matched = target_mib_s.map(|t| near(&writes, t) && near(&reads, t));
-        // Each pair's difference, under writes less under reads, in the pairs' order
-        let mut pairs: Vec<(usize, f64)> = Vec::new();
+        // Each pair's difference, under writes less under reads, in the pairs' order, and whether its writes ran first
+        let mut pairs: Vec<(usize, bool, f64)> = Vec::new();
         for w in windows.iter().filter(|w| w.level == Some(level) && w.kind == Kind::Writes) {
             if let Some(r) = windows.iter().find(|r| r.level == Some(level) && r.kind == Kind::Reads && r.pair == w.pair) {
-                pairs.push((w.pair.unwrap_or(0), w.mean_ns - r.mean_ns));
+                pairs.push((w.pair.unwrap_or(0), w.index < r.index, w.mean_ns - r.mean_ns));
             }
         }
-        pairs.sort_by_key(|&(p, _)| p);
-        let pairs: Vec<f64> = pairs.into_iter().map(|(_, d)| d).collect();
+        pairs.sort_by_key(|&(p, _, _)| p);
         let turnaround = (!pairs.is_empty()).then(|| {
+            let ns = turnaround_ns(&pairs.iter().map(|&(_, writes_first, d)| (writes_first, d)).collect::<Vec<_>>());
+            let pairs: Vec<f64> = pairs.into_iter().map(|(_, _, d)| d).collect();
             let (lowest, highest) = range(&pairs);
-            Turnaround { ns: median(&pairs), lowest, highest, pairs }
+            Turnaround { ns, lowest, highest, pairs }
         });
         rows.push(Row { target_mib_s, writes, reads, turnaround, matched, ..row(Load::Level(level)) });
     }
@@ -626,6 +632,20 @@ pub fn rows(windows: &[WindowRecord], levels: usize, tails: &dyn Fn(usize) -> Op
         rows.push(Row { writes, reads, ..row(Load::Full) });
     }
     rows
+}
+
+/// A level's turnaround from its pairs' differences, each `(writes first, under writes less under reads)`: the mean of the median of the
+/// pairs that ran writes first and that of those that ran reads first, or one order's median when it has every pair (one pair, or a stop
+/// after the first). A drift from window to window (the DIMMs warming, the boost decaying) lowers a writes-first pair's difference by a
+/// window's drift and raises a reads-first one's by as much, so it cancels between the two orders; one median over every pair keeps it
+/// whole when one order has more pairs (3 of Lat-Turnaround-DRAM's 5)
+fn turnaround_ns(pairs: &[(bool, f64)]) -> f64 {
+    let order = |writes_first: bool| -> Vec<f64> { pairs.iter().filter(|p| p.0 == writes_first).map(|p| p.1).collect() };
+    match (order(true), order(false)) {
+        (writes_first, reads_first) if reads_first.is_empty() => median(&writes_first),
+        (writes_first, reads_first) if writes_first.is_empty() => median(&reads_first),
+        (writes_first, reads_first) => (median(&writes_first) + median(&reads_first)) / 2.0,
+    }
 }
 
 /// A measurer's part as reported: the threads by role, the geometry, and the rows from its windows (`rows`).
@@ -789,8 +809,8 @@ pub unsafe fn lat_loaded_dram_multi(
 }
 
 /// Lat-Turnaround-DRAM (TODO 117): Lat-Loaded-DRAM's rows, then a read's latency under NT writes and under reads at matched levels (25,
-/// 50 and 75% of the lower flat-out peak by default), each level's turnaround the median of its ABBA pairs' differences. Shared and
-/// called as Lat-Loaded-DRAM is.
+/// 50 and 75% of the lower flat-out peak by default), each level's turnaround from its ABBA pairs' differences (`turnaround_ns`). Shared
+/// and called as Lat-Loaded-DRAM is.
 #[doc = include_str!("test_fn_safety.md")]
 pub unsafe fn lat_turnaround_dram_multi(
     blocks: &[AllocationBlock], thread_id: usize, error_mode: ErrorMode, timing: &TestTiming, config: &TestMemoryConfig,
@@ -1179,8 +1199,10 @@ mod tests {
 
         let idle = Params { pairs: 3, window: second, levels: DEFAULT_LEVELS.to_vec() }.schedule(0);
         assert_eq!(idle.windows, [Window::IDLE; 2]);
-        // The settle is never longer than the window
-        assert_eq!(Params { pairs: 3, window: Duration::from_millis(5), levels: Vec::new() }.settle(), Duration::from_millis(5));
+        // The settle is SETTLE for every window a config can give, and a unit test's shorter one its own length
+        let settle = |ms| Params { pairs: 3, window: Duration::from_millis(ms), levels: Vec::new() }.settle();
+        let ms = Duration::from_millis;
+        assert_eq!([settle(5), settle(9), settle(10), settle(50), settle(60_000)], [ms(5), ms(9), SETTLE, SETTLE, SETTLE]);
     }
 
     /// Each test's settings: Lat-Loaded-DRAM 3 pairs flat out and no levels, whatever the config says of them; Lat-Turnaround-DRAM 5
@@ -1325,9 +1347,10 @@ mod tests {
         }
     }
 
-    /// A cell is the median of its windows' means with their range and the loaders' median MiB/s; a level's turnaround the median of its
-    /// pairs' differences with theirs; a level matches when both kinds reach within 3% of its target; the headline is the turnaround at
-    /// the highest level matched, else the flat-out cells, else the idle one
+    /// A cell is the median of its windows' means with their range and the loaders' median MiB/s; a level's turnaround the mean of its
+    /// two orders' medians of its pairs' differences, with their range, so a drift between windows cancels; a level matches when both
+    /// kinds reach within 3% of its target; the headline is the turnaround at the highest level matched, else the flat-out cells, else
+    /// the idle one
     #[test]
     fn a_summary_takes_medians_ranges_pairs_and_matches() {
         use Kind::{Park, Reads, Writes};
@@ -1387,6 +1410,22 @@ mod tests {
         // A summary goes through the results file and back
         let json = serde_json::to_string(&summary).unwrap();
         assert_eq!(serde_json::from_str::<LoadedSummary>(&json).unwrap(), summary);
+
+        // Every window half a nanosecond later than the last, under writes 6 ns over under reads: a writes-first pair's difference is
+        // 5.5 and a reads-first one's 6.5, three of the one to two of the other, and the turnaround the 6 (a median of all five, 5.5)
+        let schedule = Schedule::new(5, 1, Duration::from_secs(1), SETTLE);
+        let drifting: Vec<WindowRecord> = schedule
+            .windows
+            .iter()
+            .enumerate()
+            .map(|(i, w)| window(i, w.kind, w.level, w.pair, [100.0, 120.0, 114.0][w.kind as usize] + 0.5 * i as f64, 4000.0))
+            .collect();
+        let drifted = rows(&drifting, 1, &|_| None);
+        assert_eq!(drifted.iter().map(|r| r.load).collect::<Vec<_>>(), [Load::Idle, Load::Level(0), Load::Full]);
+        let t = drifted[1].turnaround.as_ref().unwrap();
+        assert_eq!((t.ns, t.lowest, t.highest, t.pairs.as_slice()), (6.0, 5.5, 6.5, [5.5, 6.5, 5.5, 6.5, 5.5].as_slice()));
+        // One pair, or one order alone: its median
+        assert_eq!((turnaround_ns(&[(true, 5.5)]), turnaround_ns(&[(false, 6.5), (false, 7.5)])), (5.5, 7.0));
     }
 
     const STEP_CORES: [usize; 4] = [0, 0, 1, 2];
