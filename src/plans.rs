@@ -38,13 +38,15 @@ const WIDTHS: &[&str] = &[
     "Mem-MirrorV2-Auto",
 ];
 
-/// Unloaded latency (one dependent access at a time, the figure other tools report), bandwidth, and the write that skips the cache.
+/// Unloaded latency (one dependent access at a time, the figure other tools report), then a read's latency while the other cores keep the
+/// memory busy and its write turnaround (TODO 117, about a minute together), bandwidth, and the write that skips the cache.
 const PERF: &[&str] = &[
     "Lat-L1-Read", "Lat-L1-Write", "Lat-L1-Copy", "Lat-L2-Read", "Lat-L2-Write", "Lat-L2-Copy", "Lat-L3-Read", "Lat-L3-Write",
     "Lat-L3-Copy", "Lat-DRAM-Read", "Lat-DRAM-Write", "Lat-DRAM-Copy", "Lat-DRAMFull-Read", "Lat-DRAMFull-Write", "Lat-DRAMFull-Copy",
-    "Spd-L1-Read-Auto", "Spd-L1-Write-Auto", "Spd-L1-Copy-Auto", "Spd-L2-Read-Auto", "Spd-L2-Write-Auto", "Spd-L2-Copy-Auto",
-    "Spd-L3-Read-Auto", "Spd-L3-Write-Auto", "Spd-L3-Copy-Auto", "Spd-DRAMSmall-Read-Auto", "Spd-DRAMSmall-Write-Auto",
-    "Spd-DRAMSmall-Copy-Auto", "Spd-DRAMFull-Read-Auto", "Spd-DRAMFull-Write-Auto", "Spd-DRAMFull-Copy-Auto", "Lat-NTW-DRAM-Write-Auto",
+    "Lat-Loaded-DRAM", "Lat-Turnaround-DRAM", "Spd-L1-Read-Auto", "Spd-L1-Write-Auto", "Spd-L1-Copy-Auto", "Spd-L2-Read-Auto",
+    "Spd-L2-Write-Auto", "Spd-L2-Copy-Auto", "Spd-L3-Read-Auto", "Spd-L3-Write-Auto", "Spd-L3-Copy-Auto", "Spd-DRAMSmall-Read-Auto",
+    "Spd-DRAMSmall-Write-Auto", "Spd-DRAMSmall-Copy-Auto", "Spd-DRAMFull-Read-Auto", "Spd-DRAMFull-Write-Auto", "Spd-DRAMFull-Copy-Auto",
+    "Lat-NTW-DRAM-Write-Auto",
 ];
 
 pub const PLANS: &[Plan] = &[

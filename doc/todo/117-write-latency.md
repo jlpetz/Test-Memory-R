@@ -105,5 +105,6 @@ A design workflow (three designs, a judge, 2026-11-05) gave two tests on one fun
 (write/read pairs at matched levels, ABBA order, each window a fresh instance of the load). One
 thread measures (thread 0, the top-ranked core), one loader a physical core on its node, the rest
 sit out; roles chosen once. Its plan: `117-loaded-latency-design.md`. Built on 2026-11-05 (b4ad1ad,
-264b1e1, fd055aa, then the review's fixes), both run by name and are in no plan yet; next, their
-host runs (the design's step 8), then the plan, default and headline decisions with the owner.
+264b1e1, fd055aa, then the review's fixes). Both are in plan perf since 0.1.1 (2026-11-05, after
+three runs each on petz007, daddy-petz and m8i repeated), and run by name; next, the default and
+headline decisions with the owner.

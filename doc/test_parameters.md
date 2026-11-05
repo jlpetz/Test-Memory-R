@@ -213,7 +213,8 @@ restarts every loader at a random 4 KiB block, so it is a fresh instance of the 
   reads first, so a drift from window to window (the DIMMs warming), which lowers the one order's
   differences and raises the other's, cancels. It reads `not matched` when either kind's median
   MiB/s is more than 3% from the level. On daddy-petz tRDWR 8 to 12 moved only the turnaround
-  (+12 ns at 50%, +24 at 75%).
+  (+12 ns at 50%, +24 at 75%). It is negative where reads cost a read more than writes do
+  (petz007, an 8600G: -18 ns at 75%), which the table's footer says.
 - **`load_levels`:** comma-separated, each a share of the lower of this step's two flat-out peaks
   (`25%`, more than 0 and at most 100, to the whole MiB/s) or MiB/s pinned (`8058`, 1 to
   1,000,000); 1 to 8 of them. A share is a different load in each setting (an overclock moved
@@ -229,8 +230,8 @@ restarts every loader at a random 4 KiB block, so it is a fresh instance of the 
 - **Command line:** `load-levels=`, `load-pairs=`, `load-window-ms=`, over a config's or the
   built-in tests' (the levels on Lat-Turnaround-DRAM alone)
 - **Results:** the step's `loaded`: who measured, loaded and sat out, the geometry, the levels as
-  given and resolved, a row a load and every raw window; no `latency_*`. In no plan yet:
-  `plan=all` or `test=` runs them.
+  given and resolved, a row a load and every raw window; no `latency_*`.
+- **Plans:** `perf`, after the unloaded latency tests, and `all`; or `test=` runs them.
 
 ## SimpleTest patterns (pattern spec 2)
 

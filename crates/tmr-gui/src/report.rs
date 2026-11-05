@@ -279,6 +279,19 @@ mod tests {
         assert_eq!(rows.rows.iter().map(|row| row[0].as_str()).collect::<Vec<_>>(), ["idle", "full"]);
         let Some(Block::Table(threads)) = report.blocks.first() else { panic!("{:?}", report.blocks) };
         assert_eq!(threads.rows.len(), 8, "the 7 loaders and their average");
+        assert_eq!(rows.footer, None, "no turnaround, so no note of its sign");
+    }
+
+    /// Lat-Turnaround-DRAM's table has the note of the turnaround's sign under it, the engine's footer, as the console's (the events golden)
+    #[test]
+    fn a_turnaround_steps_table_says_which_way_its_turnaround_reads() {
+        let report = Report::of_step(&tmr::test_support::turnaround_step_report());
+        let Some(Block::Table(rows)) = report.blocks.last() else { panic!("{:?}", report.blocks) };
+        assert_eq!(rows.headers.last().map(|h| h.text.as_str()), Some("Turnaround"));
+        assert_eq!(
+            rows.footer.as_deref(),
+            Some("Turnaround: under NT writes less under reads, at the same MiB/s; negative when reads cost a read more than writes did")
+        );
     }
 
     #[test]

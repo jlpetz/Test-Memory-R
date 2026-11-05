@@ -53,7 +53,7 @@ I took design 3 as the base and grafted in parts of designs 2 and 1. I also adde
 - Design 2's span_facts plumbing, per-window clock probe, block-random pattern, loaders=other-l3 and retarget rule. Each is deferred as a knob for later, if the data asks for it.
 
 **The owner's point 3 ("wait for the overclock result"):**
-- What it decides stays open: whether B ships beyond plan=all and in which plan, B's default levels, its headline row and its statistic, and which write measure TODO 117 keeps.
+- What it decides stays open: B's default levels, its headline row and its statistic, and which write measure TODO 117 keeps. Where B ships is settled (2026-11-05, 0.1.1): A and B both in plan perf, after the unloaded latency tests.
 - The build order puts first what no result changes: the roles, the measurer, flat-out loaders, raw windows and A's report. B's pacing and levels are the first step that decision gates.
 - What the captures show so far:
   - A moves a lot: idle 102.8 to 65.3 ns, flat-out writes 451.5 to 214.0 ns, flat-out reads 264.5 to about 151-157 ns.
@@ -326,4 +326,4 @@ Then cargo fmt and python tools/ci_local.py --quick; commit.
 (c) A single-timing A/B at fixed MT/s and FCLK, the attribution test: one BIOS value moved (tWRRD 4 to 1 or 8, or tRDWR 8 to 12, or tWTR_L 8 to 16), with load-levels= pinned from run (a). Does B clear its pair range? Does flat-out-under-writes move, or only follow FCLK?
 (d) Sanity: the flat-out loaders' MiB/s against Spd-DRAMFull-Write-Auto and -Read-Auto on the same host; and cputype=threads once, which must give the same loader set and figures.
 (e) petz007 once (negative turnaround, sign handling) and desktop-v6v7goc once (hybrid loaders falling behind).
-10. 9. With the owner, from that data: B's default levels and headline row; the statistic in summarize() (median or mean of pairs); whether B ships beyond plan=all; Lat-Loaded-DRAM into plan perf once it repeats on more than one host; whether the run compare learns the loaded rows. Then close or narrow TODO 117 in TODO_ARCHIVE.md.
+10. 9. With the owner, from that data: B's default levels and headline row; the statistic in summarize() (median or mean of pairs); whether B ships beyond plan=all and Lat-Loaded-DRAM into plan perf once it repeats on more than one host (done 2026-11-05, 0.1.1: both in perf, after three runs each on petz007, daddy-petz and m8i repeated); whether the run compare learns the loaded rows. Then close or narrow TODO 117 in TODO_ARCHIVE.md.

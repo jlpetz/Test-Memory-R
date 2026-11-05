@@ -1746,6 +1746,13 @@ impl ReportFormatter for DefaultFormatter {
             }
             table = table.add_row(cells);
         }
+        // The turnaround's sign, which reads the wrong way round on a CPU whose reads cost a read more than its writes (petz007, an 8600G:
+        // -18 ns at 75%)
+        if levels {
+            table = table.with_footer(
+                "Turnaround: under NT writes less under reads, at the same MiB/s; negative when reads cost a read more than writes did",
+            );
+        }
         table
     }
 }

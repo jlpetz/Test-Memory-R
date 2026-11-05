@@ -119,8 +119,8 @@ the exit code: 0 passed, 1 failed or found errors, 2 stopped before testing, 3 i
 ## Latency under load
 
 Two tests measure what a memory setting does to a read's latency while the other cores keep the
-memory busy, which the other latency tests, measured idle, don't see. They are in no plan yet, so
-run them by name: `tmr test=Lat-Loaded-DRAM,Lat-Turnaround-DRAM`.
+memory busy, which the other latency tests, measured idle, don't see. `plan=perf` runs them after
+those; on their own, run them by name: `tmr test=Lat-Loaded-DRAM,Lat-Turnaround-DRAM`.
 
 - **Lat-Loaded-DRAM** (about 10 s a cycle) times a read idle, while every other core writes to
   memory as fast as it can, and while they read as fast as they can. On a Ryzen 7 5700X, raising
@@ -138,7 +138,8 @@ load, give the second run the `load-levels=` the first one's report prints.
 `load-pairs=` and `load-window-ms=` set how many windows they take and how long; `tmr --help`
 explains each. Each thread tests 1 GiB of its memory (more on a CPU with a large L3), and the
 figures compare only between runs on the same page size (large pages, which TMR takes when it
-can).
+can). They also compare only at the same `cpus=` and `skip-cores=`, as any bandwidth figure does:
+those set how many cores load, which the report shows.
 
 ## TM5 configs
 
