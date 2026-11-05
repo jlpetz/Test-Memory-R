@@ -286,10 +286,15 @@ impl ThreadSpan {
         self.runs.iter().filter(|r| r.page != PageSizeLevel::Regular && r.numa_node != self.numa_node).map(|r| r.len).sum()
     }
 
-    /// Bytes from `base` on the thread's own node: its runs up to the first from another node, 4 KiB runs counting as its own, as in
+    /// Its runs from `base` on the thread's own node: up to the first from another node, 4 KiB runs counting as its own, as in
     /// `remote_bytes`. A calibration on the run's memory measures on these alone (TODO 22).
+    pub fn local_runs(&self) -> impl Iterator<Item = &Run> {
+        self.runs.iter().take_while(|r| r.page == PageSizeLevel::Regular || r.numa_node == self.numa_node)
+    }
+
+    /// Bytes of `local_runs`
     pub fn local_prefix(&self) -> usize {
-        self.runs.iter().take_while(|r| r.page == PageSizeLevel::Regular || r.numa_node == self.numa_node).map(|r| r.len).sum()
+        self.local_runs().map(|r| r.len).sum()
     }
 
     pub fn bytes_at(&self, page: PageSizeLevel) -> usize {

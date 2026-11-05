@@ -1024,8 +1024,8 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     // The cache calibration on the run's own memory, before anything sizes from it (TODO 22): the plan's extents, the steps'
     // A recheck first, when that is all it asks (TODO 116): a calibration that holds is the run's as it is
     let measure_on = match calibration_on {
-        // None of the run's memory on the calibration's node (`cpus=` or `skip-cores=` left its CPUs out): measured on another's, a remote
-        // node's latencies would be saved, or held up against the stored ones
+        // None of the run's memory on the calibration's node (`cpus=` or `skip-cores=` left its CPUs out, or it has no memory of its own):
+        // measured on another's, a remote node's latencies would be saved, or held up against the stored ones
         Some((_, node, None)) => {
             fe.event(Run::NoMemoryOnCalibrationNode { node, stored: crate::tests::get_calibration_data().is_some() }.into());
             None
@@ -1040,7 +1040,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         None => None,
     };
     if let Some(on) = measure_on {
-        let calibrated = calibrate_on_allocation(&mut allocated_blocks, on, cache_info, &page_mix);
+        let calibrated = calibrate_on_allocation(&mut allocated_blocks, on, cache_info);
         if let Ok(now) = &calibrated {
             crate::tests::set_calibration_data(Some(now.results.clone()));
         }
@@ -4740,7 +4740,7 @@ fn convert_to_latency_level_summary(
 /// The stored cache calibration rechecked on a run's own memory, before its tests (TODO 116), on the memory `on` on the calibration's node
 /// (`calibration_span`), as `calibrate_on_allocation` measures one there
 fn recheck_on_allocation(
-    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, on: (usize, usize), cache_info: &CacheInfo,
+    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, on: CalibrationOn, cache_info: &CacheInfo,
 ) -> Result<crate::frontend::Recheck, String> {
     let stored = crate::tests::get_calibration_data().ok_or("no stored calibration")?;
     let (base, bytes) = calibration_memory(blocks, on)?;
@@ -4751,22 +4751,13 @@ fn recheck_on_allocation(
 
 /// The cache calibration on a run's own memory, before its tests (TODO 22): the memory `on` on the calibration's node
 /// (`calibration_span`), the workers not yet started and nothing
-/// written there yet, on the CPUs the calibration takes (`calibration::CalibrationCpus`), on the run's pages; saved to tmr-cfg.json as
-/// `--calibrate-cache` saves it, stamped with this machine.
+/// written there yet, on the CPUs the calibration takes (`calibration::CalibrationCpus`), labelled with the pages most of that memory is
+/// on; saved to tmr-cfg.json as `--calibrate-cache` saves it, stamped with this machine.
 fn calibrate_on_allocation(
-    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, on: (usize, usize), cache_info: &CacheInfo, pages: &crate::run_context::PageSizeMix,
+    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, on: CalibrationOn, cache_info: &CacheInfo,
 ) -> Result<crate::frontend::CalibratedNow, String> {
-    use crate::memory::allocator::PageSizeLevel;
     let (base, bytes) = calibration_memory(blocks, on)?;
-    // The run's pages: what most of its memory is on
-    let page = [
-        (pages.huge_1gib_gib, PageSizeLevel::Huge),
-        (pages.large_2mib_gib, PageSizeLevel::Large),
-        (pages.regular_4kib_gib, PageSizeLevel::Regular),
-    ]
-    .into_iter()
-    .max_by(|a, b| a.0.total_cmp(&b.0))
-    .map_or(PageSizeLevel::Regular, |(_, page)| page);
+    let page = on.2;
     let test = crate::calibration::CalibrationTest::with_config(cache_info.clone(), crate::calibration::CalibrationConfig::default());
     // SAFETY: the run's span, allocated, 64-byte aligned (test memory), not yet handed to a worker and not touched by anything else until
     // the pool takes it, after this; the workers, which would be pinned to the calibration's CPUs, don't exist yet
@@ -4781,25 +4772,37 @@ fn calibrate_on_allocation(
     Ok(crate::frontend::CalibratedNow { results, table: String::from_utf8_lossy(&table).into_owned(), saved })
 }
 
-/// The memory a calibration or recheck measures on, `(thread, bytes)` (`calibration_span`): the start of the thread's span, its one block
+/// The memory a calibration or recheck measures on (`calibration_span`): the start of the thread's span, its one block
 /// (`stitched::into_allocation_blocks`), and as many bytes of it
 fn calibration_memory(
-    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, (thread, bytes): (usize, usize),
+    blocks: &mut HashMap<usize, Vec<AllocationBlock>>, (thread, bytes, _): CalibrationOn,
 ) -> Result<(*mut u64, usize), String> {
     let block = blocks.get_mut(&thread).and_then(|list| list.first_mut()).ok_or("the run's block is gone")?;
     Ok((block.buffer.as_mut_ptr() as *mut u64, bytes.min(block.buffer.size())))
 }
 
-/// Which of the run's spans a calibration or recheck measures on, and how much of it, `(thread, bytes)` (TODO 22): of those on `node`, the
-/// calibration's NUMA node, the one with the most bytes on it from its start (`ThreadSpan::local_prefix`), which are all it measures on;
-/// a tie to the highest thread, so the pick doesn't hang on the spans' order. None with no span on the node: another's memory would read a
-/// remote node's latencies. Requiring a span wholly on the node fell to any node's when each on it was short of its large pages.
-fn calibration_span(spans: &[crate::memory::stitched::ThreadSpan], node: u32) -> Option<(usize, usize)> {
-    spans
+/// What a calibration or recheck measures on, `(thread, bytes, page)` (`calibration_span`): `bytes` from the start of the thread's span,
+/// most of them on `page` pages
+type CalibrationOn = (usize, usize, crate::memory::allocator::PageSizeLevel);
+
+/// Which of the run's spans a calibration or recheck measures on, and how much of it (TODO 22): of those on `node`, the calibration's NUMA
+/// node, the one with the most bytes on it from its start (`ThreadSpan::local_prefix`), which are all it measures on, and the pages most
+/// of them are on (a tie to the smaller), which it is labelled with; a tie to the highest thread, so the pick doesn't hang on the spans'
+/// order. None with no span on the node, or none starting on it (a node with no memory of its own, whose threads' spans start on another
+/// node's pages): another's memory would read a remote node's latencies. Requiring a span wholly on the node fell to any node's when each
+/// on it was short of its large pages.
+fn calibration_span(spans: &[crate::memory::stitched::ThreadSpan], node: u32) -> Option<CalibrationOn> {
+    use crate::memory::allocator::PageSizeLevel::{Huge, Large, Regular};
+    let (span, bytes) = spans
         .iter()
         .filter(|span| span.numa_node == Some(node))
-        .map(|span| (span.thread_id, span.local_prefix()))
-        .max_by_key(|&(thread, bytes)| (bytes, thread))
+        .map(|span| (span, span.local_prefix()))
+        .filter(|&(_, bytes)| bytes > 0)
+        .max_by_key(|&(span, bytes)| (bytes, span.thread_id))?;
+    let page = [Huge, Large, Regular]
+        .into_iter()
+        .max_by_key(|&page| span.local_runs().filter(|run| run.page == page).map(|run| run.len).sum::<usize>())?;
+    Some((span.thread_id, bytes, page))
 }
 
 /// Every thread's share, from the stitched allocator: one contiguous VA span per thread.
@@ -5313,8 +5316,9 @@ mod tests {
     const UNTOUCHED: u64 = 0x5AF0_0FA5_C3D2_1E87;
 
     /// TODO 22: a calibration measures on the span on its own node with the most bytes on it from its start, and on those alone, whatever
-    /// the spans' order: of equal spans, the highest thread's on the node; a span with a remote tail its bytes up to it, 4 KiB ones
-    /// counting as the node's, where requiring a span wholly on the node fell to another node's; with no span on the node, none
+    /// the spans' order, labelled with the pages most of them are on: of equal spans, the highest thread's on the node; a span with a
+    /// remote tail its bytes up to it, 4 KiB ones counting as the node's, where requiring a span wholly on the node fell to another node's;
+    /// with no span on the node, or none starting on it, none
     #[test]
     fn a_calibration_takes_the_largest_span_on_its_node() {
         use crate::memory::allocator::PageSizeLevel::{self, Huge, Large, Regular};
@@ -5341,22 +5345,27 @@ mod tests {
             }
         };
         let equal: Vec<ThreadSpan> = [0, 1, 1].iter().enumerate().map(|(t, &node)| span(t, node, &[(3 * GB, Huge, node)])).collect();
-        assert_eq!(calibration_span(&equal, 1), Some((2, 3 * GB)));
-        assert_eq!(calibration_span(&equal, 0), Some((0, 3 * GB)));
+        assert_eq!(calibration_span(&equal, 1), Some((2, 3 * GB, Huge)));
+        assert_eq!(calibration_span(&equal, 0), Some((0, 3 * GB, Huge)));
         // Node 0 short of its large pages: no span wholly on it, and the most from its start is thread 0's first GB
         let short = [
             span(0, 0, &[(GB, Huge, 0), (GB, Huge, 1)]),
             span(1, 0, &[(GB / 2, Large, 0), (GB / 2, Large, 1), (GB, Huge, 1)]),
             span(2, 1, &[(2 * GB, Huge, 1)]),
         ];
-        assert_eq!(calibration_span(&short, 0), Some((0, GB)));
+        assert_eq!(calibration_span(&short, 0), Some((0, GB, Huge)));
+        // Node 0 out of 1 GiB pages: those bytes are on 2 MiB pages, its label, where most of the run is on 1 GiB ones
+        assert_eq!(calibration_span(&short[1..], 0), Some((1, GB / 2, Large)));
         // 4 KiB pages count as the node's (they only prefer it)
         let regular =
             [span(0, 0, &[(GB, Huge, 0), (GB, Huge, 1)]), span(1, 0, &[(GB / 2, Large, 0), (3 * GB / 2, Regular, 0), (GB, Huge, 1)])];
-        assert_eq!(calibration_span(&regular, 0), Some((1, 2 * GB)));
-        // No span on the node (cpus= left its CPUs out)
+        assert_eq!(calibration_span(&regular, 0), Some((1, 2 * GB, Regular)));
+        // No span on the node (cpus= left its CPUs out), or none starting on it: a node with no memory of its own, its threads' spans on
+        // another node's large pages from their start, where a 0-byte pick measured on nothing and said a larger memory= gives it room
         assert_eq!(calibration_span(&short, 2), None);
         assert_eq!(calibration_span(&[], 0), None);
+        let memoryless = [span(0, 2, &[(GB, Huge, 0), (GB, Regular, 2)]), span(1, 2, &[(2 * GB, Large, 1)]), span(2, 0, &[(GB, Huge, 0)])];
+        assert_eq!(calibration_span(&memoryless, 2), None);
     }
 
     /// The built-in suite, set up to run once on a test region (one thread, 64 B lines)

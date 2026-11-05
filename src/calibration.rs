@@ -439,27 +439,38 @@ fn page_size_str(page: PageSizeLevel) -> &'static str {
 }
 
 /// A calibration's own memory: `size` bytes at `page`, else at the next smaller page size where it can't have them, down to 4 KiB; with the
-/// page size it got; on NUMA node `node` where given (strictly for large pages, then from any node where it has none, preferred for 4 KiB).
-/// The cache calibration's probes and the seal's calibration both take theirs from here.
+/// page size it got; on NUMA node `node` where given (strictly for large pages, preferred for 4 KiB), and from any node before 4 KiB only
+/// where its 4 KiB pages would be another node's too: of more than one node, a node with less than `size` free (none of its own on a
+/// Threadripper 2990WX in NUMA mode or a vNUMA VM). The cache calibration's probes and the seal's calibration both take theirs from here.
 fn allocate_calibration_buffer(size: usize, page: PageSizeLevel, node: Option<u32>) -> Result<(MemoryBuffer, PageSizeLevel), String> {
     let allocator = MemoryAllocator::new(BackendType::Auto)?;
-    allocate_stepping_down(size, page, node, |config| allocator.allocate(config))
+    let elsewhere =
+        node.is_some_and(|node| crate::memory::fill::numa_node_count() > 1 && free_on_node(node).is_some_and(|free| free < size));
+    allocate_stepping_down(size, page, node, elsewhere, |config| allocator.allocate(config))
+}
+
+/// Bytes free on NUMA node `node` (`GetNumaAvailableMemoryNodeEx`), none where it can't say
+fn free_on_node(node: u32) -> Option<usize> {
+    let mut free = 0u64;
+    // SAFETY: writes one u64, `free`, which outlives the call
+    unsafe { windows::Win32::System::Threading::GetNumaAvailableMemoryNodeEx(u16::try_from(node).ok()?, &mut free) }.ok()?;
+    usize::try_from(free).ok()
 }
 
 /// `allocate_calibration_buffer`'s requests, each made by `allocate`. Each is strict (`Require`), so the one granted proves its page size:
 /// a `Prefer` request falls back inside the backend, which doesn't say to what, and a page size can't be read back after the fact. Each
 /// large-page request carries its page's alignment, which is how it gets that page size (without it the kernel silently gives smaller
 /// pages, TODO 87); 4 KiB needs none. A `node` is named strictly (the backend leaves 4 KiB preferred): a smaller page on the node is
-/// worth more to a calibration than a larger one on another, whose latencies are a remote node's. With no large page on it, the same
-/// sizes from any node come before 4 KiB: a node with no memory of its own (a Threadripper 2990WX's in NUMA mode, a vNUMA VM's) refuses
-/// every strict request, and its 4 KiB pages come from another node anyway.
+/// worth more to a calibration than a larger one on another, whose latencies are a remote node's. Only `elsewhere`, where the node's 4 KiB
+/// pages would be another node's too (`allocate_calibration_buffer`), do the same sizes from any node come before 4 KiB, a warning saying
+/// whose latencies the calibration then reads.
 fn allocate_stepping_down<T>(
-    size: usize, page: PageSizeLevel, node: Option<u32>,
+    size: usize, page: PageSizeLevel, node: Option<u32>, elsewhere: bool,
     mut allocate: impl FnMut(&AllocationConfig) -> Result<T, crate::memory::backend::AllocError>,
 ) -> Result<(T, PageSizeLevel), String> {
     let large: Vec<PageSizeLevel> = [PageSizeLevel::Huge, PageSizeLevel::Large].into_iter().filter(|&l| l <= page).collect();
     let mut requests: Vec<(PageSizeLevel, Option<u32>)> = large.iter().map(|&level| (level, node)).collect();
-    if node.is_some() {
+    if node.is_some() && elsewhere {
         requests.extend(large.iter().map(|&level| (level, None)));
     }
     requests.push((PageSizeLevel::Regular, node));
@@ -484,10 +495,15 @@ fn allocate_stepping_down<T>(
         let pages = format!("{name} pages{}", place(level, at));
         match allocate(&config) {
             Ok(buffer) => {
+                // Another node's: the node hasn't the free memory, so its own 4 KiB pages would be another's too
+                let remote = match (node, at) {
+                    (Some(node), None) => format!(", whose latencies are another node's: NUMA node {node} hasn't that much free"),
+                    _ => String::new(),
+                };
                 if refused.is_empty() {
                     log::info!(target: SHOWN_TARGET, "Calibration buffer: {} bytes on {name} pages", size);
                 } else {
-                    log::warn!("Calibration buffer: {} bytes on {pages}, after {} refused", size, refused.join("; "));
+                    log::warn!("Calibration buffer: {} bytes on {pages}{remote}, after {} refused", size, refused.join("; "));
                 }
                 return Ok((buffer, level));
             }
@@ -830,8 +846,8 @@ impl Recheck {
     /// The console's lines: the verdict, then each probe; with no probe (none fits a thread's memory), that it wasn't rechecked
     pub fn text(&self) -> String {
         if self.probes.is_empty() {
-            return "🔁 Cache calibration not rechecked: none of its probes fits a thread's memory (a larger memory= gives them room); the \
-                    stored one is kept\n"
+            return "🔁 Cache calibration not rechecked: none of its probes fits a thread's memory on its own node (a larger memory= gives \
+                    them room, unless the node is out of large pages and the rest came from another node); the stored one is kept\n"
                 .to_string();
         }
         let verdict = if self.held { "holds" } else { "has drifted: measured again" };
@@ -1097,8 +1113,9 @@ impl CalibrationTest {
         let least = self.get_tier_size(CacheTier::Dram);
         if bytes < least {
             return Err(format!(
-                "a thread's memory on its own node, {}, is less than the {} it needs, twice the L3: a larger memory= gives it room; \
-                 nothing saved",
+                "a thread's memory on its own node, {}, is less than the {} it needs, twice the L3: a larger memory= gives it room, \
+                 unless the node is out of large pages and the rest came from another node (--calibrate-cache measures on a buffer of \
+                 its own); nothing saved",
                 format_size(bytes),
                 format_size(least)
             ));
@@ -2472,7 +2489,7 @@ mod tests {
         // The page size got, and the requests made: each its page size and alignment
         let allocate = |page, granted: &[PageSizeLevel]| {
             let mut asked = Vec::new();
-            let got = allocate_stepping_down(SIZE, page, None, |config| {
+            let got = allocate_stepping_down(SIZE, page, None, false, |config| {
                 let PageSizePreference::Require(level) = config.page_size else { panic!("not strict: {:?}", config.page_size) };
                 assert_eq!((config.size, config.numa_node, config.numa_strict), (SIZE, None, false));
                 asked.push((level, config.alignment));
@@ -2540,8 +2557,8 @@ mod tests {
         );
         assert_eq!(
             Recheck { probes: vec![], l3_ns: 34.9, held: true, time_ms: 0 }.text(),
-            "🔁 Cache calibration not rechecked: none of its probes fits a thread's memory (a larger memory= gives them room); the stored \
-             one is kept\n",
+            "🔁 Cache calibration not rechecked: none of its probes fits a thread's memory on its own node (a larger memory= gives them \
+             room, unless the node is out of large pages and the rest came from another node); the stored one is kept\n",
             "no probe is no recheck, not one that holds"
         );
     }
@@ -2702,31 +2719,44 @@ mod tests {
         assert_eq!((node1.single, node1.node, node1.nodes, node1.pair), (64, 1, 2, Some([64, 65])));
         assert_eq!((node1.all, node1.per_l3), ((64..128).collect::<Vec<_>>(), 64));
 
-        // Its buffer on the node, strictly; with no large page there (a node with no memory of its own: a Threadripper 2990WX's in NUMA
-        // mode, a vNUMA VM's), the same sizes from any node, then 4 KiB on it. The page size got, and each request's (page, node, strict).
+        // Its buffer on the node, strictly; with no large page there, 4 KiB on it, never another node's large pages, whose latencies are
+        // a remote node's, unless `elsewhere` (the node hasn't the size free: a Threadripper 2990WX's in NUMA mode, a vNUMA VM's, whose
+        // 4 KiB pages are another node's anyway), when the same sizes from any node come first. The page size got, and each request's
+        // (page, node, strict).
         use PageSizeLevel::{Huge, Large, Regular};
-        let allocate = |page, granted: fn(PageSizeLevel, Option<u32>) -> bool| {
+        let (on_node, anywhere, regular) =
+            ([(Huge, Some(1), true), (Large, Some(1), true)], [(Huge, None, false), (Large, None, false)], [(Regular, Some(1), true)]);
+        let allocate = |page, elsewhere, granted: fn(PageSizeLevel, Option<u32>) -> bool| {
             let mut asked = Vec::new();
-            let got = allocate_stepping_down(64 << 20, page, Some(1), |config| {
+            let got = allocate_stepping_down(64 << 20, page, Some(1), elsewhere, |config| {
                 let PageSizePreference::Require(level) = config.page_size else { panic!("not strict: {:?}", config.page_size) };
                 asked.push((level, config.numa_node, config.numa_strict));
                 if granted(level, config.numa_node) { Ok(()) } else { Err(crate::memory::backend::AllocError::other("refused")) }
             });
             (got.map(|((), level)| level), asked)
         };
-        assert_eq!(allocate(Large, |_, _| true), (Ok(Large), vec![(Large, Some(1), true)]));
-        let (on_node, anywhere) = ([(Huge, Some(1), true), (Large, Some(1), true)], [(Huge, None, false), (Large, None, false)]);
-        assert_eq!(allocate(Huge, |level, _| level == Large), (Ok(Large), on_node.to_vec()));
-        assert_eq!(allocate(Huge, |_, node| node.is_none()), (Ok(Huge), [&on_node[..], &anywhere[..1]].concat()));
-        assert_eq!(allocate(Huge, |level, node| level == Large && node.is_none()), (Ok(Large), [on_node, anywhere].concat()));
-        let regular = [(Regular, Some(1), true)];
-        assert_eq!(allocate(Huge, |level, _| level == Regular), (Ok(Regular), [&on_node[..], &anywhere[..], &regular[..]].concat()));
+        for elsewhere in [false, true] {
+            assert_eq!(allocate(Large, elsewhere, |_, _| true), (Ok(Large), vec![(Large, Some(1), true)]));
+            assert_eq!(allocate(Huge, elsewhere, |level, _| level == Large), (Ok(Large), on_node.to_vec()));
+            assert_eq!(allocate(Regular, elsewhere, |_, _| true), (Ok(Regular), regular.to_vec()));
+        }
+        // A node with the size free: 4 KiB on it, another node's large pages not asked for
         assert_eq!(
-            allocate(Large, |level, _| level == Regular),
-            (Ok(Regular), vec![(Large, Some(1), true), (Large, None, false), (Regular, Some(1), true)])
+            allocate(Huge, false, |level, node| level == Regular || node.is_none()),
+            (Ok(Regular), [&on_node[..], &regular[..]].concat())
         );
-        assert_eq!(allocate(Regular, |_, _| true), (Ok(Regular), vec![(Regular, Some(1), true)]));
-        let (refused, _) = allocate(Large, |_, _| false);
+        assert_eq!(
+            allocate(Large, false, |level, node| level == Regular || node.is_none()),
+            (Ok(Regular), [on_node[1], regular[0]].to_vec())
+        );
+        let (refused, _) = allocate(Large, false, |_, _| false);
+        assert!(refused.unwrap_err().contains("2MB large pages on NUMA node 1 (refused); 4KB regular pages (refused)"));
+        // Elsewhere: any node's large pages before 4 KiB
+        assert_eq!(allocate(Huge, true, |_, node| node.is_none()), (Ok(Huge), [&on_node[..], &anywhere[..1]].concat()));
+        assert_eq!(allocate(Huge, true, |level, node| level == Large && node.is_none()), (Ok(Large), [on_node, anywhere].concat()));
+        assert_eq!(allocate(Huge, true, |level, _| level == Regular), (Ok(Regular), [&on_node[..], &anywhere[..], &regular[..]].concat()));
+        assert_eq!(allocate(Large, true, |level, _| level == Regular), (Ok(Regular), vec![on_node[1], anywhere[1], regular[0]]));
+        let (refused, _) = allocate(Large, true, |_, _| false);
         assert!(refused.unwrap_err().contains(
             "2MB large pages on NUMA node 1 (refused); 2MB large pages from any NUMA node (refused); 4KB regular pages (refused)"
         ));

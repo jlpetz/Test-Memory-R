@@ -311,9 +311,10 @@ pub enum Run {
     /// The stored cache calibration rechecked on the run's memory (`calibrate=recheck`, TODO 116): each probe and whether it holds, or
     /// why it couldn't recheck. When it doesn't hold, `Calibrated` comes next.
     Rechecked(Result<Box<Recheck>, String>),
-    /// None of the run's memory is on `node`, the cache calibration's NUMA node (`cpus=` or `skip-cores=` left its CPUs out), so the run
-    /// neither measures nor rechecks one, which on another node's memory would read a remote node's latencies (TODO 22): its tests size
-    /// from the stored one (`stored`), else from CPUID. `--calibrate-cache` measures one. In place of `Rechecked` and `Calibrated`.
+    /// None of the run's memory is on `node`, the cache calibration's NUMA node (`cpus=` or `skip-cores=` left its CPUs out, or a node
+    /// with no memory of its own, its threads' spans starting on another node's pages: `runner::calibration_span`), so the run neither
+    /// measures nor rechecks one, which on another node's memory would read a remote node's latencies (TODO 22): its tests size from the
+    /// stored one (`stored`), else from CPUID. `--calibrate-cache` measures one. In place of `Rechecked` and `Calibrated`.
     NoMemoryOnCalibrationNode { node: u32, stored: bool },
     /// The suite's clock started: where it stands from now on, for a frontend that reads it on its own timer (the GUI; the CLI reads it on
     /// `tick`), the native patterns' seed, and the transfer width they take and where it came from, `None` when it is unknown

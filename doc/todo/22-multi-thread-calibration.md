@@ -158,9 +158,11 @@ put C: "full node load"), the in-run calibration and the recheck the largest spa
 `--calibrate-cache` asks for its buffer there, strictly for large pages. On one node nothing
 changes. The review after it: a span counts as the node's when its thread is, and the calibration
 takes the one with the most from its start on the node, those bytes alone (wholly on it fell to any
-node's span when the node was short of large pages); with no span on the node (`cpus=`) the run
-neither measures nor rechecks, and says so; and the buffer's large pages come from any node before
-4 KiB when the node has none (a 2990WX in NUMA mode, a vNUMA VM).
+node's span when the node was short of large pages); with no span on the node (`cpus=`), or none
+starting on it (a node with no memory of its own), the run neither measures nor rechecks, and says
+so; and the buffer's large pages come from any node before 4 KiB when the node hasn't its size free
+(a 2990WX in NUMA mode, a vNUMA VM), where its 4 KiB pages would be another node's anyway, and only
+with more than one node.
 
 Left: A's edge test misses a gradual climb. On local memory the step was sharp enough, but a
 fallback to CPUID's L3 is the package's on an SNC part; a cap on the latency the finer sweep may
