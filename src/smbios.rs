@@ -76,6 +76,21 @@ pub fn shown_system(system: &SystemIdentity) -> SystemIdentity {
     system_shown(system, serials_hidden())
 }
 
+/// A system UUID as the run shows and logs it: left out under `--no-serials`, as the SMBIOS line says it
+pub fn shown_uuid(uuid: &str) -> &str {
+    uuid_shown(uuid, serials_hidden())
+}
+
+fn uuid_shown(uuid: &str, hidden: bool) -> &str {
+    if hidden { "(left out: --no-serials)" } else { uuid }
+}
+
+/// A structure's string table as the parse's debug line shows it: under `--no-serials` only how many, since it holds the serials (Type
+/// 1's, 2's, 3's and 17's; on EC2 Type 1's serial is the system UUID)
+fn strings_shown(strings: &[String], hidden: bool) -> String {
+    if hidden { format!("({} left out: --no-serials)", strings.len()) } else { format!("{strings:?}") }
+}
+
 fn modules_shown(modules: &[MemoryModule], hidden: bool) -> Vec<MemoryModule> {
     modules.iter().cloned().map(|module| if hidden { MemoryModule { serial_number: String::new(), ..module } } else { module }).collect()
 }
@@ -327,11 +342,11 @@ fn parse_smbios(raw: &[u8]) -> SmbiosData {
 
         let end_preview = (next_offset + 8).min(table.len());
         log::debug!(
-            "SMBIOS: Type {} at offset {}, formatted_len={}, strings={:?}, next_offset={}, bytes_at_next={:02X?}",
+            "SMBIOS: Type {} at offset {}, formatted_len={}, strings={}, next_offset={}, bytes_at_next={:02X?}",
             struct_type,
             offset,
             struct_len,
-            strings,
+            strings_shown(&strings, serials_hidden()),
             next_offset,
             &table[next_offset..end_preview]
         );
@@ -643,6 +658,18 @@ mod tests {
         let without = system_shown(&system, true);
         assert_eq!((without.uuid.as_str(), without.product_name.as_str()), ("", "PRIME"));
         assert_eq!(system_shown(&system, false).uuid, "03000200-0400");
+        // And the calibration's UUID mismatch line (`MachineFingerprint::matches`)
+        assert_eq!(uuid_shown("03000200-0400", true), "(left out: --no-serials)");
+        assert_eq!(uuid_shown("03000200-0400", false), "03000200-0400");
+    }
+
+    /// TODO 105: the parse's debug line (`RUST_LOG=debug`) shows a structure's string table, Type 17's serial among it, only without
+    /// `--no-serials`; with it, only how many strings there are
+    #[test]
+    fn no_serials_leaves_the_string_tables_out_of_the_debug_lines() {
+        let strings = vec!["DIMM_A2".to_string(), "G Skill".to_string(), "12345678".to_string()];
+        assert_eq!(strings_shown(&strings, true), "(3 left out: --no-serials)");
+        assert_eq!(strings_shown(&strings, false), r#"["DIMM_A2", "G Skill", "12345678"]"#);
     }
 
     #[test]

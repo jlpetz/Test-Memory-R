@@ -649,6 +649,8 @@ impl Save<'_> {
 /// it found and saves it to tmr-cfg.json if `confirm` (or `--yes` / `--no-save`) says to; a failure stops it before any more runs.
 /// `maxpage=` sets the page size both ask for.
 fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str) -> bool) -> io::Result<RunStatus> {
+    // Serials out of what it shows and logs (`--no-serials`), before SMBIOS is first read and logged, as a session has it (TODO 105)
+    crate::smbios::hide_serials(args.iter().any(|a| a == "--no-serials"));
     let mut save = match SaveChoice::of(args) {
         Ok(choice) => Save { choice, confirm },
         Err(e) => {

@@ -110,7 +110,11 @@ impl MachineFingerprint {
             && !current_uuid.is_empty()
             && stored_uuid != current_uuid
         {
-            log::warn!("{what}: system UUID mismatch (VM migration or motherboard swap): stored={}, current={}", stored_uuid, current_uuid);
+            log::warn!(
+                "{what}: system UUID mismatch (VM migration or motherboard swap): stored={}, current={}",
+                crate::smbios::shown_uuid(stored_uuid),
+                crate::smbios::shown_uuid(current_uuid)
+            );
             valid = false;
         }
 

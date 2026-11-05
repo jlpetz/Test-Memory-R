@@ -281,8 +281,13 @@ impl Window {
         let (tx, rx) = mpsc::channel();
         let transcript = log.transcript();
         let exe = self.model.command().first().cloned().unwrap_or_else(|| "tmr.exe".to_string());
+        let mut line = vec![exe, "--calibrate-all".to_string(), "--yes".to_string()];
+        // Serials off in the Settings dialog: left out of what it shows and logs, as start()'s run has it (TODO 105)
+        if !self.settings.serials {
+            line.push("--no-serials".to_string());
+        }
         let calibration = std::thread::Builder::new().name("tmr-calibrate".to_string()).spawn(move || {
-            let command = tmr::commands::Command::Calibrate(vec![exe, "--calibrate-all".to_string(), "--yes".to_string()]);
+            let command = tmr::commands::Command::Calibrate(line);
             let mut out = logger::TranscriptWriter::new(transcript);
             let result = tmr::commands::run(&command, &mut out, &mut |_| true, &|_| String::new()).map_err(|e| e.to_string());
             out.finish();
