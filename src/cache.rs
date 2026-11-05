@@ -621,6 +621,22 @@ pub(crate) fn vm_signs(hyperv: Option<HyperVLeaves>, waet: bool, vm_maker: bool)
 mod tests {
     use super::*;
 
+    /// The total `cache_total` sizes from (doc/extent_chunk_modes.md): every core's L1d, L1i and L2, and one L3. A Ryzen 5 8600G's 6
+    /// cores of 32 + 32 KB and 1 MB with a 16 MB L3 make 22.4 MB, the L1s and L2s 6.4 of it
+    #[test]
+    fn the_total_cache_is_every_cores_l1_and_l2_and_one_l3() {
+        let mut info = CacheInfo {
+            per_core_l1d: 32 * KB,
+            per_core_l1i: 32 * KB,
+            per_core_l2: MB,
+            l3_cache: 16 * MB,
+            core_count: 6,
+            ..Default::default()
+        };
+        info.recalculate_totals();
+        assert_eq!(info.total_cache, 6 * (32 + 32 + 1024) * KB + 16 * MB);
+    }
+
     /// TODO 115: the probe's readings. The dev box's EC2 VM is a guest with WAET; a laptop with VBS is Hyper-V's root, not a VM; a VM host
     /// nested in a VM, another hypervisor, or WAET alone each make one.
     #[test]

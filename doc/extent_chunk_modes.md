@@ -19,12 +19,12 @@ Allocation  (per-thread OS-level block — set by memory_strategy.allocation_mod
 | ------ | ------------- | --------------------- | ----------------------------------------------------------------------- |
 | Extent | `full_allocation` | (none)            | Use the entire per-thread allocation.                                   |
 | Extent | `cache`       | `target` (string)     | Tier-aware sizing. Thread-aware. Calibration-aware.                     |
-| Extent | `cache_total` | `fraction` (number)   | Coarse `(L1+L2+L3) × fraction`. Naive — not tier- or thread-aware.      |
+| Extent | `cache_total` | `fraction` (number)   | Coarse `(every core's L1d+L1i+L2, one L3) × fraction`. Naive — not tier- or thread-aware. |
 | Extent | `absolute`    | `size` (string)       | Hard byte size, e.g. `"880MB"`, `"4GiB"`.                               |
 | Chunk  | `auto`        | (none)                | Per-test heuristic chunk sizing.                                        |
 | Chunk  | `whole`       | (none)                | One chunk, the whole extent (the latency and bandwidth tests).          |
 | Chunk  | `cache`       | `target` (string)     | Same target syntax as the extent's `cache` mode.                        |
-| Chunk  | `cache_total` | `fraction` (number)   | Coarse `(L1+L2+L3) × fraction`. Mirrors the extent mode.                |
+| Chunk  | `cache_total` | `fraction` (number)   | Coarse `(every core's L1d+L1i+L2, one L3) × fraction`. Mirrors the extent mode. |
 | Chunk  | `absolute`    | `size` (string)       | Hard byte size.                                                         |
 | Chunk  | `tm5_block`   | `size`, `divisor`, `granularity` | A TM5 block code 0-3: the smaller of `size` and the extent, / `divisor`, floored to `granularity`. |
 
@@ -104,16 +104,27 @@ threads. Each tier accepts a `scale` factor (any positive decimal in `0.01..=100
   them; on one L3 the two are the same. CPUID fallback also applies a `÷2` VM factor when running
   in a virtual machine: a guest of the hypervisor, a VM host nested in a Hyper-V VM, firmware with
   ACPI's WAET table, or SMBIOS naming a VM maker (VirtualBox, VMware, QEMU and the like), not a PC
-  whose Windows runs VBS's hypervisor (`cache::vm_signs`, TODO 115).
-- **DRAM**: per-thread working set = total L3 × scale. **No** thread divisor — each
-  thread independently spills L3, which is what guarantees DRAM access under
-  multi-threaded cache competition.
+  whose Windows runs VBS's hypervisor (`cache::vm_signs`, TODO 115). Never below the core's
+  L2 plus 64 KiB.
+- **DRAM**: per-thread working set = one L3 group's L3 × scale (CPUID reports one L3 instance).
+  **No** thread divisor — each thread independently spills L3, which is what guarantees DRAM
+  access under multi-threaded cache competition. With several L3s it is still one group's: on a
+  Ryzen 9950X (two CCDs of 32 MB) `DRAM*4` is 128 MB a thread.
 - **DRAM-Full**: sentinel meaning "use the entire per-thread allocation". No scale.
 
-When `tmr-cfg.json` calibration data is available, the calibrated `optimal_size` for the
-tier is used directly (not the CPUID heuristic). Calibration captures the true tier
-ceiling, so the only post-divisor in the calibrated path is the topology-sharing one
-(SMT siblings for L1/L2, the threads in an L3 group for L3).
+When `tmr-cfg.json` holds this machine's cache calibration (`doc/test_parameters.md` describes its
+three anchors, A, B and C), the sizes come from it instead, with no VM factor:
+
+- **L1 / L2**: A's size ÷ SMT siblings × scale; with two threads a core running, B's size (what a
+  thread holds with its sibling chasing too) × scale.
+- **L3**: scale × reach(k), the L3 a thread reaches with k threads in its L3 group running (k = the
+  run's threads in a group), on the curve through A (one thread, R1) and C (N threads sharing, RN):
+  reach(k) = own + split / k, split = (R1 − RN) × N / (N − 1) at most R1, own = R1 − split; without
+  C, R1 / k (`CalibrationResults::l3_reach`). Never below the thread's L2 share (B's under SMT)
+  plus 64 KiB. The L3 doesn't split evenly: with A at 24 MiB and C at 6 MiB with 8 sharing, an
+  8-thread group's `L3` is reach(8) × 0.5 = 3 MiB a thread, where A's L3 ÷ 8 × 0.5 would be
+  1.5 MiB. The plan shows it as `L3(8)/2 [cal]`.
+- **DRAM**: A's L3 × scale.
 
 Use `cache` when you want **a precise tier** — "I want this test to fit in L2", "I want to
 spill exactly 2× L3 worth of working set per thread".
@@ -130,9 +141,9 @@ L2*0.8                 # 80% of per-core L2 share
 L3                     # default scale 0.5 (= L3/2 of per-thread L3 share)
 L3/2                   # half of per-thread L3 share
 L3*0.9                 # 90% of per-thread L3 share
-DRAM                   # default scale 4.0 (= DRAM*4, per-thread = 4× total L3)
-DRAM*8                 # 8× total L3 per thread (heavy DRAM stress)
-DRAM/2                 # 0.5× total L3 — sits *inside* L3 single-threaded but spills
+DRAM                   # default scale 4.0 (= DRAM*4, per-thread = 4× one L3 group's L3)
+DRAM*8                 # 8× one L3 group's L3 per thread (heavy DRAM stress)
+DRAM/2                 # 0.5× one L3 group's L3 — sits *inside* L3 single-threaded but spills
                        # quickly under multi-thread sharing because there is no
                        # thread divisor on DRAM. Useful when you want a working set
                        # measured against the spill threshold rather than per-thread L3.
@@ -143,20 +154,24 @@ DRAM-FULL              # entire per-thread allocation
 
 Both produce a working set sized off L3, but they differ in *which* divisors apply:
 
-| Target  | Per-thread size                       | Threads divisor | VM factor (CPUID) |
-| ------- | ------------------------------------- | :-------------: | :---------------: |
-| `L3*N`  | `(group_L3 / group_threads / vm) × N` |       yes       |        yes        |
-| `DRAM*N`| `total_L3 × N`                        |        no       |         no        |
+| Target  | Per-thread size (CPUID)                               | Threads divisor | VM factor (CPUID) |
+| ------- | ----------------------------------------------------- | :-------------: | :---------------: |
+| `L3*N`  | `max(group_L3 / group_threads / vm × N, L2 + 64 KiB)` |       yes       |        yes        |
+| `DRAM*N`| `group_L3 × N`                                        |        no       |         no        |
 
-So `DRAM/2` is `total_L3 × 0.5` per thread (half of *total* L3, per thread), while
+So `DRAM/2` is `group_L3 × 0.5` per thread (half of one L3 group's L3, per thread), while
 `L3*2` is `(group_L3 / group_threads / vm_factor) × 2` per thread. On a 16-thread
-non-VM box with one L3, those differ by ~8×.
+non-VM box with one L3, those differ by 4× (L3 / 2 against L3 / 8). Calibrated, `L3*N` is
+N × reach(group_threads) and `DRAM*N` A's L3 × N (above).
 
 ### `cache_total` — coarse, intentionally naive
 
-Computes `(per_core_l1d + per_core_l2 + l3_cache) × fraction`. **Not** tier-aware,
-**not** thread-aware. The L1+L2 component is ~5% of L3 on most modern parts, so this is
-effectively "a fraction of the cache hierarchy" treated as one number.
+Computes `total_cache × fraction`, where `total_cache` is every physical core's L1d + L1i + L2
+plus one L3 group's L3, from CPUID (`CacheInfo::total_cache`; a calibration doesn't change it).
+**Not** tier-aware, **not** thread-aware: "a fraction of the cache hierarchy" treated as one
+number. The L1+L2 part is not small: on a Ryzen 5 8600G (6 cores, 32 KB L1d + 32 KB L1i and 1 MB
+L2 each, 16 MB L3) it is 6.4 of 22.4 MB, so the built-in Mem-Refresh steps' `fraction=2.0` is
+44.8 MB. On a multi-L3 part every core's L2 is summed but only one L3.
 
 Originally designed as a "spill-the-whole-hierarchy" floor — pick a multiplier > 1.0 to
 guarantee you exceed cache, regardless of tier topology. Useful for portable cross-machine

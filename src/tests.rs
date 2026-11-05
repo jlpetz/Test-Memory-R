@@ -90,7 +90,7 @@ pub fn parse_size_string(s: &str) -> Result<usize, String> {
 /// - L1/L2: per-core size ÷ active SMT siblings × scale
 /// - L3: per-thread share (one L3 group's L3 ÷ the run's threads in a group, `l3_sharers`) × scale; calibrated, `scale` of the
 ///   reach with that many sharing (TODO 22's curve), never inside the thread's L2 share
-/// - DRAM: total L3 × scale (no thread divisor — each thread independently spills)
+/// - DRAM: one L3 group's L3 × scale (no thread divisor — each thread independently spills)
 ///
 /// `DRAMFull` is a sentinel meaning "use the full thread allocation" (no scale).
 ///
@@ -104,7 +104,7 @@ pub enum CacheTarget {
     L2 { scale: f64 },
     /// Target L3 cache (shared by an L3 group's threads, ÷ `l3_sharers`).
     L3 { scale: f64 },
-    /// Target DRAM. Per-thread working set = total L3 × scale.
+    /// Target DRAM. Per-thread working set = one L3 group's L3 × scale (CPUID's one instance, or calibration A's).
     /// No thread divisor — sharing L3 across threads would shrink the per-thread region.
     Dram { scale: f64 },
     /// Sentinel: use the entire per-thread allocation.
@@ -122,7 +122,7 @@ impl CacheTarget {
     pub const L2_DEFAULT: Self = Self::L2 { scale: 0.5 };
     /// L3 with default scale 0.5 (50% of per-thread L3 share).
     pub const L3_DEFAULT: Self = Self::L3 { scale: 0.5 };
-    /// DRAM with default scale 4.0 (per-thread = total L3 × 4).
+    /// DRAM with default scale 4.0 (per-thread = one L3 group's L3 × 4).
     pub const DRAM_DEFAULT: Self = Self::Dram { scale: 4.0 };
     /// DRAM-Full uses the entire thread allocation.
     pub const DRAM_FULL_DEFAULT: Self = Self::DRAMFull;
@@ -146,8 +146,9 @@ impl CacheTarget {
         let tier = self.to_calibration_tier()?;
         let tier_result = cal.tiers.get(&tier)?;
 
-        // The calibrated optimal_size is the largest working set that stays in this tier (single-threaded measurement). Only topology
-        // sharing matters — no CPUID heuristics. Final 64-byte alignment is applied downstream in TestMemoryConfig::calculate_extent_size.
+        // The calibrated optimal_size: the largest working set that stays in this tier on one thread (anchor A). Each target scales its own
+        // measured figure below (B's for a core's two threads, the A-C curve for L3); no CPUID heuristics. Final 64-byte alignment is
+        // applied downstream in TestMemoryConfig::calculate_extent_size.
         let calibrated = tier_result.optimal_size as f64;
 
         let per_core = get_active_threads_per_core();
@@ -175,7 +176,7 @@ impl CacheTarget {
                 (reach * scale).max(floor) as usize
             }
             CacheTarget::Dram { scale } => {
-                // DRAM: each thread's working set is sized off the L3-spill threshold (calibrated total L3). No thread divisor — sharing L3
+                // DRAM: each thread's working set is sized off the L3-spill threshold (A's L3, one group's). No thread divisor — sharing L3
                 // across threads would make the per-thread region too small for a clean DRAM measurement under multi-thread cache
                 // competition.
                 let cal_l3 = cal.tiers.get(&crate::calibration::CacheTier::L3).map(|t| t.optimal_size as f64).unwrap_or(calibrated);
@@ -282,11 +283,11 @@ impl CacheTarget {
             CacheTarget::L2 { scale } => format!("L2{}{}", Self::format_scale(*scale), suffix),
             CacheTarget::L3 { scale } => {
                 if has_cal {
-                    // Calibrated: show thread count division (calibration optimal_size already captures the true L3 ceiling, so the only
-                    // post-divisor is thread sharing)
+                    // Calibrated: `scale` of reach(k), what a thread reaches with k of the run's threads in its L3 group running
+                    // (`CalibrationResults::l3_reach`), written L3(k): with anchor C it isn't the L3 divided by k
                     let scale_frag = Self::format_scale(*scale);
                     let sharers = l3_sharers(thread_count);
-                    if sharers == 1 { format!("L3{} [cal]", scale_frag) } else { format!("L3/{}{} [cal]", sharers, scale_frag) }
+                    if sharers == 1 { format!("L3{} [cal]", scale_frag) } else { format!("L3({}){} [cal]", sharers, scale_frag) }
                 } else {
                     let vm_factor = if is_vm { 2 } else { 1 };
                     let scale_frag = Self::format_scale(*scale);
@@ -10609,7 +10610,34 @@ mod l3_share {
         assert_eq!(l3.size_bytes(&cache_info, 16), 24 * MIB / 8 / 2, "calibrated");
         // Never inside the thread's L2 (CPUID's 512 KiB, none calibrated): 24 MiB over 8 at a tenth is under it
         assert_eq!(CacheTarget::L3 { scale: 0.1 }.size_bytes(&cache_info, 16), MIB / 2 + 64 * 1024, "the floor");
-        assert_eq!(l3.name_with_context(16, false), "L3/8/2 [cal]");
+        assert_eq!(l3.name_with_context(16, false), "L3(8)/2 [cal]");
+        // With anchor C the L3 doesn't split evenly (doc/extent_chunk_modes.md): A 24 MiB, C 6 MiB with 8 sharing, so a thread of 8 in its
+        // group reaches C's 6 MiB, and the default half of it is 3 MiB, where 24 MiB over 8 at a half would be 1.5 MiB
+        let mut cal = (*get_calibration_data().expect("set above")).clone();
+        cal.shared = Some(crate::calibration::SharedReach {
+            l1_smt: None,
+            l2_smt: None,
+            l3_loaded: Some(6 * MIB),
+            l3_loaded_ns: 40.0,
+            l3_sharers: 8,
+        });
+        set_calibration_data(Some(cal));
+        let curve = l3.size_bytes(&cache_info, 16);
+        assert!(curve.abs_diff(3 * MIB) <= 2, "on the curve: {curve}");
+        reset_run_settings();
+    }
+
+    /// A DRAM-sized extent is one L3 group's L3 times its scale, not every L3's, whatever the threads: on two groups of 32 MiB, `DRAM*4`
+    /// is 128 MiB a thread
+    #[test]
+    fn a_dram_extent_is_one_groups_l3_times_its_scale() {
+        const MIB: usize = 1 << 20;
+        let cache_info = CacheInfo { l3_cache: 32 * MIB, ..Default::default() };
+        reset_run_settings();
+        for per_l3 in [1, 8, 16] {
+            set_active_threads_per_l3(per_l3);
+            assert_eq!(CacheTarget::DRAM_DEFAULT.size_bytes(&cache_info, 16), 128 * MIB, "{per_l3} a group");
+        }
         reset_run_settings();
     }
 }
