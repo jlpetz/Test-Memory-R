@@ -29,8 +29,8 @@ The console, with its progress ticker at the bottom.
 ![TMR in a console: each step's report, its threads' table, and the progress ticker](doc/images/tmr_cli.PNG)
 
 The console looks best in a modern terminal, which shows its emoji and table lines in a font such as
-Cascadia Mono: [Windows Terminal](https://aka.ms/terminal) (it ships the Cascadia fonts) with
-[PowerShell](https://aka.ms/powershell) 7.6 or later. Both install with winget:
+Cascadia Mono: [Windows Terminal](https://github.com/microsoft/terminal) (it ships the Cascadia fonts) with
+[PowerShell](https://github.com/PowerShell/PowerShell) 7.6 or later. Both install with winget:
 
 ```
 winget install --id Microsoft.WindowsTerminal --source winget
