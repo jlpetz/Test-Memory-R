@@ -361,14 +361,10 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
     if cache_info.l3_cache == 0 {
         // Note: __cpuid is safe in edition 2024
         let result = std::arch::x86_64::__cpuid(0x80000006);
+        let (l2, l3) = legacy_l2_l3(result.ecx, result.edx);
 
-        // ECX contains L3 cache info
-        let _l3_line_size = result.ecx & 0xFF;
-        let _l3_assoc = (result.ecx >> 12) & 0xF;
-        let l3_size_kb = (result.ecx >> 18) & 0x3FFF;
-
-        if l3_size_kb > 0 {
-            cache_info.l3_cache = (l3_size_kb as usize) * 512 * KB; // Units of 512KB
+        if l3 > 0 {
+            cache_info.l3_cache = l3;
             found_any = true;
             log::debug!("raw_cpuid 0x80000006: L3 cache {}MB", cache_info.l3_cache / MB);
 
@@ -377,13 +373,10 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
             }
         }
 
-        // EDX contains L2 cache info if not already found
-        if cache_info.per_core_l2 == 0 {
-            let l2_size_kb = (result.edx >> 16) & 0xFFFF;
-            if l2_size_kb > 0 {
-                cache_info.per_core_l2 = (l2_size_kb as usize) * 1024;
-                found_any = true;
-            }
+        // The L2 too, if not already found
+        if cache_info.per_core_l2 == 0 && l2 > 0 {
+            cache_info.per_core_l2 = l2;
+            found_any = true;
         }
     }
 
@@ -398,12 +391,23 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
         if cache_info.per_core_l2 == 0 {
             cache_info.per_core_l2 = 512 * KB;
         }
+        // No leaf reports an L3 (a VM's: QEMU's l3-cache=off): the L2 is the last level, so the L3 and DRAM tiers size from it
+        if cache_info.l3_cache == 0 {
+            log::debug!("raw_cpuid: no L3 reported, so the L2 ({} KB) is the last level", cache_info.per_core_l2 / KB);
+            cache_info.l3_cache = cache_info.per_core_l2;
+        }
 
         cache_info.recalculate_totals();
         Some(cache_info)
     } else {
         None
     }
+}
+
+/// CPUID 0x80000006's L2 and L3 in bytes: ECX bits 31:16 the L2 in KB, EDX bits 31:18 the L3 in 512 KB units (AMD's; Intel's EDX is
+/// reserved, 0)
+fn legacy_l2_l3(ecx: u32, edx: u32) -> (usize, usize) {
+    ((ecx >> 16) as usize * KB, (edx >> 18) as usize * 512 * KB)
 }
 
 // Method 2: Windows WMI detection
@@ -492,24 +496,55 @@ fn detect_hypervisor() -> (Vec<&'static str>, Option<String>) {
     if let Some(feature_info) = cpuid.get_feature_info()
         && feature_info.has_hypervisor()
     {
-        let hypervisor_name = cpuid.get_hypervisor_info().map(|info| format!("{:?}", info.identify()));
+        let hypervisor_name = cpuid.get_hypervisor_info().map(|info| hypervisor_name(info.identify()));
         let leaves = hyperv_leaves();
         let waet = acpi_has_waet();
-        let signs = vm_signs(leaves, waet);
+        // The firmware's names, which the root partition reads from the hypervisor beneath it, if any: never its UUID or serials
+        let smbios = crate::smbios::get_smbios();
+        let vm_maker =
+            smbios_names_a_vm(&[&smbios.system.manufacturer, &smbios.system.product_name, &smbios.bios.vendor, &smbios.bios.version]);
+        let signs = vm_signs(leaves, waet, vm_maker);
         let name = hypervisor_name.as_deref().unwrap_or("Unknown");
         match leaves {
             Some(HyperVLeaves { privileges, recommendations }) => log::info!(
                 "Hypervisor: {name}, privileges {privileges:#010x} (0x40000003 EBX), recommendations {recommendations:#010x} \
-                 (0x40000004 EAX), WAET {waet}: {}",
+                 (0x40000004 EAX), WAET {waet}, SMBIOS VM maker {vm_maker}: {}",
                 if signs.is_empty() { "its root partition, not a VM".to_string() } else { format!("a VM ({})", signs.join(", ")) }
             ),
-            None => log::info!("Hypervisor: {name}, WAET {waet}: a VM ({})", signs.join(", ")),
+            None => log::info!("Hypervisor: {name}, WAET {waet}, SMBIOS VM maker {vm_maker}: a VM ({})", signs.join(", ")),
         }
         return (signs, hypervisor_name);
     }
 
     log::debug!("No hypervisor detected (running on physical hardware)");
     (Vec::new(), None)
+}
+
+/// A hypervisor's name: raw-cpuid's for one it knows ("HyperV", "KVM", "VMware"), else CPUID 0x40000000's 12-byte vendor text (EBX, ECX,
+/// EDX: "VBoxVBoxVBox"), trailing NULs and spaces trimmed; its registers in hex when that isn't printable ASCII
+fn hypervisor_name(id: raw_cpuid::Hypervisor) -> String {
+    match id {
+        raw_cpuid::Hypervisor::Unknown(ebx, ecx, edx) => {
+            let bytes: Vec<u8> = [ebx, ecx, edx].iter().flat_map(|word| word.to_le_bytes()).collect();
+            let end = bytes.iter().rposition(|&b| b != 0 && b != b' ').map_or(0, |last| last + 1);
+            let text = &bytes[..end];
+            if !text.is_empty() && text.iter().all(|&b| b == b' ' || b.is_ascii_graphic()) {
+                String::from_utf8_lossy(text).into_owned()
+            } else {
+                format!("unidentified ({ebx:#010x}, {ecx:#010x}, {edx:#010x})")
+            }
+        }
+        known => format!("{known:?}"),
+    }
+}
+
+/// Whether one of SMBIOS's system or BIOS names (manufacturer, product, BIOS vendor and version) has a VM maker's name as a word:
+/// VirtualBox's "innotek GmbH", "VMware, Inc.", "QEMU" and the like. A word, not a substring, so a board whose name holds "xen" isn't one.
+fn smbios_names_a_vm(names: &[&str]) -> bool {
+    const MAKERS: [&str; 8] = ["innotek", "virtualbox", "vmware", "qemu", "parallels", "xen", "bochs", "bhyve"];
+    names
+        .iter()
+        .any(|name| name.split(|c: char| !c.is_ascii_alphabetic()).any(|word| MAKERS.iter().any(|maker| word.eq_ignore_ascii_case(maker))))
 }
 
 /// Hyper-V's CPUID leaves that tell its root partition from a guest (TODO 115): 0x40000003 EBX, the partition's privileges, and
@@ -545,10 +580,11 @@ fn acpi_has_waet() -> bool {
 /// What says TMR runs in a VM (TODO 115), none for Hyper-V's root partition: the PC's own Windows, above the hypervisor VBS (or Hyper-V)
 /// runs on a desktop. A VM is any hypervisor but Hyper-V's (or a Hyper-V without the leaves); under Hyper-V's, a partition without both
 /// of the root's privileges (CreatePartitions, 0x40000003 EBX bit 0, and CpuManagement, bit 12: Linux's root test), or a root whose
-/// hypervisor is itself in a VM (0x40000004 EAX bit 12: a VM host nested in a VM); and firmware with ACPI's WAET table, which only a
-/// VM's has, whatever the hypervisor says. 2026-11-04: the dev box's EC2 VM, a guest with WAET; a laptop with VBS, both privileges, not
-/// nested, no WAET.
-pub(crate) fn vm_signs(hyperv: Option<HyperVLeaves>, waet: bool) -> Vec<&'static str> {
+/// hypervisor is itself in a Hyper-V VM (0x40000004 EAX bit 12, which another hypervisor beneath doesn't set); firmware with ACPI's WAET
+/// table, which only a VM's has, whatever the hypervisor says; and an SMBIOS system or BIOS named for a VM maker, the one sign left for a
+/// VM whose Windows runs VBS above VirtualBox's (or another's) hypervisor without WAET. 2026-11-04: the dev box's EC2 VM, a guest with
+/// WAET; a laptop with VBS, both privileges, not nested, no WAET.
+pub(crate) fn vm_signs(hyperv: Option<HyperVLeaves>, waet: bool, vm_maker: bool) -> Vec<&'static str> {
     const ROOT_PRIVILEGES: u32 = 1 | 1 << 12;
     const NESTED: u32 = 1 << 12;
     let mut signs = Vec::new();
@@ -566,6 +602,9 @@ pub(crate) fn vm_signs(hyperv: Option<HyperVLeaves>, waet: bool) -> Vec<&'static
     if waet {
         signs.push("the firmware's WAET table");
     }
+    if vm_maker {
+        signs.push("a VM maker's name in SMBIOS");
+    }
     signs
 }
 
@@ -578,14 +617,52 @@ mod tests {
     #[test]
     fn a_vm_is_a_guest_a_nested_root_or_another_hypervisor() {
         let ec2 = HyperVLeaves { privileges: 0x0033_0000, recommendations: 0x0006_0038 };
-        assert_eq!(vm_signs(Some(ec2), true), ["a guest partition", "the firmware's WAET table"]);
+        assert_eq!(vm_signs(Some(ec2), true, false), ["a guest partition", "the firmware's WAET table"]);
         let laptop = HyperVLeaves { privileges: 0x002b_b9ff, recommendations: 0x0094_0d1c };
-        assert!(vm_signs(Some(laptop), false).is_empty(), "VBS on a PC is no VM");
+        assert!(vm_signs(Some(laptop), false, false).is_empty(), "VBS on a PC is no VM");
         let nested = HyperVLeaves { recommendations: laptop.recommendations | 1 << 12, ..laptop };
-        assert_eq!(vm_signs(Some(nested), false), ["its hypervisor nested in a VM"]);
-        assert_eq!(vm_signs(None, false), ["not Hyper-V's"]);
-        assert_eq!(vm_signs(Some(laptop), true), ["the firmware's WAET table"]);
+        assert_eq!(vm_signs(Some(nested), false, false), ["its hypervisor nested in a VM"]);
+        assert_eq!(vm_signs(None, false, false), ["not Hyper-V's"]);
+        assert_eq!(vm_signs(Some(laptop), true, false), ["the firmware's WAET table"]);
         let one_privilege = HyperVLeaves { privileges: 1, ..laptop };
-        assert_eq!(vm_signs(Some(one_privilege), false), ["a guest partition"]);
+        assert_eq!(vm_signs(Some(one_privilege), false, false), ["a guest partition"]);
+    }
+
+    /// Windows with VBS in a VirtualBox VM without WAET is Hyper-V's root, both privileges and not nested in Hyper-V, like a laptop's:
+    /// only SMBIOS, the VM's firmware, names the VM. A VM maker's name is a word in it, so a board's name holding one isn't one.
+    #[test]
+    fn smbios_naming_a_vm_maker_makes_a_vm() {
+        let laptop = HyperVLeaves { privileges: 0x002b_b9ff, recommendations: 0x0094_0d1c };
+        assert_eq!(vm_signs(Some(laptop), false, true), ["a VM maker's name in SMBIOS"], "VBS in a VirtualBox VM without WAET");
+        assert!(smbios_names_a_vm(&["innotek GmbH", "VirtualBox", "innotek GmbH", "VirtualBox"]));
+        assert!(smbios_names_a_vm(&["QEMU", "Standard PC (Q35 + ICH9, 2009)", "EFI Development Kit II / OVMF", "0.0.0"]));
+        assert!(smbios_names_a_vm(&["VMware, Inc.", "VMware20,1", "VMware, Inc.", "VMW201.00V.21805430.B64.2305221830"]));
+        assert!(smbios_names_a_vm(&["Xen", "HVM domU", "Xen", "4.11.amazon"]));
+        assert!(!smbios_names_a_vm(&["ASUS", "PRIME X670E-PRO WIFI", "American Megatrends Inc.", "1813"]));
+        assert!(!smbios_names_a_vm(&[
+            "Micro-Star International Co., Ltd.",
+            "MS-7E26",
+            "American Megatrends International, LLC.",
+            "Xenon 1.A0"
+        ]));
+    }
+
+    /// A hypervisor raw-cpuid doesn't know is named by its vendor text, not three registers in decimal ("Unknown(2020557398, ...)")
+    #[test]
+    fn an_unknown_hypervisor_is_named_by_its_vendor_text() {
+        use raw_cpuid::Hypervisor;
+        let word = |text: &[u8; 4]| u32::from_le_bytes(*text);
+        assert_eq!(hypervisor_name(Hypervisor::Unknown(word(b"VBox"), word(b"VBox"), word(b"VBox"))), "VBoxVBoxVBox");
+        assert_eq!(hypervisor_name(Hypervisor::Unknown(word(b"prl "), word(b"hype"), word(b"rv  "))), "prl hyperv");
+        assert_eq!(hypervisor_name(Hypervisor::Unknown(1, 0, 0)), "unidentified (0x00000001, 0x00000000, 0x00000000)");
+        assert_eq!(hypervisor_name(Hypervisor::HyperV), "HyperV");
+    }
+
+    /// CPUID 0x80000006 has the L2 in ECX and the L3 in EDX. Read the other way, QEMU's AMD model without topoext (no L3 in 0x8000001D)
+    /// had a 64 MB L3 and a 128 KB L2 for its 16 MB and 512 KB, and an Intel guest without an L3 in leaf 4 a 128 MB L3 from its 1 MB L2.
+    #[test]
+    fn the_legacy_leaf_reads_the_l2_from_ecx_and_the_l3_from_edx() {
+        assert_eq!(legacy_l2_l3(0x0200_6140, 0x0080_9140), (512 * KB, 16 * MB), "QEMU's AMD model without topoext");
+        assert_eq!(legacy_l2_l3(0x0400_6040, 0), (MB, 0), "Intel: EDX reserved");
     }
 }

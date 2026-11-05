@@ -102,8 +102,9 @@ threads. Each tier accepts a `scale` factor (any positive decimal in `0.01..=100
   A multi-L3 CPU (an EPYC's CCDs, a 2-CCD Ryzen) gives each group its own L3, and a single thread
   reaches one group's, so the divisor is the most threads the run puts in one group, not all of
   them; on one L3 the two are the same. CPUID fallback also applies a `÷2` VM factor when running
-  in a virtual machine: a guest of the hypervisor, a VM host nested in one, or firmware with ACPI's
-  WAET table, not a PC whose Windows runs VBS's hypervisor (`cache::vm_signs`, TODO 115).
+  in a virtual machine: a guest of the hypervisor, a VM host nested in a Hyper-V VM, firmware with
+  ACPI's WAET table, or SMBIOS naming a VM maker (VirtualBox, VMware, QEMU and the like), not a PC
+  whose Windows runs VBS's hypervisor (`cache::vm_signs`, TODO 115).
 - **DRAM**: per-thread working set = total L3 × scale. **No** thread divisor — each
   thread independently spills L3, which is what guarantees DRAM access under
   multi-threaded cache competition.
