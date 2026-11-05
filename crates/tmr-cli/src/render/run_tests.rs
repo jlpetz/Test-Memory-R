@@ -83,11 +83,15 @@ fn events_come_in_order_with_the_log_records() {
     // Its fake cycles and runs log as they are built, before each capture
     let _turn = turn();
     // The events and the run's own records: the workers' order among themselves is the scheduler's
+    // A step's bad word, the first of its error lines, marks its results' records (the thread's own count logs at debug, 0.1.1); one
+    // thread fails, so its order is fixed
+    let bad_word = |line: &str| line.contains(" tmr::tests]") && line.contains(": expected 0x") && !line.contains("Error found by the ");
     let order = |text: &str| -> Vec<String> {
         mask_stamps(text)
             .lines()
-            .filter(|line| line.starts_with('<') || line.contains(" tmr::runner]") || line.contains(" tmr::layout]"))
-            .map(|line| line.split_once("\x1b[0m ").map_or(line, |(_, message)| message).to_string())
+            .filter(|line| line.starts_with('<') || line.contains(" tmr::runner]") || line.contains(" tmr::layout]") || bad_word(line))
+            .map(|line| if bad_word(line) { "<bad word>" } else { line.split_once("\x1b[0m ").map_or(line, |(_, message)| message) })
+            .map(str::to_string)
             // Each step's own line, which opens it (TODO 105), isn't a record around an event
             .filter(|message| !message.starts_with("Running "))
             .collect()
@@ -97,7 +101,7 @@ fn events_come_in_order_with_the_log_records() {
         capture(|| cycle.run(&Recording)).1
     };
     let text = fake_cycle(ErrorMode::Log, Flip::Verify);
-    let verify_errors = "Thread 0 reported 1 memory errors in test 'Bench-Verify-TMR-10' (1 failed checks, 0 not reproduced on rescan)";
+    let verify_errors = "<bad word>";
     assert_eq!(order(&text), [
         "<SealStage SealAll>", "<StepFinished 1, 0 errors>", verify_errors, "<StepFinished 2, 1 errors>", "<StepFinished 3, 0 errors>",
         "<StepFinished 4, 0 errors>", "<SealStage FinalCheck>"
