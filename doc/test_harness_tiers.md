@@ -1,7 +1,7 @@
 # Test Harnesses and Execution Tiers
 
 **Status**: reference. Reflects the code as of 2026-09-14 (branch `clippy-cleanup-todo20`).
-**Related**: TODO #19 (the tier decision), TODO #28 (Tier 3, unbuilt),
+**Related**: TODO #19 (the tier decision), TODO 28 (the cross-thread tests, §8),
 `doc/simd_codegen_rules.md` (why macros, not generics), `doc/extent_chunk_modes.md`
 (what extent/chunk mean), `doc/test_parameters.md` (`parameter_context` fields).
 
@@ -96,7 +96,7 @@ entire distinction between Tier 1 and Tier 2. It is about *loop shape*, nothing 
 | **1 — Phased** | `run_phased_test` (`test_harness.rs:100`) | Harness | Cycle/chunk/block walk, shutdown checks, error-mode dispatch, byte + op accounting, progress, `TestStats`, `skip_init` for dependent tests, `flush_before_verify`, TM5 `write_read_cycles`/`test_reps`/`verify_reps` | The fixed nest above. One pattern per phase, linear chunk range, no delays |
 | **2 — Loop-owning** | `TestRunner` (`test_scaffolding.rs:28`) | **Test** | Extent sizing, block prep, timers, cycle counter, shutdown probe, throttled progress, error-mode dispatch, `TestStats` construction | You write the cycle/block/chunk walk and the byte accounting yourself |
 | **— Unscaffolded** | none (hand-rolled in a macro) | Test | nothing | You duplicate all of the above |
-| **3 — Concurrent** | worker/mailbox model — **not built** (TODO #28) | Coordinator routes *jobs*; workers own access | cross-thread coordination | does not exist yet |
+| **— Cross-thread** | Tier 2 plus a step-wide shared object (`exchange::Step`, `storm::Step`; TODO 28, §8) | Test | Work items other threads also touch (tiles, shared lines), a barrier between phases | The claim protocol and the barrier are the test's own |
 
 Tiers 1 and 2 are not independent implementations: `run_phased_test` **builds on** `TestRunner`
 internally (`test_harness.rs:130`), so extent sizing, the info log, timers, progress, and stats
@@ -221,9 +221,12 @@ would strip the SIMD. So the test keeps its loop and calls the runner between ch
 | `check_seal(start, len)` / `reseal(start, len)` | before / after working a chunk | The seal around the chunk (§3a), in bytes from the extent's start. No-ops unless the step wraps (`seal_wrap()`). The check's errors are the seal's, not the test's, but halt it under `errors=halt` |
 | `chunks(piece_size)` | once per piece | The piece's `ChunkSpread` (TODO 76): `count()` chunks of exactly `chunk()` bytes (the test's chunk, or the piece when it is shorter), at `start(k)`, spread evenly from 0 to the piece's end. Chunks overlap by under one chunk in total when the chunk doesn't divide the piece, so every word must depend only on its position. Byte offsets: convert to your own units. `half_chunks` is the same for a copy from a piece's first half to its second; `chunk_bytes()` is the bare size, for tests whose chunks aren't ranges (Mem-Random) |
 | `begin_cycle()` | top of each cycle | Increments and returns the cycle number |
-| `add_bytes(n)` | per chunk, before the halt check | Byte accounting, so a halted or interrupted test reports what ran. **You compute the multiplier** — StuckBit passes `chunk() * 6` (3 writes + 3 reads), Refresh `chunk() * 2`. Overlaps count each time |
+| `add_bytes(n)` | per chunk, before the halt check | Byte accounting, so a halted or interrupted test reports what ran. **You compute the multiplier** — StuckBit passes `chunk() * 6` (3 writes + 3 reads); Refresh passes `chunk()` in its write loop and `chunk()` again in its verify loop (TODO 112). Overlaps count each time |
 | `should_halt(cycle_errors)` | after a verify | Error-mode dispatch: panics on `Panic`, returns `true` on `Halt`, `false` on `Log` |
 | `shutdown_requested()` | between chunks | Relaxed load of `SHUTDOWN_REQUESTED`. **Never inside a kernel** |
+| `set_wait(left, of)` | during a wait | What's left of a wait and its length, for the ticker (Mem-Refresh's `refresh_wait`, TODO 112) |
+| `passes_to_check()` / `passes_done(passes, pass_bytes)` | a bandwidth test: before / after each run of passes | `passes_to_check()`: the passes to run as one loop before the next check (doubled or halved to keep checks about `CHECK_INTERVAL`, 10 ms, apart; at most 2^24, never past `cycles=`). `passes_done` counts them (cycles and bytes), then `check()`s; true when the step stops |
+| `check_due()` / `check()` | a latency test: after each sample, `check_due() && check()` | `check_due()` counts samples and is true after `every` of them or at the cycle limit, reading no clock. `check()` reads the clock once for the progress, the time limit and the next `every`, then the stop flag; true when the step stops (or when the count, a u32, nears its top) |
 | `update_progress()` / `update_progress_in_cycle()` | end of cycle / between chunks | Throttled to 250 ms; no-op without a progress sink. Tier 1 calls the in-cycle one per chunk, since one piece can be a whole cycle |
 | `should_continue()` | end of cycle | The timing/cycle gate |
 | `commit_cycle_errors(n)` | end of cycle | Folds the cycle's errors into the running total |
@@ -305,12 +308,16 @@ What sets them apart:
 
 - **No error checking** → `should_halt` and the error-mode dispatch, roughly half of what
   `TestRunner` does, is moot. `spd_*` takes `_error_mode` and always reports `error_count: 0`.
-- **Bandwidth deliberately does not chunk.** `spd_*` walks the whole extent per cycle (one
-  chunk under `whole`) and checks shutdown once per cycle. Chunking would insert a loop boundary
-  into the thing being measured; shutdown responsiveness is bounded by one extent pass instead.
+- **Bandwidth deliberately does not chunk.** `spd_*` walks the whole extent per pass (one
+  chunk under `whole`), runs `passes_to_check()` passes as one loop, then calls
+  `passes_done(passes, pass_bytes)`, which counts them and checks the clock and the stop flag
+  (`check`), keeping those checks about 10 ms apart (`CHECK_INTERVAL`, TODO 105 (2)). Chunking
+  would insert a loop boundary into the thing being measured. A stop is seen within about
+  20 ms, or one pass when a pass is longer.
 - **Latency needs a different return type.** `TestFunction::Latency` returns `LatencyTestStats`
   (percentiles, TSC samples), with `TestRunner::finish_completed` as its `basic_stats`. One cycle
-  is one sample.
+  is one sample. Each sample ends with `check_due() && check()`, which keeps its clock reads and
+  stop checks about 10 ms apart too.
 
 | Registration names | Module | Return type |
 |---|---|---|
@@ -324,25 +331,28 @@ What sets them apart:
 ## 7. Calibration — outside the pipeline entirely
 
 `calibration.rs` is not a tier. It does not go through the thread pool, does not return
-`TestStats`, and is not in `get_test_function_by_name`. It runs single-threaded via its own
-`ProbeEngine` (pointer-chasing latency sweep, then a finer one around each tier's edge),
-reached from `commands.rs` (`--calibrate-cache`). `run()` allocates its own buffer (TODO 22
-makes it a run's first step, on the run's own memory).
+`TestStats`, and is not in `get_test_function_by_name`. Its own `ProbeEngine` chases pointers:
+anchor A on one pinned thread (a latency sweep, then a finer one around each tier's edge), B on
+one core's two SMT threads, C on every CPU of A's NUMA node at once (`CalibrationCpus`), B's and
+C's threads scoped, pinned and starting together at a `Barrier` (`probe_shared`). A run
+calibrates before its tests, after allocation, on its own memory on that node
+(`runner::calibrate_on_allocation`, `calibration_span`; `calibrate=`), and under
+`calibrate=recheck` probes a stored one there first (`recheck_on_allocation`, TODO 116).
+`--calibrate-cache` (`commands.rs`) runs it on a buffer of its own, asked for on that node
+(TODO 22).
 
 ---
 
-## 8. Tier 3 — concurrent / worker model (not built)
+## 8. Cross-thread tests — Tier 2 with a shared step (TODO 28, built 2026-10-25)
 
-TODO #28. A coordinator routes **jobs** (region descriptors: test id, address range, stride,
-pattern, duration); workers own and execute all memory access locally. The settled rule is that
-individual loads/stores are **never** routed through a queue — any handoff between test logic and
-the actual access destroys the signal being measured. Handoff granularity is per work unit
-(~32 MB, ~100 ms–1 s of kernel time), never per access.
-
-The two tests that need it: **cross-thread page exchange** (thread A writes a page and enqueues
-it, thread B verifies A's pattern and writes its own) and coherence-storm variants. Both need
-thread-to-thread coordination that no per-thread harness can provide, because a Tier-1/2 test
-function is handed its own blocks and never talks to another thread.
+The tests whose threads coordinate mid-test are Tier 2 tests that share one object a step:
+`Mem-PageExchange` (`-Invert`, `-Rewrite`) claim tiles from every thread's extent through a state
+word a tile (`exchange::Step`, `TestMemoryConfig::exchange`) and meet at its barrier before their
+last check and reseal; `Mem-CoherenceStorm` bumps bytes of cache lines the step's threads share
+(`storm::Step`, `TestMemoryConfig::storm`), its threads starting together at its barrier. §5's
+table has both. The coordinator-and-jobs model this section used to describe was not built, and
+these tests don't need it. The settled rule stands: individual loads and stores are never routed
+through a queue; a thread claims a whole work item and works it in its own loop.
 
 ---
 
@@ -350,8 +360,10 @@ function is handed its own blocks and never talks to another thread.
 
 Work down this list; take the first match.
 
-1. **Does it need two threads to coordinate mid-test?** → Tier 3. It does not exist, so this
-   blocks on TODO #28.
+1. **Does it need two threads to coordinate mid-test?** → Tier 2 with a step-wide shared object,
+   as the page exchange and the coherence storm do (§8): the threads share it through
+   `TestMemoryConfig`, claim whole work items (never single accesses), and meet at a barrier
+   where a phase ends.
 2. **Is it a pure throughput or latency measurement with no correctness check?** → follow
    `bandwidth_tests.rs` / `latency_tests_v2.rs`. Consider adopting `TestRunner` for the
    boilerplate even so; there is no reason not to beyond it not having been done.
@@ -377,7 +389,7 @@ TODO #19's remaining test backlog is already assigned:
 - **Moving inversions** — Tier 2. Per-element read→modify→write, which no current test does. Write
   it as one concrete test; do **not** build a `march_element!` macro until a second march-shaped
   test appears
-- **Cross-thread page exchange** — Tier 3, blocked
+- **Cross-thread page exchange** — built (TODO 28): `Mem-PageExchange`, `-Invert`, `-Rewrite`, Tier 2 with a shared step (§8)
 - **Extended bit fade** — Refresh with a 1–60 min `wait_ms`, nothing more: it waits once a pass
 
 ---

@@ -5315,6 +5315,18 @@ mod tests {
     /// A word no test pattern writes, to find extent words a test never touched
     const UNTOUCHED: u64 = 0x5AF0_0FA5_C3D2_1E87;
 
+    /// The plans' Mem-RefreshAuto verifies without flushing (its extent is twice the caches) and Mem-Refresh-FlushAuto flushes first, as
+    /// refresh_impl!'s comment on the flush says
+    #[test]
+    fn only_the_flush_refresh_flushes_before_its_verify() {
+        let flushes = |name: &str| {
+            let tests = registered_tests(&CacheInfo::default());
+            tests.into_iter().find(|(test, ..)| *test == name).map(|(_, _, config)| config.flush_before_verify)
+        };
+        assert_eq!(flushes("Mem-RefreshAuto"), Some(false));
+        assert_eq!(flushes("Mem-Refresh-FlushAuto"), Some(true));
+    }
+
     /// TODO 22: a calibration measures on the span on its own node with the most bytes on it from its start, and on those alone, whatever
     /// the spans' order, labelled with the pages most of them are on: of equal spans, the highest thread's on the node; a span with a
     /// remote tail its bytes up to it, 4 KiB ones counting as the node's, where requiring a span wholly on the node fell to another node's;

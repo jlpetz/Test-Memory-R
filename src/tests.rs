@@ -1561,10 +1561,11 @@ macro_rules! refresh_impl {
 
                     // Optional flush (TODO #59, opt-in): evict this chunk so the post-wait verify reads DRAM rather than a cache-resident
                     // copy that would mask bit-fade. Writing the whole pass before the wait evicts most of it anyway when the extent is
-                    // past the caches (the built-in step's is twice them), and the verify sweeps forward, as the write did, so what
+                    // past the caches (Mem-RefreshAuto's is twice them), and the verify sweeps forward, as the write did, so what
                     // survives in cache is read last, after the verify's own reads have pulled most of an extent through. Turn it on to
                     // make the DRAM round-trip architecturally guaranteed instead of policy-dependent (shared virtualized L3,
-                    // non-inclusive caches, prefetchers); the built-in step and an imported RefreshStable do.
+                    // non-inclusive caches, prefetchers). Mem-Refresh-FlushAuto, the demo config's step and an imported RefreshStable
+                    // do; the plans' Mem-RefreshAuto doesn't.
                     if flush_before_verify {
                         let chunk_ptr = base.add(processed) as *const u8;
                         let chunk_bytes = (chunk_end - processed) * lanes;
