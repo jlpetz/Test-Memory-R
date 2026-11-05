@@ -582,7 +582,7 @@ Extent modes (`tests.rs:14-28`):
 |---|---|
 | `FullAllocation` | Everything the thread owns |
 | `Cache { target }` | Tier-aware: `"L3/2"`, `"L3*4"`, `"DRAM*8"`. Divides per-thread for L3, per-SMT-sibling for L1/L2. Uses calibration data when present |
-| `CacheTotal { fraction }` | `(L1+L2+L3) × fraction`. Not tier- or thread-aware |
+| `CacheTotal { fraction }` | `(every core's L1d+L1i+L2, one L3) × fraction`. Not tier- or thread-aware |
 | `Absolute { size_bytes }` | Hard byte count, e.g. `"880MB"`. Not the TM5 window: an import's extent is the full allocation (TODO 76) |
 
 ### 2.3 Stage 3 — chunk
@@ -596,7 +596,7 @@ divide it (`test_memory::ChunkSpread`):
 |---|---|
 | `Auto` | Per-test heuristic (`calculate_optimal_block_for_test`) |
 | `Cache { target }` | Tier-aware. `L3/N` keeps writes warm through verify; `DRAM*N` forces eviction (refresh stress) |
-| `CacheTotal { fraction }` | `(L1+L2+L3) × fraction` |
+| `CacheTotal { fraction }` | `(every core's L1d+L1i+L2, one L3) × fraction` |
 | `Absolute { size_bytes }` | Hard byte count. TM5 `Test Block Size` 4 and up imports as one, in MiB, capped at the `.cfg` window (`Fraction` was removed 2026-10-03) |
 | `Tm5Block { window, divisor, granularity }` | TM5 `Test Block Size` codes 0-3: the smaller of the `.cfg` window and the extent, / (code + 1), floored to the Lock Memory Granularity |
 | `Whole` | One chunk, the extent: the latency and bandwidth tests |

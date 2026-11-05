@@ -499,7 +499,7 @@ pub fn spec_to_chunk_mode(spec: &ChunkSpec) -> Result<ChunkMode, String> {
 /// Modes:
 /// - `full_allocation` — use entire per-thread allocation (no other fields needed)
 /// - `cache` — tier-aware sizing; requires `target` (e.g. `"L3/2"`, `"DRAM*4"`)
-/// - `cache_total` — coarse `(L1+L2+L3) × fraction`; requires `fraction`
+/// - `cache_total` — coarse `(every core's L1d+L1i+L2, one L3) × fraction`; requires `fraction`
 /// - `absolute` — hard byte size; requires `size` (string like `"880MB"`, `"4GiB"`)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]

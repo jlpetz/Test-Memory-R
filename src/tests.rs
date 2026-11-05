@@ -19,7 +19,7 @@ pub enum ExtentMode {
     /// (e.g. "L3/2", "L3*4", "DRAM*8"). Divides per-thread share for L3, per-SMT-sibling share for L1/L2. Calibration-aware when
     /// tmr-cfg.json data exists.
     Cache { target: CacheTarget },
-    /// Coarse `(L1+L2+L3) × fraction` working-set size. NOT tier-aware, NOT thread-aware. Originally designed as a
+    /// Coarse `(every core's L1d+L1i+L2, one L3) × fraction` working-set size. NOT tier-aware, NOT thread-aware. Originally designed as a
     /// "spill-the-whole-hierarchy" floor (multiplier > 1).
     /// Use `Cache` for precise tier targeting; this is for portable cross-machine ratios.
     CacheTotal { fraction: f64 },
@@ -387,7 +387,7 @@ pub enum ChunkMode {
     /// Tier-aware sizing — same target syntax as `ExtentMode::Cache`.
     /// L3/N keeps writes warm through verify; DRAM*N forces eviction (refresh stress).
     Cache { target: CacheTarget },
-    /// `(L1+L2+L3) × fraction`. NOT tier-aware. Coarse parity with `ExtentMode::CacheTotal`.
+    /// `(every core's L1d+L1i+L2, one L3) × fraction`. NOT tier-aware. Coarse parity with `ExtentMode::CacheTotal`.
     CacheTotal { fraction: f64 },
     /// Hard-coded byte size. Replaces former FixedSize (MB).
     Absolute { size_bytes: usize },
@@ -10582,11 +10582,15 @@ mod mirror_tests {
 mod l3_share {
     use super::*;
 
+    /// The run's settings these tests set are the process's: held by each, as `cargo test` runs a crate's tests on threads of one process
+    static RUN_SETTINGS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// An L3-sized extent is one L3 group's L3 over the run's threads in a group, calibrated or by CPUID: on an m8a.4xlarge-like CPU
     /// (two groups of 32 MiB, 8 threads in each) each of 16 threads gets 32 MiB / 8 x 0.5 = 2 MiB, not 32 MiB / 16 x 0.5 = 1 MiB. A test
     /// on fewer threads than a group runs shares among its own; before a session sets the groups, every thread shares one L3.
     #[test]
     fn an_l3_extent_is_one_groups_share() {
+        let _settings = RUN_SETTINGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         const MIB: usize = 1 << 20;
         let cache_info = CacheInfo { l3_cache: 32 * MIB, per_core_l2: MIB / 2, ..Default::default() };
         let l3 = CacheTarget::L3_DEFAULT;
@@ -10631,6 +10635,7 @@ mod l3_share {
     /// is 128 MiB a thread
     #[test]
     fn a_dram_extent_is_one_groups_l3_times_its_scale() {
+        let _settings = RUN_SETTINGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         const MIB: usize = 1 << 20;
         let cache_info = CacheInfo { l3_cache: 32 * MIB, ..Default::default() };
         reset_run_settings();

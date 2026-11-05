@@ -39,6 +39,9 @@ Note: --latency-test has been renamed to --ram-latency
 
 USAGE:
   tmr.exe                                    # Run with defaults
+  tmr.exe --gui                            # Open the window, any parameters given in its box; where it can't open, it says why
+  tmr.exe --gui --start                    #   ...and start the run as it opens
+  tmr.exe --cli                            # Run in the console (as any parameter does; with none, a double-click opens the window)
   tmr.exe config=test.json                  # Load modern JSON config (v2.0)
   tmr.exe config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)
   tmr.exe --create-demo-configs              # Create demo configuration files
@@ -51,13 +54,15 @@ USAGE:
                                           #   (DOMAIN\name, or .\name for this PC's; quote a name with spaces)
   tmr.exe --remove-large-pages             # Remove it from you, or from the Group:<name> or User:<name> given
   tmr.exe --calibrate-cache                # Measure the cache tiers' sizes, finer around each edge; saved to tmr-cfg.json after a prompt
-  tmr.exe --calibrate-curve                # Check the calibration's curve: the L3 at thread counts, against it (saves nothing)
-                                          #   (an L3 of up to 8 cores: every count; a larger one: 1-4, 6, 8, 12, 16, 24 ... all)
+  tmr.exe --calibrate-curve                # Check the calibration's curve: the L3 against it on k cores of each L3 (saves nothing)
+                                          #   (k: an L3 of up to 8 cores, every count; a larger one, 1-4, 6, 8, 12, 16, 24 ... all),
+                                          #   one thread a core, then both
   tmr.exe --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto
                                           #   then runs the fastest (a narrower one if it is as fast)
   tmr.exe --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)
   tmr.exe --calibrate-cache --yes          #   any calibration: --yes saves without asking, --no-save keeps what is
                                           #   stored; with neither it asks, and saves if no answer can come
+  tmr.exe --calibrate-all --output x.json  #   --calibrate-cache or -all: also writes the cache tiers it measured to x.json, here
   tmr.exe plan=stability                   # The default: the stability tests at the widest width (or width=)
   tmr.exe plan=quick                       # The stability tests once
   tmr.exe plan=widths                      # Every width of the tests that have them, side by side

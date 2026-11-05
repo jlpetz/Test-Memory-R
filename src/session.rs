@@ -28,6 +28,13 @@ pub(crate) const RAM_LATENCY_FILTER: &str = "Lat-DRAM-*,Lat-DRAMFull-*";
 pub(crate) const CACHE_LATENCY_FILTER: &str = "Lat-L1-*,Lat-L2-*,Lat-L3-*,Lat-DRAM-*";
 /// The flags that pick a mode's defaults, which `run` takes out before it looks for a one-shot command (`logfile::wanted` too)
 pub(crate) const MODE_FLAGS: [&str; 3] = ["--ram-latency", "--cache-latency", "--quick-test"];
+/// Every flag a session takes, exactly: any other is refused before anything runs (`Stopped::UnknownFlags`); `--help` names each
+pub(crate) const KNOWN_FLAGS: [&str; 25] = [
+    "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-curve", "--calibrate-seal", "--calibrate-all",
+    "--output", "--yes", "--no-save", "--create-demo-configs", "--compare-results", "--show-results", "--debug-topology",
+    "--show-topology", "--setup-large-pages", "--remove-large-pages", "--startup-debug", "--disable-pinning", "--no-serials", "--help",
+    "-h", "-?", "--version", "-v",
+];
 
 /// How a session ended. An error that stops it is `run`'s `Err`.
 pub enum SessionEnd {
@@ -151,18 +158,11 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
 
     // Validate that all -- flags are recognized before processing
     // This catches typos and deprecated flags early with helpful error messages
-    let known_flags = [
-        "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-curve", "--calibrate-seal",
-        "--calibrate-all", "--output", "--yes", "--no-save", "--create-demo-configs", "--compare-results", "--show-results",
-        "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages", "--startup-debug", "--disable-pinning",
-        "--no-serials", "--help", "-h", "-?", "--version", "-v",
-    ];
-
     let unknown_flags: Vec<String> = args
         .iter()
         .filter(|arg| arg.starts_with("--") || arg.starts_with("-"))
         // Exactly: no flag takes a value (`--flag=value`), and a prefix let a typo through (`--quick-tests` ran the stability plan)
-        .filter(|arg| !known_flags.contains(&arg.as_str()))
+        .filter(|arg| !KNOWN_FLAGS.contains(&arg.as_str()))
         .cloned()
         .collect();
 

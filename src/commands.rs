@@ -122,6 +122,17 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out)?;
     writeln!(out, "USAGE:")?;
     writeln!(out, "  {}                                    # Run with defaults", program_name)?;
+    writeln!(
+        out,
+        "  {} --gui                            # Open the window, any parameters given in its box; where it can't open, it says why",
+        program_name
+    )?;
+    writeln!(out, "  {} --gui --start                    #   ...and start the run as it opens", program_name)?;
+    writeln!(
+        out,
+        "  {} --cli                            # Run in the console (as any parameter does; with none, a double-click opens the window)",
+        program_name
+    )?;
     writeln!(out, "  {} config=test.json                  # Load modern JSON config (v2.0)", program_name)?;
     writeln!(out, "  {} config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)", program_name)?;
     writeln!(out, "  {} --create-demo-configs              # Create demo configuration files", program_name)?;
@@ -148,13 +159,14 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     )?;
     writeln!(
         out,
-        "  {} --calibrate-curve                # Check the calibration's curve: the L3 at thread counts, against it (saves nothing)",
+        "  {} --calibrate-curve                # Check the calibration's curve: the L3 against it on k cores of each L3 (saves nothing)",
         program_name
     )?;
     writeln!(
         out,
-        "                                          #   (an L3 of up to 8 cores: every count; a larger one: 1-4, 6, 8, 12, 16, 24 ... all)"
+        "                                          #   (k: an L3 of up to 8 cores, every count; a larger one, 1-4, 6, 8, 12, 16, 24 ... all),"
     )?;
+    writeln!(out, "                                          #   one thread a core, then both")?;
     writeln!(
         out,
         "  {} --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto",
@@ -172,6 +184,11 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
         program_name
     )?;
     writeln!(out, "                                          #   stored; with neither it asks, and saves if no answer can come")?;
+    writeln!(
+        out,
+        "  {} --calibrate-all --output x.json  #   --calibrate-cache or -all: also writes the cache tiers it measured to x.json, here",
+        program_name
+    )?;
     writeln!(
         out,
         "  {} plan=stability                   # The default: the stability tests at the widest width (or width=)",
@@ -342,7 +359,7 @@ fn demo_configs(out: &mut dyn Write) -> io::Result<RunStatus> {
     writeln!(out, "In {}:", crate::home::configs().display())?;
     writeln!(out, "✅ Created demo_comprehensive_test.json - Modern comprehensive memory testing")?;
     writeln!(out, "   Features: Full memory stuck bit test + timed stress tests")?;
-    writeln!(out, "   Timing: 1 cycle, each test once")?;
+    writeln!(out, "   Timing: 1 cycle, each step once")?;
     writeln!(out, "   Memory: Uses full allocation for critical tests, optimized windows for others")?;
     writeln!(out)?;
     writeln!(out, "✅ Created demo_tm5_compatible.json - TM5-compatible configuration")?;
@@ -688,8 +705,8 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
         writeln!(out, "❌ {e}")?;
         return Ok(RunStatus::NotRun);
     }
-    // TODO 22's curve check: the calibration, then the L3 at thread counts up to a group's cores (`curve_counts`), against its curve; it
-    // saves nothing
+    // TODO 22's curve check: the calibration, then the L3 with k of each group's cores running (`curve_counts`), one thread a core and then
+    // both, against its curve; it saves nothing
     if command == "--calibrate-curve" {
         writeln!(out, "🔬 TMR Calibration Curve Check (saves nothing)")?;
         writeln!(out, "=============================================\n")?;
@@ -1034,6 +1051,13 @@ mod tests {
         for key in crate::params::get_registry().all_keys() {
             let named = if key.starts_with("--") { format!("{key} ") } else { format!("{key}=") };
             assert!(starts.iter().any(|line| line.starts_with(&named)), "--help has no line for {key}");
+        }
+        // And every flag a session takes, and the frontends' (`--gui` and `--cli`, tmr-app's launch.rs; `--start`, the window's), each named
+        // on a line, but --help itself and the short forms of it and of --version
+        let words: Vec<&str> = text.split(|c: char| c.is_whitespace() || ",;:()".contains(c)).collect();
+        let flags = crate::session::KNOWN_FLAGS.into_iter().chain(["--gui", "--cli", "--start"]);
+        for flag in flags.filter(|flag| !["--help", "-h", "-?", "-v"].contains(flag)) {
+            assert!(words.contains(&flag), "--help names no {flag}");
         }
     }
 
