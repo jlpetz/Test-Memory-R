@@ -606,14 +606,6 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         crate::set_calibration_data(None);
     }
 
-    // Display CPU topology right after system information
-    let (report, smt_p_cores, e_cores_skipped_first) =
-        crate::cpu_selection::startup_topology(&cores, &request, &choice, pinning_config.enable_pinning, is_hybrid_cpu(topology));
-    fe.event(Setup::CpuTopology { report: Box::new(report), smt_p_cores, e_cores_skipped_first }.into());
-
-    // Show memory stats
-    fe.event(Setup::MemoryStatus(crate::runner::memory_status()).into());
-
     {
         use crate::reporting::system_info_builder::build_system_info_report;
 
@@ -635,6 +627,12 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
             .into(),
         );
     }
+
+    // The setup's order (the owner, 0.1.1): the machine, then Windows' memory, then the CPUs the threads take; none needs another's
+    fe.event(Setup::MemoryStatus(crate::runner::memory_status()).into());
+    let (report, smt_p_cores, e_cores_skipped_first) =
+        crate::cpu_selection::startup_topology(&cores, &request, &choice, pinning_config.enable_pinning, is_hybrid_cpu(topology));
+    fe.event(Setup::CpuTopology { report: Box::new(report), smt_p_cores, e_cores_skipped_first }.into());
 
     // Calculate memory layout using enhanced system
     // Checks the block sizes too, so a bad one stops the run before anything is allocated

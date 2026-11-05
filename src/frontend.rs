@@ -155,11 +155,6 @@ pub enum Setup {
     /// The seal calibration `seal-width=auto` takes. Its own event, because checking it against this machine logs
     /// (`AppConfig::valid_seal_calibration`).
     SealCalibration(SealCalibrationState),
-    /// The CPUs and the threads assigned them, with each core's priority and L3 group, which order them (TODO 108); on a hybrid CPU, how
-    /// many of its P-cores have SMT (`None` on one that isn't), and whether skip-cores= skipped E-cores first
-    CpuTopology { report: Box<CpuTopologyReport>, smt_p_cores: Option<usize>, e_cores_skipped_first: bool },
-    /// The system's memory now, `None` when Windows doesn't say
-    MemoryStatus(Option<MemoryStatus>),
     /// The CPU, its caches and TSC, and the memory modules SMBIOS lists
     SystemInfo {
         report: Box<SystemInfoReport>,
@@ -170,6 +165,11 @@ pub enum Setup {
         /// The hypervisor, when CPUID says one runs: a VM's, or the one Windows' VBS runs on a desktop (TODO 115)
         hypervisor: Option<Hypervisor>,
     },
+    /// The system's memory now, `None` when Windows doesn't say
+    MemoryStatus(Option<MemoryStatus>),
+    /// The CPUs and the threads assigned them, with each core's priority and L3 group, which order them (TODO 108); on a hybrid CPU, how
+    /// many of its P-cores have SMT (`None` on one that isn't), and whether skip-cores= skipped E-cores first
+    CpuTopology { report: Box<CpuTopologyReport>, smt_p_cores: Option<usize>, e_cores_skipped_first: bool },
     /// The tests are about to start (the CLI takes Ctrl+C from here)
     Starting,
     /// `priority=realtime` with a worker on every logical CPU, which can freeze the console and input
