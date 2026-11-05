@@ -69,8 +69,12 @@ and serial numbers) and the motherboard's system UUID, so mind that before you p
   24-bit, chosen with `beat=`. A random family feeds every line every short bit sequence, which DDR5's receive
   equalisers react to. Both aim to make a marginal overclock fail sooner.
 - **Built-in test plans** (`plan=`; `stability` by default), **results as JSON** saved during the
-  run and comparable between runs, and a console (CLI) and a window (GUI, WinUI 3 through
-  `windows-reactor`) in one `tmr.exe`.
+  run and comparable between runs, and a console (CLI) and a window (GUI) in one `tmr.exe`.
+- **The window is WinUI 3, through [Reactor](https://github.com/microsoft/windows-rs/blob/master/crates/libs/reactor/readme.md)**
+  (`windows-reactor`, from Microsoft's windows-rs). It was chosen because it proved very light in
+  testing, even in a VM with no GPU, so it leaves the machine to the test. The trade-off is that
+  Reactor is young: some things the window would like, such as monospaced text in its controls and
+  a log that follows its end, aren't there yet. The window will gain that polish as Reactor does.
 
 ## Supported Windows OSes
 
