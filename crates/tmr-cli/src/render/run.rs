@@ -267,9 +267,10 @@ fn step_report(report: &StepReport) -> String {
     // Calculate operations per second
     let ops_per_sec = if *timed_secs > 0.0 { s.operations as f64 / timed_secs } else { 0.0 };
 
-    // The consolidated P50 and spread of a latency step
-    let latency_info = match (s.latency_p50_ns, s.latency_spread) {
-        (Some(p50), Some(spread)) => format!(", P50: {:.1}ns, Spread: {:.2}x", p50, spread),
+    // The consolidated P50 and spread of a latency step; a loaded latency test's headline, its rows being a load each (TODO 117)
+    let latency_info = match (s.loaded.as_deref(), s.latency_p50_ns, s.latency_spread) {
+        (Some(loaded), _, _) => format!(", {}", loaded.headline()),
+        (None, Some(p50), Some(spread)) => format!(", P50: {:.1}ns, Spread: {:.2}x", p50, spread),
         _ => String::new(),
     };
 
@@ -324,9 +325,14 @@ fn step_report(report: &StepReport) -> String {
         config.parameter, config.mode, config.extent, config.chunk, reps_str
     );
 
-    // Thread timing deviations, and a latency step's latencies
-    text += &report_text("thread timing report", |r| r.report_thread_timing(threads));
-    if let Some(latency) = latency {
+    // Thread timing deviations, and a latency step's latencies: a loaded latency test's by load, its timing table its loaders', none when
+    // it has none (TODO 117)
+    if s.loaded.is_none() || !threads.thread_timings.is_empty() {
+        text += &report_text("thread timing report", |r| r.report_thread_timing(threads));
+    }
+    if let Some(loaded) = s.loaded.as_deref() {
+        text += &report_text("loaded latency report", |r| r.report_loaded(loaded));
+    } else if let Some(latency) = latency {
         text += &report_text("latency report", |r| r.report_latency_summary(latency));
     }
 

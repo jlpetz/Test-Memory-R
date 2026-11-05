@@ -191,6 +191,9 @@ pub struct TestSummary {
     pub latency_p99_ns: Option<f64>,
     pub latency_p99_9_ns: Option<f64>,
     pub latency_spread: Option<f64>,
+    /// A loaded latency test's latencies (TODO 117): its rows, each load's own, and the raw windows they came from. Its `latency_*` above
+    /// are `None`: one P50 merged over every load would mean nothing. `None` for every other step
+    pub loaded: Option<Box<crate::loaded::LoadedSummary>>,
     /// Each thread's part of the step, by thread (TODO 72); none for a step that didn't run
     pub threads: Vec<crate::results::ThreadStepRecord>,
 }

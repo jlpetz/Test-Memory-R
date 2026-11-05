@@ -169,6 +169,19 @@ impl<R: Renderer> Reporter<R> {
         Ok(())
     }
 
+    /// A loaded latency test's latencies (TODO 117), in place of a latency step's by thread: its header lines, what its figures can't be
+    /// taken for, and its table, a row a load
+    pub fn report_loaded(&mut self, summary: &crate::loaded::LoadedSummary) -> Result<()> {
+        for line in self.formatter.loaded_header_lines(summary) {
+            self.renderer.render_text(&line)?;
+        }
+        for warning in self.formatter.loaded_warnings(summary) {
+            self.renderer.render_warning(&warning)?;
+        }
+        let table = self.formatter.prepare_loaded_table(summary);
+        self.renderer.render_table(&table)
+    }
+
     /// The allocation report (TODO 81): by node, the requests, by thread, each thread's requests, and with more than one thread, how evenly
     /// they were served.
     pub fn report_allocation(&mut self, report: &AllocationReport) -> Result<()> {

@@ -1641,6 +1641,7 @@ mod tests {
                 latency_p99_ns: None,
                 latency_p99_9_ns: None,
                 latency_spread: None,
+                loaded: None,
                 threads: Vec::new(),
             },
             wall: Duration::from_millis(10_500),

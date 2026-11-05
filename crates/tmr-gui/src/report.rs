@@ -32,7 +32,7 @@ pub struct Report {
 
 impl Report {
     /// A step's: the console's step report (crates/tmr-cli's `render/run.rs`, `step_report`), its first line the verdict, and its threads'
-    /// table and a latency step's latencies the engine's
+    /// table and a latency step's latencies the engine's, a loaded latency test's by load
     pub fn of_step(report: &StepReport) -> Self {
         let StepReport { cycle, summary: s, wall, timed_secs, cycle_limit, stopped_by_time, config, threads, latency, .. } = report;
         let errors = report.errors();
@@ -40,8 +40,10 @@ impl Report {
         let verdict = format!("{} · {:.1} s · {errors}", if failed { "❌ Failed" } else { "✅ Passed" }, wall.as_secs_f64());
 
         let ops_per_sec = if *timed_secs > 0.0 { s.operations as f64 / timed_secs } else { 0.0 };
-        let latency_line = match (s.latency_p50_ns, s.latency_spread) {
-            (Some(p50), Some(spread)) => format!(", P50 {p50:.1} ns, spread {spread:.2}x"),
+        // A loaded latency test's headline, its rows being a load each (TODO 117)
+        let latency_line = match (s.loaded.as_deref(), s.latency_p50_ns, s.latency_spread) {
+            (Some(loaded), _, _) => format!(", {}", loaded.headline()),
+            (None, Some(p50), Some(spread)) => format!(", P50 {p50:.1} ns, spread {spread:.2}x"),
             _ => String::new(),
         };
         // The bits that failed first, as the console's report has them (TODO 109)
@@ -79,10 +81,14 @@ impl Report {
         }
 
         let blocks = blocks(|r| {
-            r.report_thread_timing(threads)?;
-            match latency {
-                Some(latency) => r.report_latency_summary(latency),
-                None => Ok(()),
+            // A loaded latency test's are its loaders', none when it has none (TODO 117)
+            if s.loaded.is_none() || !threads.thread_timings.is_empty() {
+                r.report_thread_timing(threads)?;
+            }
+            match (s.loaded.as_deref(), latency) {
+                (Some(loaded), _) => r.report_loaded(loaded),
+                (None, Some(latency)) => r.report_latency_summary(latency),
+                (None, None) => Ok(()),
             }
         });
         Report { title: format!("Cycle {cycle} · step {} · {}", s.step, s.label), verdict, failed, lines, blocks }
@@ -246,6 +252,33 @@ mod tests {
             "{}",
             report.verdict
         );
+    }
+
+    /// TODO 117: a loaded latency step's report has its headline on its Test: line and its rows in place of a latency table, after its
+    /// loaders' timing table: the engine's lines and table, as the console's (`test_support::loaded_step_report`, crates/tmr-cli's events
+    /// golden)
+    #[test]
+    fn a_loaded_steps_report_is_its_rows() {
+        let report = Report::of_step(&tmr::test_support::loaded_step_report());
+        assert_eq!(report.title, "Cycle 1 · step 2 · Lat-Loaded-DRAM");
+        assert!(
+            report.lines[0].starts_with("Test: 9.6 s, 91.00 GiB @ 9,707 MiB/s, ")
+                && report.lines[0].ends_with(" ops/s, Under load: writes 451.7 ns @ 16117 MiB/s, reads 264.8 ns @ 27180 MiB/s"),
+            "{}",
+            report.lines[0]
+        );
+        assert!(!report.lines.iter().any(|line| line.contains("P50")), "{:?}", report.lines);
+        let outline = outline(&report);
+        assert_eq!((outline.len(), outline[0].as_str(), outline[3].as_str()), (4, "table ", "table "), "{outline:?}");
+        assert!(
+            outline[1] == "🔍 Under load: thread 0 (CPU 2, core 1, node 0) measures; 7 threads load, one a core; 8 sit out"
+                && outline[2].starts_with("   1.00 GiB chain in 128 B cells; 256-bit loaders in 4 KiB blocks; 1.0 s windows"),
+            "the engine's header lines: {outline:?}"
+        );
+        let Some(Block::Table(rows)) = report.blocks.last() else { panic!("{:?}", report.blocks) };
+        assert_eq!(rows.rows.iter().map(|row| row[0].as_str()).collect::<Vec<_>>(), ["idle", "full"]);
+        let Some(Block::Table(threads)) = report.blocks.first() else { panic!("{:?}", report.blocks) };
+        assert_eq!(threads.rows.len(), 8, "the 7 loaders and their average");
     }
 
     #[test]

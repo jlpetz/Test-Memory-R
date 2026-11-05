@@ -96,7 +96,7 @@ entire distinction between Tier 1 and Tier 2. It is about *loop shape*, nothing 
 | **1 — Phased** | `run_phased_test` (`test_harness.rs:100`) | Harness | Cycle/chunk/block walk, shutdown checks, error-mode dispatch, byte + op accounting, progress, `TestStats`, `skip_init` for dependent tests, `flush_before_verify`, TM5 `write_read_cycles`/`test_reps`/`verify_reps` | The fixed nest above. One pattern per phase, linear chunk range, no delays |
 | **2 — Loop-owning** | `TestRunner` (`test_scaffolding.rs:28`) | **Test** | Extent sizing, block prep, timers, cycle counter, shutdown probe, throttled progress, error-mode dispatch, `TestStats` construction | You write the cycle/block/chunk walk and the byte accounting yourself |
 | **— Unscaffolded** | none (hand-rolled in a macro) | Test | nothing | You duplicate all of the above |
-| **— Cross-thread** | Tier 2 plus a step-wide shared object (`exchange::Step`, `storm::Step`; TODO 28, §8) | Test | Work items other threads also touch (tiles, shared lines), a barrier between phases | The claim protocol and the barrier are the test's own |
+| **— Cross-thread** | Tier 2 plus a step-wide shared object (`exchange::Step`, `storm::Step`, `loaded::Step`; TODO 28, 117, §8) | Test | Work items other threads also touch (tiles, shared lines), a barrier between phases | The claim protocol and the barrier are the test's own |
 
 Tiers 1 and 2 are not independent implementations: `run_phased_test` **builds on** `TestRunner`
 internally (`test_harness.rs:130`), so extent sizing, the info log, timers, progress, and stats
@@ -325,6 +325,7 @@ What sets them apart:
 | `Spd-{DRAMSmall,DRAMFull}-{Read,Write,Copy}-Auto` | `bandwidth_tests.rs` (NT stores for Write/Copy) | `TestStats` |
 | `Lat-{L1,L2,L3,DRAM,DRAMFull}-{Read,Write,Copy}` (15) | `latency_tests.rs` (v1) | `LatencyTestStats` |
 | `Lat-V2-*`, `Lat-V2P-*`, `Lat-NTW-*` | `latency_tests_v2.rs` | `LatencyTestStats` |
+| `Lat-Loaded-DRAM` (TODO 117) | `loaded.rs`, its threads sharing a step (§8) | `LatencyTestStats`, the measurer's with its windows (`loaded`) |
 
 ---
 
@@ -353,6 +354,14 @@ last check and reseal; `Mem-CoherenceStorm` bumps bytes of cache lines the step'
 table has both. The coordinator-and-jobs model this section used to describe was not built, and
 these tests don't need it. The settled rule stands: individual loads and stores are never routed
 through a queue; a thread claims a whole work item and works it in its own loop.
+
+`Lat-Loaded-DRAM` (TODO 117, §6's table) shares `loaded::Step` (`TestMemoryConfig::loaded`),
+and each thread takes a role in it once, from the step's CPUs: thread 0 measures, the first
+thread of each other physical core on its node loads, and the rest sit out and return at once.
+The measurer and the loaders meet at its barrier, and the measurer drives the loaders' load
+window by window through a phase word, which they read once a 4 KiB block. Its latencies are the
+measurer's rows, a load each (`TestSummary::loaded`), never one P50 merged over its threads, and
+its timing table is its loaders'.
 
 ---
 

@@ -4,6 +4,7 @@ use std::time::Duration;
 /// This layer handles all the "how to format" decisions
 use super::models::*;
 use crate::constants::BYTES_PER_MIB;
+use crate::loaded::LoadedSummary;
 use crate::whea::WheaCounts;
 
 /// Footer for the tables whose CPU columns are marked ⚠️ when pinning is off.
@@ -88,6 +89,18 @@ pub trait ReportFormatter: Send + Sync {
 
     /// Prepare latency test summary tables (multi-threaded results)
     fn prepare_latency_per_thread_table(&self, level: &LatencyLevelSummary) -> TableData;
+
+    /// A loaded latency test's lines above its table (TODO 117): who measures, loads and sits out, and how it measures
+    fn loaded_header_lines(&self, summary: &LoadedSummary) -> Vec<String>;
+    /// What its figures can't be taken for: a chain under 16 L3s, a schedule a stop cut short
+    fn loaded_warnings(&self, summary: &LoadedSummary) -> Vec<String>;
+    /// Its table: a row a load, each kind of load's latency with its range and the loaders' MiB/s, and at a level its turnaround
+    fn prepare_loaded_table(&self, summary: &LoadedSummary) -> TableData;
+}
+
+/// A loaded latency test's window or settle (TODO 117): `1.0 s`, `0.2 s`, and a unit test's few milliseconds, `5 ms`
+fn window_length(ms: f64) -> String {
+    if ms >= 100.0 { format!("{:.1} s", ms / 1000.0) } else { format!("{ms:.0} ms") }
 }
 
 /// Default formatter implementation
@@ -1587,6 +1600,83 @@ impl ReportFormatter for DefaultFormatter {
             format!("{:.2}x", p.spread_ratio),
         ]);
 
+        table
+    }
+
+    fn loaded_header_lines(&self, s: &LoadedSummary) -> Vec<String> {
+        let m = &s.measurer;
+        let mut who = vec![format!("thread {} (CPU {}, core {}, node {}) measures", m.thread, m.cpu, m.core, m.node)];
+        who.push(match s.loaders.len() {
+            0 => "no other core on its node loads, so idle only".to_string(),
+            1 => "1 thread loads".to_string(),
+            n => format!("{n} threads load, one a core"),
+        });
+        match s.sat_out.len() {
+            0 => {}
+            1 => who.push("1 sits out".to_string()),
+            n => who.push(format!("{n} sit out")),
+        }
+        let bytes = |n: usize| self.format_bytes_precise(n as u64, 0);
+        let mut how = vec![format!("{} chain in {} cells", self.format_bytes(s.chain_bytes as u64), bytes(s.cell_bytes))];
+        if !s.loaders.is_empty() {
+            how.push(format!("{}-bit loaders in {} blocks", s.width, bytes(s.block_bytes)));
+        }
+        how.push(format!("{} windows after {} settles", window_length(s.window_ms), window_length(s.settle_ms)));
+        how.push("median of window means [lowest-highest]".to_string());
+        vec![format!("🔍 Under load: {}", who.join("; ")), format!("   {}", how.join("; "))]
+    }
+
+    fn loaded_warnings(&self, s: &LoadedSummary) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if s.l3_bytes > 0 && s.chain_bytes < 16 * s.l3_bytes {
+            warnings.push(format!(
+                "The chain is under 16 L3s ({}): its thread's span capped it, and some of its reads may hit the L3",
+                self.format_bytes(16 * s.l3_bytes as u64)
+            ));
+        }
+        if s.partial {
+            warnings.push(format!("Stopped before its schedule ended: the rows are its first {} windows'", s.windows.len()));
+        }
+        warnings
+    }
+
+    fn prepare_loaded_table(&self, s: &LoadedSummary) -> TableData {
+        use crate::loaded::{Cell, Load};
+        // The turnaround's column only with a level to have one
+        let levels = s.rows.iter().any(|row| matches!(row.load, Load::Level(_)));
+        let mut table = TableData::new()
+            .add_header("Load", ColumnAlignment::Left)
+            .add_header("Under NT writes", ColumnAlignment::Right)
+            .add_header("MiB/s", ColumnAlignment::Right)
+            .add_header("Under reads", ColumnAlignment::Right)
+            .add_header("MiB/s", ColumnAlignment::Right);
+        if levels {
+            table = table.add_header("Turnaround", ColumnAlignment::Right);
+        }
+        let ns = |c: &Option<Cell>| c.as_ref().map_or("-".to_string(), |c| format!("{:.1} ns [{:.1}-{:.1}]", c.ns, c.lowest, c.highest));
+        let mib_s = |c: &Option<Cell>| c.as_ref().map_or("-".to_string(), |c| format!("{:.0}", c.mib_s));
+        for row in &s.rows {
+            let mut cells = match row.load {
+                // An idle window's latency is under no load: the row's one figure, in the first column
+                Load::Idle => vec!["idle".to_string(), ns(&row.idle), String::new(), String::new(), String::new()],
+                Load::Level(_) | Load::Full => {
+                    let load = match row.target_mib_s {
+                        Some(target) => format!("{target:.0} MiB/s"),
+                        None => "full".to_string(),
+                    };
+                    vec![load, ns(&row.writes), mib_s(&row.writes), ns(&row.reads), mib_s(&row.reads)]
+                }
+            };
+            if levels {
+                cells.push(match (row.load, row.matched, &row.turnaround) {
+                    (Load::Level(_), Some(false), _) => "not matched".to_string(),
+                    (Load::Level(_), _, Some(t)) => format!("{:+.1} ns [{:+.1} - {:+.1}]", t.ns, t.lowest, t.highest),
+                    (Load::Level(_), _, None) => "-".to_string(),
+                    _ => String::new(),
+                });
+            }
+            table = table.add_row(cells);
+        }
         table
     }
 }

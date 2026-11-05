@@ -287,6 +287,13 @@ pub struct LoadedPart {
     pub partial: bool,
 }
 
+impl LoadedPart {
+    /// Thread `thread`'s role, as the step's (`Step::role`): past the step's threads, sitting out
+    pub fn role(&self, thread: usize) -> Role {
+        self.roles.get(thread).copied().unwrap_or(Role::SitsOut)
+    }
+}
+
 /// A row's figures under one kind of load: the median of its windows' means with [lowest-highest], the P50 and P99 of its samples, and
 /// the loaders' median MiB/s.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -346,6 +353,10 @@ pub struct LoadedSummary {
     pub loaders: Vec<usize>,
     pub sat_out: Vec<usize>,
     pub chain_bytes: usize,
+    /// The L3 the chain is sized by (one instance, CPUID's; `extent_bytes`), which the runner sets: under 16 of them some of its reads may
+    /// hit the L3, and the report warns. 0 when unknown
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub l3_bytes: usize,
     pub cell_bytes: usize,
     /// The loaders' kernels' width, in bits
     pub width: u32,
@@ -381,6 +392,10 @@ impl LoadedSummary {
             (None, None) => "Under load: no window measured".to_string(),
         }
     }
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// The median of `values` (the mean of the middle two of an even count); 0 with none
@@ -462,6 +477,7 @@ pub fn summarize(part: &LoadedPart) -> LoadedSummary {
         loaders: threads(|r| matches!(r, Role::Loads { .. })),
         sat_out: threads(|r| r == Role::SitsOut),
         chain_bytes: part.chain_bytes,
+        l3_bytes: 0,
         cell_bytes: CELL,
         width: part.width.bits(),
         block_bytes: BLOCK,

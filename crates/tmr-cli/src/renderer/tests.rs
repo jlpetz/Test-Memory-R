@@ -266,3 +266,30 @@ fn latency_summary() {
     result.unwrap();
     check("report_latency_summary", &text);
 }
+
+/// TODO 117: a loaded latency test's latencies, each after a `## case` line (`test_support::loaded_summary`): Lat-Loaded-DRAM's idle and
+/// flat-out rows; with levels, each level's row and turnaround, the third not matched; one thread, no loaders, so idle only; and a chain
+/// under 16 L3s, stopped mid-schedule.
+#[test]
+fn loaded() {
+    let full = test_support::loaded_summary(false);
+    let idle = test_support::loaded_windows(&full, &[0, 7], false);
+    let cut =
+        tmr::frontend::LoadedSummary { chain_bytes: 256 * MIB as usize, ..test_support::loaded_windows(&full, &[0, 1, 2, 3, 4], true) };
+    let cases = [
+        ("Lat-Loaded-DRAM", full),
+        ("Lat-Turnaround-DRAM's levels, the third not matched", test_support::loaded_summary(true)),
+        ("no loaders: idle only", idle),
+        ("a chain under 16 L3s, stopped mid-schedule", cut),
+    ];
+    let mut text = String::new();
+    for (case, summary) in cases {
+        let (result, printed) = rendered(|reporter| reporter.report_loaded(&summary));
+        result.unwrap();
+        text += &format!(
+            "## {case}
+{printed}"
+        );
+    }
+    check("report_loaded", &text);
+}

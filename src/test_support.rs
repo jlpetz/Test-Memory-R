@@ -249,7 +249,119 @@ pub(crate) fn summary(step: usize, duration_ms: u128, bytes_processed: u64, seal
         latency_p99_ns: None,
         latency_p99_9_ns: None,
         latency_spread: None,
+        loaded: None,
         threads: Vec::new(),
+    }
+}
+
+/// A loaded latency test's latencies (TODO 117), from raw windows through `loaded::rows` as a run's step takes them: daddy-petz at
+/// DDR4-2133, its figures near the probe's (`doc/todo/117-write-latency.md`), thread 0 on CPU 2 measuring, a loader on each other core's
+/// first thread, their siblings sitting out, over a 1 GiB chain at 32 MiB of L3; Lat-Loaded-DRAM's schedule (idle, 3 ABBA pairs flat out,
+/// idle), and with `levels`, 3 pairs at each of 3 levels after them, both kinds within 3% of the lower two, the reads 7% short of the
+/// third. No histograms: its P50s and P99s are absent.
+pub fn loaded_summary(levels: bool) -> crate::loaded::LoadedSummary {
+    use crate::loaded::{Kind, LoadedSummary, Placement, WindowRecord};
+    let mut windows: Vec<WindowRecord> = Vec::new();
+    let mut window = |kind, level: Option<usize>, pair: Option<usize>, target_mib_s: Option<f64>, mean_ns: f64, mib_s: f64| {
+        let index = windows.len();
+        windows.push(WindowRecord { index, kind, level, pair, target_mib_s, mean_ns, mib_s, reads: 812_000, fell_behind: 0 });
+    };
+    let (w, r) = (Kind::Writes, Kind::Reads);
+    window(Kind::Park, None, None, None, 102.5, 0.0);
+    // Flat out: W R, R W, W R
+    #[rustfmt::skip]
+    let full = [(w, 0, 449.0, 16_097.0), (r, 0, 263.9, 27_180.0), (r, 1, 265.6, 27_151.0), (w, 1, 451.7, 16_117.0),
+        (w, 2, 453.2, 16_130.0), (r, 2, 264.8, 27_205.0)];
+    for (kind, pair, ns, mib_s) in full {
+        window(kind, None, Some(pair), None, ns, mib_s);
+    }
+    if levels {
+        // Each level's pairs in the same order, its writes' and reads' latency and MiB/s a pair each
+        #[rustfmt::skip]
+        let at = [
+            (4029.0, [(111.9, 4027.0), (113.0, 4027.0), (114.2, 4030.0)], [(112.2, 4028.0), (111.6, 4026.0), (111.2, 4031.0)]),
+            (8058.0, [(125.1, 8051.0), (127.0, 8049.0), (129.9, 8055.0)], [(121.2, 8055.0), (121.0, 8060.0), (121.8, 8052.0)]),
+            (12_087.0, [(150.3, 12_080.0), (148.9, 12_085.0), (152.0, 12_090.0)], [(133.1, 11_210.0), (132.4, 11_190.0), (134.0, 11_230.0)]),
+        ];
+        for (level, (target, writes, reads)) in at.into_iter().enumerate() {
+            for pair in 0..3 {
+                let both = [(w, writes[pair]), (r, reads[pair])];
+                let order = if pair % 2 == 0 { both } else { [both[1], both[0]] };
+                for (kind, (ns, mib_s)) in order {
+                    window(kind, Some(level), Some(pair), Some(target), ns, mib_s);
+                }
+            }
+        }
+    }
+    window(Kind::Park, None, None, None, 103.1, 0.0);
+    let levels = if levels { 3 } else { 0 };
+    LoadedSummary {
+        measurer: Placement { thread: 0, cpu: 2, core: 1, node: 0 },
+        loaders: (1..8).map(|core| 2 * core).collect(),
+        sat_out: (0..8).map(|core| 2 * core + 1).collect(),
+        chain_bytes: GIB as usize,
+        l3_bytes: 32 * MIB as usize,
+        cell_bytes: crate::loaded::CELL,
+        width: 256,
+        block_bytes: crate::loaded::BLOCK,
+        window_ms: 1000.0,
+        settle_ms: 200.0,
+        rows: crate::loaded::rows(&windows, levels, &|_| None),
+        windows,
+        partial: false,
+    }
+}
+
+/// `summary` (`loaded_summary`'s) with only its windows at `indices`, its rows taken again from them as a step's are: a step with no
+/// loaders (its idle windows, no loaders and no sit-outs), or one a stop cut short (its first windows, `partial`)
+pub fn loaded_windows(summary: &crate::loaded::LoadedSummary, indices: &[usize], partial: bool) -> crate::loaded::LoadedSummary {
+    let windows: Vec<_> = indices.iter().map(|&i| summary.windows[i]).collect();
+    let levels = windows.iter().filter_map(|w| w.level).max().map_or(0, |level| level + 1);
+    let idle = windows.iter().all(|w| w.kind == crate::loaded::Kind::Park);
+    crate::loaded::LoadedSummary {
+        loaders: if idle { Vec::new() } else { summary.loaders.clone() },
+        sat_out: if idle { Vec::new() } else { summary.sat_out.clone() },
+        rows: crate::loaded::rows(&windows, levels, &|_| None),
+        windows,
+        partial,
+        ..summary.clone()
+    }
+}
+
+/// TODO 117: Lat-Loaded-DRAM's step as its report gets it (`loaded_summary`), on its cycle limit: its rows in place of a latency table, and
+/// its timing table its 7 loaders' alone, each numbered CPU 0, so no figure depends on the machine's topology. Both frontends' goldens
+/// and tests show it.
+pub fn loaded_step_report() -> crate::frontend::StepReport {
+    let loader = |core: usize| (2 * core, 0, 13 * GIB, Duration::from_millis(9_600), 0, 13 * GIB / 8, 1);
+    crate::frontend::StepReport {
+        cycle: 1,
+        summary: TestSummary {
+            label: crate::loaded::LOADED_NAME.to_string(),
+            name: crate::loaded::LOADED_NAME.to_string(),
+            timed_ms: 9_600.0,
+            // The loaders' bytes and words, and the measurer's reads
+            operations: 91 * GIB / 8 + 6_496_000,
+            throughput_mib_s: 91.0 * 1024.0 / 9.6,
+            loaded: Some(Box::new(loaded_summary(false))),
+            ..summary(2, 11_400, 91 * GIB, 0)
+        },
+        wall: Duration::from_millis(11_400),
+        timed_secs: 9.6,
+        cycle_limit: Some(1),
+        stopped_by_time: false,
+        sealed: false,
+        config: crate::frontend::StepConfigLine {
+            parameter: "-".to_string(),
+            mode: "-".to_string(),
+            extent: "1.00 GiB".to_string(),
+            chunk: "Whole".to_string(),
+            test_reps: 1,
+            verify_reps: 1,
+            write_read_cycles: 1,
+        },
+        threads: create_thread_timing_report(&(1..8).map(loader).collect::<Vec<_>>(), Default::default()),
+        latency: None,
+        stamp: None,
     }
 }
 

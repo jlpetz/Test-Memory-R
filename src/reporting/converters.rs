@@ -7,6 +7,15 @@ use crate::constants::{HUGE_PAGE_SIZE_USIZE, bytes_to_gib_f64};
 use crate::memory::allocation_strategy::{AllocationResult, SystemMemoryInfo};
 use crate::progress::TestSummary;
 
+/// `ms` in the largest unit that holds it whole: `30min`, `90s`, `1500ms`
+fn whole_unit(ms: u64) -> String {
+    match ms {
+        ms if ms % 60_000 == 0 && ms > 0 => format!("{}min", ms / 60_000),
+        ms if ms % 1000 == 0 && ms > 0 => format!("{}s", ms / 1000),
+        ms => format!("{ms}ms"),
+    }
+}
+
 /// A test's parameters for the plan and report: the first one set, in the input's own form
 pub(crate) fn format_parameter_context(ctx: &Option<crate::config::TestParameterContext>) -> String {
     match ctx {
@@ -57,11 +66,18 @@ pub(crate) fn format_parameter_context(ctx: &Option<crate::config::TestParameter
                 );
             }
             if let Some(ms) = c.wait_ms {
-                return match ms {
-                    ms if ms % 60_000 == 0 && ms > 0 => format!("Wait({}min)", ms / 60_000),
-                    ms if ms % 1000 == 0 && ms > 0 => format!("Wait({}s)", ms / 1000),
-                    ms => format!("Wait({ms}ms)"),
-                };
+                return format!("Wait({})", whole_unit(ms));
+            }
+            // The loaded latency tests' (TODO 117): each load's ABBA pairs and a window's timed length
+            if c.load_pairs.is_some() || c.load_window_ms.is_some() {
+                let mut parts = Vec::new();
+                if let Some(pairs) = c.load_pairs {
+                    parts.push(format!("Pairs({pairs})"));
+                }
+                if let Some(ms) = c.load_window_ms {
+                    parts.push(format!("Window({})", whole_unit(ms.into())));
+                }
+                return parts.join(",");
             }
             "-".to_string()
         }
@@ -716,6 +732,21 @@ mod tests {
 
     const MIB: usize = 1 << 20;
     const GIB: usize = 1 << 30;
+
+    /// TODO 117: a loaded latency test's settings show as its step's parameter, each one given, its window in the largest unit that holds
+    /// it whole; its defaults, none
+    #[test]
+    fn a_loaded_tests_settings_are_its_parameter() {
+        use crate::config::TestParameterContext;
+        let shown = |load_pairs, load_window_ms| {
+            format_parameter_context(&Some(TestParameterContext { load_pairs, load_window_ms, ..Default::default() }))
+        };
+        assert_eq!(shown(Some(5), Some(1000)), "Pairs(5),Window(1s)");
+        assert_eq!(
+            (shown(None, Some(250)), shown(Some(20), None), shown(None, None)),
+            ("Window(250ms)".into(), "Pairs(20)".into(), "-".into())
+        );
+    }
 
     /// TODO 99: a width given is in the plan, with where it came from, and Mem-Sequence's own where it lacks that one; under auto the plan
     /// says nothing of it.

@@ -1455,6 +1455,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
                     latency_p99_ns: None,
                     latency_p99_9_ns: None,
                     latency_spread: None,
+                    loaded: None,
                     threads: Vec::new(),
                 });
                 stopped = Some(RunOutcome::Halted);
@@ -1563,11 +1564,13 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
             }
         }
         thread_records.sort_by_key(|record| record.thread);
-        // A loaded latency test's figures (TODO 117): its measurer's rows, in one line for now
-        if let Some(part) = latency_results.iter().find_map(|(_, _, stats)| stats.loaded.as_deref()) {
-            let summary = crate::loaded::summarize(part);
-            log::info!(target: crate::logfile::SHOWN_TARGET, "{test_display_name}: {}", summary.headline());
-        }
+        // A loaded latency test's latencies (TODO 117): its measurer's rows, a load each, and each thread's role
+        let loaded = latency_results.iter().find_map(|(_, _, stats)| stats.loaded.as_deref()).map(|part| {
+            for record in &mut thread_records {
+                record.role = Some(part.role(record.thread).name().to_string());
+            }
+            Box::new(crate::loaded::LoadedSummary { l3_bytes: cache_info.l3_cache, ..crate::loaded::summarize(part) })
+        });
 
         // Attribute WHEA events that landed while this test ran. A non-zero count here is a real failure signal even when every thread
         // reported zero errors: the fault was either corrected before our verify read could see it, or it happened during a test that does
@@ -1611,8 +1614,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
             latency_p99,
             latency_p99_9,
             latency_spread,
-        ) = if !latency_results.is_empty() {
-            // Aggregate latency stats across all threads
+        ) = if !latency_results.is_empty() && loaded.is_none() {
+            // Aggregate latency stats across all threads (a loaded test's are its rows': one P50 over every load would mean nothing)
             let total_samples: usize = latency_results.iter().map(|(_, _, stats)| stats.sample_count).sum();
             let all = merged_latencies(&latency_results);
 
@@ -1675,6 +1678,7 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
             latency_p99_ns: latency_p99,
             latency_p99_9_ns: latency_p99_9,
             latency_spread,
+            loaded,
             threads: thread_records,
         };
 
@@ -1682,10 +1686,19 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         progress.complete_test(total_errors_for_test, seal_errors_for_test);
 
         // The step's report (TODO 29): its thread timing deviations, a latency step's latencies, and where the suite stood as it ended, its
-        // results in
-        let latency = (!latency_results.is_empty()).then(|| LatencyTestSummaryReport {
+        // results in. A loaded latency test's latencies are its rows (`summary.loaded`), and its timing table its loaders' alone: how
+        // evenly they held their load (TODO 117)
+        let latency = (!latency_results.is_empty() && summary.loaded.is_none()).then(|| LatencyTestSummaryReport {
             levels_tested: vec![convert_to_latency_level_summary(&latency_results, &merged_latencies(&latency_results))],
         });
+        let loaders: Vec<CpuStatRow>;
+        let timed_threads = match summary.loaded.as_deref() {
+            Some(loaded) => {
+                loaders = test_stats.iter().filter(|row| loaded.loaders.contains(&row.0)).copied().collect();
+                &loaders[..]
+            }
+            None => &test_stats[..],
+        };
         fe.event(
             Run::StepFinished(Box::new(StepReport {
                 cycle,
@@ -1696,15 +1709,15 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
                 stopped_by_time: stopped_by_time_limit,
                 sealed: seal.is_some(),
                 config: step_config_line(test_def, cache_info, thread_count),
-                threads: crate::reporting::converters::create_thread_timing_report(&test_stats, whea_for_test),
+                threads: crate::reporting::converters::create_thread_timing_report(timed_threads, whea_for_test),
                 latency,
                 stamp: progress.snapshot(),
             }))
             .into(),
         );
 
-        // Add this step's work to each thread's totals
-        {
+        // Add this step's work to each thread's totals: not a loaded latency test's, whose loaders' bytes are no thread's speed (TODO 117)
+        if summary.loaded.is_none() {
             let mut totals = thread_totals.lock().unwrap_or_else(PoisonError::into_inner);
             for &(thread_id, _cpu_id, bytes, time, errors, _operations, _cycles) in &test_stats {
                 let total = totals.entry(thread_id).or_default();
@@ -1813,12 +1826,15 @@ fn thread_step_record(result: &WorkResult, assignment: Option<CpuAssignment>) ->
         seal_errors: result.seal_errors,
         operations: result.total_operations,
         cycles: result.cycles_completed,
-        latency: result.latency_stats.as_ref().map(|stats| crate::results::ThreadLatency {
+        // A loaded latency test's threads take none (TODO 117): its measurer's are its rows'
+        latency: result.latency_stats.as_ref().filter(|stats| stats.sample_count > 0).map(|stats| crate::results::ThreadLatency {
             min_ns: stats.histogram.min(),
             p50_ns: stats.p50_ns,
             p99_ns: stats.p99_ns,
             spread: stats.spread_ratio,
         }),
+        // A loaded latency test's, from its measurer's part, once every thread's result is in
+        role: None,
     }
 }
 
@@ -5172,10 +5188,12 @@ pub mod test_support {
         blocks: HashMap<usize, Vec<AllocationBlock>>,
     }
 
-    /// How the fake cycle ended, and the results it added
+    /// How the fake cycle ended, the results it added, and each thread's totals over its steps (the CPU Performance Summary's)
     pub struct CycleRun {
         pub(super) end: CycleEnd,
         pub(super) result: TestRunResult,
+        #[cfg(test)]
+        pub(super) thread_totals: ThreadTotals,
     }
 
     impl CycleRun {
@@ -5229,6 +5247,21 @@ pub mod test_support {
             FakeCycle { error_mode, steps, kernel, cache_info, regions, blocks }
         }
 
+        /// TODO 117: a cycle of Lat-Loaded-DRAM alone, logging errors, its windows 5 ms over 256 KiB, on the fake cycle's two workers. Both
+        /// are numbered CPU 0, one core, so thread 0 measures and thread 1, on its core, sits out, whatever this machine's topology.
+        #[cfg(test)]
+        pub(crate) fn loaded() -> Self {
+            let mut cycle = FakeCycle::new(ErrorMode::Log, Flip::Verify);
+            let suite = create_test_definitions(&cycle.cache_info);
+            let mut def = suite.into_iter().find(|d| d.actual_name == crate::loaded::LOADED_NAME).expect("Lat-Loaded-DRAM is registered");
+            def.config.extent_mode = ExtentMode::Absolute { size_bytes: 256 * KIB };
+            def.config.parameter_context = Some(crate::config::TestParameterContext { load_window_ms: Some(5), ..Default::default() });
+            (def.config.thread_count, def.config.cache_line_bytes, def.config.tsc_frequency_ghz) = (2, 64, 1.0);
+            cycle.steps = vec![def];
+            set_step_seals(&mut cycle.steps, cycle.kernel, true);
+            cycle
+        }
+
         /// Runs the cycle, `fe` showing it: the workers' start, the cycle, and their end.
         pub fn run(self, fe: &dyn Frontend) -> CycleRun {
             let FakeCycle { error_mode, steps, kernel, cache_info, regions, blocks } = self;
@@ -5258,7 +5291,12 @@ pub mod test_support {
             drop(blocks);
             drop(regions);
             let result = test_run_result.lock().unwrap_or_else(PoisonError::into_inner).clone();
-            CycleRun { end, result }
+            CycleRun {
+                end,
+                result,
+                #[cfg(test)]
+                thread_totals: thread_totals.lock().unwrap_or_else(PoisonError::into_inner).clone(),
+            }
         }
     }
 
@@ -6753,7 +6791,7 @@ mod tests {
     /// (tmr-cli).
     #[test]
     fn a_cycle_records_each_step_and_its_threads() {
-        let CycleRun { end, result } = FakeCycle::new(ErrorMode::Log, Flip::Verify).run(&Unseen);
+        let CycleRun { end, result, .. } = FakeCycle::new(ErrorMode::Log, Flip::Verify).run(&Unseen);
         assert_eq!((end.stop, end.partial), (None, false), "the cycle ran to its end");
         let errors: Vec<u64> = result.cycles[0].tests.iter().map(|t| t.errors).collect();
         assert_eq!(errors, [0, 1, 0, 0], "the flipped bit is the verify's one error");
@@ -6789,11 +6827,50 @@ mod tests {
         }
     }
 
+    /// TODO 117: a loaded latency step's results are its measurer's rows (`loaded`), never one P50 merged over its loads: no `latency_*`
+    /// and no thread's latency, but each thread's role; its report has no latency table and its timing table only its loaders (none
+    /// here: both workers are on one core, so thread 1 sits out and thread 0 measures the idle windows alone), and no thread's totals
+    /// take its bytes.
+    #[test]
+    fn a_loaded_step_reports_its_rows_not_a_merged_p50() {
+        struct Steps(Mutex<Vec<StepReport>>);
+        impl Frontend for Steps {
+            fn event(&self, event: crate::frontend::Event) {
+                if let crate::frontend::Event::Run(Run::StepFinished(report)) = event {
+                    self.0.lock().unwrap().push(*report);
+                }
+            }
+            fn ask_large_pages(&self, _: &crate::frontend::LargePageQuestion) -> crate::frontend::LargePageAnswer {
+                unreachable!("a run asks nothing: large pages are setup's question")
+            }
+        }
+        let fe = Steps(Mutex::default());
+        let CycleRun { end, result, thread_totals } = FakeCycle::loaded().run(&fe);
+        assert_eq!((end.stop, end.partial), (None, false), "the cycle ran to its end");
+        let step = &result.cycles[0].tests[0];
+        assert_eq!(step.name, crate::loaded::LOADED_NAME);
+        let loaded = step.loaded.as_deref().expect("its rows");
+        assert_eq!(loaded.rows.iter().map(|r| r.load).collect::<Vec<_>>(), [crate::loaded::Load::Idle], "no loaders: idle only");
+        assert_eq!((loaded.loaders.as_slice(), loaded.sat_out.as_slice(), loaded.windows.len()), ([].as_slice(), [1].as_slice(), 2));
+        assert_eq!(loaded.l3_bytes, CacheInfo::default().l3_cache, "the L3 its chain is sized by");
+        assert!(step.latency_samples.is_none() && step.latency_p50_ns.is_none() && step.latency_spread.is_none(), "no merged P50");
+        let roles: Vec<(usize, Option<&str>, bool)> =
+            step.threads.iter().map(|r| (r.thread, r.role.as_deref(), r.latency.is_some())).collect();
+        assert_eq!(roles, [(0, Some("measures"), false), (1, Some("sits out"), false)]);
+        assert!(thread_totals.is_empty(), "no thread's totals: {thread_totals:?}");
+
+        let reports = fe.0.into_inner().unwrap();
+        let [report] = reports.as_slice() else { panic!("{} step reports", reports.len()) };
+        assert!(report.latency.is_none(), "no latency table by thread");
+        assert!(report.threads.thread_timings.is_empty(), "its loaders' timing alone, and it has none");
+        assert_eq!(report.summary.loaded.as_deref(), Some(loaded));
+    }
+
     /// TODO 72: a cycle that errors=halt stops, at the verify's error, is partial in the results, as its end says: the steps that ran, and
     /// no final seal check.
     #[test]
     fn a_halted_cycle_is_partial() {
-        let CycleRun { end, result } = FakeCycle::new(ErrorMode::Halt, Flip::Verify).run(&Unseen);
+        let CycleRun { end, result, .. } = FakeCycle::new(ErrorMode::Halt, Flip::Verify).run(&Unseen);
         assert_eq!((end.stop, end.partial), (Some(RunOutcome::Halted), true));
         let cycle = &result.cycles[0];
         assert!(cycle.partial);
@@ -6807,7 +6884,7 @@ mod tests {
     /// partial. After a cycle the results are saved when a save is due, and then its end is shown, `partial` as the results have it.
     #[test]
     fn a_cycle_ends_saved_then_shown() {
-        let CycleRun { end, mut result } = FakeCycle::new(ErrorMode::Halt, Flip::Sealed).run(&Unseen);
+        let CycleRun { end, mut result, .. } = FakeCycle::new(ErrorMode::Halt, Flip::Sealed).run(&Unseen);
         assert_eq!((end.stop, end.partial), (Some(RunOutcome::Halted), false));
         assert_eq!(result.cycles.len(), 1);
         assert!(!result.cycles[0].partial && result.cycles[0].tests.len() == 4, "every step ran");

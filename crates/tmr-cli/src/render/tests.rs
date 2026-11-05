@@ -84,6 +84,7 @@ fn events_print_as_their_golden() {
             duration: Duration::from_millis(1180),
         }),
         ("a step unsealed, ended by its time limit, with a WHEA event and repetitions", Run::StepFinished(Box::new(step()))),
+        ("a loaded latency step: its rows, its loaders' timing", Run::StepFinished(Box::new(tmr::test_support::loaded_step_report()))),
         (
             "WHEA after the monitor's last tick",
             Run::LateWhea(vec![
@@ -312,6 +313,7 @@ fn step() -> StepReport {
             latency_p99_ns: None,
             latency_p99_9_ns: None,
             latency_spread: None,
+            loaded: None,
             threads: Vec::new(),
         },
         wall: Duration::from_millis(61_250),

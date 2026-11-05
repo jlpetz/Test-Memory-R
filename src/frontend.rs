@@ -33,6 +33,8 @@ pub use crate::ErrorMode;
 pub use crate::calibration::{Recheck, RecheckProbe};
 pub use crate::cpu_selection::{SkipSpec, core_list};
 use crate::failing_bits::FailingBits;
+// A loaded latency test's latencies, a step's (`TestSummary::loaded`, TODO 117)
+pub use crate::loaded::LoadedSummary;
 pub use crate::memory::allocator::PageSizeLevel;
 pub use crate::memory::lsa::Sid;
 pub use crate::memory::privileges::{BROAD_CAUTION, BROAD_MARK, BROAD_RISK, Candidate, LargePageQuestion, Reach, broad_legend};

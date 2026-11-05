@@ -205,6 +205,11 @@ pub struct TestResult {
     pub latency_p99_9_ns: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_spread: Option<f64>,
+    /// A loaded latency test's latencies (TODO 117, `loaded::LoadedSummary`): who measured and who loaded, the geometry, a row a load
+    /// and every raw window, so its statistic can be taken again from the file. Its `latency_*` are absent. Absent for every other step,
+    /// and in results written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loaded: Option<Box<crate::loaded::LoadedSummary>>,
     /// Each thread's part of the step, by thread (TODO 72): what the console's thread table shows, and where the thread ran. Absent for a
     /// step that didn't run, and in results written before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -237,9 +242,13 @@ pub struct ThreadStepRecord {
     pub operations: u64,
     /// Passes over its extent
     pub cycles: u32,
-    /// A latency test's figures, as the latency table's row for the thread
+    /// A latency test's figures, as the latency table's row for the thread; absent for one that took no samples
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latency: Option<ThreadLatency>,
+    /// Its part in a loaded latency test (TODO 117, `loaded::Role::name`): `measures`, `loads` or `sits out`. Absent in every other
+    /// step, and in results written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 /// One thread's latencies in a step (`ThreadStepRecord::latency`).
@@ -596,6 +605,7 @@ impl TestRunResult {
                     latency_p99_ns: summary.latency_p99_ns,
                     latency_p99_9_ns: summary.latency_p99_9_ns,
                     latency_spread: summary.latency_spread,
+                    loaded: summary.loaded.clone(),
                     threads: summary.threads.clone(),
                 }
             })
@@ -1278,6 +1288,7 @@ mod tests {
                 operations: 81_920,
                 cycles: 1,
                 latency: Some(ThreadLatency { min_ns: 70.5, p50_ns: 72.5, p99_ns: 85.0, spread: 1.08 }),
+                role: None,
             },
             ThreadStepRecord { thread: 1, bytes: 24_576, ms: 3_900.5, operations: 81_920, cycles: 1, ..Default::default() },
         ];
@@ -1299,6 +1310,58 @@ mod tests {
         assert_eq!(keys(serde_json::to_value(&result.cycles[1].tests[1].threads[1]).unwrap()), [
             "bytes", "cycles", "errors", "ms", "operations", "thread"
         ]);
+    }
+
+    /// TODO 117: a loaded latency test's latencies, its rows and every raw window, and its threads' roles read back as they were written,
+    /// its floats to within an ulp; a step without them writes neither key, and a results file written before them loads with none.
+    #[test]
+    fn a_loaded_steps_latencies_round_trip() {
+        let (_, mut result) = written_before_todo_72();
+        let steps = |result: &TestRunResult| result.cycles.iter().flat_map(|c| &c.tests).cloned().collect::<Vec<_>>();
+        assert!(steps(&result).iter().all(|t| t.loaded.is_none()), "the fixture is from before TODO 117");
+        let step = &mut result.cycles[1].tests[0];
+        step.loaded = Some(Box::new(crate::test_support::loaded_summary(true)));
+        step.threads = ["measures", "sits out", "loads"]
+            .into_iter()
+            .enumerate()
+            .map(|(thread, role)| ThreadStepRecord { thread, role: Some(role.to_string()), ..Default::default() })
+            .collect();
+
+        let json = serde_json::to_string_pretty(&result).unwrap();
+        let back: TestRunResult = serde_json::from_str(&json).unwrap();
+        let (step, want) = (&back.cycles[1].tests[0], &result.cycles[1].tests[0]);
+        assert_eq!(step.threads, want.threads);
+        // serde_json reads a float back to within an ulp, not always to the bit (without its `float_roundtrip`): 3.8999999999999915, a
+        // pair's difference, reads as 3.899999999999991. The figures come back that near
+        fn near(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+            use serde_json::Value;
+            match (a, b) {
+                (Value::Number(x), Value::Number(y)) => match (x.as_f64(), y.as_f64()) {
+                    (Some(x), Some(y)) => (x - y).abs() <= 1e-12 * x.abs().max(1.0),
+                    _ => x == y,
+                },
+                (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| near(x, y)),
+                (Value::Object(x), Value::Object(y)) => x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| near(v, w))),
+                _ => a == b,
+            }
+        }
+        let value = |loaded: &Option<Box<crate::loaded::LoadedSummary>>| serde_json::to_value(loaded).unwrap();
+        assert!(near(&value(&step.loaded), &value(&want.loaded)), "{:?}", step.loaded);
+        let loaded = step.loaded.as_deref().unwrap();
+        assert_eq!((loaded.rows.len(), loaded.windows.len()), (5, 26), "idle, 3 levels and flat out; every window");
+
+        let keys = |value: serde_json::Value| value.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        let step_keys = keys(serde_json::to_value(step).unwrap());
+        assert!(step_keys.contains(&"loaded".to_string()) && !step_keys.iter().any(|k| k.starts_with("latency_")), "{step_keys:?}");
+        assert_eq!(keys(serde_json::to_value(&step.threads[1]).unwrap()), [
+            "bytes", "cycles", "errors", "ms", "operations", "role", "thread"
+        ]);
+        for (c, cycle) in back.cycles.iter().enumerate() {
+            for (t, other) in cycle.tests.iter().enumerate().filter(|&(t, _)| (c, t) != (1, 0)) {
+                let other = keys(serde_json::to_value(other).unwrap());
+                assert!(!other.contains(&"loaded".to_string()), "cycle {c} step {t}: {other:?}");
+            }
+        }
     }
 
     /// TODO 72: a save replaces the file whole, by renaming a temp file over it, and leaves nothing of the temp file: a reader that had the
