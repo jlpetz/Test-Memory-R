@@ -1391,7 +1391,13 @@ impl CalibrationTest {
             (!samples.is_empty()).then(|| StatisticsAnalyzer::analyze(&samples))
         };
         let sweep_results = self.run_sweep(&mut probe, (l1_size / 4).max(4096), (l3_size * 4).min(max_working_set), "Sweep, one thread");
-        let tipping_points = self.find_tipping_points(&sweep_results);
+        let mut tipping_points = self.find_tipping_points(&sweep_results);
+        // The L1's and the L2's edges but no L3's: a gradual one, where no step reaches 1.4x over the three before it
+        if tipping_points.len() == 2
+            && let Some(edge) = Self::find_gradual_edge(&sweep_results, tipping_points[1].0)
+        {
+            tipping_points.push(edge);
+        }
 
         for (size, lat_before, lat_after) in &tipping_points {
             log::info!(target: SHOWN_TARGET,
@@ -1769,6 +1775,18 @@ impl CalibrationTest {
     /// Find tipping points where latency jumps significantly
     /// A true tipping point is where we transition from one stable latency region to another
     /// We expect 3-4 real transitions: L1→L2, L2→L3, L3→DRAM, (optionally DRAM→HighTLB)
+    /// A gradual edge past `after` (the L2's), for anchor A when `find_tipping_points` finds no L3 edge (TODO 22): the first probe reading
+    /// at least 1.4x the one three before it (a size 1.52x as big, the sweep stepping 1.15x), the edge at that earlier probe, the last
+    /// before the climb; three times `after` or more, as `find_tipping_points` keeps its edges apart. Without it A took CPUID's L3 and the
+    /// finer sweep's largest steady size there, in DRAM. On the m8i.metal-48xl (SNC3, 2026-11-05) on 4 KiB pages the L3's latency climbed
+    /// from 26 to 45 ns over 5-138 MB (TLB misses), and the step at its edge read 1.31x over the three before; 475 MB at 105 ns was saved,
+    /// and this takes 119.9 MB. On another node's memory (99f4337) it takes 137.8 MB. Its 1 GiB pages' edge, sharp, is the usual test's.
+    fn find_gradual_edge(sweep: &[SweepProbe], after: usize) -> Option<(usize, f64, f64)> {
+        (3..sweep.len())
+            .find(|&i| sweep[i - 3].size >= 3 * after && sweep[i].median_ns >= 1.4 * sweep[i - 3].median_ns)
+            .map(|i| (sweep[i - 3].size, sweep[i - 3].median_ns, sweep[i].median_ns))
+    }
+
     fn find_tipping_points(&self, sweep: &[SweepProbe]) -> Vec<(usize, f64, f64)> {
         let mut tipping_points = Vec::new();
 
@@ -2463,6 +2481,40 @@ mod tests {
                 && recheck.text().contains("it has drifted: measured again")
                 && recheck.text().contains("(> 43.6 ns) ⚠️ it isn't")
         );
+    }
+
+    /// TODO 22: a gradual L3 edge, from two sweeps of the m8i.metal-48xl (2026-11-05) past its L2 edge at 1.8 MB, each probe's size (MB)
+    /// and median (ns). On 4 KiB pages the edge is at 119.9 MB, the last before the climb to 1.4x; on another node's memory (99f4337's
+    /// recheck), 137.8 MB. A plateau with no climb has none, and nothing inside three times the L2's edge counts.
+    #[test]
+    fn a_gradual_l3_edge_is_where_the_climb_starts() {
+        let sweep = |points: &[(f64, f64)]| -> Vec<SweepProbe> {
+            points
+                .iter()
+                .map(|&(mb, ns)| SweepProbe { size: (mb * 1048576.0) as usize, median_ns: ns, spread: 1.05, window_stddev: 0.0 })
+                .collect()
+        };
+        #[rustfmt::skip]
+        let pages_4k = sweep(&[
+            (1.8, 7.1), (2.1, 9.2), (2.4, 12.0), (2.8, 15.7), (3.2, 18.6), (3.6, 21.0), (4.2, 23.0), (4.8, 24.6), (5.5, 26.1), (6.4, 27.2),
+            (7.3, 28.8), (8.4, 30.2), (9.7, 31.7), (11.1, 32.8), (12.8, 33.4), (14.7, 34.8), (16.9, 34.7), (19.5, 36.3), (22.4, 37.0),
+            (25.8, 37.7), (29.6, 38.2), (34.1, 38.6), (39.2, 39.0), (45.1, 39.4), (51.8, 40.0), (59.6, 39.6), (68.5, 40.6), (78.8, 41.1),
+            (90.6, 41.8), (104.2, 43.0), (119.9, 45.3), (137.8, 43.9), (158.5, 57.6), (182.3, 66.3), (209.6, 76.6), (241.1, 87.3),
+            (277.2, 98.2), (318.8, 107.6), (366.7, 103.4), (421.6, 125.0), (484.9, 126.9),
+        ]);
+        #[rustfmt::skip]
+        let remote = sweep(&[
+            (1.8, 4.5), (2.1, 6.8), (2.4, 15.1), (2.8, 22.1), (3.2, 27.2), (3.6, 31.7), (4.2, 35.3), (4.8, 38.2), (5.5, 41.0), (6.4, 43.2),
+            (7.3, 45.3), (8.4, 46.7), (9.7, 48.2), (11.1, 49.6), (12.8, 50.7), (14.7, 51.6), (16.9, 52.4), (19.5, 53.0), (22.4, 53.8),
+            (25.8, 54.2), (29.6, 54.7), (34.1, 55.1), (39.2, 55.5), (45.1, 56.1), (51.8, 56.0), (59.6, 55.8), (68.5, 56.6), (78.8, 56.4),
+            (90.6, 56.3), (104.2, 56.6), (119.9, 57.2), (137.8, 57.6), (158.5, 64.0), (182.3, 74.1), (209.6, 87.4), (241.1, 99.3),
+        ]);
+        let l2_edge = (1.8 * 1048576.0) as usize;
+        let edge = |points: &[SweepProbe]| CalibrationTest::find_gradual_edge(points, l2_edge).map(|(size, ..)| size as f64 / 1048576.0);
+        assert_eq!(edge(&pages_4k).map(|mb| (mb * 10.0).round() / 10.0), Some(119.9));
+        assert_eq!(edge(&remote).map(|mb| (mb * 10.0).round() / 10.0), Some(137.8));
+        assert_eq!(edge(&pages_4k[..30]), None, "the L3's own climb, 26 to 43 ns, is no edge");
+        assert_eq!(edge(&remote[..8]), None, "the L2 to L3 ramp is inside three times the L2's edge");
     }
 
     /// TODO 22: the curve check measures every count up to 8 cores a group, and samples past that, the whole group last
