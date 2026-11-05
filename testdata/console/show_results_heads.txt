@@ -37,7 +37,7 @@
 ## never finished, by another build
 ⚠️  The run never finished: it was killed or crashed, unless it is still running; its figures are up to its last saved cycle, 2
 📄 TMR_2026-11-02_14-03-07, started 2026-11-02 14:03:07 +10:00, run ID 5f0c3a9e81d24b7c9a6e0d13f2b84c57
-⚠️  Not this build: TMR 0.1.0, commit 0d274ef9b6c1a3d5e7f8091a2b3c4d5e6f708192 (dirty), rustc 1.101.0-nightly (1a2c4797e 2026-10-21), release
+⚠️  Not this build: TMR 0.1.1, commit 0d274ef9b6c1a3d5e7f8091a2b3c4d5e6f708192 (dirty), rustc 1.101.0-nightly (1a2c4797e 2026-10-21), release
    The summary below is laid out as this build lays it out, which may not be how that run's console showed it
 ## never finished, its last saved cycle cut short
 ⚠️  The run never finished: it was killed or crashed, unless it is still running; its figures are up to its last saved cycle, 2, which was cut short

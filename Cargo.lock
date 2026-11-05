@@ -856,7 +856,7 @@ dependencies = [
 
 [[package]]
 name = "test-memory-r"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "log",
  "test-memory-r-cli",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "test-memory-r-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "ctrlc",
@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "test-memory-r-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "globset",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "test-memory-r-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "log",

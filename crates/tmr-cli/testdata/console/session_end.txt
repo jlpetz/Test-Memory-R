@@ -34,7 +34,7 @@
 
 Note: --latency-test has been renamed to --ram-latency
 
-🚀 Test Memory R (TMR) v0.1.0 - High-Performance Memory Testing Tool
+🚀 Test Memory R (TMR) v0.1.1 - High-Performance Memory Testing Tool
 ===================================================================================
 
 USAGE:

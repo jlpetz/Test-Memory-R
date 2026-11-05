@@ -11,7 +11,7 @@ default-members = [".", "crates/tmr-app", "crates/tmr-cli"]
 # The four crates are released together, at one version (TODO 104): a new one moves this and the
 # three pins below
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Jarrod Petz"]
 license = "MIT OR Apache-2.0"
@@ -21,9 +21,9 @@ repository = "https://github.com/jlpetz/Test-Memory-R"
 # name its code knows it by. Pinned exactly: the window's title and the console's banner read
 # different crates' versions, so a build takes the four from one release.
 [workspace.dependencies]
-tmr = { package = "test-memory-r-engine", version = "=0.1.0", path = "." }
-tmr-cli = { package = "test-memory-r-cli", version = "=0.1.0", path = "crates/tmr-cli" }
-tmr-gui = { package = "test-memory-r-gui", version = "=0.1.0", path = "crates/tmr-gui" }
+tmr = { package = "test-memory-r-engine", version = "=0.1.1", path = "." }
+tmr-cli = { package = "test-memory-r-cli", version = "=0.1.1", path = "crates/tmr-cli" }
+tmr-gui = { package = "test-memory-r-gui", version = "=0.1.1", path = "crates/tmr-gui" }
 
 [package]
 name = "test-memory-r-engine"
