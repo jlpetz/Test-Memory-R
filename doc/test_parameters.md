@@ -428,7 +428,10 @@ since (a VM's neighbours, a BIOS setting), and the run measures it again. A prob
 can't hold is left out; with none left, the run says it couldn't recheck and keeps the stored one.
 `calibrate=always` measures before every run's tests. A run's calibration needs a thread's memory
 to hold twice CPUID's L3, for A's sweep to pass the L3's edge; with less it measures nothing, saves
-nothing, and says so, as it does when the run is stopped during it. `calibrate=off` takes none
+nothing, and says so, as it does when the run is stopped during it. Then the tests size from this
+machine's stored calibration, if there is one, and the line names it with its date; from CPUID's
+sizes when there is none, or when the recheck had just found the stored one drifted (it no longer
+fits). `calibrate=off` takes none
 (CPUID sizes, and the seal's width from its rule). `--calibrate-cache` measures on its own
 allocation, without a test, and asks before saving over a stored one.
 

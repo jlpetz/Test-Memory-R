@@ -245,6 +245,23 @@ pub enum MeasureWhy {
     Always,
 }
 
+/// A cache calibration a run couldn't measure (`Run::Calibrated`): why, and what its tests size from instead
+#[derive(Debug, Clone, PartialEq)]
+pub struct CalibrationFailed {
+    /// Why it couldn't measure: stopped, too little memory on its node, its buffer
+    pub why: String,
+    /// The stored calibration the tests size from instead, by its date: this machine's, unless a recheck had just found it drifted;
+    /// `None`, CPUID's sizes
+    pub sizes_from: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl CalibrationFailed {
+    /// What the tests size from, as the console and the window say it: "the stored calibration of <date> UTC", or "CPUID"
+    pub fn sizes_from_text(&self) -> String {
+        self.sizes_from.map_or_else(|| "CPUID".to_string(), |at| format!("the stored calibration of {}", at.format("%Y-%m-%d %H:%M UTC")))
+    }
+}
+
 /// The cache calibration a run measured before its tests (`Run::Calibrated`, TODO 22), and where it was saved, or why not
 #[derive(Debug)]
 pub struct CalibratedNow {
@@ -307,9 +324,9 @@ pub enum Run {
     AllocationStarting { min: PageSizeLevel, max: PageSizeLevel },
     /// What allocation got (TODO 81)
     Allocated(Box<AllocationReport>),
-    /// The cache calibration the run measured on its memory before its tests (`calibrate=`, TODO 22), or why it couldn't: the run goes
-    /// on without one
-    Calibrated(Result<Box<CalibratedNow>, String>),
+    /// The cache calibration the run measured on its memory before its tests (`calibrate=`, TODO 22), or why it couldn't and what the
+    /// tests size from instead
+    Calibrated(Result<Box<CalibratedNow>, CalibrationFailed>),
     /// The stored cache calibration rechecked on the run's memory (`calibrate=recheck`, TODO 116): each probe and whether it holds, or
     /// why it couldn't recheck. When it doesn't hold, `Calibrated` comes next.
     Rechecked(Result<Box<Recheck>, String>),

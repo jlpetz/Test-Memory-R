@@ -1064,18 +1064,29 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         Some((CalibrateFirst::Recheck, _, Some(on))) => {
             let rechecked = recheck_on_allocation(&mut allocated_blocks, on, cache_info);
             let held = matches!(&rechecked, Ok(recheck) if recheck.held);
+            // Its probes read otherwise: the stored calibration no longer fits this machine (`drifted`, below)
+            let drifted = matches!(&rechecked, Ok(recheck) if !recheck.held && !recheck.probes.is_empty());
             fe.event(Run::Rechecked(rechecked.map(Box::new)).into());
-            (!held).then_some(on)
+            (!held).then_some((on, drifted))
         }
-        Some((CalibrateFirst::Measure(_), _, on)) => on,
+        Some((CalibrateFirst::Measure(_), _, on)) => on.map(|on| (on, false)),
         None => None,
     };
-    if let Some(on) = measure_on {
+    if let Some((on, drifted)) = measure_on {
         let calibrated = calibrate_on_allocation(&mut allocated_blocks, on, cache_info);
-        if let Ok(now) = &calibrated {
-            crate::tests::set_calibration_data(Some(now.results.clone()));
+        match &calibrated {
+            Ok(now) => crate::tests::set_calibration_data(Some(now.results.clone())),
+            // One the recheck just found drifted is wrong for this machine now: CPUID's sizes, not it. Any other stored one (`always`, a
+            // one-thread one, a recheck that couldn't probe) is still this machine's and nearer than CPUID's (on an SNC Xeon CPUID's L3
+            // is the package's, three nodes')
+            Err(_) if drifted => crate::tests::set_calibration_data(None),
+            Err(_) => {}
         }
-        fe.event(Run::Calibrated(calibrated.map(Box::new)).into());
+        let calibrated = calibrated.map(Box::new).map_err(|why| crate::frontend::CalibrationFailed {
+            why,
+            sizes_from: crate::tests::get_calibration_data().map(|stored| stored.timestamp),
+        });
+        fe.event(Run::Calibrated(calibrated).into());
     }
 
     let tests_per_cycle = test_definitions.len() as u64;

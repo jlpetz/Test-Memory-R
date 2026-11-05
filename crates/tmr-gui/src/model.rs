@@ -1071,9 +1071,9 @@ impl Model {
                 self.position = "Calibrated".to_string();
             }
             // As the console says it; in the errors too, since the suite's start replaces the position line at once
-            Run::Calibrated(Err(e)) => {
+            Run::Calibrated(Err(failed)) => {
                 self.calibrating = false;
-                self.position = format!("The cache calibration failed ({e}): the tests size from CPUID");
+                self.position = format!("The cache calibration failed ({}): the tests size from {}", failed.why, failed.sizes_from_text());
                 self.errors.push(self.position.clone());
             }
             // A recheck that held ends the calibration, as one none of whose probes fit does, the stored one kept unchecked; one that
@@ -1769,10 +1769,18 @@ mod tests {
         m.apply(Run::Rechecked(Err("the run has no memory".to_string())).into());
         assert_eq!(m.position, "The calibration's recheck failed (the run has no memory): measuring it again, about 2 minutes");
         assert!(m.calibrating());
-        m.apply(Run::Calibrated(Err("the run has no memory".to_string())).into());
+        let failed = |sizes_from| tmr::frontend::CalibrationFailed { why: "the run has no memory".to_string(), sizes_from };
+        m.apply(Run::Calibrated(Err(failed(None))).into());
         assert_eq!(m.position, "The cache calibration failed (the run has no memory): the tests size from CPUID");
         assert!(!m.calibrating());
         assert_eq!(m.errors, ["The cache calibration failed (the run has no memory): the tests size from CPUID"]);
+        // With this machine's stored calibration still in use (calibrate=always, a one-thread one), the line names it, not CPUID
+        let at = chrono::DateTime::parse_from_rfc3339("2026-11-05T03:19:00Z").unwrap().with_timezone(&chrono::Utc);
+        m.apply(Run::Calibrated(Err(failed(Some(at)))).into());
+        assert_eq!(
+            m.position,
+            "The cache calibration failed (the run has no memory): the tests size from the stored calibration of 2026-11-05 03:19 UTC"
+        );
 
         // A recheck none of whose probes fit a thread's memory ends the calibration, the stored one kept, and says it didn't recheck
         let mut m = model();

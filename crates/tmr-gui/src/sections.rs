@@ -121,7 +121,11 @@ impl Sections {
                     Err(e) => format!("Cache calibration: measured now, not saved ({e})"),
                 }));
             }
-            Run::Calibrated(Err(e)) => self.system.push(Block::Text(format!("Cache calibration: failed ({e}), sizes from CPUID"))),
+            Run::Calibrated(Err(failed)) => self.system.push(Block::Text(format!(
+                "Cache calibration: failed ({}), sizes from {}",
+                failed.why,
+                failed.sizes_from_text()
+            ))),
             Run::Rechecked(Ok(recheck)) => self.system.push(Block::Text(recheck.text().trim_end().to_string())),
             Run::Rechecked(Err(e)) => self.system.push(Block::Text(format!("Cache calibration: the recheck failed ({e}), measured again"))),
             Run::NoMemoryOnCalibrationNode { node, stored } => {
