@@ -21,7 +21,7 @@ L3              16.0 MB      14.5 MB      91%       11.3ns       1.08x     ✅ S
 DRAM            32.0 MB      64.0 MB     200%       84.6ns       1.12x     ✅ Stable
 FullDRAM        64.0 MB     256.0 MB     400%       91.3ns       1.11x     ✅ Stable
 ───────────────────────────────────────────────────────────────────────────────
-Measured 2026-11-03 14:22 on 2MB large pages
+Measured 2026-11-03 14:22 UTC on 2MB large pages
 Two threads on one core: L1 16.0 KB, L2 480.0 KB a thread
 Every CPU at once (12 sharing each L3): L3 2.5 MB a thread at 13.4ns
 L3 a thread: 14.5 MB alone, 2.5 MB with 12 sharing; a run's L3 tests size from the curve through them
@@ -31,7 +31,7 @@ L3 a thread: 14.5 MB alone, 2.5 MB with 12 sharing; a run's L3 tests size from t
 ℹ️  Calibration used 2MB large pages.
     Use maxpage=regular with --calibrate-cache to test with 4KB pages for TLB comparison.
 
-Seal calibration: this machine's, measured 2026-11-03 14:31: seal-width=auto runs its 128 bits
+Seal calibration: this machine's, measured 2026-11-03 14:31 UTC: seal-width=auto runs its 128 bits
 
 📊 Seal Width Calibration (tmr, 1 thread, 512.0 MB, 32 × L3, 2MB large pages; median of 5 runs after a warm-up)
 ═══════════════════════════════════════════════════════════════════════════════
@@ -58,7 +58,7 @@ L3              16.0 MB      14.5 MB      91%       11.3ns       1.08x     ✅ S
 DRAM            32.0 MB      64.0 MB     200%       84.6ns       1.12x     ✅ Stable
 FullDRAM        64.0 MB     256.0 MB     400%       91.3ns       1.11x     ✅ Stable
 ───────────────────────────────────────────────────────────────────────────────
-Measured 2026-11-03 14:22 on 2MB large pages
+Measured 2026-11-03 14:22 UTC on 2MB large pages
 ℹ️  DRAM and FullDRAM show similar latency (84.6ns vs 91.3ns).
     This is expected with large pages (2MB+) which minimize TLB pressure.
     Use maxpage=regular to test with 4KB pages for TLB comparison.
@@ -82,7 +82,7 @@ L3              32.0 MB      14.5 MB      45%       11.3ns       1.08x     ✅ S
 DRAM            64.0 MB      64.0 MB     100%       84.6ns       1.12x     ✅ Stable
 FullDRAM       128.0 MB     256.0 MB     200%       91.3ns       1.11x     ✅ Stable
 ───────────────────────────────────────────────────────────────────────────────
-Measured 2026-11-03 14:22 on 2MB large pages
+Measured 2026-11-03 14:22 UTC on 2MB large pages
 Two threads on one core: L1 16.0 KB, L2 480.0 KB a thread
 Every CPU at once (12 sharing each L3): L3 2.5 MB a thread at 13.4ns
 L3 a thread: 14.5 MB alone, 2.5 MB with 12 sharing; a run's L3 tests size from the curve through them
@@ -92,9 +92,9 @@ L3 a thread: 14.5 MB alone, 2.5 MB with 12 sharing; a run's L3 tests size from t
 ℹ️  Calibration used 2MB large pages.
     Use maxpage=regular with --calibrate-cache to test with 4KB pages for TLB comparison.
 
-Seal calibration: not this machine's: measured 2026-11-03 14:31 on hardware that has changed since, so seal-width=auto runs the rule's width (256 bits with AVX2, else 128) until tmr.exe --calibrate-seal measures it again
+Seal calibration: not this machine's: measured 2026-11-03 14:31 UTC on hardware that has changed since, so seal-width=auto runs the rule's width (256 bits with AVX2, else 128) until tmr.exe --calibrate-seal measures it again
 
-📊 Seal Width Calibration (tmr, 1 thread, 512.0 MB, 64 × L3, 2MB large pages; median of 5 runs after a warm-up)
+📊 Seal Width Calibration (tmr, 1 thread, 512.0 MB, 2MB large pages; median of 5 runs after a warm-up)
 ═══════════════════════════════════════════════════════════════════════════════
 Width             Fill         Check                 Fill + check
 ───────────────────────────────────────────────────────────────────────────────

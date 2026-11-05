@@ -606,33 +606,28 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         crate::set_calibration_data(None);
     }
 
-    {
+    let system = {
         use crate::reporting::system_info_builder::build_system_info_report;
 
-        // With the cache calibration the run took, this machine's (none under calibrate=off), beside CPUID's sizes
-        let report = build_system_info_report(system_info, &simd_caps, crate::tests::get_calibration_data().as_deref());
+        // With the cache calibration the run takes beside CPUID's sizes (`calibration_shown`)
+        let stored = crate::tests::get_calibration_data();
+        let report = build_system_info_report(system_info, &simd_caps, calibration_shown(calibrate_first, stored.as_deref()));
         // Every hypervisor CPUID reports, a VM's or the one VBS runs on a desktop, and what made it a VM (TODO 115)
         let hypervisor = (cache_info.is_virtual_machine || cache_info.hypervisor_name.is_some()).then(|| crate::frontend::Hypervisor {
             name: cache_info.hypervisor_name.clone().unwrap_or_else(|| "unidentified".to_string()),
             vm_signs: cache_info.vm_signs.clone(),
         });
-        fe.event(
-            Setup::SystemInfo {
-                report: Box::new(report),
-                memory_modules: crate::smbios::shown_modules(&smbios.memory_modules),
-                system: crate::smbios::shown_system(&smbios.system),
-                bios: smbios.bios.clone(),
-                hypervisor,
-            }
-            .into(),
-        );
-    }
-
-    // The setup's order (the owner, 0.1.1): the machine, then Windows' memory, then the CPUs the threads take; none needs another's
-    fe.event(Setup::MemoryStatus(crate::runner::memory_status()).into());
+        Setup::SystemInfo {
+            report: Box::new(report),
+            memory_modules: crate::smbios::shown_modules(&smbios.memory_modules),
+            system: crate::smbios::shown_system(&smbios.system),
+            bios: smbios.bios.clone(),
+            hypervisor,
+        }
+    };
     let (report, smt_p_cores, e_cores_skipped_first) =
         crate::cpu_selection::startup_topology(&cores, &request, &choice, pinning_config.enable_pinning, is_hybrid_cpu(topology));
-    fe.event(Setup::CpuTopology { report: Box::new(report), smt_p_cores, e_cores_skipped_first }.into());
+    show_the_machine(&*fe, system, Setup::CpuTopology { report: Box::new(report), smt_p_cores, e_cores_skipped_first });
 
     // Calculate memory layout using enhanced system
     // Checks the block sizes too, so a bad one stops the run before anything is allocated
@@ -810,6 +805,27 @@ fn load_seal_calibration(
         (None, Some(_)) => SealCalibrationState::Stale,
         (None, None) => SealCalibrationState::None,
     }
+}
+
+/// The cache calibration the setup's cache table shows beside CPUID's sizes: the stored one the run takes, `calibrate=auto`'s or
+/// recheck's (which keeps it unless its probes find it has drifted); none when the run measures one before its tests (calibrate=always,
+/// or one thread alone measured the one stored), whose own table shows it after allocation
+fn calibration_shown(
+    first: Option<crate::runner::CalibrateFirst>, stored: Option<&crate::calibration::CalibrationResults>,
+) -> Option<&crate::calibration::CalibrationResults> {
+    use crate::runner::CalibrateFirst;
+    match first {
+        None | Some(CalibrateFirst::Recheck) => stored,
+        Some(CalibrateFirst::Measure(_)) => None,
+    }
+}
+
+/// The machine's sections, in the setup's order (the owner, 0.1.1), none needing another's: System Information (`system`), then Windows'
+/// memory, then the CPUs the threads take (`topology`)
+fn show_the_machine(fe: &dyn Frontend, system: Setup, topology: Setup) {
+    fe.event(system.into());
+    fe.event(Setup::MemoryStatus(crate::runner::memory_status()).into());
+    fe.event(topology.into());
 }
 
 /// Parsed configuration bundle produced from validated CLI parameters:
@@ -1208,5 +1224,62 @@ mod tests {
         assert_eq!(load(&config), (SealCalibrationState::Stale, vec![]));
         config.seal_calibration = None;
         assert_eq!(load(&config), (SealCalibrationState::None, vec![]));
+    }
+
+    /// The setup's cache table shows the stored calibration only when the run takes it, as stored or rechecked (a recheck keeps it unless
+    /// it has drifted); not when the run measures one before its tests, calibrate=always or one thread alone having measured the one stored
+    #[test]
+    fn the_cache_table_shows_only_a_calibration_the_run_takes() {
+        use crate::runner::CalibrateFirst;
+        let stored = crate::test_support::cache_calibration();
+        let shown = |first| calibration_shown(first, Some(&stored)).is_some();
+        assert!(shown(None), "calibrate=auto takes the one stored");
+        assert!(shown(Some(CalibrateFirst::Recheck)), "calibrate=recheck");
+        assert!(!shown(Some(CalibrateFirst::Measure(MeasureWhy::Always))), "calibrate=always");
+        assert!(!shown(Some(CalibrateFirst::Measure(MeasureWhy::OneThreadOnly))), "one thread alone");
+        assert!(calibration_shown(None, None).is_none(), "none stored, or calibrate=off");
+    }
+
+    /// The machine's sections in the owner's order (0.1.1): System Information, then Windows' memory, then the CPUs the threads take
+    #[test]
+    fn the_machine_shows_its_sections_in_the_owners_order() {
+        use std::sync::Mutex;
+
+        use crate::frontend::Event;
+
+        /// The setup's sections it was shown, by their headings
+        struct Sections(Mutex<Vec<&'static str>>);
+        impl Frontend for Sections {
+            fn event(&self, event: Event) {
+                let heading = match event {
+                    Event::Setup(Setup::SystemInfo { .. }) => "System Information",
+                    Event::Setup(Setup::MemoryStatus(_)) => "Current System Memory Status",
+                    Event::Setup(Setup::CpuTopology { .. }) => "CPU Topology and Thread Assignment",
+                    _ => "another",
+                };
+                self.0.lock().unwrap().push(heading);
+            }
+            fn ask_large_pages(&self, _: &LargePageQuestion) -> LargePageAnswer {
+                LargePageAnswer::Quit
+            }
+        }
+        let report = crate::reporting::system_info_builder::build_system_info_report(crate::tests::get_system_info(), "AVX2", None);
+        let system = Setup::SystemInfo {
+            report: Box::new(report),
+            memory_modules: Vec::new(),
+            system: Default::default(),
+            bios: Default::default(),
+            hypervisor: None,
+        };
+        let topology = Setup::CpuTopology {
+            report: Box::new(crate::test_support::hybrid_cpu_topology_report()),
+            smt_p_cores: None,
+            e_cores_skipped_first: false,
+        };
+        let fe = Sections(Mutex::default());
+        show_the_machine(&fe, system, topology);
+        assert_eq!(fe.0.into_inner().unwrap(), [
+            "System Information", "Current System Memory Status", "CPU Topology and Thread Assignment"
+        ]);
     }
 }

@@ -2,7 +2,7 @@ use crate::cache::SystemInfo;
 /// System info report builder - converts TMR's internal system info to reporting format
 use crate::reporting::models::{CacheInfo, CpuInfo, SystemInfoReport, TscCalibrationInfo};
 
-/// Build a SystemInfoReport from TMR's internal system info, with the cache calibration the run took (`SystemInfoReport::calibration`)
+/// Build a SystemInfoReport from TMR's internal system info, with the cache calibration the run takes (`SystemInfoReport::calibration`)
 pub fn build_system_info_report(
     system_info: &SystemInfo, simd_caps: &str, calibration: Option<&crate::calibration::CalibrationResults>,
 ) -> SystemInfoReport {

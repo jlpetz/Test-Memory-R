@@ -2777,7 +2777,7 @@ mod tests {
         assert_eq!(row("L3 (Shared)"), ["L3 (Shared)", "16.00 MiB", "-", "14.50 MiB", "11.3 ns"]);
         assert_eq!(row("FullDRAM"), ["FullDRAM", "-", "-", "256.00 MiB", "91.3 ns"]);
         let footer = caches.footer.as_deref().unwrap_or_default();
-        assert!(footer.starts_with("Calibrated: one thread alone, measured 2026-11-03 14:22 on 2MB large pages"), "{footer}");
+        assert!(footer.starts_with("Calibrated: one thread alone, measured 2026-11-03 14:22 UTC on 2MB large pages"), "{footer}");
         assert!(footer.contains("\nL3 a thread: 14.50 MiB alone, 2.50 MiB with 12 sharing;"), "{footer}");
     }
 

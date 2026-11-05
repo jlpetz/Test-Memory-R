@@ -124,6 +124,15 @@ mod tests {
         assert!(!names.iter().any(|n| n.contains("CacheBust") || n.contains("Flush")));
     }
 
+    /// Perf takes the loaded latency tests (TODO 117), after the unloaded latency tests and before the bandwidth ones
+    #[test]
+    fn perf_takes_the_loaded_latency_between_the_unloaded_and_the_bandwidth() {
+        let loaded = PERF.iter().position(|&n| n == "Lat-Loaded-DRAM").expect("perf takes Lat-Loaded-DRAM");
+        assert!(PERF[..loaded].iter().all(|n| n.starts_with("Lat-")) && PERF[..loaded].contains(&"Lat-DRAMFull-Copy"), "{PERF:?}");
+        assert_eq!(PERF[loaded + 1], "Lat-Turnaround-DRAM");
+        assert!(PERF[loaded + 2].starts_with("Spd-"), "{PERF:?}");
+    }
+
     /// A plain run takes the default; a filter alone picks from every test, as before plans; a config brings its own tests and can't take a
     /// plan as well.
     #[test]

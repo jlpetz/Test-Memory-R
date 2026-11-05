@@ -251,9 +251,10 @@ impl CalibrationResults {
         })
     }
 
-    /// When it was measured and on which pages, as its reports give it: "2026-11-03 14:22 on 2MB large pages"
+    /// When it was measured and on which pages, as its reports give it: "2026-11-03 14:22 UTC on 2MB large pages", its timestamp's zone
+    /// named, where the window's info line gives the same calibration in local time
     pub fn when_and_pages(&self) -> String {
-        format!("{} on {} pages", self.timestamp.format("%Y-%m-%d %H:%M"), page_size_name(&self.page_size))
+        format!("{} on {} pages", self.timestamp.format("%Y-%m-%d %H:%M UTC"), page_size_name(&self.page_size))
     }
 
     /// Anchor B's line (TODO 22), L1 and L2 a thread with its SMT sibling chasing too, each size as `size` gives it; none without B

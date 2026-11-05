@@ -7,8 +7,9 @@ pub struct SystemInfoReport {
     pub cpu_info: CpuInfo,
     pub cache_info: CacheInfo,
     pub tsc_info: TscCalibrationInfo,
-    /// The cache calibration the run took from tmr-cfg.json, this machine's (TODO 22), which the cache table shows beside CPUID's sizes;
-    /// none under `calibrate=off` or with none of this machine's stored
+    /// The cache calibration the run takes from tmr-cfg.json, this machine's (TODO 22), which the cache table shows beside CPUID's sizes;
+    /// none under `calibrate=off`, with none of this machine's stored, or when the run measures one before its tests
+    /// (`session::calibration_shown`)
     pub calibration: Option<crate::calibration::CalibrationResults>,
 }
 

@@ -954,8 +954,9 @@ fn write_calibrations(
              measures both)"
         )?,
         Some(seal) => {
-            let at = seal.timestamp.format("%Y-%m-%d %H:%M");
-            // Its buffer as a multiple of this machine's L3 only when it was measured here
+            let at = seal.timestamp.format("%Y-%m-%d %H:%M UTC");
+            // Its buffer as a multiple of this machine's L3 only when it was measured here: an L3 of 0 leaves the multiple out, where
+            // CacheInfo's default would give one of its made-up 8 MB
             let (line, l3) = if ours.seal {
                 (format!("this machine's, measured {at}: seal-width=auto runs its {} bits", seal.width_bits), cache_info.clone())
             } else {
@@ -963,7 +964,7 @@ fn write_calibrations(
                     "not this machine's: measured {at} on hardware that has changed since, so seal-width=auto runs {rule} until \
                      tmr.exe --calibrate-seal measures it again"
                 );
-                (line, CacheInfo::default())
+                (line, CacheInfo { l3_cache: 0, ..Default::default() })
             };
             writeln!(out, "Seal calibration: {line}")?;
             crate::calibration::display_seal_calibration(seal, &l3, out)?;
