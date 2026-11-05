@@ -173,7 +173,11 @@ configs, results and logs beside itself, in `target\release\`, which `cargo clea
 `TMR_HOME` to another folder to keep them there (`$env:TMR_HOME = "$PWD"` in the repository keeps
 them in its `results\` and `logs\`, which git ignores). A development machine, with the tests and
 checks as CI runs them: [doc/dev_setup.md](doc/dev_setup.md) (`tools\setup_dev.ps1` installs what's
-missing).
+missing). The crates are on crates.io too: [`test-memory-r`](https://crates.io/crates/test-memory-r),
+the exe, and its parts, [`test-memory-r-engine`](https://crates.io/crates/test-memory-r-engine),
+[`-cli`](https://crates.io/crates/test-memory-r-cli) (the console) and
+[`-gui`](https://crates.io/crates/test-memory-r-gui) (the window). The exe's page shows how to
+`cargo install` it built as the releases are.
 
 ## License
 
