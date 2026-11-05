@@ -456,6 +456,17 @@ impl<'a> TestRunner<'a> {
         self.every = next_every(self.every, now.duration_since(self.last_check));
         self.last_check = now;
         self.publish_progress(self.cycle, now);
+        // The count is a u32: stop where the passes or samples before the next check (`MAX_EVERY` at most) could run it past the top, where
+        // a bandwidth step's count stuck at 4294967295 and a latency step's wrapped to 0 (an L1 bandwidth step of two minutes got there)
+        if self.cycle > u32::MAX - MAX_EVERY {
+            log::info!(
+                "[Thread {}] {}: stopped at {} passes or samples, as many as a step counts",
+                self.thread_id,
+                self.test_name,
+                self.cycle
+            );
+            return true;
+        }
         self.shutdown_requested() || !self.timing.should_continue(self.cycle, now.duration_since(self.start).as_secs() as u32)
     }
 
@@ -651,6 +662,41 @@ mod tests {
         assert!((1 << 17..=1 << 18).contains(&every), "an L1 pass of 62 ns settles at 5-20 ms of passes: {every}");
         assert_eq!([None, Some(10), Some(100), Some(3)].map(|cycles| passes_before(64, 3, cycles)), [64, 7, 64, 64]);
         assert_eq!(passes_before(64, 0, Some(1)), 1, "cycles=1 is one pass");
+    }
+
+    /// A bandwidth or latency step stops before its count of passes or samples, a u32, can pass the top, however much of its time is
+    /// left: at a check within `MAX_EVERY` of it, so the passes or samples up to the next check can't stick a bandwidth step's count at
+    /// the top (it saturated) or wrap a latency step's (in a test build, an overflow panic)
+    #[test]
+    fn a_step_stops_before_its_count_passes_the_top() {
+        use crate::runner::test_support::{KIB, Region};
+        use crate::tests::{ChunkMode, ExtentMode};
+        let region = Region::new(&[64 * KIB]);
+        let config = TestMemoryConfig::new(ExtentMode::Absolute { size_bytes: 4 * KIB }, ChunkMode::Whole)
+            .with_timing(TestTiming::duration_only(3600));
+        let runner = |name, action| TestRunner::new(&region.blocks, 0, ErrorMode::Log, &config.timing, &config, None, name, action).0;
+
+        // A bandwidth step: MAX_EVERY short of the top it goes on, its last batch reaches the top, and there it stops, an hour left
+        let mut bandwidth = runner("Spd-L1-Read-Auto", TestAction::Read);
+        bandwidth.cycle = u32::MAX - MAX_EVERY;
+        assert!(!bandwidth.check(), "MAX_EVERY short of the top, the step goes on");
+        bandwidth.every = MAX_EVERY;
+        let passes = bandwidth.passes_to_check();
+        assert!(bandwidth.passes_done(passes, 4 * KIB), "at the top, the step stops");
+        let stats = bandwidth.finish_completed(0);
+        assert_eq!((stats.cycles_completed, stats.bytes_processed), (u32::MAX, MAX_EVERY as usize * 4 * KIB));
+
+        // A latency step, a sample a cycle: its check after MAX_EVERY samples comes at the top, and stops it
+        let mut latency = runner("Lat-L1-Read", TestAction::Latency);
+        latency.cycle = u32::MAX - MAX_EVERY;
+        latency.every = MAX_EVERY;
+        loop {
+            latency.begin_cycle();
+            if latency.check_due() && latency.check() {
+                break;
+            }
+        }
+        assert_eq!(latency.cycle, u32::MAX);
     }
 
     /// TODO 105: a step logs one line, not one a thread; threads whose spans give the same layout are counted together, in the order they
