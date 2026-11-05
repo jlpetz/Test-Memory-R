@@ -367,16 +367,16 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
             cache_info.l3_cache = l3;
             found_any = true;
             log::debug!("raw_cpuid 0x80000006: L3 cache {}MB", cache_info.l3_cache / MB);
-
-            if cache_info.detection_method.is_empty() {
-                cache_info.detection_method = "raw_cpuid legacy AMD".to_string();
-            }
         }
 
         // The L2 too, if not already found
         if cache_info.per_core_l2 == 0 && l2 > 0 {
             cache_info.per_core_l2 = l2;
             found_any = true;
+        }
+        // The leaves above found nothing (each names itself when it finds something), so this one found what there is: an L3, an L2 or both
+        if found_any && cache_info.detection_method.is_empty() {
+            cache_info.detection_method = "raw_cpuid legacy AMD".to_string();
         }
     }
 
@@ -391,10 +391,12 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
         if cache_info.per_core_l2 == 0 {
             cache_info.per_core_l2 = 512 * KB;
         }
-        // No leaf reports an L3 (a VM's: QEMU's l3-cache=off): the L2 is the last level, so the L3 and DRAM tiers size from it
+        // No leaf reports an L3: a VM's hypervisor hides the host's, which still has one, so the L3 is taken (`UNREPORTED_L3`), and the
+        // method says so
         if cache_info.l3_cache == 0 {
-            log::debug!("raw_cpuid: no L3 reported, so the L2 ({} KB) is the last level", cache_info.per_core_l2 / KB);
-            cache_info.l3_cache = cache_info.per_core_l2;
+            log::debug!("raw_cpuid: no L3 reported (a VM's hypervisor hiding the host's): {} MB taken", UNREPORTED_L3 / MB);
+            cache_info.l3_cache = UNREPORTED_L3;
+            cache_info.detection_method.push_str(&format!("; no L3 reported, {} MB taken", UNREPORTED_L3 / MB));
         }
 
         cache_info.recalculate_totals();
@@ -409,6 +411,13 @@ fn detect_via_raw_cpuid_comprehensive(physical_cores: usize) -> Option<CacheInfo
 fn legacy_l2_l3(ecx: u32, edx: u32) -> (usize, usize) {
     ((ecx >> 16) as usize * KB, (edx >> 18) as usize * 512 * KB)
 }
+
+/// The L3 taken where no CPUID leaf reports one: a VM's hypervisor hiding the host's (QEMU's l3-cache=off; an AMD model without topoext
+/// whose 0x80000006 EDX is 0), which still has one. The guest's L2 in its place put the DRAM tests, at four times the L3 a thread (4 MB
+/// on a 1 MB L2), inside the host's L3, and calibrate=auto couldn't recover it: its sweep ends at four times the L3, and the L3 it finds
+/// is capped at it. Four times this, 512 MB, passes any desktop's L3 and most servers' (a Xeon 6's is 504 MB), so the sweep finds the
+/// host's edge. Too large is the safe side: it costs memory (the calibration needs twice it a thread), not DRAM figures that measure cache.
+const UNREPORTED_L3: usize = 128 * MB;
 
 // Method 2: Windows WMI detection
 #[cfg(target_os = "windows")]
