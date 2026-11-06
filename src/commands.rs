@@ -121,251 +121,218 @@ pub fn run(
     Ok(RunStatus::Passed)
 }
 
-/// The complete help text, `program_name` the exe's name in its usage lines: `--help`'s, and what follows an unknown flag's error.
+/// The complete help text, `program_name` the exe's name in its usage lines (`program_stem`): `--help`'s, and what follows an unknown
+/// flag's error. No banner: the console prints its own before either. Every comment starts at one column (`entry`, TODO 121).
 pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
-    writeln!(out, "🚀 Test Memory R (TMR) v{} - High-Performance Memory Testing Tool", crate::BUILD.version)?;
-    writeln!(out, "===================================================================================")?;
+    let program_name = program_stem(program_name);
+    let cmd = |out: &mut dyn Write, args: &str, comment: &str| entry(out, format!("{program_name} {args}").trim_end(), comment);
     writeln!(out)?;
     writeln!(out, "USAGE:")?;
-    writeln!(out, "  {}                                    # This help, in a console (a double-click opens the window)", program_name)?;
-    writeln!(out, "  {} plan=stability                     # Run the defaults: any setting starts a run", program_name)?;
-    writeln!(
-        out,
-        "  {} --gui                            # Open the window, any parameters given in its box; where it can't open, it says why",
-        program_name
-    )?;
-    writeln!(out, "  {} --gui --start                    #   ...and start the run as it opens", program_name)?;
-    writeln!(
-        out,
-        "  {} --cli                            # The console, not the window, as any setting gives; alone, this help",
-        program_name
-    )?;
-    writeln!(out, "  {} config=test.json                  # Load modern JSON config (v2.0)", program_name)?;
-    writeln!(out, "  {} config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)", program_name)?;
-    writeln!(out, "  {} --create-demo-configs              # Create demo configuration files", program_name)?;
+    cmd(out, "", "This help, in a console (a double-click opens the window)")?;
+    cmd(out, "plan=stability", "Run the defaults: any setting starts a run")?;
+    cmd(out, "--gui", "Open the window, any parameters given in its box; where it can't open, it says why")?;
+    cmd(out, "--gui --start", "  ...and start the run as it opens")?;
+    cmd(out, "--cli", "The console, not the window, as any setting gives; alone, this help")?;
+    cmd(out, "config=test.json", "Load modern JSON config (v2.0)")?;
+    cmd(out, "config=legacy.cfg", "Load legacy TestMem5 config (v1.0)")?;
+    cmd(out, "--create-demo-configs", "Create demo configuration files")?;
     writeln!(out, "  {} --compare-results baseline.json current.json [output.json]", program_name)?;
-    writeln!(out, "                                          # Compare two test results (here, or in results\\)")?;
-    writeln!(out, "  {} --show-results results.json      # How a run ended, then its final summary (here, or in results\\)", program_name)?;
-    writeln!(
-        out,
-        "  {} --setup-large-pages              # Grant 'Lock pages in memory' to you (as administrator), then sign out and in",
-        program_name
-    )?;
+    more(out, "Compare two test results (here, or in the results folder)")?;
+    cmd(out, "--show-results results.json", "How a run ended, then its final summary (here, or in the results folder)")?;
+    cmd(out, "--setup-large-pages", "Grant 'Lock pages in memory' to you (as administrator), then sign out and in")?;
     writeln!(out, "  {} --setup-large-pages Group:Administrators", program_name)?;
-    writeln!(out, "                                          #   ...or to a group or another user: Group:<name>, User:<name>")?;
-    writeln!(out, "                                          #   (DOMAIN\\name, or .\\name for this PC's; quote a name with spaces)")?;
-    writeln!(
-        out,
-        "  {} --remove-large-pages             # Remove it from you, or from the Group:<name> or User:<name> given",
-        program_name
-    )?;
-    writeln!(
-        out,
-        "  {} --calibrate-cache                # Measure the cache tiers' sizes, finer around each edge; saved to tmr-cfg.json after a prompt",
-        program_name
-    )?;
-    writeln!(
-        out,
-        "  {} --calibrate-curve                # Check the calibration's curve: the L3 against it on k cores of each L3 (saves nothing)",
-        program_name
-    )?;
-    writeln!(
-        out,
-        "                                          #   (k: an L3 of up to 8 cores, every count; a larger one, 1-4, 6, 8, 12, 16, 24 ... all),"
-    )?;
-    writeln!(out, "                                          #   one thread a core, then both")?;
-    writeln!(
-        out,
-        "  {} --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto",
-        program_name
-    )?;
-    writeln!(out, "                                          #   then runs the fastest (a narrower one if it is as fast)")?;
-    writeln!(
-        out,
-        "  {} --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)",
-        program_name
-    )?;
-    writeln!(
-        out,
-        "  {} --calibrate-cache --yes          #   any calibration: --yes saves without asking, --no-save keeps what is",
-        program_name
-    )?;
-    writeln!(out, "                                          #   stored; with neither it asks, and saves if no answer can come")?;
-    writeln!(
-        out,
-        "  {} --calibrate-all --output x.json  #   --calibrate-cache or -all: also writes the cache tiers it measured to x.json, here",
-        program_name
-    )?;
-    writeln!(
-        out,
-        "  {} --show-calibration               # What the calibrations stored (the cache tiers, the seal's widths), and whether",
-        program_name
-    )?;
-    writeln!(out, "                                          #   each is this machine's, which a run takes")?;
-    writeln!(
-        out,
-        "  {} plan=stability                   # The default: the stability tests at the widest width (or width=)",
-        program_name
-    )?;
-    writeln!(out, "  {} plan=quick                       # The stability tests once", program_name)?;
-    writeln!(out, "  {} plan=widths                      # Every width of the tests that have them, side by side", program_name)?;
-    writeln!(out, "  {} plan=perf                        # Latency and bandwidth", program_name)?;
-    writeln!(out, "  {} plan=all                         # Every test in the suite; test= alone picks from it", program_name)?;
-    writeln!(out, "  {} --quick-test                     # plan=quick, reserving 60% of available memory", program_name)?;
-    writeln!(out, "  {} --ram-latency                    # Run DRAM latency tests (6 tests)", program_name)?;
-    writeln!(out, "  {} --cache-latency                  # Run full cache hierarchy latency tests (12 tests)", program_name)?;
-    writeln!(out, "  {} test=Spd-*                       # Run tests matching pattern (glob wildcards)", program_name)?;
-    writeln!(out, "  {} test=Mem-Mirror*,Lat-L3-*        # Run multiple patterns (comma-separated)", program_name)?;
-    writeln!(
-        out,
-        "  {} config=x.cfg --startup-debug     # Print the memory and test plan; allocate no test memory, run nothing",
-        program_name
-    )?;
-    writeln!(out, "  {} --version                         # Show version information", program_name)?;
-    writeln!(out, "  {} --show-topology                   # Show CPU Topology Mapping for debugging", program_name)?;
-    writeln!(out, "  {} --debug-topology                  # Runs multiple CPU Topology checks to debug if one works better", program_name)?;
-    writeln!(out)?;
-    writeln!(out, "EXIT STATUS: 0 passed, 1 tests failed or found errors, 2 stopped before or instead of testing")?;
-    writeln!(out, "             (bad config, failed command), 3 interrupted (Ctrl+C); other codes: crashed or killed")?;
-    writeln!(out, "             (errors=panic aborts on the first error)")?;
+    more(out, "  ...or to a group or another user: Group:<name>, User:<name>")?;
+    more(out, "  (DOMAIN\\name, or .\\name for this PC's; quote a name with spaces)")?;
+    cmd(out, "--remove-large-pages", "Remove it from you, or from the Group:<name> or User:<name> given")?;
+    cmd(out, "--calibrate-cache", "Measure the cache tiers' sizes, finer around each edge; saved to tmr-cfg.json after a prompt")?;
+    cmd(out, "--calibrate-curve", "Check the calibration's curve: the L3 against it on k cores of each L3 (saves nothing)")?;
+    more(out, "  (k: an L3 of up to 8 cores, every count; a larger one, 1-4, 6, 8, 12, 16, 24 ... all),")?;
+    more(out, "  one thread a core, then both")?;
+    cmd(out, "--calibrate-seal", "Time the seal's fill and check at each width, one thread; seal-width=auto")?;
+    more(out, "  then runs the fastest (a narrower one if it is as fast)")?;
+    cmd(out, "--calibrate-all", "--calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)")?;
+    cmd(out, "--calibrate-cache --yes", "  any calibration: --yes saves without asking, --no-save keeps what is")?;
+    more(out, "  stored; with neither it asks, and saves if no answer can come")?;
+    cmd(out, "--calibrate-all --output x.json", "  --calibrate-cache or -all: also writes the cache tiers it measured to x.json, here")?;
+    cmd(out, "--show-calibration", "What the calibrations stored (the cache tiers, the seal's widths), and whether")?;
+    more(out, "  each is this machine's, which a run takes")?;
+    cmd(out, "plan=stability", "The stability tests at the widest width (or width=): the default plan")?;
+    cmd(out, "plan=quick", "The stability tests once")?;
+    cmd(out, "plan=widths", "Every width of the tests that have them, side by side")?;
+    cmd(out, "plan=perf", "Latency and bandwidth")?;
+    cmd(out, "plan=all", "Every test in the suite; test= alone picks from it")?;
+    cmd(out, "--quick-test", "plan=quick, reserving 60% of available memory")?;
+    cmd(out, "--ram-latency", "Run DRAM latency tests (6 tests)")?;
+    cmd(out, "--cache-latency", "Run full cache hierarchy latency tests (12 tests)")?;
+    cmd(out, "test=Spd-*", "Run tests matching pattern (glob wildcards)")?;
+    cmd(out, "test=Mem-Mirror*,Lat-L3-*", "Run multiple patterns (comma-separated)")?;
+    cmd(out, "config=x.cfg --startup-debug", "Print the memory and test plan; allocate no test memory, run nothing")?;
+    cmd(out, "--version", "Show version information")?;
+    cmd(out, "--show-topology", "Show CPU Topology Mapping for debugging")?;
+    cmd(out, "--debug-topology", "Runs multiple CPU Topology checks to debug if one works better")?;
     writeln!(out)?;
     writeln!(out, "COMMAND LINE PARAMETERS:")?;
-    writeln!(out, "  memory=20%                          # Reserve 20% of the memory available now (as 20%-from-available)")?;
-    writeln!(out, "  memory=2GiB                         # Reserve 2 GiB")?;
-    writeln!(out, "  memory=2048MB                       # TM5-compatible allocation (2048MB from available)")?;
-    writeln!(out, "  memory=10%-from-available           # Reserve 10% from currently available memory")?;
-    writeln!(out, "  memory=8GiB-from-total              # Reserve 8 GiB from total system memory")?;
-    writeln!(out, "  memory=64GiB-target                 # Target 64 GiB allocation (may fail if unavailable)")?;
-    writeln!(out, "  cycles=5                            # Run 5 complete test cycles")?;
-    writeln!(out, "  duration=600                        # Maximum 10 minutes runtime")?;
-    writeln!(out, "  cpus=50%                            # Use 50% of available CPUs, from the front of the core order:")?;
-    writeln!(out, "                                      #   each L3's cores by Windows' core priority, the L3s in turn")?;
-    writeln!(out, "  cpus=4                              #   ...or a count of them")?;
-    writeln!(out, "  cputype=cores                       # Use physical cores (vs threads/SMT)")?;
-    writeln!(out, "  skip-cores=1                        # Leave out the last N cores in the core order, the weakest")?;
-    writeln!(out, "                                      #   (default: 1, for the system's responsiveness)")?;
-    writeln!(out, "  skip-cores=25%                      #   ...or a share of the cores, from the end too (never every core)")?;
-    writeln!(out, "  skip-cores=0-7                      #   ...or the cores numbered A-B (isolate a memory domain/CCD)")?;
-    writeln!(out, "  cpu-stride=2                        # Take the cores by number instead of the core order, every Nth")?;
-    writeln!(out, "  cpu-stride=even                     #   ...or the count spread evenly over them (1: packed); core types too")?;
-    writeln!(out, "  --disable-pinning                   # Disable CPU thread pinning")?;
-    writeln!(out, "  priority=high                       # Worker priority: normal, high (default), realtime")?;
-    writeln!(out, "                                      #   realtime is THREAD_PRIORITY_TIME_CRITICAL, the top of the")?;
-    writeln!(out, "                                      #   normal range (not the realtime class); leave a core free with it")?;
-    writeln!(out, "  window-priority=high                # The window's thread during a run: normal, high, realtime (default:")?;
-    writeln!(out, "                                      #   the workers', priority='s); the console ignores it")?;
-    writeln!(out, "  hugechunk=1GiB                      # First 1GB-page request size, halved on refusal (power of two, >= 1GiB)")?;
-    writeln!(out, "  largechunk=128MiB                   # First 2MB-page request size, halved on refusal (default 128MiB)")?;
-    writeln!(out, "  largefloor=16MiB                    # Smallest 2MB-page request (16MiB-1GiB)")?;
-    writeln!(out, "  blkroundtarget=1GiB                 # Round each thread's share to a multiple of this (of largefloor)")?;
-    writeln!(out, "  blkround=up                         # ...up (default; a smaller step rather than pass available), down, or nearest")?;
-    writeln!(out, "  minpage=regular                     # Smallest page the run takes: regular (4KB), large (2MB, the default)")?;
-    writeln!(out, "                                      #   or huge (1GB); 2MB and 1GB pages need the large-page privilege")?;
-    writeln!(out, "  maxpage=large                       # Largest page it asks for: regular, large or huge (the default)")?;
-    writeln!(out, "                                      #   (minpage=regular maxpage=regular: 4KB pages, without asking)")?;
-    writeln!(out, "  channels=2                          # Memory channels, for TM5 SimpleTest's stride (channels x Parameter - 1")?;
-    writeln!(out, "                                      #   lines); default: the config's, else 2")?;
-    writeln!(out, "  errors=halt                         # Error handling (log/halt/panic)")?;
-    writeln!(out, "  seal=tmr                            # Seal: check and reseal around every chunk (tmr, the default; tm5; off)")?;
-    writeln!(out, "  seal-width=auto                     # Seal kernels' SIMD width (auto, 128, 256, 512); unset, width='s;")?;
-    writeln!(out, "                                      #   auto is --calibrate-seal's width on this machine, else 256")?;
-    writeln!(out, "  width=auto                          # SIMD width of the tests that pick theirs at run time (the -Auto")?;
-    writeln!(out, "                                      #   tests, Mem-Sequence, the Bench pairs) and of the seal: auto (the")?;
-    writeln!(out, "                                      #   widest the CPU has; the seal its own auto), 128, 256 or 512")?;
-    writeln!(out, "                                      #   (refused if the CPU lacks it). Mem-Sequence has no 128 and runs")?;
-    writeln!(out, "                                      #   at 256; -128/-256/-512 tests keep theirs")?;
-    writeln!(out, "  mirror=whole                        # Mirror tests: one mirror over each chunk (the default)")?;
-    writeln!(out, "  mirror=subblocks:4                  #   ...each chunk in 2 or 4 parts, mirrored in lockstep")?;
-    writeln!(out, "  mirror=jump:510                     #   ...128 B swaps every (N+1) x 128 B (TM5 MirrorMove128)")?;
-    writeln!(out, "  load-levels=25%,50%,75%             # Lat-Turnaround-DRAM's matched loads (the default): shares of")?;
-    writeln!(out, "                                      #   the lower flat-out peak, or MiB/s pinned, 1-8 of them; its report")?;
-    writeln!(out, "                                      #   prints the pin of a run's (load-levels=4029,8059,12088)")?;
-    writeln!(out, "  load-pairs=5                        # The loaded latency tests' ABBA pairs at each load, 1-50 (default")?;
-    writeln!(out, "                                      #   3 for Lat-Loaded-DRAM, 5 for Lat-Turnaround-DRAM)")?;
-    writeln!(out, "  load-window-ms=1000                 # Their timed window, each after a 0.2 s settle: 10-60000 ms")?;
-    writeln!(out, "  pattern-mode=0                      # Pattern mode: 0-2 (TM5's), 10, 11, 13, 20, 30 (TMR's), or a native")?;
-    writeln!(out, "                                      #   family alone on SimpleTest: 15 ident, 16 random, 17 linepair,")?;
-    writeln!(out, "                                      #   21 lines, 31 switch, 32 quiet, 33 header; unset, SimpleTest runs")?;
-    writeln!(out, "                                      #   native programs (doc/pattern_spec.md)")?;
-    writeln!(out, "  sequence=W,2R,RW,2R@random          # Mem-Sequence's passes: W writes, R reads, RW reads and writes each line;")?;
-    writeln!(out, "                                      #   a count before, an @order after (spaces or commas between)")?;
-    writeln!(out, "  order=random                        # Mem-Sequence's order where a step names none: forward, reverse, random,")?;
-    writeln!(out, "                                      #   stride (TM5's, from a config entry's parameter)")?;
-    writeln!(out, "  patterns=legacy                     # A TM5 .cfg's SimpleTest modes as TMR's numbered modes, not native")?;
-    writeln!(out, "                                      #   programs (default native), to compare the two")?;
-    writeln!(out, "  seed=0x1234                         # The native patterns' run seed (default: from the clock, logged and")?;
-    writeln!(out, "                                      #   saved in the results), to replay a run's bytes")?;
-    writeln!(out, "  beat=32                             # Transfer width the switch pattern flips at: auto (SMBIOS, the")?;
-    writeln!(out, "                                      #   default), 16 (LPDDR4/5), 32 (DDR5), 64 (DDR4), or a memory")?;
-    writeln!(out, "                                      #   type (ddr4, ddr5, lpddr5, ...); 12 (lpddr6) and 24 (ddr6) are")?;
-    writeln!(out, "                                      #   models: TMR hasn't verified their packet maps")?;
-    writeln!(out, "  rescan=off                          # A failed check isn't rescanned to name each bad word (default on;")?;
-    writeln!(out, "                                      #   off counts one error a failed check, for runs with many errors)")?;
-    writeln!(out, "  verify-reps=5                       # Verify passes per write (TM5 retention stress: 5)")?;
-    writeln!(out, "  test-reps=3                         # Test op repetitions per write (MirrorMove round-trips)")?;
-    writeln!(out, "  write-read-cycles=4                 # Write+verify cycles per chunk (TM5 SimpleTest: 4)")?;
-    writeln!(out, "  topology=windowsv2                  # Core types from one detector alone (default auto, the cascade):")?;
-    writeln!(out, "                                      #   windows efficiency class, windowsv2 Windows' core priority,")?;
-    writeln!(out, "                                      #   cpuid L3 size per core, amd AMD's CPUID core type")?;
-    writeln!(out, "  core-priority=hybrid                # Hybrid CPUs that report no core types (e.g. Ryzen 8500G):")?;
-    writeln!(out, "                                      #   Windows' higher-priority cores are P-cores (default: equal);")?;
-    writeln!(out, "                                      #   labels only: the core order is the priority's either way")?;
-    writeln!(
-        out,
-        "  calibrate=auto                      # The cache calibration: measured before the tests when none is stored (default)"
-    )?;
-    writeln!(
-        out,
-        "  calibrate=recheck                   #   ...and a stored one probed first, about 15 s, measured again if it has drifted"
-    )?;
-    writeln!(out, "  calibrate=always                    #   ...measured before every run's tests")?;
-    writeln!(out, "  calibrate=off                       #   ...none: sizes from CPUID, and the seal's width from its rule")?;
-    writeln!(
-        out,
-        "  --no-serials                        # Leave the DIMMs' serials and the system's UUID out of the output, log and results"
-    )?;
+    entry(out, "memory=20%", "Reserve 20% of the memory available now (as 20%-from-available)")?;
+    entry(out, "memory=2GiB", "Reserve 2 GiB")?;
+    entry(out, "memory=2048MB", "TM5-compatible allocation (2048MB from available)")?;
+    entry(out, "memory=10%-from-available", "Reserve 10% from currently available memory")?;
+    entry(out, "memory=8GiB-from-total", "Reserve 8 GiB from total system memory")?;
+    entry(out, "memory=64GiB-target", "Target 64 GiB allocation (may fail if unavailable)")?;
+    entry(out, "cycles=5", "Run 5 complete test cycles")?;
+    entry(out, "duration=600", "Maximum 10 minutes runtime")?;
+    entry(out, "cpus=50%", "Use 50% of available CPUs, from the front of the core order:")?;
+    more(out, "  each L3's cores by Windows' core priority, the L3s in turn")?;
+    entry(out, "cpus=4", "  ...or a count of them")?;
+    entry(out, "cputype=cores", "Use physical cores (vs threads/SMT)")?;
+    entry(out, "skip-cores=1", "Leave out the last N cores in the core order, the weakest")?;
+    more(out, "  (default: 1, for the system's responsiveness)")?;
+    entry(out, "skip-cores=25%", "  ...or a share of the cores, from the end too (never every core)")?;
+    entry(out, "skip-cores=0-7", "  ...or the cores numbered A-B (isolate a memory domain/CCD)")?;
+    entry(out, "cpu-stride=2", "Take the cores by number instead of the core order, every Nth")?;
+    entry(out, "cpu-stride=even", "  ...or the count spread evenly over them (1: packed); core types too")?;
+    entry(out, "--disable-pinning", "Disable CPU thread pinning")?;
+    entry(out, "priority=high", "Worker priority: normal, high (default), realtime")?;
+    more(out, "  realtime is THREAD_PRIORITY_TIME_CRITICAL, the top of the")?;
+    more(out, "  normal range (not the realtime class); leave a core free with it")?;
+    entry(out, "window-priority=high", "The window's thread during a run: normal, high, realtime (default:")?;
+    more(out, "  the workers', priority='s); the console ignores it")?;
+    entry(out, "hugechunk=1GiB", "First 1GB-page request size, halved on refusal (power of two, >= 1GiB)")?;
+    entry(out, "largechunk=128MiB", "First 2MB-page request size, halved on refusal (default 128MiB)")?;
+    entry(out, "largefloor=16MiB", "Smallest 2MB-page request (16MiB-1GiB)")?;
+    entry(out, "blkroundtarget=1GiB", "Round each thread's share to a multiple of this (of largefloor)")?;
+    entry(out, "blkround=up", "...up (default; a smaller step rather than pass available), down, or nearest")?;
+    entry(out, "minpage=regular", "Smallest page the run takes: regular (4KB), large (2MB, the default)")?;
+    more(out, "  or huge (1GB); 2MB and 1GB pages need the large-page privilege")?;
+    entry(out, "maxpage=large", "Largest page it asks for: regular, large or huge (the default)")?;
+    more(out, "  (minpage=regular maxpage=regular: 4KB pages, without asking)")?;
+    entry(out, "channels=2", "Memory channels, for TM5 SimpleTest's stride (channels x Parameter - 1")?;
+    more(out, "  lines); default: the config's, else 2")?;
+    entry(out, "errors=halt", "Error handling (log/halt/panic)")?;
+    entry(out, "seal=tmr", "Seal: check and reseal around every chunk (tmr, the default; tm5; off)")?;
+    entry(out, "seal-width=auto", "Seal kernels' SIMD width (auto, 128, 256, 512); unset, width='s;")?;
+    more(out, "  auto is --calibrate-seal's width on this machine, else 256")?;
+    entry(out, "width=auto", "SIMD width of the tests that pick theirs at run time (the -Auto")?;
+    more(out, "  tests, Mem-Sequence, the Bench pairs) and of the seal: auto (the")?;
+    more(out, "  widest the CPU has; the seal its own auto), 128, 256 or 512")?;
+    more(out, "  (refused if the CPU lacks it). Mem-Sequence has no 128 and runs")?;
+    more(out, "  at 256; -128/-256/-512 tests keep theirs")?;
+    entry(out, "mirror=whole", "Mirror tests: one mirror over each chunk (the default)")?;
+    entry(out, "mirror=subblocks:4", "  ...each chunk in 2 or 4 parts, mirrored in lockstep")?;
+    entry(out, "mirror=jump:510", "  ...128 B swaps every (N+1) x 128 B (TM5 MirrorMove128)")?;
+    entry(out, "load-levels=25%,50%,75%", "Lat-Turnaround-DRAM's matched loads (the default): shares of")?;
+    more(out, "  the lower flat-out peak, or MiB/s pinned, 1-8 of them; its report")?;
+    more(out, "  prints the pin of a run's (load-levels=4029,8059,12088)")?;
+    entry(out, "load-pairs=5", "The loaded latency tests' ABBA pairs at each load, 1-50 (default")?;
+    more(out, "  3 for Lat-Loaded-DRAM, 5 for Lat-Turnaround-DRAM)")?;
+    entry(out, "load-window-ms=1000", "Their timed window, each after a 0.2 s settle: 10-60000 ms")?;
+    entry(out, "pattern-mode=0", "Pattern mode: 0-2 (TM5's), 10, 11, 13, 20, 30 (TMR's), or a native")?;
+    more(out, "  family alone on SimpleTest: 15 ident, 16 random, 17 linepair,")?;
+    more(out, "  21 lines, 31 switch, 32 quiet, 33 header; unset, SimpleTest runs")?;
+    more(out, "  native programs (doc/pattern_spec.md)")?;
+    entry(out, "sequence=W,2R,RW,2R@random", "Mem-Sequence's passes: W writes, R reads, RW reads and writes each line;")?;
+    more(out, "  a count before, an @order after (spaces or commas between)")?;
+    entry(out, "order=random", "Mem-Sequence's order where a step names none: forward, reverse, random,")?;
+    more(out, "  stride (TM5's, from a config entry's parameter)")?;
+    entry(out, "patterns=legacy", "A TM5 .cfg's SimpleTest modes as TMR's numbered modes, not native")?;
+    more(out, "  programs (default native), to compare the two")?;
+    entry(out, "seed=0x1234", "The native patterns' run seed (default: from the clock, logged and")?;
+    more(out, "  saved in the results), to replay a run's bytes")?;
+    entry(out, "beat=32", "Transfer width the switch pattern flips at: auto (SMBIOS, the")?;
+    more(out, "  default), 16 (LPDDR4/5), 32 (DDR5), 64 (DDR4), or a memory")?;
+    more(out, "  type (ddr4, ddr5, lpddr5, ...); 12 (lpddr6) and 24 (ddr6) are")?;
+    more(out, "  models: TMR hasn't verified their packet maps")?;
+    entry(out, "rescan=off", "A failed check isn't rescanned to name each bad word (default on;")?;
+    more(out, "  off counts one error a failed check, for runs with many errors)")?;
+    entry(out, "verify-reps=5", "Verify passes per write (TM5 retention stress: 5)")?;
+    entry(out, "test-reps=3", "Test op repetitions per write (MirrorMove round-trips)")?;
+    entry(out, "write-read-cycles=4", "Write+verify cycles per chunk (TM5 SimpleTest: 4)")?;
+    entry(out, "topology=windowsv2", "Core types from one detector alone (default auto, the cascade):")?;
+    more(out, "  windows efficiency class, windowsv2 Windows' core priority,")?;
+    more(out, "  cpuid L3 size per core, amd AMD's CPUID core type")?;
+    entry(out, "core-priority=hybrid", "Hybrid CPUs that report no core types (e.g. Ryzen 8500G):")?;
+    more(out, "  Windows' higher-priority cores are P-cores (default: equal);")?;
+    more(out, "  labels only: the core order is the priority's either way")?;
+    entry(out, "calibrate=auto", "The cache calibration: measured before the tests when none is stored (default)")?;
+    entry(out, "calibrate=recheck", "  ...and a stored one probed first, about 15 s, measured again if it has drifted")?;
+    entry(out, "calibrate=always", "  ...measured before every run's tests")?;
+    entry(out, "calibrate=off", "  ...none: sizes from CPUID, and the seal's width from its rule")?;
+    entry(out, "--no-serials", "Leave the DIMMs' serials and the system's UUID out of the output, log and results")?;
     writeln!(out)?;
     writeln!(out, "CONFIG FILE OVERRIDES:")?;
     writeln!(out, "  All parameters can override config file values:")?;
     writeln!(out, "    {} config=test.json cycles=1 skip-cores=0 memory=4GiB", program_name)?;
     writeln!(out)?;
     writeln!(out, "LOGGING:")?;
-    writeln!(out, "  RUST_LOG=info                       # What the console shows and the log file takes (error/warn/info/debug/trace)")?;
-    writeln!(out, "                                        # Without it: the console warnings (a debug build: info), the log file info")?;
-    writeln!(out, "                                        # The run's own lines (allocation, each step's start) show either way")?;
-    writeln!(out, "                                        # Use debug for detailed per-thread logs")?;
+    entry(out, "RUST_LOG=info", "What the console shows and the log file takes (error/warn/info/debug/trace)")?;
+    more(out, "Without it: the console warnings (a debug build: info), the log file info")?;
+    more(out, "The run's own lines (allocation, each step's start) show either way")?;
+    more(out, "Use debug for detailed per-thread logs")?;
     writeln!(out, "  Logs saved to: logs\\TMR_YYYY-MM-DD_HH-MM-SS.log      (local time)")?;
     writeln!(out, "  Results saved to: results\\TMR_YYYY-MM-DD_HH-MM-SS.json (same name as the log)")?;
     writeln!(out, "  Both beside tmr.exe, as are configs\\ and tmr-cfg.json; TMR_HOME=<folder> puts them there instead")?;
     writeln!(out)?;
     writeln!(out, "RESULT COMPARISON:")?;
-    writeln!(out, "  Test results are automatically saved as JSON files to results\\")?;
+    writeln!(out, "  Each run's results are saved as a JSON file in the results folder, as it goes")?;
     writeln!(out, "  Use --compare-results to analyze performance differences")?;
     writeln!(out, "  Use --show-results to see a run's final summary again, and how the run ended")?;
     writeln!(out, "  Useful for memory overclocking and timing optimization")?;
     writeln!(out)?;
+    writeln!(out, "EXIT STATUS, for scripts:")?;
+    entry(out, "0", "Passed, or a command done")?;
+    entry(out, "1", "Tests failed or found errors")?;
+    entry(out, "2", "Stopped before or instead of testing (a bad config, a failed command)")?;
+    entry(out, "3", "Interrupted (Ctrl+C)")?;
+    entry(out, "other", "Crashed or killed (errors=panic aborts on the first error)")?;
+    writeln!(out)?;
     usage(out, program_name)
+}
+
+/// The column every comment in the help starts at, the settings' (`entry`, `more`)
+const HELP_COLUMN: usize = 38;
+
+/// A help line: `left` two spaces in, then its comment from `HELP_COLUMN`; a `left` that reaches the column has a line of its own, and
+/// its comment the next
+fn entry(out: &mut dyn Write, left: &str, comment: &str) -> io::Result<()> {
+    let left = format!("  {left}");
+    if left.chars().count() < HELP_COLUMN {
+        writeln!(out, "{left:<width$}# {comment}", width = HELP_COLUMN)
+    } else {
+        writeln!(out, "{left}")?;
+        more(out, comment)
+    }
+}
+
+/// A comment's next line in the help, from `HELP_COLUMN`
+fn more(out: &mut dyn Write, comment: &str) -> io::Result<()> {
+    writeln!(out, "{:width$}# {comment}", "", width = HELP_COLUMN)
+}
+
+/// The exe as the help names it: its file name less `.exe`, as typed at a prompt (`tmr`), however it was started (a double-click's or
+/// a shell's full path, TODO 121)
+fn program_stem(program_name: &str) -> &str {
+    std::path::Path::new(program_name).file_stem().and_then(|stem| stem.to_str()).unwrap_or(program_name)
 }
 
 /// Quick usage examples (the end of `--help`)
 fn usage(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
+    let cmd = |out: &mut dyn Write, args: &str, comment: &str| entry(out, format!("{program_name} {args}").trim_end(), comment);
     writeln!(out, "Quick Usage Examples:")?;
-    writeln!(out, "  {} memory=10%-from-available     # Standard: Reserve 10% from currently available memory", program_name)?;
-    writeln!(out, "  {} memory=2048MB                 # TM5 compatible: Reserve 2048MB from available memory", program_name)?;
-    writeln!(out, "  {} memory=8GiB-from-total        # Failure test: Reserve 8 GiB from total (unrealistic)", program_name)?;
-    writeln!(out, "  {} memory=64GiB-target           # Failure test: Target 64 GiB allocation (may fail)", program_name)?;
-    writeln!(out, "  {} cycles=5 duration=600        # 5 cycles OR 10 minutes max", program_name)?;
-    writeln!(out, "  {} cpus=50% cputype=cores       # Use 50% of CPU cores (cores=avoid SMT)", program_name)?;
-    writeln!(out, "  {} skip-cores=0                 # Don't skip any core (default: leave out the weakest)", program_name)?;
-    writeln!(out, "  {} skip-cores=0-7 cpus=100%     # Test ONLY cores 8+ (isolate a memory domain on multi-CCD parts)", program_name)?;
-    writeln!(out, "  {} cpus=50%                     # Half the cores, spread over the L3s (the memory domains) evenly", program_name)?;
-    writeln!(out, "  {} cpus=50% cpu-stride=even     # Half the cores by core number, spaced (cores / threads) apart", program_name)?;
-    writeln!(out, "  {} --disable-pinning            # Disable CPU pinning (default: enabled)", program_name)?;
-    writeln!(out, "  {} errors=halt                  # Stop on first error", program_name)?;
-    writeln!(out, "  {} config=test.json             # Load comprehensive JSON config", program_name)?;
-    writeln!(out, "  {} config=legacy.cfg            # Run a TM5 config: its own tests, Test0 as the seal", program_name)?;
-    writeln!(out, "  {} --create-demo-configs        # Create demo configurations", program_name)?;
-    writeln!(out, "  {} --compare-results old.json new.json # Compare results from results\\", program_name)?;
+    cmd(out, "memory=10%-from-available", "Standard: Reserve 10% from currently available memory")?;
+    cmd(out, "memory=2048MB", "TM5 compatible: Reserve 2048MB from available memory")?;
+    cmd(out, "memory=8GiB-from-total", "Failure test: Reserve 8 GiB from total (unrealistic)")?;
+    cmd(out, "memory=64GiB-target", "Failure test: Target 64 GiB allocation (may fail)")?;
+    cmd(out, "cycles=5 duration=600", "5 cycles OR 10 minutes max")?;
+    cmd(out, "cpus=50% cputype=cores", "Use 50% of CPU cores (cores=avoid SMT)")?;
+    cmd(out, "skip-cores=0", "Don't skip any core (default: leave out the weakest)")?;
+    cmd(out, "skip-cores=0-7 cpus=100%", "Test ONLY cores 8+ (isolate a memory domain on multi-CCD parts)")?;
+    cmd(out, "cpus=50%", "Half the cores, spread over the L3s (the memory domains) evenly")?;
+    cmd(out, "cpus=50% cpu-stride=even", "Half the cores by core number, spaced (cores / threads) apart")?;
+    cmd(out, "--disable-pinning", "Disable CPU pinning (default: enabled)")?;
+    cmd(out, "errors=halt", "Stop on first error")?;
+    cmd(out, "config=test.json", "Load comprehensive JSON config")?;
+    cmd(out, "config=legacy.cfg", "Run a TM5 config: its own tests, Test0 as the seal")?;
+    cmd(out, "--create-demo-configs", "Create demo configurations")?;
+    cmd(out, "--compare-results old.json new.json", "Compare two runs' results (here, or in the results folder)")?;
     Ok(())
 }
 
@@ -1161,7 +1128,8 @@ mod tests {
         let mut out = Vec::new();
         help(&mut out, "tmr.exe").unwrap();
         let text = String::from_utf8(out).unwrap();
-        let starts: Vec<&str> = text.lines().map(str::trim_start).map(|line| line.strip_prefix("tmr.exe ").unwrap_or(line)).collect();
+        // The help names the exe by its stem, as typed (`program_stem`)
+        let starts: Vec<&str> = text.lines().map(str::trim_start).map(|line| line.strip_prefix("tmr ").unwrap_or(line)).collect();
         for key in crate::params::get_registry().all_keys() {
             let named = if key.starts_with("--") { format!("{key} ") } else { format!("{key}=") };
             assert!(starts.iter().any(|line| line.starts_with(&named)), "--help has no line for {key}");

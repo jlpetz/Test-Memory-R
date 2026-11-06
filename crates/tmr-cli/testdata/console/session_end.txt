@@ -34,56 +34,50 @@
 
 Note: --latency-test has been renamed to --ram-latency
 
-🚀 Test Memory R (TMR) v0.1.1 - High-Performance Memory Testing Tool
-===================================================================================
 
 USAGE:
-  tmr.exe                                    # This help, in a console (a double-click opens the window)
-  tmr.exe plan=stability                     # Run the defaults: any setting starts a run
-  tmr.exe --gui                            # Open the window, any parameters given in its box; where it can't open, it says why
-  tmr.exe --gui --start                    #   ...and start the run as it opens
-  tmr.exe --cli                            # The console, not the window, as any setting gives; alone, this help
-  tmr.exe config=test.json                  # Load modern JSON config (v2.0)
-  tmr.exe config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)
-  tmr.exe --create-demo-configs              # Create demo configuration files
-  tmr.exe --compare-results baseline.json current.json [output.json]
-                                          # Compare two test results (here, or in results\)
-  tmr.exe --show-results results.json      # How a run ended, then its final summary (here, or in results\)
-  tmr.exe --setup-large-pages              # Grant 'Lock pages in memory' to you (as administrator), then sign out and in
-  tmr.exe --setup-large-pages Group:Administrators
-                                          #   ...or to a group or another user: Group:<name>, User:<name>
-                                          #   (DOMAIN\name, or .\name for this PC's; quote a name with spaces)
-  tmr.exe --remove-large-pages             # Remove it from you, or from the Group:<name> or User:<name> given
-  tmr.exe --calibrate-cache                # Measure the cache tiers' sizes, finer around each edge; saved to tmr-cfg.json after a prompt
-  tmr.exe --calibrate-curve                # Check the calibration's curve: the L3 against it on k cores of each L3 (saves nothing)
-                                          #   (k: an L3 of up to 8 cores, every count; a larger one, 1-4, 6, 8, 12, 16, 24 ... all),
-                                          #   one thread a core, then both
-  tmr.exe --calibrate-seal                 # Time the seal's fill and check at each width, one thread; seal-width=auto
-                                          #   then runs the fastest (a narrower one if it is as fast)
-  tmr.exe --calibrate-all                  # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)
-  tmr.exe --calibrate-cache --yes          #   any calibration: --yes saves without asking, --no-save keeps what is
-                                          #   stored; with neither it asks, and saves if no answer can come
-  tmr.exe --calibrate-all --output x.json  #   --calibrate-cache or -all: also writes the cache tiers it measured to x.json, here
-  tmr.exe --show-calibration               # What the calibrations stored (the cache tiers, the seal's widths), and whether
-                                          #   each is this machine's, which a run takes
-  tmr.exe plan=stability                   # The default: the stability tests at the widest width (or width=)
-  tmr.exe plan=quick                       # The stability tests once
-  tmr.exe plan=widths                      # Every width of the tests that have them, side by side
-  tmr.exe plan=perf                        # Latency and bandwidth
-  tmr.exe plan=all                         # Every test in the suite; test= alone picks from it
-  tmr.exe --quick-test                     # plan=quick, reserving 60% of available memory
-  tmr.exe --ram-latency                    # Run DRAM latency tests (6 tests)
-  tmr.exe --cache-latency                  # Run full cache hierarchy latency tests (12 tests)
-  tmr.exe test=Spd-*                       # Run tests matching pattern (glob wildcards)
-  tmr.exe test=Mem-Mirror*,Lat-L3-*        # Run multiple patterns (comma-separated)
-  tmr.exe config=x.cfg --startup-debug     # Print the memory and test plan; allocate no test memory, run nothing
-  tmr.exe --version                         # Show version information
-  tmr.exe --show-topology                   # Show CPU Topology Mapping for debugging
-  tmr.exe --debug-topology                  # Runs multiple CPU Topology checks to debug if one works better
-
-EXIT STATUS: 0 passed, 1 tests failed or found errors, 2 stopped before or instead of testing
-             (bad config, failed command), 3 interrupted (Ctrl+C); other codes: crashed or killed
-             (errors=panic aborts on the first error)
+  tmr                                 # This help, in a console (a double-click opens the window)
+  tmr plan=stability                  # Run the defaults: any setting starts a run
+  tmr --gui                           # Open the window, any parameters given in its box; where it can't open, it says why
+  tmr --gui --start                   #   ...and start the run as it opens
+  tmr --cli                           # The console, not the window, as any setting gives; alone, this help
+  tmr config=test.json                # Load modern JSON config (v2.0)
+  tmr config=legacy.cfg               # Load legacy TestMem5 config (v1.0)
+  tmr --create-demo-configs           # Create demo configuration files
+  tmr --compare-results baseline.json current.json [output.json]
+                                      # Compare two test results (here, or in the results folder)
+  tmr --show-results results.json     # How a run ended, then its final summary (here, or in the results folder)
+  tmr --setup-large-pages             # Grant 'Lock pages in memory' to you (as administrator), then sign out and in
+  tmr --setup-large-pages Group:Administrators
+                                      #   ...or to a group or another user: Group:<name>, User:<name>
+                                      #   (DOMAIN\name, or .\name for this PC's; quote a name with spaces)
+  tmr --remove-large-pages            # Remove it from you, or from the Group:<name> or User:<name> given
+  tmr --calibrate-cache               # Measure the cache tiers' sizes, finer around each edge; saved to tmr-cfg.json after a prompt
+  tmr --calibrate-curve               # Check the calibration's curve: the L3 against it on k cores of each L3 (saves nothing)
+                                      #   (k: an L3 of up to 8 cores, every count; a larger one, 1-4, 6, 8, 12, 16, 24 ... all),
+                                      #   one thread a core, then both
+  tmr --calibrate-seal                # Time the seal's fill and check at each width, one thread; seal-width=auto
+                                      #   then runs the fastest (a narrower one if it is as fast)
+  tmr --calibrate-all                 # --calibrate-cache, then --calibrate-seal (maxpage= sets both's page size)
+  tmr --calibrate-cache --yes         #   any calibration: --yes saves without asking, --no-save keeps what is
+                                      #   stored; with neither it asks, and saves if no answer can come
+  tmr --calibrate-all --output x.json #   --calibrate-cache or -all: also writes the cache tiers it measured to x.json, here
+  tmr --show-calibration              # What the calibrations stored (the cache tiers, the seal's widths), and whether
+                                      #   each is this machine's, which a run takes
+  tmr plan=stability                  # The stability tests at the widest width (or width=): the default plan
+  tmr plan=quick                      # The stability tests once
+  tmr plan=widths                     # Every width of the tests that have them, side by side
+  tmr plan=perf                       # Latency and bandwidth
+  tmr plan=all                        # Every test in the suite; test= alone picks from it
+  tmr --quick-test                    # plan=quick, reserving 60% of available memory
+  tmr --ram-latency                   # Run DRAM latency tests (6 tests)
+  tmr --cache-latency                 # Run full cache hierarchy latency tests (12 tests)
+  tmr test=Spd-*                      # Run tests matching pattern (glob wildcards)
+  tmr test=Mem-Mirror*,Lat-L3-*       # Run multiple patterns (comma-separated)
+  tmr config=x.cfg --startup-debug    # Print the memory and test plan; allocate no test memory, run nothing
+  tmr --version                       # Show version information
+  tmr --show-topology                 # Show CPU Topology Mapping for debugging
+  tmr --debug-topology                # Runs multiple CPU Topology checks to debug if one works better
 
 COMMAND LINE PARAMETERS:
   memory=20%                          # Reserve 20% of the memory available now (as 20%-from-available)
@@ -174,40 +168,48 @@ COMMAND LINE PARAMETERS:
 
 CONFIG FILE OVERRIDES:
   All parameters can override config file values:
-    tmr.exe config=test.json cycles=1 skip-cores=0 memory=4GiB
+    tmr config=test.json cycles=1 skip-cores=0 memory=4GiB
 
 LOGGING:
   RUST_LOG=info                       # What the console shows and the log file takes (error/warn/info/debug/trace)
-                                        # Without it: the console warnings (a debug build: info), the log file info
-                                        # The run's own lines (allocation, each step's start) show either way
-                                        # Use debug for detailed per-thread logs
+                                      # Without it: the console warnings (a debug build: info), the log file info
+                                      # The run's own lines (allocation, each step's start) show either way
+                                      # Use debug for detailed per-thread logs
   Logs saved to: logs\TMR_YYYY-MM-DD_HH-MM-SS.log      (local time)
   Results saved to: results\TMR_YYYY-MM-DD_HH-MM-SS.json (same name as the log)
   Both beside tmr.exe, as are configs\ and tmr-cfg.json; TMR_HOME=<folder> puts them there instead
 
 RESULT COMPARISON:
-  Test results are automatically saved as JSON files to results\
+  Each run's results are saved as a JSON file in the results folder, as it goes
   Use --compare-results to analyze performance differences
   Use --show-results to see a run's final summary again, and how the run ended
   Useful for memory overclocking and timing optimization
 
+EXIT STATUS, for scripts:
+  0                                   # Passed, or a command done
+  1                                   # Tests failed or found errors
+  2                                   # Stopped before or instead of testing (a bad config, a failed command)
+  3                                   # Interrupted (Ctrl+C)
+  other                               # Crashed or killed (errors=panic aborts on the first error)
+
 Quick Usage Examples:
-  tmr.exe memory=10%-from-available     # Standard: Reserve 10% from currently available memory
-  tmr.exe memory=2048MB                 # TM5 compatible: Reserve 2048MB from available memory
-  tmr.exe memory=8GiB-from-total        # Failure test: Reserve 8 GiB from total (unrealistic)
-  tmr.exe memory=64GiB-target           # Failure test: Target 64 GiB allocation (may fail)
-  tmr.exe cycles=5 duration=600        # 5 cycles OR 10 minutes max
-  tmr.exe cpus=50% cputype=cores       # Use 50% of CPU cores (cores=avoid SMT)
-  tmr.exe skip-cores=0                 # Don't skip any core (default: leave out the weakest)
-  tmr.exe skip-cores=0-7 cpus=100%     # Test ONLY cores 8+ (isolate a memory domain on multi-CCD parts)
-  tmr.exe cpus=50%                     # Half the cores, spread over the L3s (the memory domains) evenly
-  tmr.exe cpus=50% cpu-stride=even     # Half the cores by core number, spaced (cores / threads) apart
-  tmr.exe --disable-pinning            # Disable CPU pinning (default: enabled)
-  tmr.exe errors=halt                  # Stop on first error
-  tmr.exe config=test.json             # Load comprehensive JSON config
-  tmr.exe config=legacy.cfg            # Run a TM5 config: its own tests, Test0 as the seal
-  tmr.exe --create-demo-configs        # Create demo configurations
-  tmr.exe --compare-results old.json new.json # Compare results from results\
+  tmr memory=10%-from-available       # Standard: Reserve 10% from currently available memory
+  tmr memory=2048MB                   # TM5 compatible: Reserve 2048MB from available memory
+  tmr memory=8GiB-from-total          # Failure test: Reserve 8 GiB from total (unrealistic)
+  tmr memory=64GiB-target             # Failure test: Target 64 GiB allocation (may fail)
+  tmr cycles=5 duration=600           # 5 cycles OR 10 minutes max
+  tmr cpus=50% cputype=cores          # Use 50% of CPU cores (cores=avoid SMT)
+  tmr skip-cores=0                    # Don't skip any core (default: leave out the weakest)
+  tmr skip-cores=0-7 cpus=100%        # Test ONLY cores 8+ (isolate a memory domain on multi-CCD parts)
+  tmr cpus=50%                        # Half the cores, spread over the L3s (the memory domains) evenly
+  tmr cpus=50% cpu-stride=even        # Half the cores by core number, spaced (cores / threads) apart
+  tmr --disable-pinning               # Disable CPU pinning (default: enabled)
+  tmr errors=halt                     # Stop on first error
+  tmr config=test.json                # Load comprehensive JSON config
+  tmr config=legacy.cfg               # Run a TM5 config: its own tests, Test0 as the seal
+  tmr --create-demo-configs           # Create demo configurations
+  tmr --compare-results old.json new.json
+                                      # Compare two runs' results (here, or in the results folder)
 ## an invalid parameter, on stderr
 ❌ Unknown parameter: colour
 💡 Run with --help to see all valid parameters
