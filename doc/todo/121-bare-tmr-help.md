@@ -61,4 +61,13 @@ Which modern terminal, or its font, isn't told; nor is the shell, but by the par
 - A scheduled task that runs bare `tmr` in a console of its own now leaves a shell waiting there, where it ran the defaults before.
   Nothing of TMR's does that (hw-pass, `bench_ab.py` and the docs all pass settings).
 - On an unsupported CPU, a Server 2022 click's FATAL line still closes with its console, as before (the gate exits before the hand-over).
-- Checked on Server 2022 by a real double-click over RDP (the metal box at m8a.xlarge): see TODO 121's entry.
+- The same-console route (no Windows Terminal) is tested in code only.
+
+## Checked (2026-11-06)
+
+The owner double-clicked the build on Server 2022 (build 20348; the metal box resized to m8a.xlarge) over RDP, as Administrator, who has
+Windows Terminal (a per-user app: `power-remote`, whose WinRM session saw none, lacks it). It opened a Windows Terminal window with the
+help and a PowerShell prompt, and no warning (4d67efd). What that showed in the help, fixed in 88d57eb: a second banner (the help's own,
+under the console's); comments out of line, from the path the exe was started by in every usage line and hand-counted padding (columns
+43-45 even for `tmr.exe`), now `tmr` and one column (38) through `entry` and `more`; `results\` ending lines, now "the results folder";
+and the exit status, which read as an error, now a code a line among the reference sections. 88d57eb rechecked there and passed.
