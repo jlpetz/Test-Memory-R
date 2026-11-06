@@ -60,11 +60,30 @@ decisions). Tools that ship a signed driver read it already; TMR takes it from t
 6. **The results' timings block is source-neutral**: its source, version and schema, then the source's own data, so another source
    (Intel's, below) fits later without a new format.
 
-## For ZenTimings: feature requests, for the owner to post
+## For ZenTimings: to discuss with its maintainer (the owner, on its Discord)
 
-- A snapshot from the command line (`--snapshot <file>`, say), so a tool can take one without the window open.
-- Open a saved snapshot to view, and two side by side (TMR's results would hold one).
-- The BIOS controller block decoded in the export, as the window shows it.
+Facts behind them (its code, 2026-11-06): it runs as administrator (`requireAdministrator`), its autostart a logon task at the highest
+privileges, the supported way to start elevated without a prompt; it has no tray. The export and the Live Snapshot are one format, the
+default sections "what the main window shows" (System, Modules, Timings, AOD, APOB, BIOS controller, power table, DIMM telemetry), and
+opt-in ones: `Spd`, `Registers` (the raw dump), `Sensors` (the board's sensor chip and plugins, not the CPU's own temperature), `AsusWmi`.
+Decoded throughout but for the BIOS controller block, the structure's raw fields copied out.
+
+In TMR's order of use:
+1. **One snapshot on demand**: a command line that takes one reading, writes the file and exits without the window
+   (`--snapshot <file>`, say), so TMR takes the timings at a run's start and nothing stays running. As it runs elevated, a way without a
+   prompt each time too (a task like its autostart's, which a tool can start).
+2. **A known place for the file**: today beside ZenTimings or a folder the user picks; a fixed default (`%ProgramData%\ZenTimings`, say)
+   or a documented pointer lets a tool find it without asking.
+3. **The schema as an interface**: whether `zentimings.snapshot` is meant for other tools, and its version bumped on a rename or a
+   removal, which TMR keys on.
+4. **The BIOS controller block decoded**, as the window shows it (ohms, RZQ), beside the raw codes.
+5. **Open a saved snapshot to view, and two side by side** with the differences marked. TMR keeps the snapshot as it is, so it can write
+   one back out for ZenTimings; ZenTimings needs to know nothing of TMR's format.
+6. **CPU temperature (PR 109) in the snapshot's readings** as well as the window: an AMD user could then run ZenTimings alone.
+7. **Intel**: whether he would want it in ZenTimings or a sibling, with PawnIO's `IntelMCHBAR` and Intel's datasheets; it needs testers,
+   as we have no Intel desktop.
+8. **Courtesy**: that TMR (open source, MIT/Apache) reads the snapshot and keeps it in its results, crediting ZenTimings; any
+   attribution he wants. Reading a file's data isn't using GPL code, so the licences don't meet.
 
 ## Intel
 
