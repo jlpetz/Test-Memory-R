@@ -20,6 +20,7 @@ compile_error!(
 #[cfg(feature = "gui")]
 mod fatal_box; // the window's message boxes, the crash box among them (TODO 29 S6)
 mod launch; // which frontend a launch runs, and what it does about the console (TODO 29 S6)
+mod shell; // the shell a click's help goes to where the window can't open (TODO 121)
 
 use std::process::exit;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -211,6 +212,17 @@ fn main() {
         fatal_box::arm();
     }
 
+    // A click's help where the window can't open goes to a shell that stays (TODO 121): a new Windows Terminal window, when it's
+    // installed and there is a PowerShell, which shows the help itself. After the gate, which this code may not run without.
+    let exe = launch.hand_over.then(std::env::current_exe).and_then(Result::ok);
+    let shell = exe.as_ref().map(|_| shell::newest_shell());
+    if let (Some(exe), Some(shell::Shell::PowerShell(powershell))) = (&exe, &shell)
+        && let Some(wt) = shell::windows_terminal()
+        && shell::open_terminal(&wt, powershell, exe).is_ok()
+    {
+        exit(RunStatus::Passed.exit_code());
+    }
+
     // The console Windows opened for the window is left only now, so the gate's text above was on it
     if launch.free_console {
         launch::free_console();
@@ -231,5 +243,12 @@ fn main() {
         exit(closed.exit_code);
     }
 
-    exit(tmr_cli::main(args));
+    let status = tmr_cli::main(args);
+    // Otherwise this console: the shell takes it over, after the help, as tmr.exe exits
+    if let (Some(exe), Some(shell)) = (&exe, &shell)
+        && let Err(e) = shell::stay(shell, exe)
+    {
+        eprintln!("The shell didn't start ({e}): open a console and type tmr, or tmr plan=stability for a run");
+    }
+    exit(status);
 }

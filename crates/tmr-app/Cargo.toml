@@ -28,9 +28,10 @@ tmr.workspace = true
 tmr-cli.workspace = true
 tmr-gui = { workspace = true, optional = true }
 log = "0.4"
-# The crash handler and the crash box's thread, and the launch's facts (the console, standard
-# output, the Windows build): features the engine and the CLI enable already, but for LibraryLoader,
-# tmr.exe's own (the crash report's module base)
+# The crash handler and the crash box's thread, the launch's facts (the console, standard output,
+# the Windows build) and the shell a click's help goes to (the installed PowerShells, TODO 121):
+# features the engine and the CLI enable already, but for LibraryLoader, tmr.exe's own (the crash
+# report's module base)
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
@@ -38,6 +39,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Kernel",
     "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }

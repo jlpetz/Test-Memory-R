@@ -38,10 +38,11 @@ Note: --latency-test has been renamed to --ram-latency
 ===================================================================================
 
 USAGE:
-  tmr.exe                                    # Run with defaults
+  tmr.exe                                    # This help, in a console (a double-click opens the window)
+  tmr.exe plan=stability                     # Run the defaults: any setting starts a run
   tmr.exe --gui                            # Open the window, any parameters given in its box; where it can't open, it says why
   tmr.exe --gui --start                    #   ...and start the run as it opens
-  tmr.exe --cli                            # Run in the console (as any parameter does; with none, a double-click opens the window)
+  tmr.exe --cli                            # The console, not the window, as any setting gives; alone, this help
   tmr.exe config=test.json                  # Load modern JSON config (v2.0)
   tmr.exe config=legacy.cfg                 # Load legacy TestMem5 config (v1.0)
   tmr.exe --create-demo-configs              # Create demo configuration files

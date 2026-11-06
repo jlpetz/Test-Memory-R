@@ -30,7 +30,8 @@ The console, with its progress ticker at the bottom.
 
 The console looks best in a modern terminal, which shows its emoji and table lines in a font such as
 Cascadia Mono: [Windows Terminal](https://github.com/microsoft/terminal) (it ships the Cascadia fonts) with
-[PowerShell](https://github.com/PowerShell/PowerShell) 7.6 or later. Both install with winget:
+[PowerShell](https://github.com/PowerShell/PowerShell) 7.6 or later. In the classic Windows console, which draws the emoji as
+boxes, TMR says so at a run's start and end. Both install with winget:
 
 ```
 winget install --id Microsoft.WindowsTerminal --source winget
@@ -48,8 +49,8 @@ winget install --id Microsoft.PowerShell --source winget
 Then grant the large-page privilege once, from a console run as administrator:
 `tmr --setup-large-pages` grants it to you (`Group:Administrators`, or another `Group:` or `User:`
 name, to a group or another account), and sign out and back in. From then on TMR has it in every
-run, run as administrator or not. Double-click TMR for its window, or type `tmr` in a console: on its own it runs the stability
-plan, 3 cycles; `tmr --help` lists every setting, and `config=file.cfg` runs a TM5 config. The
+run, run as administrator or not. Double-click TMR for its window, or type `tmr plan=stability` in a console for the stability
+plan, 3 cycles: any setting starts a run, `tmr` alone lists every setting, and `config=file.cfg` runs a TM5 config. The
 [user guide](dist/docs/guide.md), which the installer puts in TMR's `docs\` folder, has the rest.
 
 TMR keeps its files beside `tmr.exe`: `configs\`, `results\` (one JSON file a run, saved as it
@@ -94,7 +95,7 @@ a script or a remote session; `--gui` and `--cli` choose explicitly. Where the w
 
 | Windows | Build | Console (CLI) | Window (GUI) |
 |---|---|---|---|
-| Server 2022 | 20348 | Yes | No: a double-click runs the console in its own console window, and `--gui` says why and stops |
+| Server 2022 | 20348 | Yes | No: a double-click leaves you at a prompt in TMR's folder, after its help, in a Windows Terminal window when it's installed, with the newest PowerShell; `--gui` says why and stops |
 | Windows 11 21H2, 22H2, 23H2 | 22000–26099 | Yes | Yes, but a double-click flashes a console window briefly before the window opens |
 | Windows 11 24H2 and later, Server 2025 | 26100 and later | Yes | Yes, fully supported |
 

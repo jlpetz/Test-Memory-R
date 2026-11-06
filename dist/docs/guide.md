@@ -95,9 +95,11 @@ takes the privilege away again (from you, or from the `Group:` or `User:` named)
   cache calibration it finds; the first run on a machine measures one before its tests (about 2
   minutes), or Calibrate the caches and the seal, in the same menu, measures it now, with the
   seal's fastest width.
-- **From a console**, type `tmr`. On its own it runs the stability plan, 3 cycles of it; press
-  Ctrl+C to stop it sooner, and it stops at its next checkpoint and writes its report. Some
-  settings:
+- **From a console**, type `tmr plan=stability` for the stability plan, 3 cycles of it: any
+  setting starts a run, and `tmr` alone lists every setting and starts nothing. Press Ctrl+C to
+  stop a run sooner, and it stops at its next checkpoint and writes its report. In the classic
+  Windows console, which draws TMR's emoji as boxes, a WARNING at the run's start and end says
+  so, and how to get Windows Terminal, which draws them. Some settings:
 
   | Setting | What it does |
   |---|---|

@@ -31,8 +31,9 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// status for scripts: 0 passed, 1 failed or found errors, 2 stopped before testing, 3 interrupted (`RunStatus::exit_code`). Any error
 /// stops TMR before
 /// testing, so it exits 2 like every other "stopped before testing" case (`RunStatus::NotRun`);
-/// the console gets it once, the log file too.
+/// the console gets it once, the log file too. `tmr` alone is its help (`bare_is_help`).
 pub fn main(args: Vec<String>) -> i32 {
+    let args = bare_is_help(args);
     // Initialize enhanced logging, with the log file for a session and the commands that change the system (`tmr::logfile::wanted`)
     setup_logging(tmr::logfile::wanted(&args));
 
@@ -41,14 +42,47 @@ pub fn main(args: Vec<String>) -> i32 {
         tmr::BUILD.version,
         "=".repeat(80)
     ));
+    // A run's warning comes near its start and again at its end, where neither is missed; a command's help ends with it
+    let run = tmr::commands::Command::parse(&args).is_none();
+    if run {
+        warn_if_classic();
+    }
 
     let program = args.first().cloned().unwrap_or_default();
-    match tmr::session::run(args, Arc::new(crate::render::CliFrontend::new())) {
+    let status = match tmr::session::run(args, Arc::new(crate::render::CliFrontend::new())) {
         Ok(end) => finish(&end, &program),
         Err(e) => {
             report_error(e.as_ref());
             RunStatus::NotRun.exit_code()
         }
+    };
+    if run {
+        warn_if_classic();
+    }
+    status
+}
+
+/// `tmr` alone is `tmr --help`, which exits 0 (TODO 121): a run takes a setting (`tmr plan=stability`), so typing the name, or a check
+/// that runs the exe bare (winget's), starts nothing. The window, the engine's other caller, still runs the defaults on an empty box.
+fn bare_is_help(mut args: Vec<String>) -> Vec<String> {
+    if args.len() == 1 {
+        args.push("--help".to_string());
+    }
+    args
+}
+
+/// What the classic console window is told (TODO 121): plain text, as it can't draw an emoji, with `WARNING:` in yellow
+const CLASSIC_WARNING: &str = "\x1b[1;33mWARNING:\x1b[0m this is the classic Windows console, which shows TMR's emoji as boxes.
+         For the best view, run TMR in Windows Terminal:
+         winget install --id Microsoft.WindowsTerminal --source winget
+         or https://github.com/microsoft/terminal
+";
+
+/// The classic console's warning (`CLASSIC_WARNING`), when stdout is that console (`console::is_classic`), set apart by a blank line. Not
+/// blocking, and never in redirected output, which no console shows.
+fn warn_if_classic() {
+    if crate::console::is_classic() {
+        crate::console::print(&format!("\n{CLASSIC_WARNING}\n"));
     }
 }
 
@@ -62,7 +96,13 @@ fn report_error(e: &dyn std::error::Error) {
 /// command runs here.
 fn finish(end: &SessionEnd, program: &str) -> i32 {
     let status = match end {
-        SessionEnd::Command(command) => return run_command(command),
+        SessionEnd::Command(command) => {
+            let status = run_command(command);
+            if matches!(command, tmr::commands::Command::Help(_)) {
+                warn_if_classic();
+            }
+            return status;
+        }
         SessionEnd::Ran { status, .. } => *status,
         // Nothing ran, as the user chose
         SessionEnd::SignOutChosen => RunStatus::Passed,
@@ -226,5 +266,19 @@ mod tests {
         }
         let _ = std::fs::remove_file(&unreadable);
         check("show_results", &text);
+    }
+
+    /// TODO 121: `tmr` alone is its help, which exits 0, so a check that runs the exe bare (winget's) sees nothing run and nothing fail;
+    /// with any argument the command line is left as it is
+    #[test]
+    fn tmr_alone_is_its_help_which_exits_0() {
+        let args = |args: &[&str]| args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        let bare = crate::bare_is_help(args(&["tmr.exe"]));
+        assert_eq!(bare, args(&["tmr.exe", "--help"]));
+        assert_eq!(crate::bare_is_help(args(&["tmr.exe", "plan=stability"])), args(&["tmr.exe", "plan=stability"]));
+        let command = Command::parse(&bare).expect("--help is a command");
+        let (status, printed) = capture(|| crate::run_command(&command));
+        assert_eq!(status, 0);
+        assert!(printed.contains("USAGE:"), "{printed}");
     }
 }

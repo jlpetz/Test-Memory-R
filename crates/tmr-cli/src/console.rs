@@ -20,17 +20,51 @@ use std::sync::{Mutex, MutexGuard};
 
 use windows::Win32::System::Console::{
     CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO, ENABLE_VIRTUAL_TERMINAL_PROCESSING, FlushConsoleInputBuffer, GetConsoleMode,
-    GetConsoleScreenBufferInfo, GetStdHandle, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleMode,
+    GetConsoleScreenBufferInfo, GetConsoleWindow, GetStdHandle, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetConsoleMode,
 };
+use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, IsWindowVisible};
 
 /// Whether stdout is a console: one flag for the process, set at startup (`init`) and read by everything that writes escape codes (the
 /// log's colours, `setup_logging`; the reports' colours and bold, `ConsoleRenderer`) and by the ticker, which a redirected stdout doesn't
 /// get at all (`draw_ticker`). Off until `init`, so a process that never calls it, the window's, renders its text without escapes.
 static IS_CONSOLE: AtomicBool = AtomicBool::new(false);
 
+/// Whether stdout is the classic console window, conhost's own (TODO 121): it draws in one font with no fallback, so TMR's emoji show as
+/// boxes there. Windows Terminal, VS Code's terminal and the other modern terminals host a console through a pseudoconsole, whose window
+/// is of another class (`PseudoConsoleWindow`); a hidden classic window is a terminal's that draws the text itself (ConEmu's). Set at
+/// startup (`init`); off until then, and so in a test.
+static CLASSIC: AtomicBool = AtomicBool::new(false);
+
+/// The classic console window's class: conhost's, not a pseudoconsole's (checked against both on Server 2025, 2026-11-06)
+const CLASSIC_CLASS: &str = "ConsoleWindowClass";
+
 /// Whether stdout is a console (`IS_CONSOLE`). Relaxed: a plain load on x86, and nothing else is ordered by it.
 pub fn is_console() -> bool {
     IS_CONSOLE.load(Ordering::Relaxed)
+}
+
+/// Whether stdout is the classic console window (`CLASSIC`)
+pub fn is_classic() -> bool {
+    CLASSIC.load(Ordering::Relaxed)
+}
+
+/// Whether this process's console is the classic console window, shown (`CLASSIC`)
+fn classic_window() -> bool {
+    // SAFETY: no arguments
+    let window = unsafe { GetConsoleWindow() };
+    if window.is_invalid() {
+        return false;
+    }
+    let mut class = [0u16; 64];
+    // SAFETY: `class` is a local buffer, passed with its length, which the call writes no more of; a window that has gone fails, as 0
+    let length = unsafe { GetClassNameW(window, &mut class) };
+    // SAFETY: a value argument; a window that has gone is not visible
+    let shown = unsafe { IsWindowVisible(window) }.as_bool();
+    shown
+        && usize::try_from(length)
+            .ok()
+            .and_then(|length| class.get(..length))
+            .is_some_and(|name| String::from_utf16_lossy(name) == CLASSIC_CLASS)
 }
 
 /// Sets the flag `init` sets, for a golden's capture (`golden.rs`): on, as on a console, or off, as redirected
@@ -230,12 +264,15 @@ impl Write for LogSink {
 }
 
 /// Whether stdout is a console, into the process's flag (`is_console`), once, at startup (`setup_logging`): std's `is_terminal`, a console
-/// or an MSYS terminal's pipe, as the logger's colours have always been decided. Then a console is switched to VT processing, which the
+/// or an MSYS terminal's pipe, as the logger's colours have always been decided; and whether that console is the classic console window
+/// (`is_classic`). Then a console is switched to VT processing, which the
 /// ticker's cursor movement and the log colours both need. Windows Terminal always has it on; classic conhost only for programs that ask.
 /// It used to be switched on as a side effect of env_logger writing to stdout, which stopped when the logger moved to `LogSink`, so it is
 /// done explicitly here.
 pub fn init() {
-    IS_CONSOLE.store(io::IsTerminal::is_terminal(&io::stdout()), Ordering::Relaxed);
+    let console = io::IsTerminal::is_terminal(&io::stdout());
+    IS_CONSOLE.store(console, Ordering::Relaxed);
+    CLASSIC.store(console && classic_window(), Ordering::Relaxed);
     // SAFETY: no pointer arguments. The handle is the process's own stdout, which we do not own and never close.
     let Ok(handle) = (unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }) else {
         return;

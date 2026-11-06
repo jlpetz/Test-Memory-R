@@ -48,8 +48,9 @@ pub enum Command {
 }
 
 impl Command {
-    /// The command `args` (the exe's name first) names with its first argument, if it names one.
-    pub(crate) fn parse(args: &[String]) -> Option<Command> {
+    /// The command `args` (the exe's name first) names with its first argument, if it names one. Public for the console, which tells a
+    /// run from a one-shot command before the session starts (its classic-console warning, TODO 121).
+    pub fn parse(args: &[String]) -> Option<Command> {
         if args.len() > 1 {
             match args[1].as_str() {
                 "--create-demo-configs" => return Some(Command::DemoConfigs),
@@ -126,7 +127,8 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "===================================================================================")?;
     writeln!(out)?;
     writeln!(out, "USAGE:")?;
-    writeln!(out, "  {}                                    # Run with defaults", program_name)?;
+    writeln!(out, "  {}                                    # This help, in a console (a double-click opens the window)", program_name)?;
+    writeln!(out, "  {} plan=stability                     # Run the defaults: any setting starts a run", program_name)?;
     writeln!(
         out,
         "  {} --gui                            # Open the window, any parameters given in its box; where it can't open, it says why",
@@ -135,7 +137,7 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "  {} --gui --start                    #   ...and start the run as it opens", program_name)?;
     writeln!(
         out,
-        "  {} --cli                            # Run in the console (as any parameter does; with none, a double-click opens the window)",
+        "  {} --cli                            # The console, not the window, as any setting gives; alone, this help",
         program_name
     )?;
     writeln!(out, "  {} config=test.json                  # Load modern JSON config (v2.0)", program_name)?;

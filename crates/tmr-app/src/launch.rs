@@ -80,6 +80,10 @@ pub struct Launch {
     /// `--gui` asked for the window, which can't open (`note` says why): nothing runs, `mode` notwithstanding, and tmr.exe exits as not
     /// run. Not a double-click's: an error there would close the console Windows opened before it could be read, so the CLI runs instead.
     pub refused: bool,
+    /// The CLI with nothing to run, in a console that is tmr.exe's alone (TODO 121): one Windows opened for a click where the window
+    /// can't open (Server 2022), or the one opened for `--cli` alone. Its help would close with it, so it goes to a shell that stays
+    /// (`shell`), as `tmr` typed into a shell leaves you at that shell's prompt.
+    pub hand_over: bool,
 }
 
 impl Launch {
@@ -122,7 +126,8 @@ impl std::fmt::Display for Note {
 /// Which frontend runs, and what to do about the console first. `--cli`/`--gui` decide; any other argument means the CLI; with none,
 /// redirected output means the CLI (WinRM), no console the window (a double-click, from build 26100 with the manifest), a console of this
 /// process alone the window after leaving it (a double-click below 26100), and a shared one the CLI (a shell). The window opens only in a
-/// build that has it, from `FIRST_GUI_BUILD`; otherwise `--gui` is refused, and a double-click runs the CLI with a note.
+/// build that has it, from `FIRST_GUI_BUILD`; otherwise `--gui` is refused, and a double-click runs the CLI with a note, handing its help
+/// over to a shell (`Launch::hand_over`).
 pub fn decide(facts: &Facts) -> Launch {
     let wanted = facts.asked.unwrap_or(if facts.arguments || facts.stdout_redirected {
         Mode::Cli
@@ -139,12 +144,15 @@ pub fn decide(facts: &Facts) -> Launch {
         (Mode::Gui, Mode::Cli) => Some(Note::OldWindows(facts.build)),
         _ => None,
     };
+    let own_console = facts.console_window && facts.console_processes == 1;
+    let alloc_console = !refused && mode == Mode::Cli && facts.gui_built && !facts.console_window && !facts.stdout_redirected;
     Launch {
         mode,
-        free_console: mode == Mode::Gui && facts.console_window && facts.console_processes == 1,
-        alloc_console: !refused && mode == Mode::Cli && facts.gui_built && !facts.console_window && !facts.stdout_redirected,
+        free_console: mode == Mode::Gui && own_console,
+        alloc_console,
         note,
         refused,
+        hand_over: !refused && mode == Mode::Cli && !facts.arguments && !facts.stdout_redirected && (own_console || alloc_console),
     }
 }
 
@@ -260,10 +268,14 @@ mod tests {
     }
 
     fn launch(mode: Mode, free_console: bool, alloc_console: bool, note: Option<Note>) -> Launch {
-        Launch { mode, free_console, alloc_console, note, refused: false }
+        Launch { mode, free_console, alloc_console, note, refused: false, hand_over: false }
     }
     fn refused(note: Note) -> Launch {
-        Launch { mode: Mode::Cli, free_console: false, alloc_console: false, note: Some(note), refused: true }
+        Launch { mode: Mode::Cli, free_console: false, alloc_console: false, note: Some(note), refused: true, hand_over: false }
+    }
+    /// The CLI with nothing to run in a console of its own: its help goes to a shell that stays (TODO 121)
+    fn handed(launch: Launch) -> Launch {
+        Launch { hand_over: true, ..launch }
     }
 
     /// The decision table (TODO 29 S6): the flags decide, then any other argument, then redirected output, then the console
@@ -293,11 +305,13 @@ mod tests {
                 launch(Mode::Gui, true, false, None),
             ),
             (
-                "--cli on a double-click: a console opened for it",
+                "--cli on a double-click: a console opened for it, its help handed to a shell",
                 Facts { asked: Some(Mode::Cli), ..double_click() },
-                launch(Mode::Cli, false, true, None),
+                handed(launch(Mode::Cli, false, true, None)),
             ),
-            ("--cli in a console of its own", Facts { asked: Some(Mode::Cli), ..own_console() }, cli),
+            ("--cli in a console of its own: its help handed to a shell", Facts { asked: Some(Mode::Cli), ..own_console() }, handed(cli)),
+            ("--cli in a console of its own, with parameters", Facts { asked: Some(Mode::Cli), arguments: true, ..own_console() }, cli),
+            ("--cli from a shell: the help stays in it", Facts { asked: Some(Mode::Cli), ..shell() }, cli),
         ];
         for (case, facts, expected) in cases {
             assert_eq!(decide(&facts), expected, "{case}");
@@ -315,10 +329,15 @@ mod tests {
         let old = |build| launch(Mode::Cli, false, false, Some(Note::OldWindows(build)));
         let cli = launch(Mode::Cli, false, false, None);
         let cases = [
-            ("a double-click on Server 2022", server_2022(own_console()), old(Some(20348))),
+            ("a double-click on Server 2022: its help handed to a shell", server_2022(own_console()), handed(old(Some(20348)))),
+            (
+                "a double-click on Server 2022, with parameters: the CLI, no note",
+                server_2022(Facts { arguments: true, ..own_console() }),
+                cli,
+            ),
             ("a shell on Server 2022", server_2022(shell()), cli),
             ("--cli on Server 2022", server_2022(Facts { asked: Some(Mode::Cli), ..shell() }), cli),
-            ("an unknown build", Facts { build: None, ..own_console() }, old(None)),
+            ("an unknown build", Facts { build: None, ..own_console() }, handed(old(None))),
             ("--gui on Server 2022", server_2022(gui(shell())), refused(Note::OldWindows(Some(20348)))),
             ("--gui on Server 2022, in a console of its own", server_2022(gui(own_console())), refused(Note::OldWindows(Some(20348)))),
             (
@@ -333,7 +352,7 @@ mod tests {
                 without(gui(Facts { arguments: true, ..double_click() })),
                 refused(Note::NotBuilt),
             ),
-            ("a double-click without the window", without(own_console()), cli),
+            ("a double-click without the window", without(own_console()), handed(cli)),
             ("no console without the window: as launched", without(Facts { arguments: true, ..double_click() }), cli),
         ];
         for (case, facts, expected) in cases {

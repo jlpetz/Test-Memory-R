@@ -22,11 +22,13 @@ log = "0.4"
 env_logger = "0.11"
 ctrlc = "3.5"
 chrono = "0.4"
-# The ticker's console (VT mode, its width) and Ctrl+C's exit status. The engine enables the other
-# features tmr.exe builds the crate with, so it still builds once, with the features it had
+# The ticker's console (VT mode, its width), Ctrl+C's exit status, and the console window's class (the
+# classic console's warning, TODO 121). The engine enables the other features tmr.exe builds the crate
+# with, so it still builds once, with the features it had
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Console",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]
