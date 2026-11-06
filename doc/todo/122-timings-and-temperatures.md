@@ -22,9 +22,10 @@ decisions). Tools that ship a signed driver read it already; TMR takes it from t
 
 - **No export command**: its startup (`WPF/App.xaml.cs`) takes only its driver cleanup mode and its autostart argument.
 - **Live Snapshot** (`WPF/Export/LiveSnapshot.cs`, off by default): keeps a snapshot file current "so that local tools can read the
-  current state without talking to the application", at most once a second, after each auto refresh. Written whole (a temp file, then
+  current state without talking to the application", every 5 s by default (1 s at the least), after each auto refresh. Written whole (a temp file, then
   `File.Replace`), serial numbers never in it. The folder and name are the user's (default beside ZenTimings,
-  `live_snapshot_device_config.json`), and so are the sections.
+  `live_snapshot_device_config.json`), and so are the sections, by default the export's (`Settings/ExportSettings.cs`): the DIMMs'
+  temperatures and the decoded timings are in both.
 - **Its schema**, `zentimings.snapshot` 1.0 (the owner's captures for TODO 117, `baselines\2026-11-05-timings\`):
   - `app`: ZenTimings', its core's and PawnIO's versions; `static`: the system, CPU, board, BIOS and AGESA, SMU, modules, SPD;
   - `config.timings.per_dct[].timings`: decoded, each channel (`CL 14, RCDRD 14, RFC 288, REFI 14029, PHYRDL 28`), in clocks unless
@@ -33,7 +34,8 @@ decisions). Tools that ship a signed driver read it already; TMR takes it from t
   - `readings`: `sampled_at`, `stale`, the power table (FCLK, UCLK, MCLK, SoC and VDDP voltages), each DIMM's `dimm_temp_c`;
   - `unavailable`: each missing value and why.
 - **It takes outside work**: the snapshot export and the Live Snapshot are a contributor's (PRs 107, 108), the side-by-side channels
-  another's (106); an open PR (109) adds CPU temperature to its window. If that lands, an AMD user could run ZenTimings alone.
+  another's (106); an open PR (109, the first contributor's, not ours) adds CPU temperature to its window. If that lands in the
+  snapshot too, an AMD user could run ZenTimings alone.
 
 ### LibreHardwareMonitor (LibreHardwareMonitor/LibreHardwareMonitor, MPL-2.0, v0.9.6 of 2026-02-14)
 
