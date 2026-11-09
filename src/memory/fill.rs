@@ -13,6 +13,7 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
 
 use std::collections::{BTreeMap, HashMap};
+use std::time::{Duration, Instant};
 
 use windows::Win32::System::Threading::GetNumaHighestNodeNumber;
 
@@ -166,28 +167,89 @@ impl Source {
     }
 }
 
+/// The fill's progress lines (TODO 120), the run's own (`SHOWN_TARGET`), so the console, the window's Log tab and the log file all have
+/// them: a line as each pass begins (its page size, what is still to take), and, while a pass lasts, one every `every` saying how far the
+/// whole allocation has got. By time, not by count: a 1 GiB request takes under a millisecond, a 2 MiB one up to 80 ms where memory is
+/// short of 1 GiB pages (the dev box, 2026-11-09), so a 2-second fill adds only its pass lines.
+pub(crate) struct Progress {
+    /// The bytes every thread wants, the fill's whole
+    target: usize,
+    /// When the allocation began (the reservation, before the fill), as its finished line counts it
+    started: Instant,
+    /// When this last wrote a line
+    last: Instant,
+    every: Duration,
+}
+
+/// How often a pass that is still running says how far the allocation has got
+const PROGRESS_EVERY: Duration = Duration::from_secs(5);
+
+impl Progress {
+    pub(crate) fn new(fill: &impl Fill, started: Instant) -> Self {
+        let target = (0..fill.thread_count()).map(|i| fill.filled(i) + fill.remaining(i)).sum();
+        Self { target, started, last: Instant::now(), every: PROGRESS_EVERY }
+    }
+
+    /// A pass begins: `page` pages from `source`, for the threads that can take them. Nothing is said when none can.
+    fn pass(&mut self, fill: &impl Fill, page: PageSizeLevel, floor: usize, source: Source, who: &str) {
+        let to_go: usize = (0..fill.thread_count())
+            .filter(|&i| fill.remaining(i) >= floor && fill.can_take(i, page) && source.pool(fill.numa_node(i)).is_some())
+            .map(|i| fill.remaining(i))
+            .sum();
+        if to_go > 0 {
+            log::info!(target: crate::logfile::SHOWN_TARGET, "{}", pass_line(who, page, source, to_go));
+            self.last = Instant::now();
+        }
+    }
+
+    /// After a grant: a line once `every` has passed since the last
+    fn granted(&mut self, fill: &impl Fill, who: &str) {
+        let now = Instant::now();
+        if now.duration_since(self.last) >= self.every {
+            let done = (0..fill.thread_count()).map(|i| fill.filled(i)).sum();
+            log::info!(target: crate::logfile::SHOWN_TARGET, "{}", progress_line(who, done, self.target, now.duration_since(self.started)));
+            self.last = now;
+        }
+    }
+}
+
+/// A pass's line: `⏳ stitched: 2MB large pages, 5.00 GiB to go`, a remote pass's `from other nodes`
+fn pass_line(who: &str, page: PageSizeLevel, source: Source, to_go: usize) -> String {
+    let from = if source == Source::Local { "" } else { " from other nodes" };
+    format!("⏳ {who}: {} pages{from}, {} to go", page_label(page), gib_label(to_go))
+}
+
+/// A running pass's line: `⏳ stitched: 18.40 of 28.00 GiB so far (12 s)`
+fn progress_line(who: &str, done: usize, target: usize, elapsed: Duration) -> String {
+    format!("⏳ {who}: {} of {} so far ({} s)", gib_number(done), gib_label(target), elapsed.as_secs())
+}
+
 /// Every pass, in order: 1 GiB then 2 MiB pages from each thread's own node, then the same from each other node in turn, then 4 KiB pages
 /// (preferred home node) for whatever is left. Page size gives way before locality: a thread takes its own node's 2 MiB pages before
 /// another node's 1 GiB ones, and no thread goes remote until every node has filled its own threads as far as it can. A stitched thread
 /// whose local 2 MiB pages end off a 1 GiB boundary is padded up to it before each remote 1 GiB pass (`pad_to_huge_boundary`). Returns the
 /// first 4 KiB refusal, as `fill_regular` does.
 pub(crate) fn fill_all(
-    fill: &mut impl Fill, pages: PageSizes, sizing: &crate::memory::allocator::BlockSizing, nodes: u32, who: &str,
+    fill: &mut impl Fill, pages: PageSizes, sizing: &crate::memory::allocator::BlockSizing, nodes: u32, who: &str, started: Instant,
 ) -> Result<Option<(usize, u32)>, String> {
+    let mut progress = Progress::new(fill, started);
     let sources = std::iter::once(Source::Local).chain((1..nodes).map(|step| Source::Remote { step, nodes }));
     for source in sources {
         if pages.allows(PageSizeLevel::Huge) {
             if source != Source::Local && pages.allows(PageSizeLevel::Large) {
-                pad_to_huge_boundary(fill, source, sizing.large_floor, who)?;
+                pad_to_huge_boundary(fill, source, sizing.large_floor, who, &mut progress)?;
             }
-            fill_ladder(fill, PageSizeLevel::Huge, sizing.huge_chunk, HUGE_PAGE_SIZE_USIZE, source, who)?;
+            progress.pass(fill, PageSizeLevel::Huge, HUGE_PAGE_SIZE_USIZE, source, who);
+            fill_ladder(fill, PageSizeLevel::Huge, sizing.huge_chunk, HUGE_PAGE_SIZE_USIZE, source, who, &mut progress)?;
         }
         if pages.allows(PageSizeLevel::Large) {
-            fill_ladder(fill, PageSizeLevel::Large, sizing.large_chunk, sizing.large_floor, source, who)?;
+            progress.pass(fill, PageSizeLevel::Large, sizing.large_floor, source, who);
+            fill_ladder(fill, PageSizeLevel::Large, sizing.large_chunk, sizing.large_floor, source, who, &mut progress)?;
         }
     }
     if pages.allows(PageSizeLevel::Regular) {
-        return fill_regular(fill, who);
+        progress.pass(fill, PageSizeLevel::Regular, 1, Source::Local, who);
+        return fill_regular(fill, who, &mut progress);
     }
     Ok(None)
 }
@@ -197,7 +259,7 @@ pub(crate) fn fill_all(
 /// its own node's last 2 MiB pages came in odd-sized pieces; without the pad it would get no remote 1 GiB pages at all.) Nothing is freed:
 /// the pad is part of what the thread needs anyway, and where it lands is fixed, the thread's own next addresses. A refused pad leaves the
 /// thread on 2 MiB pages.
-fn pad_to_huge_boundary(fill: &mut impl Fill, source: Source, floor: usize, who: &str) -> Result<(), String> {
+fn pad_to_huge_boundary(fill: &mut impl Fill, source: Source, floor: usize, who: &str, progress: &mut Progress) -> Result<(), String> {
     let label = page_label(PageSizeLevel::Large);
     for i in 0..fill.thread_count() {
         let gap = fill.gap_to_boundary(i, PageSizeLevel::Huge);
@@ -222,6 +284,7 @@ fn pad_to_huge_boundary(fill: &mut impl Fill, source: Source, floor: usize, who:
                 break;
             }
             padded += len;
+            progress.granted(fill, who);
         }
         if padded == gap {
             log::info!(target: crate::logfile::SHOWN_TARGET,
@@ -250,7 +313,7 @@ fn pad_to_huge_boundary(fill: &mut impl Fill, source: Source, floor: usize, who:
 /// Every request is traced at info: a ✅ line per size granted, logged whenever the pool's size drops and at the end, and a ❌ line per
 /// refusal.
 pub(crate) fn fill_ladder(
-    fill: &mut impl Fill, page: PageSizeLevel, top: usize, floor: usize, source: Source, who: &str,
+    fill: &mut impl Fill, page: PageSizeLevel, top: usize, floor: usize, source: Source, who: &str, progress: &mut Progress,
 ) -> Result<(), String> {
     let label = page_label(page);
     let mut rung: HashMap<Option<u32>, usize> = HashMap::new();
@@ -281,6 +344,7 @@ pub(crate) fn fill_ladder(
                 grants += 1;
                 served[i] = grants;
                 *tally.entry(pool).or_default().entry(len).or_default() += 1;
+                progress.granted(fill, who);
             }
             Grant::Refused(code) => {
                 log_granted(who, &source.label(pool), label, tally.remove(&pool));
@@ -332,7 +396,7 @@ fn log_granted(who: &str, pool: &str, label: &str, sizes: Option<BTreeMap<usize,
 /// Fill what each thread still needs with 4 KiB pages, thread by thread: there is no shared pool to split fairly. The home node is
 /// preferred, not required (4 KiB pages refuse the strict form). Returns the first refusal, as (thread index, code); a 4 KiB refusal is the
 /// commit limit, and what to do about it is the caller's call. Traced like `fill_ladder`.
-pub(crate) fn fill_regular(fill: &mut impl Fill, who: &str) -> Result<Option<(usize, u32)>, String> {
+pub(crate) fn fill_regular(fill: &mut impl Fill, who: &str, progress: &mut Progress) -> Result<Option<(usize, u32)>, String> {
     let label = page_label(PageSizeLevel::Regular);
     let mut tally: BTreeMap<Option<u32>, BTreeMap<usize, usize>> = BTreeMap::new();
     let mut refused = None;
@@ -341,7 +405,10 @@ pub(crate) fn fill_regular(fill: &mut impl Fill, who: &str) -> Result<Option<(us
         while fill.remaining(i) > 0 {
             let len = fill.request_len(i, usize::MAX, PAGE_SIZE_4KB)?;
             match fill.request(i, len, PageSizeLevel::Regular, home)? {
-                Grant::Done => *tally.entry(home).or_default().entry(len).or_default() += 1,
+                Grant::Done => {
+                    *tally.entry(home).or_default().entry(len).or_default() += 1;
+                    progress.granted(fill, who);
+                }
                 Grant::Refused(code) => {
                     log::info!(target: crate::logfile::SHOWN_TARGET,
                         "❌ {who}: {}: {} ({label}) for thread {} refused: {}",
@@ -380,6 +447,21 @@ pub(crate) fn page_label(page: PageSizeLevel) -> &'static str {
 
 pub(crate) fn node_label(node: Option<u32>) -> String {
     node.map_or_else(|| "any node".to_string(), |n| format!("NUMA {n}"))
+}
+
+/// A thread count as the allocation's lines give it: `1 thread`, `4 threads`
+pub(crate) fn threads_label(threads: usize) -> String {
+    format!("{threads} thread{}", if threads == 1 { "" } else { "s" })
+}
+
+/// Bytes as the progress lines give them: `28.00 GiB`
+pub(crate) fn gib_label(bytes: usize) -> String {
+    format!("{} GiB", gib_number(bytes))
+}
+
+/// Bytes in GiB, two places: `28.00`
+fn gib_number(bytes: usize) -> String {
+    format!("{:.2}", bytes as f64 / HUGE_PAGE_SIZE_USIZE as f64)
 }
 
 /// A request size for the log: whole GiB when it is one, else MiB.
@@ -492,13 +574,48 @@ mod tests {
         }
     }
 
+    /// A fill's progress that writes no running lines: the tests' fills take no time to speak of
+    fn quiet(fill: &impl Fill) -> Progress {
+        Progress { every: Duration::MAX, ..Progress::new(fill, Instant::now()) }
+    }
+
+    /// TODO 120: a pass's line names its page size and what is left for it, a remote pass where from; a running pass's line, how far the
+    /// whole allocation has got and since when
+    #[test]
+    fn the_progress_lines_say_the_page_size_and_how_far() {
+        assert_eq!(pass_line("stitched", PageSizeLevel::Huge, Source::Local, 28 * GIB), "⏳ stitched: 1GB huge pages, 28.00 GiB to go");
+        assert_eq!(
+            pass_line("stitched", PageSizeLevel::Large, Source::Remote { step: 1, nodes: 2 }, 5 * GIB + GIB / 2),
+            "⏳ stitched: 2MB large pages from other nodes, 5.50 GiB to go"
+        );
+        assert_eq!(
+            progress_line("stitched", 18 * GIB + 2 * GIB / 5, 28 * GIB, Duration::from_millis(12_700)),
+            "⏳ stitched: 18.40 of 28.00 GiB so far (12 s)"
+        );
+    }
+
+    /// The running lines come by time: none before `every` has passed since the last line, then one, and the clock starts again
+    #[test]
+    fn a_running_line_waits_for_its_interval() {
+        let fill = pools(&[Some(0); 2], 4 * GIB, &[(Some(0), 8)]);
+        let long_ago = Instant::now().checked_sub(Duration::from_secs(10)).expect("a clock 10 s in");
+        let mut progress = Progress { last: long_ago, ..Progress::new(&fill, long_ago) };
+        progress.granted(&fill, "test");
+        assert!(progress.last > long_ago, "10 s on, a line, and the clock restarts");
+        let wrote = progress.last;
+        progress.granted(&fill, "test");
+        assert_eq!(progress.last, wrote, "straight after, none");
+        assert_eq!(progress.target, 8 * GIB, "the whole: every thread's want");
+    }
+
     /// Two nodes, two threads each, one shared order: each node splits its own pool, one page at a time, and running dry on one node does
     /// not stop the other.
     #[test]
     fn nodes_split_their_own_pools_one_page_apart() {
         let nodes = [Some(0), Some(1), Some(0), Some(1)];
         let mut fill = pools(&nodes, 8 * GIB, &[(Some(0), 3), (Some(1), 9)]);
-        fill_ladder(&mut fill, PageSizeLevel::Huge, GIB, GIB, Source::Local, "test").unwrap();
+        let mut progress = quiet(&fill);
+        fill_ladder(&mut fill, PageSizeLevel::Huge, GIB, GIB, Source::Local, "test", &mut progress).unwrap();
         assert_eq!(fill.filled, vec![2 * GIB, 5 * GIB, GIB, 4 * GIB]);
         // Each node's single refusal ended it; nothing else was refused.
         let refused: Vec<usize> = fill.requests.iter().filter(|r| !r.2).map(|r| r.0).collect();
@@ -510,7 +627,8 @@ mod tests {
     #[test]
     fn a_refusal_halves_the_rung_and_the_same_thread_retries() {
         let mut fill = pools(&[Some(0); 2], 8 * GIB, &[(Some(0), 6)]);
-        fill_ladder(&mut fill, PageSizeLevel::Huge, 4 * GIB, GIB, Source::Local, "test").unwrap();
+        let mut progress = quiet(&fill);
+        fill_ladder(&mut fill, PageSizeLevel::Huge, 4 * GIB, GIB, Source::Local, "test", &mut progress).unwrap();
         let asked: Vec<(usize, usize, bool)> = fill.requests.iter().map(|&(i, len, ok)| (i, len / GIB, ok)).collect();
         assert_eq!(asked, vec![(0, 4, true), (1, 4, false), (1, 2, true), (1, 2, false), (1, 1, false)]);
         assert_eq!(fill.filled, vec![4 * GIB, 2 * GIB]);
@@ -523,8 +641,9 @@ mod tests {
         let nodes = [Some(0), Some(0), Some(1), Some(1)];
         let mut fill = pools(&nodes, 3 * GIB, &[(Some(0), 4), (Some(1), 9)]);
         let remote = Source::Remote { step: 1, nodes: 2 };
+        let mut progress = quiet(&fill);
         for source in [Source::Local, remote] {
-            fill_ladder(&mut fill, PageSizeLevel::Huge, GIB, GIB, source, "test").unwrap();
+            fill_ladder(&mut fill, PageSizeLevel::Huge, GIB, GIB, source, "test", &mut progress).unwrap();
         }
         assert_eq!(fill.filled, vec![3 * GIB; 4]);
         // Node 0's last two pages came from node 1, asked for by name after the local passes.

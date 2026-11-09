@@ -327,6 +327,99 @@ pub trait VmOps {
     fn release(&mut self, addr: usize, len: usize) -> Result<(), u32>;
 }
 
+/// How many of each operation an arena asked of the OS, refusals included: its finished line's figures (TODO 120)
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct VmCalls {
+    /// The placeholder VA reserved for the whole arena (`reserve`)
+    pub reservations: usize,
+    /// Holes a refused commit left, reserved again (`reserve_at`)
+    pub re_reservations: usize,
+    /// Placeholders split (`split`)
+    pub splits: usize,
+    /// Placeholders merged (`coalesce`)
+    pub merges: usize,
+    /// Commits asked for (`allocate_at`, `replace`), granted or refused
+    pub commits: usize,
+    /// Of those, refused
+    pub refused: usize,
+    /// Regions released (`release`)
+    pub releases: usize,
+}
+
+impl VmCalls {
+    /// Every call made
+    pub fn total(&self) -> usize {
+        self.reservations + self.re_reservations + self.splits + self.merges + self.commits + self.releases
+    }
+
+    /// Each kind made, by its count, commits first: `64 commits (1 refused), 66 placeholder splits, 64 releases, 1 VA reservation`
+    pub fn describe(&self) -> String {
+        let kind = |n: usize, one: &str, many: &str| (n > 0).then(|| format!("{n} {}", if n == 1 { one } else { many }));
+        let commits =
+            kind(self.commits, "commit", "commits").map(|c| if self.refused > 0 { format!("{c} ({} refused)", self.refused) } else { c });
+        [
+            commits,
+            kind(self.splits, "placeholder split", "placeholder splits"),
+            kind(self.merges, "placeholder merge", "placeholder merges"),
+            kind(self.releases, "release", "releases"),
+            kind(self.reservations, "VA reservation", "VA reservations"),
+            kind(self.re_reservations, "re-reservation", "re-reservations"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ")
+    }
+}
+
+/// `vm`, each operation counted (`VmCalls`). The arena keeps its OS through this, so every call it makes, the teardown's too, counts.
+#[derive(Debug)]
+pub struct Counted<V> {
+    vm: V,
+    calls: VmCalls,
+}
+
+impl<V> Counted<V> {
+    fn new(vm: V) -> Self {
+        Self { vm, calls: VmCalls::default() }
+    }
+}
+
+impl<V: VmOps> VmOps for Counted<V> {
+    fn reserve(&mut self, len: usize, align: usize, lowest: Option<usize>) -> Result<usize, u32> {
+        self.calls.reservations += 1;
+        self.vm.reserve(len, align, lowest)
+    }
+    fn reserve_at(&mut self, addr: usize, len: usize) -> Result<(), u32> {
+        self.calls.re_reservations += 1;
+        self.vm.reserve_at(addr, len)
+    }
+    fn split(&mut self, addr: usize, len: usize) -> Result<(), u32> {
+        self.calls.splits += 1;
+        self.vm.split(addr, len)
+    }
+    fn replace(&mut self, addr: usize, len: usize, page: PageSizeLevel, numa: Option<u32>) -> Result<(), u32> {
+        self.calls.commits += 1;
+        let result = self.vm.replace(addr, len, page, numa);
+        self.calls.refused += usize::from(result.is_err());
+        result
+    }
+    fn coalesce(&mut self, addr: usize, len: usize) -> Result<(), u32> {
+        self.calls.merges += 1;
+        self.vm.coalesce(addr, len)
+    }
+    fn allocate_at(&mut self, addr: usize, len: usize, page: PageSizeLevel, numa: Option<u32>) -> Result<(), u32> {
+        self.calls.commits += 1;
+        let result = self.vm.allocate_at(addr, len, page, numa);
+        self.calls.refused += usize::from(result.is_err());
+        result
+    }
+    fn release(&mut self, addr: usize, len: usize) -> Result<(), u32> {
+        self.calls.releases += 1;
+        self.vm.release(addr, len)
+    }
+}
+
 /// `VirtualAlloc2` / `VirtualFree` on the current process. Every call is logged at debug level *before* it is made, so a log that is
 /// written through survives a bugcheck on that call.
 #[derive(Debug, Default)]
@@ -508,6 +601,20 @@ fn win32_code(e: &windows::core::Error) -> u32 {
     if hr & 0xFFFF_0000 == 0x8007_0000 { hr & 0xFFFF } else { hr }
 }
 
+/// The allocation's finished line (TODO 120): what it got, in how long, and the calls it took. `✅ stitched: 28.00 GiB for 4 threads in 2.02
+/// s, 133 calls to Windows: 64 commits (1 refused), 66 placeholder splits, 64 releases, 1 VA reservation`; a short one says of how much.
+fn finished_line(allocated: usize, target: usize, threads: usize, elapsed: std::time::Duration, calls: &VmCalls) -> String {
+    let got =
+        if allocated == target { fill::gib_label(allocated) } else { format!("{:.2} of {}", gib(allocated), fill::gib_label(target)) };
+    format!(
+        "✅ {WHO}: {got} for {} in {:.2} s, {} calls to Windows: {}",
+        fill::threads_label(threads),
+        elapsed.as_secs_f64(),
+        calls.total(),
+        calls.describe()
+    )
+}
+
 fn gib(bytes: usize) -> f64 {
     bytes_to_gib_f64(bytes as u64)
 }
@@ -604,7 +711,7 @@ fn refusal(code: u32, page: PageSizeLevel, addr: usize, len: usize) -> Result<Gr
 /// them.
 #[derive(Debug)]
 pub struct StitchedArena<V: VmOps = Win32Vm> {
-    vm: V,
+    vm: Counted<V>,
     base: usize,
     reservation: usize,
     stride: usize,
@@ -642,8 +749,13 @@ impl<V: VmOps> StitchedArena<V> {
     /// Reserve, carve and fill through `vm`. On error everything taken so far is released (the half-built arena drops) before the error
     /// returns.
     pub fn build_with(vm: V, req: &StitchRequest) -> Result<Self, String> {
+        let started = std::time::Instant::now();
         let plan = plan(req)?;
-        let mut vm = vm;
+        let target: usize = plan.targets.iter().sum();
+        log::info!(target: crate::logfile::SHOWN_TARGET,
+            "⏳ Allocating {} for {} with the stitched allocator", fill::gib_label(target), fill::threads_label(req.threads.len())
+        );
+        let mut vm = Counted::new(vm);
         let base = vm.reserve(plan.reservation, HUGE, req.lowest_address).map_err(|code| {
             format!("stitched: reserving {:.2} GiB of placeholder VA failed: {}", gib(plan.reservation), describe_error(code))
         })?;
@@ -661,7 +773,7 @@ impl<V: VmOps> StitchedArena<V> {
         let pages = PageSizes { min: req.min_page, max: req.max_page };
         let sizing = BlockSizing { huge_chunk: req.huge_chunk, large_chunk: req.large_chunk, large_floor: req.large_floor };
         // No fairness question for 4 KiB pages: a refusal there is the commit limit, and that fails the build.
-        if let Some((i, code)) = fill::fill_all(&mut arena, pages, &sizing, req.numa_nodes, WHO)? {
+        if let Some((i, code)) = fill::fill_all(&mut arena, pages, &sizing, req.numa_nodes, WHO, started)? {
             let slice = &arena.slices[i];
             return Err(format!(
                 "stitched: committing {:.2} GiB of 4 KiB pages for thread {} was refused: {}",
@@ -687,7 +799,15 @@ impl<V: VmOps> StitchedArena<V> {
                 req.max_page
             );
         }
+        let allocated: usize = arena.slices.iter().map(|s| s.cursor).sum();
+        log::info!(target: crate::logfile::SHOWN_TARGET, "{}", finished_line(allocated, target, req.threads.len(), started.elapsed(), &arena.vm.calls));
         Ok(arena)
+    }
+
+    /// The calls this arena has made of the OS so far (`VmCalls`)
+    #[cfg(test)]
+    fn calls(&self) -> VmCalls {
+        self.vm.calls
     }
 
     /// Cut the reservation into one placeholder per thread, bottom up. Each cut is a front split of what is left.
@@ -1328,6 +1448,47 @@ mod tests {
         let mut odd = StitchRequest::new(threads(&[GIB], &[None]));
         odd.run_quantum = 24 * MIB;
         assert!(super::plan(&odd).is_err());
+    }
+
+    /// TODO 120: every call the arena makes is counted: one reservation; each commit, granted or refused, and each refused one's hole
+    /// reserved again; at least a release a commit (free-then-allocate frees the slot first) and a split a thread past the first (the
+    /// carve)
+    #[test]
+    fn every_os_call_is_counted() {
+        let vm = FakeVm::default();
+        vm.state().huge_pages.insert(Some(0), 3);
+        let req = StitchRequest::new(threads(&[2 * GIB; 2], &[Some(0); 2]));
+        let arena = StitchedArena::build_with(vm.clone(), &req).unwrap();
+        let calls = arena.calls();
+        let granted = vm.state().regions.values().filter(|(_, r)| matches!(r, Region::Committed(..))).count();
+        assert_eq!(calls.reservations, 1);
+        assert_eq!(calls.refused, 1, "the 4th 1 GiB page");
+        assert_eq!(calls.commits, granted + calls.refused);
+        assert_eq!(calls.re_reservations, calls.refused, "the refused commit's hole");
+        assert!(calls.releases >= calls.commits, "{calls:?}");
+        assert!(calls.splits >= 1, "{calls:?}");
+        assert_eq!(
+            calls.total(),
+            calls.reservations + calls.re_reservations + calls.splits + calls.merges + calls.commits + calls.releases
+        );
+    }
+
+    /// The finished line: what it got, in how long, every call by kind with the kinds it made none of left out; and a short allocation
+    /// says of how much
+    #[test]
+    fn the_finished_line_counts_the_calls_by_kind() {
+        let calls = VmCalls { reservations: 1, re_reservations: 1, splits: 66, merges: 0, commits: 64, refused: 1, releases: 64 };
+        let took = std::time::Duration::from_millis(2_018);
+        assert_eq!(
+            finished_line(28 * GIB, 28 * GIB, 4, took, &calls),
+            "✅ stitched: 28.00 GiB for 4 threads in 2.02 s, 196 calls to Windows: 64 commits (1 refused), 66 placeholder splits, \
+             64 releases, 1 VA reservation, 1 re-reservation"
+        );
+        let one = VmCalls { reservations: 1, commits: 1, releases: 1, ..VmCalls::default() };
+        assert_eq!(
+            finished_line(GIB / 2, GIB, 1, took, &one),
+            "✅ stitched: 0.50 of 1.00 GiB for 1 thread in 2.02 s, 3 calls to Windows: 1 commit, 1 release, 1 VA reservation"
+        );
     }
 
     #[test]
