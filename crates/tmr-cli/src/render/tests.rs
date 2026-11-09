@@ -539,6 +539,7 @@ fn setup_events_print_as_their_golden() {
                 display_version: "24H2".to_string(),
                 build: 26100,
                 revision: 4349,
+                server: false,
             })),
         }),
         // TODO 115: a VM, and why

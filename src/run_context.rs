@@ -1306,6 +1306,7 @@ mod tests {
                 display_version: "24H2".to_string(),
                 build: 26100,
                 revision,
+                server: false,
             }),
             ..identity("abc", "def")
         };

@@ -116,30 +116,40 @@ impl CommitMethod {
     }
 }
 
-/// The Windows builds Microsoft fixed the refused-replace bugcheck in (0x139, module docs), each with the first revision (UBR) that has
-/// the fix: none known yet. A row goes in only once the fix is verified on a machine that can afford the bugcheck if it isn't, never on
-/// an announcement alone; it is the one switch between the methods (TMR-APP CLAUDE.md).
-const REPLACE_FIXED: &[(u32, u32)] = &[];
+/// A Windows build Microsoft fixed the refused-replace bugcheck in (0x139, module docs): a server's or a client's, whose revisions run
+/// apart for one build (`WindowsVersion::server`), the build, and the first revision (UBR) with the fix.
+#[derive(Debug, Clone, Copy)]
+struct Fixed {
+    server: bool,
+    build: u32,
+    revision: u32,
+}
 
-/// How this Windows commits, and why (TODO 123): [`CommitMethod::Replace`] on a build and revision `REPLACE_FIXED` lists, else
+/// The fixed builds: none known yet, so every Windows, server and client, is taken as having the bugcheck (the owner, 2026-11-09). A row
+/// goes in only once the fix is verified on a machine that can afford the bugcheck if it isn't, never on an announcement alone, one for
+/// each build and line; it is the one switch between the methods (TMR-APP CLAUDE.md).
+const REPLACE_FIXED: &[Fixed] = &[];
+
+/// How this Windows commits, and why (TODO 123): [`CommitMethod::Replace`] on a build, line and revision `REPLACE_FIXED` lists, else
 /// [`CommitMethod::FreeThenAllocate`].
 pub fn commit_method_for(os: Option<&crate::windows_version::WindowsVersion>) -> (CommitMethod, String) {
     choose(os, REPLACE_FIXED)
 }
 
-/// `commit_method_for` against `fixed`, which the tests give their own
-fn choose(os: Option<&crate::windows_version::WindowsVersion>, fixed: &[(u32, u32)]) -> (CommitMethod, String) {
+/// `commit_method_for` against `fixed`, which the tests give their own. A row counts only for its own line, server or client.
+fn choose(os: Option<&crate::windows_version::WindowsVersion>, fixed: &[Fixed]) -> (CommitMethod, String) {
     let Some(os) = os else {
         return (
             CommitMethod::FreeThenAllocate,
             "Windows' build is unknown, so the refused-replace bugcheck's fix is not known".to_string(),
         );
     };
-    let build = format!("{}.{}", os.build, os.revision);
-    match fixed.iter().find(|&&(b, _)| b == os.build) {
-        Some(&(_, from)) if os.revision >= from => (CommitMethod::Replace, format!("build {build} has the refused-replace bugcheck's fix")),
-        Some(&(b, from)) => (CommitMethod::FreeThenAllocate, format!("build {build} predates the bugcheck's fix ({b}.{from})")),
-        None => (CommitMethod::FreeThenAllocate, format!("no fix for the refused-replace bugcheck is known for build {build}")),
+    let line = if os.server { "server" } else { "client" };
+    let build = format!("{line} build {}.{}", os.build, os.revision);
+    match fixed.iter().find(|row| row.server == os.server && row.build == os.build) {
+        Some(row) if os.revision >= row.revision => (CommitMethod::Replace, format!("{build} has the refused-replace bugcheck's fix")),
+        Some(row) => (CommitMethod::FreeThenAllocate, format!("{build} predates the bugcheck's fix ({}.{})", row.build, row.revision)),
+        None => (CommitMethod::FreeThenAllocate, format!("no fix for the refused-replace bugcheck is known for {build}")),
     }
 }
 
@@ -1489,31 +1499,42 @@ mod tests {
         assert!(super::plan(&odd).is_err());
     }
 
-    /// TODO 120: every call the arena makes is counted: one reservation; each commit, granted or refused, and each refused one's hole
-    /// reserved again; at least a release a commit (free-then-allocate frees the slot first) and a split a thread past the first (the
-    /// carve)
-    /// TODO 123: Replace only on a build the table lists, from its fixed revision on; free-then-allocate before it, on any other build,
-    /// and when the build is unknown. The real table is empty: no fix is verified yet.
+    /// TODO 123: Replace only on a build the table lists for its own line, from its fixed revision on; free-then-allocate before it, on a
+    /// build the table lists for the other line (a server's revisions run apart from a client's), on any other build, and when the build is
+    /// unknown. The real table is empty: every Windows is taken as having the bugcheck.
     #[test]
-    fn the_commit_method_follows_the_build() {
-        let os = |build, revision| crate::windows_version::WindowsVersion {
-            name: "Windows Server 2025 Datacenter".to_string(),
+    fn the_commit_method_follows_the_build_and_its_line() {
+        let os = |server, build, revision| crate::windows_version::WindowsVersion {
+            name: if server { "Windows Server 2025 Datacenter" } else { "Windows 11 Pro" }.to_string(),
             display_version: "24H2".to_string(),
             build,
             revision,
+            server,
         };
-        let fixed = [(26100, 7000)];
-        assert_eq!(choose(Some(&os(26100, 7000)), &fixed).0, CommitMethod::Replace);
-        assert_eq!(choose(Some(&os(26100, 7001)), &fixed).0, CommitMethod::Replace);
+        let fixed = [Fixed { server: false, build: 26100, revision: 9800 }];
+        assert_eq!(choose(Some(&os(false, 26100, 9800)), &fixed).0, CommitMethod::Replace);
+        assert_eq!(choose(Some(&os(false, 26100, 9801)), &fixed).0, CommitMethod::Replace);
         assert_eq!(
-            choose(Some(&os(26100, 6999)), &fixed),
-            (CommitMethod::FreeThenAllocate, "build 26100.6999 predates the bugcheck's fix (26100.7000)".to_string())
+            choose(Some(&os(false, 26100, 9725)), &fixed),
+            (CommitMethod::FreeThenAllocate, "client build 26100.9725 predates the bugcheck's fix (26100.9800)".to_string())
         );
-        assert_eq!(choose(Some(&os(20348, 9000)), &fixed).0, CommitMethod::FreeThenAllocate, "another build");
+        assert_eq!(
+            choose(Some(&os(true, 26100, 33650)), &fixed),
+            (CommitMethod::FreeThenAllocate, "no fix for the refused-replace bugcheck is known for server build 26100.33650".to_string()),
+            "a client's fixed revision says nothing of a server's, though the server's number is higher"
+        );
+        assert_eq!(choose(Some(&os(false, 26200, 9818)), &fixed).0, CommitMethod::FreeThenAllocate, "another build");
         assert_eq!(choose(None, &fixed).0, CommitMethod::FreeThenAllocate, "an unknown build");
-        assert_eq!(commit_method_for(Some(&os(26100, 99_999))).0, CommitMethod::FreeThenAllocate, "no fix verified yet");
+        for (server, build) in
+            [(true, 26100), (true, 20348), (false, 26100), (false, 26200), (false, 26300), (false, 28000), (false, 22631)]
+        {
+            assert_eq!(commit_method_for(Some(&os(server, build, 99_999))).0, CommitMethod::FreeThenAllocate, "none verified: {build}");
+        }
     }
 
+    /// TODO 120: every call the arena makes is counted: one reservation; each commit, granted or refused, and each refused one's hole
+    /// reserved again; at least a release a commit (free-then-allocate frees the slot first) and a split a thread past the first (the
+    /// carve)
     #[test]
     fn every_os_call_is_counted() {
         let vm = FakeVm::default();

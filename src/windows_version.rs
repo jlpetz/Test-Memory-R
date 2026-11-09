@@ -24,6 +24,11 @@ pub struct WindowsVersion {
     pub build: u32,
     /// The revision cumulative updates raise (UBR); 0 where Windows doesn't say
     pub revision: u32,
+    /// A server's (`InstallationType` Server, Server Core, Nano Server), not a client's. Its revisions run apart from a client's of the
+    /// same build: this dev box's Server 2025 was 26100.33650 when Windows 11 24H2's was listed as 26100.9725 (2026-11-09), so a fix's
+    /// first revision is a server's or a client's (`stitched::commit_method_for`)
+    #[serde(default)]
+    pub server: bool,
 }
 
 impl WindowsVersion {
@@ -50,12 +55,14 @@ fn product_name(registry: &str, client: bool, build: u32) -> String {
 fn read() -> Option<WindowsVersion> {
     let name = string(w!("ProductName"))?;
     let build = string(w!("CurrentBuildNumber"))?.trim().parse().ok()?;
-    let client = string(w!("InstallationType")).is_some_and(|kind| kind.eq_ignore_ascii_case("Client"));
+    let kind = string(w!("InstallationType")).unwrap_or_default();
+    let client = kind.eq_ignore_ascii_case("Client");
     Some(WindowsVersion {
         name: product_name(&name, client, build),
         display_version: string(w!("DisplayVersion")).unwrap_or_default(),
         build,
         revision: dword(w!("UBR")).unwrap_or(0),
+        server: kind.to_ascii_lowercase().contains("server"),
     })
 }
 
@@ -103,8 +110,13 @@ mod tests {
     /// The label: the product, its feature version when Windows gives one, and the build with its revision
     #[test]
     fn the_label_has_the_build_and_its_revision() {
-        let server =
-            WindowsVersion { name: "Windows Server 2025 Datacenter".into(), display_version: "24H2".into(), build: 26100, revision: 33650 };
+        let server = WindowsVersion {
+            name: "Windows Server 2025 Datacenter".into(),
+            display_version: "24H2".into(),
+            build: 26100,
+            revision: 33650,
+            server: true,
+        };
         assert_eq!(server.label(), "Windows Server 2025 Datacenter 24H2, build 26100.33650");
         let old = WindowsVersion { display_version: String::new(), build: 17763, revision: 0, ..server };
         assert_eq!(old.label(), "Windows Server 2025 Datacenter, build 17763.0");
