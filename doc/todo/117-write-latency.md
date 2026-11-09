@@ -118,6 +118,32 @@ With the afternoon's tRDWR result (+12 / +24 ns in the turnaround, against 0.3 n
 Next for the tests: steadier flat-out rows (a measured chain over more of the memory; a warm-up
 window), so a change of a few percent can be read; then which rows join a summary grid.
 
+### Where the flat-out rows' spread comes from (2026-11-10, from the kept console outputs)
+
+Each boot's three runs (`baselines\2026-11-05-timings\`), the `full` rows of both tests, spread as max/min - 1:
+
+| Host, row | Within a boot (median, max) | Between boots' means |
+|---|---|---|
+| daddy-petz, Loaded under writes | 18.3%, 24.4% | 25.8% |
+| daddy-petz, Loaded under reads | 8.7%, 15.8% | 22.0% (tRRD_L's boot included) |
+| daddy-petz, Turnaround under writes / reads | 11.6% / 4.0% | 24.7% / 21.7% |
+| petz007, Loaded under writes / reads | 0.7% / 4.1% | 4.0% / 11.9% |
+| petz007, Turnaround under writes / reads | 0.7% / 5.5% | 1.6% / 12.7% |
+
+- **daddy-petz is noisy within a boot**, and a boot's first run reads highest in 5 of its 7 boots (207, 196, 175; 250, 209,
+  211). Not the page mix: each boot's three runs got the same (all 32 GiB on 1 GiB pages in four of them). A state that lasts the
+  whole 10 s run, after the minutes of idle before run 1 (the reboot, the ZenTimings save).
+- **Its PHYRDL-synced boot** (RxDatChnDly Auto, VDDP 0.96 V, MCR off: 26/26) was nearly flat: 176, 179, 178 under writes, 304, 306,
+  303 under reads. One boot, so a hint that the noise is training's, not the test's.
+- **petz007 is steady within a boot**; its spread is between boots: the fresh power-on read 355 ns under reads against 306-330.
+- A change of BIOS timing means a reboot, so the floor that matters is between boots. A test can't take out what training puts in.
+
+What decides the next step, and needs no runs: the results files of those runs (every raw window), still on the desktops
+(`C:\Users\power-remote\tmr\results\`, never fetched). If run 1's windows fall over its 10 s, a warm-up before the timed
+windows is the fix, its length from them; if they're flat, it isn't. The longer chain waits for a sign that placement matters (none
+yet: each boot's runs got the same pages). Then, on daddy-petz as it is (PHYRDL synced): two or three boots of three runs, to see
+whether the steadiness holds.
+
 ## Other hosts (v3, 2 runs each)
 
 | Host | Idle R | 50% under writes / reads | Flat out under writes / reads |
