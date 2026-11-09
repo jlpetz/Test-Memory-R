@@ -43,6 +43,7 @@ Seen live on the dev box (28 GiB: 20 x 1 GiB in 1 s, 64 x 128 MiB in 4 s), the 5
 
 ## Checks
 
-- Tests: the counters through a fake `Fill`; the console's line and the redirected lines against goldens.
+- Tests: the pass and progress lines' text and their 5 s timing (`fill.rs`); every call counted through the fake VM, and the finished
+  line's text (`stitched.rs`).
 - Live: the dev box, 2026-11-09 (above). (An earlier note here said this session lacked the large-page right: Git Bash's `whoami` is
   coreutils', not Windows'; `whoami.exe /priv` shows it enabled.)
