@@ -16,33 +16,33 @@ The allocation table prints its own time (`📊 Memory Allocation (stitched, N s
 | The metal box, 384 GiB over 192 threads, 2026-11-03 | (most) | | under 1 s | |
 
 - **1 GiB pages, when Windows has them, are instant** (23 in under a millisecond).
-- **2 MiB pages are slow once memory is fragmented**, the state that refuses 1 GiB pages after a machine has been up a while: 42-77 ms
-  per 128 MiB, 1.6-3 GiB/s, Windows assembling contiguous runs and zeroing them. Fresh from a boot they were instant too (daddy-petz,
-  the campaign's hosts).
+- **2 MiB requests took 42-77 ms each** (128 MiB, 1.6-3 GiB/s) on the dev box (a VM) and the 8500G, and under 0.1 ms on daddy-petz
+  and the campaign's other hosts. Why isn't established. Running out of 1 GiB pages is itself normal for a run that takes most of the
+  memory, fragmented or not (the owner).
 - **The thread split is instant** (the stitched arena's slices, one line).
 - **What the console shows meanwhile**: "Stage 1: Pre-allocating memory blocks...", the page sizes, the 1 GiB refusal (❌), then
   nothing until the pass ends: the ✅ lines summarise each request size at a pass's end or a refusal (`fill_ladder`'s tally). They are
   the run's own lines (`SHOWN_TARGET`), shown at every log level; release builds hiding info (TODO 105) didn't hide them. The silence
   is the pass, up to 29 s here.
 
-## Proposed (for the owner, 2026-11-09)
+## Built (92cded0, 2026-11-09)
 
-A progress line while the fill runs, from shared counters the frontends read on their own timer, as the tests' figures are read: the
-fill stores the bytes granted and the page size after each request (a relaxed store every 1-80 ms, in no test loop), and
-`Run::AllocationStarting` carries the counters as `SuiteStarted` carries its `ProgressTracker`.
+The owner chose lines over a ticker: no wiring, every frontend has them (the console, the window's Log tab, the log file), and they
+leave a record, as the timestamps above did. The run's own lines (`SHOWN_TARGET`), by time, not by count:
 
-- **A console** (the ticker): one line redrawn in place 2-4 times a second, gone when the fill ends, before the allocation tables:
-  `⏳ Allocating: 18.4 of 48.0 GiB (38%) on 2 MiB pages, 12 s`.
-- **Redirected output** (a script, WinRM, a file): no redraw; a plain line every 5 s while the fill lasts, so a fill under 5 s adds
-  nothing.
-- **The window**: the same text in its header while it allocates, where it says "Setting up".
-- **By time, not by count**: a 1 GiB request takes under a millisecond and a 2 MiB one up to 80, so a count would flood or stall.
-- **Not shown**: each request, and the thread split.
-- **Maybe**: the 1 GiB refusal's line saying why the rest is slow and what helps ("memory is fragmented: 2 MiB pages are slower to
-  take; a restart usually brings 1 GiB pages back").
+- **A start line**, naming the allocator: `⏳ Allocating 28.00 GiB for 4 threads with the stitched allocator`.
+- **A line as each pass begins**, when a thread can take that page size: `⏳ stitched: 2MB large pages, 8.00 GiB to go`, a remote pass
+  `from other nodes`.
+- **While a pass runs past 5 s, a line every 5 s**: `⏳ stitched: 18.40 of 28.00 GiB so far (12 s)` (`fill::Progress`).
+- **A finished line**, the time and every call to Windows by kind (the owner): `✅ stitched: 28.00 GiB for 4 threads in 4.17 s, 255
+  calls to Windows: 85 commits (1 refused), 83 placeholder splits, 85 releases, 1 VA reservation, 1 re-reservation`. Counted by
+  `stitched::Counted`, a wrapper around the arena's VM, so the fake's tests count the same calls (`every_os_call_is_counted`).
+- **No hint** on the 1 GiB refusal: the line stays factual (the owner).
+
+Seen live on the dev box (28 GiB: 20 x 1 GiB in 1 s, 64 x 128 MiB in 4 s), the 5 s line not reached.
 
 ## Checks
 
 - Tests: the counters through a fake `Fill`; the console's line and the redirected lines against goldens.
-- Live: a slow fill shows on the dev box (fragmented memory, 2 MiB pages). This session's sign-in lacks the large-page right, so the
-  live look is the owner's run there.
+- Live: the dev box, 2026-11-09 (above). (An earlier note here said this session lacked the large-page right: Git Bash's `whoami` is
+  coreutils', not Windows'; `whoami.exe /priv` shows it enabled.)
