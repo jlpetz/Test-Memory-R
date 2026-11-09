@@ -623,6 +623,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
             system: crate::smbios::shown_system(&smbios.system),
             bios: smbios.bios.clone(),
             hypervisor,
+            os: crate::windows_version::WindowsVersion::detect().cloned().map(Box::new),
         }
     };
     let (report, smt_p_cores, e_cores_skipped_first) =
@@ -1270,6 +1271,7 @@ mod tests {
             system: Default::default(),
             bios: Default::default(),
             hypervisor: None,
+            os: None,
         };
         let topology = Setup::CpuTopology {
             report: Box::new(crate::test_support::hybrid_cpu_topology_report()),

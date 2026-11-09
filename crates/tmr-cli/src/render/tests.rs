@@ -164,6 +164,7 @@ fn a_redirected_stdout_gets_no_escape_codes_and_no_ticker() {
                 system: Default::default(),
                 bios: Default::default(),
                 hypervisor: None,
+                os: None,
             }
             .into(),
         );
@@ -532,6 +533,13 @@ fn setup_events_print_as_their_golden() {
                 release_date: "2025-01-02".to_string(),
             },
             hypervisor: Some(Hypervisor { name: "HyperV".to_string(), vm_signs: Vec::new() }),
+            // TODO 123: Windows' version, build and revision
+            os: Some(Box::new(tmr::frontend::WindowsVersion {
+                name: "Windows 11 Pro".to_string(),
+                display_version: "24H2".to_string(),
+                build: 26100,
+                revision: 4349,
+            })),
         }),
         // TODO 115: a VM, and why
         ("a VM", Setup::SystemInfo {
@@ -540,6 +548,7 @@ fn setup_events_print_as_their_golden() {
             system: Default::default(),
             bios: Default::default(),
             hypervisor: Some(Hypervisor { name: "HyperV".to_string(), vm_signs: vec!["a guest partition", "the firmware's WAET table"] }),
+            os: None,
         }),
         ("a system SMBIOS names nothing of", Setup::SystemInfo {
             report: Box::new(crate::renderer::tests::system_info_report()),
@@ -547,6 +556,7 @@ fn setup_events_print_as_their_golden() {
             system: Default::default(),
             bios: Default::default(),
             hypervisor: None,
+            os: None,
         }),
         ("realtime on every CPU", Setup::RealtimeOnEveryCpu),
         ("the default plan", Setup::Plan { name: "stability", about: "the stability tests at the widest width", is_default: true }),

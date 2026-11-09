@@ -100,14 +100,47 @@ const WHO: &str = "stitched";
 pub enum CommitMethod {
     /// `MEM_REPLACE_PLACEHOLDER` straight into the split slot: one call, and the VA never leaves our hands. **Bugchecks 10.0.26100**
     /// (0x139) as soon as a 1 GiB or 2 MiB replace is refused and that placeholder is later freed or split. For kernels with the fix.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "dormant until the kernel's refused-replace bug is fixed (module docs, TMR-APP CLAUDE.md)")
-    )]
     Replace,
     /// Split the slot off, release it, allocate at the address: two more calls per slot and a momentary VA hole, but a refusal leaves no
     /// damaged placeholder behind.
     FreeThenAllocate,
+}
+
+impl CommitMethod {
+    /// Its name on the allocation's start line and in the results
+    pub fn label(self) -> &'static str {
+        match self {
+            CommitMethod::Replace => "replace",
+            CommitMethod::FreeThenAllocate => "free-then-allocate",
+        }
+    }
+}
+
+/// The Windows builds Microsoft fixed the refused-replace bugcheck in (0x139, module docs), each with the first revision (UBR) that has
+/// the fix: none known yet. A row goes in only once the fix is verified on a machine that can afford the bugcheck if it isn't, never on
+/// an announcement alone; it is the one switch between the methods (TMR-APP CLAUDE.md).
+const REPLACE_FIXED: &[(u32, u32)] = &[];
+
+/// How this Windows commits, and why (TODO 123): [`CommitMethod::Replace`] on a build and revision `REPLACE_FIXED` lists, else
+/// [`CommitMethod::FreeThenAllocate`].
+pub fn commit_method_for(os: Option<&crate::windows_version::WindowsVersion>) -> (CommitMethod, String) {
+    choose(os, REPLACE_FIXED)
+}
+
+/// `commit_method_for` against `fixed`, which the tests give their own
+fn choose(os: Option<&crate::windows_version::WindowsVersion>, fixed: &[(u32, u32)]) -> (CommitMethod, String) {
+    let Some(os) = os else {
+        return (
+            CommitMethod::FreeThenAllocate,
+            "Windows' build is unknown, so the refused-replace bugcheck's fix is not known".to_string(),
+        );
+    };
+    let build = format!("{}.{}", os.build, os.revision);
+    match fixed.iter().find(|&&(b, _)| b == os.build) {
+        Some(&(_, from)) if os.revision >= from => (CommitMethod::Replace, format!("build {build} has the refused-replace bugcheck's fix")),
+        Some(&(b, from)) => (CommitMethod::FreeThenAllocate, format!("build {build} predates the bugcheck's fix ({b}.{from})")),
+        None => (CommitMethod::FreeThenAllocate, format!("no fix for the refused-replace bugcheck is known for build {build}")),
+    }
 }
 
 /// One thread's share of the arena.
@@ -753,7 +786,10 @@ impl<V: VmOps> StitchedArena<V> {
         let plan = plan(req)?;
         let target: usize = plan.targets.iter().sum();
         log::info!(target: crate::logfile::SHOWN_TARGET,
-            "⏳ Allocating {} for {} with the stitched allocator", fill::gib_label(target), fill::threads_label(req.threads.len())
+            "⏳ Allocating {} for {} with the stitched allocator (commits: {})",
+            fill::gib_label(target),
+            fill::threads_label(req.threads.len()),
+            req.commit_method.label()
         );
         let mut vm = Counted::new(vm);
         let base = vm.reserve(plan.reservation, HUGE, req.lowest_address).map_err(|code| {
@@ -1175,6 +1211,9 @@ pub fn chunk_allocate_stitched(
     request.huge_chunk = sizing.huge_chunk;
     request.large_chunk = sizing.large_chunk;
     request.large_floor = sizing.large_floor;
+    let (method, why) = commit_method_for(crate::windows_version::WindowsVersion::detect());
+    request.commit_method = method;
+    log::info!("stitched: commits by {}: {why}", method.label());
     log::debug!(
         "Stitched: commits start at {} of 1 GiB pages and {} of 2 MiB pages, down to {}",
         size_label(request.huge_chunk),
@@ -1453,6 +1492,28 @@ mod tests {
     /// TODO 120: every call the arena makes is counted: one reservation; each commit, granted or refused, and each refused one's hole
     /// reserved again; at least a release a commit (free-then-allocate frees the slot first) and a split a thread past the first (the
     /// carve)
+    /// TODO 123: Replace only on a build the table lists, from its fixed revision on; free-then-allocate before it, on any other build,
+    /// and when the build is unknown. The real table is empty: no fix is verified yet.
+    #[test]
+    fn the_commit_method_follows_the_build() {
+        let os = |build, revision| crate::windows_version::WindowsVersion {
+            name: "Windows Server 2025 Datacenter".to_string(),
+            display_version: "24H2".to_string(),
+            build,
+            revision,
+        };
+        let fixed = [(26100, 7000)];
+        assert_eq!(choose(Some(&os(26100, 7000)), &fixed).0, CommitMethod::Replace);
+        assert_eq!(choose(Some(&os(26100, 7001)), &fixed).0, CommitMethod::Replace);
+        assert_eq!(
+            choose(Some(&os(26100, 6999)), &fixed),
+            (CommitMethod::FreeThenAllocate, "build 26100.6999 predates the bugcheck's fix (26100.7000)".to_string())
+        );
+        assert_eq!(choose(Some(&os(20348, 9000)), &fixed).0, CommitMethod::FreeThenAllocate, "another build");
+        assert_eq!(choose(None, &fixed).0, CommitMethod::FreeThenAllocate, "an unknown build");
+        assert_eq!(commit_method_for(Some(&os(26100, 99_999))).0, CommitMethod::FreeThenAllocate, "no fix verified yet");
+    }
+
     #[test]
     fn every_os_call_is_counted() {
         let vm = FakeVm::default();

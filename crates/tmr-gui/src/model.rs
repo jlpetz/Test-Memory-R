@@ -2073,6 +2073,7 @@ mod tests {
                 system: Default::default(),
                 bios: Default::default(),
                 hypervisor: None,
+                os: None,
             },
             Setup::Starting,
             Setup::RealtimeOnEveryCpu,
@@ -2717,6 +2718,7 @@ mod tests {
                 system: Default::default(),
                 bios: Default::default(),
                 hypervisor: None,
+                os: None,
             },
         ] {
             m.apply(setup.into());
@@ -2771,6 +2773,7 @@ mod tests {
                 system: Default::default(),
                 bios: Default::default(),
                 hypervisor: None,
+                os: None,
             }
             .into(),
         );

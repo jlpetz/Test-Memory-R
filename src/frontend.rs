@@ -53,6 +53,7 @@ pub use crate::smbios::{BiosInfo, MemoryModule, SystemIdentity, memory_type_name
 pub use crate::tests::Stage;
 pub use crate::thread_pool::{SealOp, WorkerStart};
 pub use crate::whea::WheaCounts;
+pub use crate::windows_version::WindowsVersion;
 
 /// Whoever shows a run. Two engine threads call it, so it is `Send + Sync` and takes `&self`: the thread that runs the suite sends the
 /// events, and the monitor thread ticks.
@@ -164,6 +165,9 @@ pub enum Setup {
         bios: BiosInfo,
         /// The hypervisor, when CPUID says one runs: a VM's, or the one Windows' VBS runs on a desktop (TODO 115)
         hypervisor: Option<Hypervisor>,
+        /// Windows' version, its build and revision, `None` when the registry doesn't say (TODO 123). Boxed, as the report is: this is the
+        /// largest event, which sizes every one
+        os: Option<Box<WindowsVersion>>,
     },
     /// The system's memory now, `None` when Windows doesn't say
     MemoryStatus(Option<MemoryStatus>),

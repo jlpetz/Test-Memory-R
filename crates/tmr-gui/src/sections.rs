@@ -45,9 +45,12 @@ impl Sections {
                     self.threads.push(text("E-cores were skipped first".to_string()));
                 }
             }
-            Setup::SystemInfo { report, memory_modules, .. } => {
+            Setup::SystemInfo { report, memory_modules, os, .. } => {
                 self.system.extend(blocks(|r| r.report_system_info(report)));
                 self.system.push(Block::Table(modules_table(memory_modules)));
+                if let Some(os) = os {
+                    self.system.push(text(format!("OS: {}", os.label())));
+                }
             }
             Setup::CacheCalibration(state) => self.system.push(text(match state {
                 CacheCalibrationState::Loaded { at } => format!("Cache calibration: loaded ({})", at.format("%Y-%m-%d %H:%M")),

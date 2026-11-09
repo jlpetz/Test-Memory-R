@@ -174,6 +174,11 @@ pub struct RunIdentity {
     /// Whether `memory_modules` describes real DIMMs (bare metal) or a synthetic firmware view (virtualized). `memory_id` stays useful
     /// either way — on a VM it changes when the instance is retyped, which is the signal worth having.
     pub memory_identity_is_physical: bool,
+
+    /// Windows' version, its build and the revision updates raise (TODO 123). Not in `machine_id`: a Windows update doesn't make a
+    /// calibration stale (the owner, 2026-11-09). Absent from results written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows: Option<crate::windows_version::WindowsVersion>,
 }
 
 impl RunIdentity {
@@ -228,6 +233,7 @@ impl RunIdentity {
             memory_reported_gib: to_gib(smbios.total_memory_bytes()),
             memory_modules: crate::smbios::shown_modules(&smbios.memory_modules),
             memory_identity_is_physical: !virtualized,
+            windows: crate::windows_version::WindowsVersion::detect().cloned(),
         }
     }
 }
@@ -318,6 +324,10 @@ pub struct MemorySnapshot {
     pub requests: usize,
     #[serde(default)]
     pub refused: usize,
+    /// How the stitched allocator committed: `free-then-allocate`, or `replace` on a Windows build with the refused-replace bugcheck's fix
+    /// (`stitched::commit_method_for`, TODO 123); absent from results written before it
+    #[serde(default)]
+    pub commit_method: String,
 
     /// The API that allocated the memory. The page sizes it actually got are `page_mix`.
     pub backend: String,
@@ -623,6 +633,10 @@ impl RunConfigSnapshot {
             per_thread_gib: if thread_count > 0 { to_gib(allocated_bytes / thread_count as u64) } else { 0.0 },
             requests,
             refused,
+            commit_method: crate::memory::stitched::commit_method_for(crate::windows_version::WindowsVersion::detect())
+                .0
+                .label()
+                .to_string(),
             backend: format!("{:?}", runtime_config.memory_backend),
             large_pages_available: runtime_config.large_pages_available,
             min_page_size: runtime_config.memory_allocation.min_page_size.clone(),
@@ -841,6 +855,14 @@ pub fn compare_identity(baseline: &RunIdentity, current: &RunIdentity) -> Vec<Ru
         if m.0.physical_cores != m.1.physical_cores {
             diffs.push(RunDifference::new("  Physical cores", m.0.physical_cores.to_string(), m.1.physical_cores.to_string(), true));
         }
+    }
+
+    // Windows' build beside the hardware: an update can move a run's figures, but it isn't the machine, so it is noted, not invalidating
+    // (TODO 123). Only between two runs that both recorded it.
+    if let (Some(b), Some(c)) = (&baseline.windows, &current.windows)
+        && b != c
+    {
+        diffs.push(RunDifference::new("Windows", b.label(), c.label(), false));
     }
 
     if baseline.memory_id != current.memory_id {
@@ -1272,6 +1294,29 @@ mod tests {
         let a = identity("abc", "def");
         let b = identity("abc", "def");
         assert!(compare_identity(&a, &b).is_empty());
+    }
+
+    /// TODO 123: two runs on different Windows revisions are noted, not invalidated (an update isn't the machine), and a run that
+    /// recorded none (a file from before) is compared as before
+    #[test]
+    fn a_windows_update_is_noted_not_invalidating() {
+        let on = |revision| RunIdentity {
+            windows: Some(crate::windows_version::WindowsVersion {
+                name: "Windows 11 Pro".to_string(),
+                display_version: "24H2".to_string(),
+                build: 26100,
+                revision,
+            }),
+            ..identity("abc", "def")
+        };
+        let diffs = compare_identity(&on(4349), &on(4652));
+        assert_eq!(diffs.len(), 1, "{diffs:?}");
+        assert!(!diffs[0].invalidates);
+        assert_eq!(
+            (diffs[0].baseline.as_str(), diffs[0].current.as_str()),
+            ("Windows 11 Pro 24H2, build 26100.4349", "Windows 11 Pro 24H2, build 26100.4652")
+        );
+        assert!(compare_identity(&on(4349), &identity("abc", "def")).is_empty());
     }
 
     #[test]

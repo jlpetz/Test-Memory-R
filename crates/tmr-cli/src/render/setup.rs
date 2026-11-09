@@ -193,9 +193,9 @@ pub(super) fn text(setup: &Setup) -> String {
         Setup::MemoryStatus(Some(status)) => memory_status_text(&mut text, status),
         // On stderr (`show`)
         Setup::MemoryStatus(None) => {}
-        Setup::SystemInfo { report, memory_modules, system, bios, hypervisor } => {
+        Setup::SystemInfo { report, memory_modules, system, bios, hypervisor, os } => {
             text += &report_text("system info report", |reporter| reporter.report_system_info(report));
-            machine_text(&mut text, system, bios, memory_modules, hypervisor.as_ref());
+            machine_text(&mut text, system, bios, memory_modules, hypervisor.as_ref(), os.as_deref());
             let _ = writeln!(text);
         }
         Setup::Starting => {
@@ -219,11 +219,11 @@ pub(super) fn text(setup: &Setup) -> String {
 }
 
 /// The machine as SMBIOS and CPUID give it (TODO 105, the owner 2026-11-04): a line for the system, its BIOS, its UUID and its memory; one,
-/// indented, for each DIMM, its serial too; and one for a hypervisor, a VM's or the one VBS runs on (TODO 115). Under `--no-serials` the
-/// serials and the UUID aren't there, and the system's line says so.
+/// indented, for each DIMM, its serial too; one for Windows' version and build (TODO 123); and one for a hypervisor, a VM's or the one VBS
+/// runs on (TODO 115). Under `--no-serials` the serials and the UUID aren't there, and the system's line says so.
 fn machine_text(
     text: &mut String, system: &tmr::frontend::SystemIdentity, bios: &tmr::frontend::BiosInfo, modules: &[tmr::frontend::MemoryModule],
-    hypervisor: Option<&tmr::frontend::Hypervisor>,
+    hypervisor: Option<&tmr::frontend::Hypervisor>, os: Option<&tmr::frontend::WindowsVersion>,
 ) {
     let gib = |bytes: u64| {
         let gib = bytes as f64 / (1u64 << 30) as f64;
@@ -260,6 +260,9 @@ fn machine_text(
         let details: Vec<&str> = fields.iter().filter(|field| !field.is_empty()).map(String::as_str).collect();
         let locator = if module.locator.trim().is_empty() { "a module" } else { module.locator.trim() };
         let _ = writeln!(text, "    {locator}: {}", details.join(" · "));
+    }
+    if let Some(os) = os {
+        let _ = writeln!(text, "🪟 OS: {}", os.label());
     }
     match hypervisor {
         Some(tmr::frontend::Hypervisor { name, vm_signs }) if vm_signs.is_empty() => {

@@ -98,6 +98,7 @@ mod tests;
 mod thread_pool;
 mod tsc; // TSC frequency detection (x86_64)
 mod whea; // WHEA hardware-error monitoring via the System event log (TODO #63) // which build this binary is: version, commit, compiler (TODO 72)
+mod windows_version; // Windows' version and build, as a run records it (TODO 123)
 mod xform; // Mem-TileTransform: a memory test under the matrix unit's load (TODO 102)
 
 // Common result type for the crate
