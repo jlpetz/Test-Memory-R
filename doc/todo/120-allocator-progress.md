@@ -39,7 +39,10 @@ leave a record, as the timestamps above did. The run's own lines (`SHOWN_TARGET`
   `stitched::Counted`, a wrapper around the arena's VM, so the fake's tests count the same calls (`every_os_call_is_counted`).
 - **No hint** on the 1 GiB refusal: the line stays factual (the owner).
 
-Seen live on the dev box (28 GiB: 20 x 1 GiB in 1 s, 64 x 128 MiB in 4 s), the 5 s line not reached.
+Seen live on the dev box (28 GiB: 20 x 1 GiB in 1 s, 64 x 128 MiB in 4 s), the 5 s line not reached. Then the owner's slow one
+(`--quick-test maxpage=large memory=5%`: 52 GiB, all 2 MiB pages, 416 x 128 MiB in 18.95 s), its 5 s lines at 5, 10 and 15 s, and
+what they show: the fill slows as it nears the memory limit, 7.1 GiB/s in its first 5 s, then 1.7, 1.2 and 0.5. Likely Windows taking
+memory back from other uses (its file cache) and zeroing it, once what it had free is gone (not measured).
 
 ## Checks
 
