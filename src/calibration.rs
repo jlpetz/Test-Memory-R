@@ -769,6 +769,10 @@ pub struct SweepProbe {
 // Fine Probe (Phase 2 extended calibration)
 // ============================================================================
 
+/// How far past the L3's flat latency an L3 size may read and still be the L3's: anchor A's pick (`find_largest_reliable_within`) and C's
+/// (`loaded_reach`) both (TODO 116)
+const L3_CLIMB: f64 = 1.25;
+
 /// Result from a fine-grain probe with multiple repeats at a single size
 #[derive(Clone, Debug)]
 pub struct FineProbe {
@@ -1366,7 +1370,7 @@ impl CalibrationTest {
             return None;
         };
         let fine = self.run_fine_sweep(&mut probe, (edge / 2).max(low), edge, fine_step, repeats, &format!("L3→DRAM, {label}"));
-        let cap = 1.25 * l3_ns;
+        let cap = L3_CLIMB * l3_ns;
         // The sizes that qualify, largest first: steady, and within the cap
         let mut candidates: Vec<(usize, f64)> = fine
             .iter()
@@ -1598,8 +1602,8 @@ impl CalibrationTest {
             });
         }
 
-        // L3: Largest reliable below L3 cap
-        if let Some(fp) = Self::find_largest_reliable(&fine_l3, stable_spread) {
+        // L3: Largest reliable below L3 cap, within 1.25x of the L3's flat latency (TODO 116)
+        if let Some(fp) = Self::find_largest_reliable_within(&fine_l3, stable_spread, L3_CLIMB) {
             log::info!(target: SHOWN_TARGET,
                 "L3: {} @ {:.1}ns ({}/{} stable, worst_spread={:.2}x, consistency={:.2}ns)",
                 format_size(fp.size),
@@ -1764,6 +1768,16 @@ impl CalibrationTest {
     /// Find the largest size where ALL repeats were stable
     fn find_largest_reliable(fine_probes: &[FineProbe], max_spread: f64) -> Option<FineProbe> {
         fine_probes.iter().filter(|fp| fp.is_reliable() && fp.worst_spread < max_spread).max_by_key(|fp| fp.size).cloned()
+    }
+
+    /// Anchor A's L3 (TODO 116): the largest reliable probe of the finer sweep no slower than `climb` times its smallest reliable one's,
+    /// the L3's flat latency (half the edge, inside the L3), as C's pick is held within 1.25x of A's latency (`loaded_reach`). On the
+    /// m8i.metal-48xl (2 MiB pages, 2026-11-05) one sweep put the 1.4x edge a probe late, and the finer sweep's largest steady size, 180.5
+    /// MB at 53 ns, was already past the L3's 156.9 MB at 40. A sharp edge's finer sweep is flat to its top, and takes its largest as before.
+    fn find_largest_reliable_within(fine_probes: &[FineProbe], max_spread: f64, climb: f64) -> Option<FineProbe> {
+        let reliable = || fine_probes.iter().filter(|fp| fp.is_reliable() && fp.worst_spread < max_spread);
+        let flat = reliable().min_by_key(|fp| fp.size)?.overall_median_ns;
+        reliable().filter(|fp| fp.overall_median_ns <= climb * flat).max_by_key(|fp| fp.size).cloned()
     }
 
     /// Run a continuous sweep from small to large sizes, ended early by a stop (`stopped`)
@@ -2668,6 +2682,36 @@ mod tests {
             }
             assert_eq!(at, base as usize, "back at the first after {len}");
         }
+    }
+
+    /// TODO 116: A's L3 is the finer sweep's largest steady size within 1.25x of its smallest's latency. The m8i.metal-48xl's late edge:
+    /// flat at 40 ns to 156.9 MB, then 47, then 53 at 180.5 MB, which the plain largest took; a sharp edge's sweep, flat to its top, takes
+    /// its top as before; an unsteady top is passed over as before
+    #[test]
+    fn a_l3_pick_stays_within_the_flat_latencys_climb() {
+        let fine = |points: &[(usize, f64, bool)]| -> Vec<FineProbe> {
+            points
+                .iter()
+                .map(|&(mb, ns, steady)| FineProbe {
+                    size: mb << 20,
+                    repeats: 3,
+                    stable_count: if steady { 3 } else { 2 },
+                    overall_median_ns: ns,
+                    worst_spread: 1.1,
+                    latency_consistency: 0.5,
+                })
+                .collect()
+        };
+        let pick = |points: &[(usize, f64, bool)]| {
+            CalibrationTest::find_largest_reliable_within(&fine(points), 1.5, L3_CLIMB).map(|fp| fp.size >> 20)
+        };
+        let late = [(90, 39.0, true), (120, 40.0, true), (150, 40.5, true), (157, 41.0, true), (170, 47.0, true), (180, 53.0, true)];
+        assert_eq!(pick(&late), Some(170), "47 ns is within 1.25x of 39; 53 isn't");
+        let sharp = [(80, 37.0, true), (110, 37.5, true), (157, 38.0, true)];
+        assert_eq!(pick(&sharp), Some(157));
+        let unsteady_top = [(80, 37.0, true), (110, 37.5, true), (157, 38.0, false)];
+        assert_eq!(pick(&unsteady_top), Some(110));
+        assert_eq!(pick(&[]), None);
     }
 
     /// TODO 22: a gradual L3 edge, from two sweeps of the m8i.metal-48xl (2026-11-05) past its L2 edge at 1.8 MB, each probe's size (MB)
