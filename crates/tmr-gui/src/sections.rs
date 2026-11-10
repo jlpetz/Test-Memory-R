@@ -168,9 +168,10 @@ fn selection_lines(s: &Selection) -> Vec<String> {
         lines.push("Physical cores only (avoiding SMT doubling)".to_string());
     }
     lines.push(format!("Error mode: {}", match s.error_mode {
-        ErrorMode::Log => "log and continue",
-        ErrorMode::Halt => "halt on the first error",
-        ErrorMode::Panic => "panic on an error (debug)",
+        ErrorMode::Log => "log and continue".to_string(),
+        ErrorMode::Halt => "halt on the first error".to_string(),
+        ErrorMode::Panic => "panic on an error (debug)".to_string(),
+        ErrorMode::HaltAfter(n) => format!("halt once the run has found {n} errors"),
     }));
     lines.push(format!("Limits: {}", match (s.cycles, s.duration_secs) {
         (Some(cycles), Some(secs)) => format!("{cycles} cycles or {secs} s, whichever comes first"),

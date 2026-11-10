@@ -29,10 +29,10 @@
 ⚠️  The run was stopped (Ctrl+C, or the window's Stop): no test ran, 0 cycles
 📄 TMR_2026-11-02_14-03-07, started 2026-11-02 14:03:07 +10:00, run ID 5f0c3a9e81d24b7c9a6e0d13f2b84c57, by this build
 ## halted in its second cycle
-❌ The run halted on errors (errors=halt): failed, 6 errors (3 test + 2 seal + 1 WHEA 1C/0UC), 2 cycles, the last cut short
+❌ The run halted on errors (errors=halt or halt:N): failed, 6 errors (3 test + 2 seal + 1 WHEA 1C/0UC), 2 cycles, the last cut short
 📄 TMR_2026-11-02_14-03-07, started 2026-11-02 14:03:07 +10:00, run ID 5f0c3a9e81d24b7c9a6e0d13f2b84c57, by this build
 ## halted by its final seal check
-❌ The run halted on errors (errors=halt): failed, 6 errors (3 test + 2 seal + 1 WHEA 1C/0UC), 2 cycles
+❌ The run halted on errors (errors=halt or halt:N): failed, 6 errors (3 test + 2 seal + 1 WHEA 1C/0UC), 2 cycles
 📄 TMR_2026-11-02_14-03-07, started 2026-11-02 14:03:07 +10:00, run ID 5f0c3a9e81d24b7c9a6e0d13f2b84c57, by this build
 ## never finished, by another build
 ⚠️  The run never finished: it was killed or crashed, unless it is still running; its figures are up to its last saved cycle, 2

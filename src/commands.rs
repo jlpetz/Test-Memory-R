@@ -208,6 +208,7 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     entry(out, "channels=2", "Memory channels, for TM5 SimpleTest's stride (channels x Parameter - 1")?;
     more(out, "  lines); default: the config's, else 2")?;
     entry(out, "errors=halt", "Error handling (log/halt/panic)")?;
+    entry(out, "errors=halt:100", "  ...or stop the run once it has found 100 errors, about: counted twice a second")?;
     entry(out, "seal=tmr", "Seal: check and reseal around every chunk (tmr, the default; tm5; off)")?;
     entry(out, "seal-width=auto", "Seal kernels' SIMD width (auto, 128, 256, 512); unset, width='s;")?;
     more(out, "  auto is --calibrate-seal's width on this machine, else 256")?;
@@ -580,7 +581,7 @@ fn ending(result: &TestRunResult, errors: ErrorCounts) -> String {
         RunOutcome::Completed => "finished",
         RunOutcome::TimeLimit => "ended at its time limit",
         RunOutcome::Interrupted => "was stopped (Ctrl+C, or the window's Stop)",
-        RunOutcome::Halted => "halted on errors (errors=halt)",
+        RunOutcome::Halted => "halted on errors (errors=halt or halt:N)",
     };
     let (icon, verdict) = match verdict {
         RunStatus::Passed => ("✅ ", "passed".to_string()),

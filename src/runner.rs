@@ -182,6 +182,28 @@ pub fn request_stop() {
 /// only once the last one's thread has ended, so a stop for that one can't reach it, and the kernels' check stays one relaxed load.
 pub(crate) fn clear_stop() {
     SHUTDOWN_REQUESTED.store(false, Ordering::Relaxed);
+    HALT_REQUESTED.store(false, Ordering::Relaxed);
+}
+
+/// Set with `SHUTDOWN_REQUESTED` when `errors=halt:N`'s count is reached (TODO 106, `progress::monitor`): the tests stop at their next
+/// check as for Ctrl+C, and the run ends as halted, not interrupted. The kernels read only `SHUTDOWN_REQUESTED`.
+static HALT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Stops the run as halted on its errors (`ErrorMode::HaltAfter`): the step running ends at its next check
+pub(crate) fn request_halt() {
+    HALT_REQUESTED.store(true, Ordering::Relaxed);
+    SHUTDOWN_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+/// Why the run must stop now, if it must: halted on its errors (`request_halt`) before interrupted (Ctrl+C, the window's Stop)
+fn stop_requested() -> Option<RunOutcome> {
+    if HALT_REQUESTED.load(Ordering::Relaxed) {
+        Some(RunOutcome::Halted)
+    } else if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
+        Some(RunOutcome::Interrupted)
+    } else {
+        None
+    }
 }
 
 // OS memory allocation per thread (renamed from AllocationBlock for clarity)
@@ -1103,11 +1125,13 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
     // At the workers' priority (TODO 7): with a worker on every logical CPU, a Normal thread gets time only from Windows' starvation boost,
     // and the ticker and the WHEA poll stalled for seconds
     let monitor_priority = runtime_config.thread_priority;
+    // errors=halt:N's count, which the monitor watches (TODO 106)
+    let halt_after = error_mode.halt_after();
     let monitor_handle = thread::spawn(move || {
         if let Err(e) = monitor_priority.apply() {
             log::debug!("The monitor's thread at {monitor_priority} priority: {e}");
         }
-        monitor(progress_clone, fe_clone);
+        monitor(progress_clone, fe_clone, halt_after);
     });
 
     // Create thread pool with pre-allocated blocks
@@ -1236,8 +1260,8 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         if time_limit.is_some_and(|limit| suite_start.elapsed() >= limit) {
             break RunOutcome::TimeLimit;
         }
-        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            break RunOutcome::Interrupted;
+        if let Some(stop) = stop_requested() {
+            break stop;
         }
 
         let cycle = cycles_done + 1;
@@ -1387,8 +1411,8 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
         step_config.seal.kernel = step_config.seal.kernel.for_cycle(run_seed, cycle);
         step_config.epoch = crate::pattern::StepEpoch { seed: run_seed, suite_cycle: cycle as u32, step: test_idx as u32 };
         let test_config = &step_config;
-        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            stopped = Some(RunOutcome::Interrupted);
+        if let Some(stop) = stop_requested() {
+            stopped = Some(stop);
             break;
         }
 
@@ -1780,9 +1804,9 @@ fn execute_test_cycle(ctx: &CycleContext, cycle: u64) -> CycleEnd {
             stopped = Some(RunOutcome::Halted);
             break;
         }
-        // Ctrl+C during this test cut it short, so the cycle did not finish even if this was its last test.
-        if SHUTDOWN_REQUESTED.load(Ordering::Relaxed) {
-            stopped = Some(RunOutcome::Interrupted);
+        // Ctrl+C or errors=halt:N's count during this test cut it short, so the cycle did not finish even if this was its last test.
+        if let Some(stop) = stop_requested() {
+            stopped = Some(stop);
             break;
         }
     }
@@ -5432,6 +5456,23 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
+    /// TODO 106: errors=halt:N's stop ends the run as halted, though it stops the tests as Ctrl+C does (the one flag they read); Ctrl+C
+    /// alone is an interruption; a session after another starts with neither
+    #[test]
+    fn a_halt_is_a_halt_not_an_interruption() {
+        use std::sync::atomic::Ordering;
+        clear_stop();
+        assert_eq!(stop_requested(), None);
+        request_stop();
+        assert_eq!(stop_requested(), Some(RunOutcome::Interrupted));
+        clear_stop();
+        request_halt();
+        assert!(SHUTDOWN_REQUESTED.load(Ordering::Relaxed), "the tests stop at their next check");
+        assert_eq!(stop_requested(), Some(RunOutcome::Halted));
+        clear_stop();
+        assert_eq!(stop_requested(), None);
+    }
+
     use super::test_support::{CycleRun, FakeCycle, Flip, KIB, Region, golden_layout};
     use super::*;
 

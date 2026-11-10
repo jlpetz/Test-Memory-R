@@ -120,6 +120,31 @@ pub enum ErrorMode {
     Log,   // Log errors and continue (default)
     Halt,  // Stop current test on first error
     Panic, // Panic on first error (for debugging)
+    /// `errors=halt:N` (TODO 106): stop the run once its errors reach N, the count its verdict fails on (the tests', the seal's and
+    /// WHEA's), as the monitor sees it twice a second (`progress::monitor`). The tests go on as under `Log`, so the run stops at about N,
+    /// a little past it: the step's next check after the count is seen.
+    HaltAfter(u64),
+}
+
+impl ErrorMode {
+    /// `errors=`'s value: `log`, `halt` (or `stop`), `panic` (or `debug`), or `halt:N`, N at least 1
+    pub fn parse(value: &str) -> std::result::Result<Self, String> {
+        let mode = value.trim().to_lowercase();
+        match mode.as_str() {
+            "log" => Ok(Self::Log),
+            "halt" | "stop" => Ok(Self::Halt),
+            "panic" | "debug" => Ok(Self::Panic),
+            _ => match mode.strip_prefix("halt:").map(|n| n.trim().parse::<u64>()) {
+                Some(Ok(n)) if n >= 1 => Ok(Self::HaltAfter(n)),
+                _ => Err(format!("Invalid error mode '{value}'. Valid: log, halt, halt:N (stop after N errors, N at least 1), panic")),
+            },
+        }
+    }
+
+    /// The count `halt:N` stops the run at, for the monitor
+    pub fn halt_after(self) -> Option<u64> {
+        if let Self::HaltAfter(n) = self { Some(n) } else { None }
+    }
 }
 
 /// One variant since the driver-client purge (TODO #4/5). A ring-0 backend would come back as a second one.

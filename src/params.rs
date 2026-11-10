@@ -200,10 +200,7 @@ impl ParamRegistry {
         params.insert("errors", ParamDef {
             key: "errors",
             can_override_config: true,
-            parser: |v| match v.to_lowercase().as_str() {
-                "log" | "halt" | "stop" | "panic" | "debug" => Ok(ParamValue::String(v.to_string())),
-                _ => Err(format!("Invalid error mode '{}'. Valid: log, halt, panic", v)),
-            },
+            parser: |v| crate::ErrorMode::parse(v).map(|_| ParamValue::String(v.to_string())),
         });
 
         params.insert("channels", ParamDef {

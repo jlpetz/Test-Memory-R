@@ -310,6 +310,7 @@ fn selection_text(text: &mut String, selection: &Selection) {
         ErrorMode::Log => writeln!(text, "Log and continue"),
         ErrorMode::Halt => writeln!(text, "Halt on first error"),
         ErrorMode::Panic => writeln!(text, "Panic on error (debug mode)"),
+        ErrorMode::HaltAfter(n) => writeln!(text, "Halt once the run has found {n} errors"),
     };
 
     let _ = writeln!(text, "  Using {}/{} {} for testing", threads, available, cputype);

@@ -85,6 +85,7 @@ COMMAND LINE PARAMETERS:
   channels=2                          # Memory channels, for TM5 SimpleTest's stride (channels x Parameter - 1
                                       #   lines); default: the config's, else 2
   errors=halt                         # Error handling (log/halt/panic)
+  errors=halt:100                     #   ...or stop the run once it has found 100 errors, about: counted twice a second
   seal=tmr                            # Seal: check and reseal around every chunk (tmr, the default; tm5; off)
   seal-width=auto                     # Seal kernels' SIMD width (auto, 128, 256, 512); unset, width='s;
                                       #   auto is --calibrate-seal's width on this machine, else 256

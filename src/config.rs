@@ -985,12 +985,9 @@ impl ModernConfig {
         spec_to_chunk_mode(&self.system.memory_strategy.default_chunk).map_err(|e| format!("invalid default chunk spec: {e}"))
     }
 
+    /// The error mode `error_mode` names (`ErrorMode::parse`), which `validate_system` checked; `Log` when it names none
     pub fn to_error_mode(&self) -> ErrorMode {
-        match self.system.error_mode.to_lowercase().as_str() {
-            "halt" | "stop" => ErrorMode::Halt,
-            "panic" | "debug" => ErrorMode::Panic,
-            _ => ErrorMode::Log, // default
-        }
+        ErrorMode::parse(&self.system.error_mode).unwrap_or(ErrorMode::Log)
     }
 
     pub fn to_test_suite_timing(&self) -> TestSuiteTiming {
@@ -2423,6 +2420,14 @@ mod tests {
         ok.system.width = Some("128".to_string());
         ok.validate_system().unwrap();
         assert!(matches!(ok.to_error_mode(), ErrorMode::Halt));
+        // TODO 106: halt:N, N at least 1, from a config as from the command line
+        ok.system.error_mode = "halt:25".to_string();
+        assert!(ok.validate_system().is_ok());
+        assert_eq!(ok.to_error_mode(), ErrorMode::HaltAfter(25));
+        for bad_count in ["halt:0", "halt:", "halt:x", "halt:-3"] {
+            bad.system.error_mode = bad_count.to_string();
+            assert!(bad.validate_system().unwrap_err().contains("error_mode"), "{bad_count}");
+        }
         assert_eq!("Realtime".parse::<crate::runner::ThreadPriority>(), Ok(crate::runner::ThreadPriority::Realtime));
     }
 

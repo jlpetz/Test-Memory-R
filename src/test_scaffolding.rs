@@ -503,7 +503,8 @@ impl<'a> TestRunner<'a> {
                 panic!("{}: {} memory errors detected in cycle {} (see logs above)", self.test_name, cycle_errors, self.cycle)
             }
             ErrorMode::Halt => true,
-            ErrorMode::Log => false,
+            // errors=halt:N's stop is the monitor's, never a test's (TODO 106)
+            ErrorMode::Log | ErrorMode::HaltAfter(_) => false,
         }
     }
 

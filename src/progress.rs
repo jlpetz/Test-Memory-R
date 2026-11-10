@@ -493,13 +493,25 @@ fn live_figures(workers: &[TestProgress]) -> LiveFigures {
 
 /// The engine's monitor thread while a suite runs (TODO 29): every 500 ms it drains what WHEA queued, then hands `fe` its tick, which the
 /// CLI draws its ticker on; when the suite is over, `fe`'s last call. The WHEA drain is the engine's, whatever the frontend draws.
-pub fn monitor(progress: Arc<ProgressTracker>, fe: Arc<dyn Frontend>) {
+pub fn monitor(progress: Arc<ProgressTracker>, fe: Arc<dyn Frontend>, halt_after: Option<u64>) {
+    let mut halting = false;
     loop {
         thread::sleep(Duration::from_millis(500));
 
         // Drain any WHEA events the OS queued for us. Costs a single zero-timeout wait on a local event handle when nothing has happened,
         // so it is safe to do on every 500ms tick — the descriptions are cached and only printed when the frontend draws (TODO 63).
         progress.whea.poll();
+
+        // errors=halt:N (TODO 106): here, one place on one thread, never in the tests. The count is the verdict's, the WHEA events just
+        // polled included, as the ticker shows it; the run stops at the step's next check, so at about N
+        if let Some(limit) = halt_after
+            && !halting
+            && let Some(errors) = halt_due(progress.snapshot().as_ref(), limit)
+        {
+            halting = true;
+            log::error!(target: crate::logfile::SHOWN_TARGET, "🛑 {errors} errors, errors=halt:{limit}'s count: halting the run");
+            crate::runner::request_halt();
+        }
 
         if progress.finished.load(Ordering::Relaxed) {
             break;
@@ -510,10 +522,43 @@ pub fn monitor(progress: Arc<ProgressTracker>, fe: Arc<dyn Frontend>) {
     fe.ticks_done(&progress);
 }
 
+/// The run's errors when they have reached `limit`, `errors=halt:N`'s count: every error the verdict fails on (`ErrorCounts::total`), the
+/// running test's included
+fn halt_due(snapshot: Option<&ProgressSnapshot>, limit: u64) -> Option<u64> {
+    snapshot.map(|s| s.errors().total()).filter(|&errors| errors >= limit)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tests::Stage;
+
+    /// TODO 106: errors=halt:N's count is every error the verdict fails on, the tests' (the running one's live errors too), the seal's
+    /// and WHEA's; the halt is due at N and past it, not before, and not without a suite
+    #[test]
+    fn a_halt_is_due_at_the_count_the_verdict_fails_on() {
+        let snapshot = |finished: u64, live: u64, whea: u64| ProgressSnapshot {
+            runtime: Duration::ZERO,
+            time_limit: None,
+            cycle: 1,
+            cycle_limit: None,
+            cycle_elapsed: Duration::ZERO,
+            tests_done: 0,
+            tests_per_cycle: 1,
+            finished_errors: finished,
+            live_errors: live,
+            finished_seal_errors: 1,
+            live_seal_errors: 0,
+            sealed: true,
+            whea: crate::whea::WheaCounts { total: whea, ..Default::default() },
+            test: None,
+        };
+        assert_eq!(halt_due(Some(&snapshot(3, 2, 0)), 5), Some(5), "the running test's live errors count");
+        assert_eq!(halt_due(Some(&snapshot(3, 1, 0)), 5), None, "one short");
+        assert_eq!(halt_due(Some(&snapshot(3, 1, 1)), 5), Some(5), "a WHEA error counts");
+        assert_eq!(halt_due(Some(&snapshot(30, 0, 0)), 5), Some(30), "past the count, the count the line says");
+        assert_eq!(halt_due(None, 1), None, "no suite yet");
+    }
 
     /// TODO 109: the chart's speed sums the workers' speeds over their last seconds, a worker that publishes none (a seal stage)
     /// counting at its speed since the start, and one worker in its sealed pass marks the test's; the speed since the start is apart
