@@ -168,6 +168,23 @@ Left: A's edge test misses a gradual climb. On local memory the step was sharp e
 fallback to CPUID's L3 is the package's on an SNC part; a cap on the latency the finer sweep may
 take (as C's 1.25x of A's) would stop it taking DRAM sizes.
 
+## The cap on A's pick (2026-11-10, 87e0e03)
+
+A's L3 is now the finer sweep's largest steady size within 1.25x (`L3_CLIMB`, C's ratio too) of that
+sweep's smallest steady size's latency. On the dev box, old (041d910) against new, alternating,
+`--calibrate-cache --no-save`: 55.8 MB at 35.5 ns, 61.1 at 36.0, 56.2 at 33.9 (the cap not binding,
+a sharp edge), then the fourth, the new build: **79.3 MB at 44.8 ns, its edge at 158.5 MB**. Its
+coarse sweep: flat at 29-37 ns to 59.6 MB, then 49.2 ns at 68.5 MB, **1.398x** the three before it
+(35.2), against the 1.4x the edge test needs; the climb after it gradual, so the first 1.4x step was
+182.3 MB's (114 ns over 80.9), and its 158.5 MB was taken for the L3's edge. The gradual-edge rule
+didn't run: it runs only when no L3 edge is found. The finer sweep ran 79-158 MB, all past the L3, so
+its "flat" latency was already the climb's: the cap held A at 79.3 MB, where the plain largest would
+have gone further, but not at the L3. Not the cap's doing: the coarse sweep's, before it.
+
+Proposed, not built: an L3 edge whose latency before it is already about twice the L3's plateau
+(here 80.9 ns against about 31) isn't the L3's, and the gradual rule takes over, as with none found.
+First, more runs here, to see how often the edge test misses (one in four so far).
+
 ## Notes (TODO 116 has them)
 
 - The coarse sweep runs to 4x CPUID's L3, 1.9 GB here, and most of its time goes on the DRAM
