@@ -109,6 +109,7 @@ takes the privilege away again (from you, or from the `Group:` or `User:` named)
   | `cpus=50%` | test on half the CPUs: the cores Windows prefers first, spread evenly over the CPU's L3 caches |
   | `skip-cores=1` | leave the core Windows ranks lowest free, for Windows (the default; `skip-cores=0` uses every core) |
   | `config=my_tm5.cfg` | run a TM5 config, or a TMR `.json` one |
+  | `record=compact` | a smaller results file for long runs: per-thread rows only where errors were, unindented; `record=off` keeps no results file and no log file |
   | `errors=halt` | stop at the first error |
   | `errors=halt:100` | go on past errors, and stop once the run has found 100 (about: it is counted twice a second) |
   | `calibrate=recheck` | probe the stored cache calibration before the tests (about 15 s) and measure it again if the cache has changed; `calibrate=always` measures every run, `calibrate=off` takes none (by default the first run on a machine measures one) |

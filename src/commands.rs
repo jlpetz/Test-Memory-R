@@ -207,6 +207,8 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     more(out, "  (minpage=regular maxpage=regular: 4KB pages, without asking)")?;
     entry(out, "channels=2", "Memory channels, for TM5 SimpleTest's stride (channels x Parameter - 1")?;
     more(out, "  lines); default: the config's, else 2")?;
+    entry(out, "record=compact", "What the run keeps: full (every thread's rows, indented; the default), compact (the erring")?;
+    more(out, "  threads' rows only, unindented: long runs), off (no results file, no log file)")?;
     entry(out, "errors=halt", "Error handling (log/halt/panic)")?;
     entry(out, "errors=halt:100", "  ...or stop the run once it has found 100 errors, about: counted twice a second")?;
     entry(out, "seal=tmr", "Seal: check and reseal around every chunk (tmr, the default; tm5; off)")?;

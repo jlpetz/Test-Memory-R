@@ -44,6 +44,36 @@ pub struct TestRunResult {
     pub overall_stats: OverallStats,
 }
 
+/// What a run records (`record=`, TODO 105): its results file and its log file, the console and the window showing the run either way
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Record {
+    /// Every step's per-thread rows, the file indented: for the runs a person reads, shorter ones
+    #[default]
+    Full,
+    /// Per-thread rows only for the threads that found errors, the file unindented (a 672 KB stability run's 295 KB): for long runs and
+    /// many threads, whose rows grow the file, and the memory the run holds for it, with every step of every cycle
+    Compact,
+    /// No results file and no log file
+    Off,
+}
+
+impl Record {
+    /// `record=`'s value: `full`, `compact` or `off`
+    pub fn parse(value: &str) -> std::result::Result<Self, String> {
+        match value.trim().to_lowercase().as_str() {
+            "full" => Ok(Self::Full),
+            "compact" => Ok(Self::Compact),
+            "off" => Ok(Self::Off),
+            _ => Err(format!("Invalid record '{value}'. Valid: full, compact, off")),
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        *self == Self::Full
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestRunMetadata {
     pub tmr_version: String,
@@ -66,6 +96,10 @@ pub struct TestRunMetadata {
     #[serde(default)]
     pub run_id: Option<String>,
     pub config_name: Option<String>, // If loaded from config
+    /// What the run recorded (`record=`): absent for `full`, the default, and in results written before it; `compact` says the steps'
+    /// per-thread rows are only the erring threads'
+    #[serde(default, skip_serializing_if = "Record::is_full")]
+    pub record: Record,
 }
 
 /// The build that wrote a results file (`build_info::BUILD`, TODO 72). Its version is `tmr_version`.
@@ -214,6 +248,15 @@ pub struct TestResult {
     /// step that didn't run, and in results written before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub threads: Vec<ThreadStepRecord>,
+}
+
+/// The per-thread rows a step's record keeps (`record=`, TODO 105): every thread's, but under `compact` only those that found errors, a
+/// check's alarm or the seal's, which thread, core and node failing being the diagnosis
+fn recorded_threads(record: Record, threads: &[ThreadStepRecord]) -> Vec<ThreadStepRecord> {
+    match record {
+        Record::Compact => threads.iter().filter(|t| t.errors + t.alarms + t.not_reproduced + t.seal_errors > 0).cloned().collect(),
+        Record::Full | Record::Off => threads.to_vec(),
+    }
 }
 
 /// One thread's part of a step (TODO 72). With its CPU, core and node, the run's CPU Performance Summary can be worked out again from the
@@ -532,6 +575,7 @@ impl TestRunResult {
                 filename: filename.clone(),
                 run_id: Some(crate::run_context::run_id()),
                 config_name: run_config.config_name.clone(),
+                record: Record::Full,
             },
             // Detected here rather than via a setter, for the same reason as `run_config`.
             identity: crate::run_context::RunIdentity::detect(),
@@ -606,7 +650,8 @@ impl TestRunResult {
                     latency_p99_9_ns: summary.latency_p99_9_ns,
                     latency_spread: summary.latency_spread,
                     loaded: summary.loaded.clone(),
-                    threads: summary.threads.clone(),
+                    // record=compact keeps the erring threads' rows only (TODO 105): which thread, core and node failed is the diagnosis
+                    threads: recorded_threads(self.metadata.record, &summary.threads),
                 }
             })
             .collect();
@@ -868,7 +913,9 @@ impl TestRunResult {
     /// be deleted, falls back to writing `path` in place, with a warning; the next save tries the rename again. When the viewer won't let
     /// it be written either, the save stays in the `.tmp`, and the error names both.
     pub fn save_atomic(&self, path: &str) -> Result<(), String> {
-        let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize test result: {}", e))?;
+        // Indented but for record=compact (TODO 105): a file that size is read by TMR, not by eye
+        let json = if self.metadata.record == Record::Compact { serde_json::to_string(self) } else { serde_json::to_string_pretty(self) }
+            .map_err(|e| format!("Failed to serialize test result: {}", e))?;
         let temp = format!("{path}.tmp");
         // A new file (TODO 104): in an install for all users results\ is writable by every user, and TMR may run elevated, so the temp is
         // never a file someone else put there, a link among them. One a failed save left is removed first (a link, not what it names).
@@ -1368,6 +1415,33 @@ mod tests {
     /// old file open, and lets it be deleted, still reads the old one, which a write in place wouldn't leave it. When a viewer holds the
     /// file without letting it be deleted, so it can't be renamed over, the save writes it in place instead; when the viewer won't let it
     /// be written either, the save stays in the temp file, which the error names, and the file is as it was.
+    /// TODO 105: record=compact keeps only the erring threads' rows, an alarm or a seal error counting, and writes the file unindented; it
+    /// loads back with the setting named; full keeps every row, indented, and names none
+    #[test]
+    fn a_compact_record_keeps_the_erring_threads_unindented() {
+        let row = |thread, errors, alarms, seal_errors| ThreadStepRecord { thread, errors, alarms, seal_errors, ..Default::default() };
+        let rows = [row(0, 0, 0, 0), row(1, 3, 1, 0), row(2, 0, 1, 0), row(3, 0, 0, 2), row(4, 0, 0, 0)];
+        let kept = |record| recorded_threads(record, &rows).iter().map(|t| t.thread).collect::<Vec<_>>();
+        assert_eq!(kept(Record::Compact), [1, 2, 3]);
+        assert_eq!(kept(Record::Full), [0, 1, 2, 3, 4]);
+        for (value, record) in [("full", Record::Full), ("Compact", Record::Compact), (" off ", Record::Off)] {
+            assert_eq!(Record::parse(value), Ok(record));
+        }
+        assert!(Record::parse("none").is_err());
+
+        let dir = TempDir::new("record-compact");
+        let (_, mut result) = written_before_todo_72();
+        for (record, file) in [(Record::Compact, "compact.json"), (Record::Full, "full.json")] {
+            result.metadata.record = record;
+            let path = dir.file(file);
+            result.save_atomic(&path).unwrap();
+            let text = fs::read_to_string(&path).unwrap();
+            assert_eq!(text.contains("\n  "), record == Record::Full, "{file}: indented only when full");
+            assert_eq!(text.contains("\"record\":\"compact\""), record == Record::Compact, "{file}: compact named");
+            assert_eq!(TestRunResult::load_from_file(&path).unwrap().metadata.record, record);
+        }
+    }
+
     #[test]
     fn a_save_replaces_the_file_whole() {
         use std::io::Read;

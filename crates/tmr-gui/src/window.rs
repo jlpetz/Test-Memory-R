@@ -235,11 +235,14 @@ impl Window {
         // A run as a new process's first (TODO 109): the last run's settings, stamp and stop cleared, then a log file of its own
         tmr::session::reset_run();
         let log = self.log.take().unwrap_or_else(logger::install);
-        logger::open_log_file();
-        self.model.log_path = Some(tmr::logfile::path());
+        let mut args = self.model.command();
+        // No log file under record=off in the box (TODO 105), as the console has none
+        self.model.log_path = tmr::logfile::wanted(&args).then(|| {
+            logger::open_log_file();
+            tmr::logfile::path()
+        });
         let (tx, rx) = mpsc::channel();
         let fe = Arc::new(GuiFrontend { feed: tx.clone(), transcript: Some(log.transcript()) });
-        let mut args = self.model.command();
         // Serials off in the Settings dialog: the run leaves them out, as --no-serials does (TODO 105)
         if !self.settings.serials && !args.iter().any(|arg| arg == "--no-serials") {
             args.push("--no-serials".to_string());

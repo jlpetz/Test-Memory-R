@@ -84,6 +84,9 @@ pub struct SystemConfig {
     /// pattern either way.
     #[serde(default)]
     pub seal: Option<String>,
+    /// What the run records (`record=`, TODO 105): `"full"` (the default), `"compact"` or `"off"`
+    #[serde(default)]
+    pub record: Option<String>,
     /// The seal kernels' SIMD width: `"auto"` (this machine's `--calibrate-seal` width, else the seal's rule, 256 with AVX2), `"128"`,
     /// `"256"`, `"512"`; unset, `width`'s when that is set, else `"auto"`.
     #[serde(default)]
@@ -921,6 +924,7 @@ impl ModernConfig {
             ("skip-cores", "cpu_pinning.skip_spec", sys.cpu_pinning.skip_spec.as_str()),
             ("cpu-stride", "cpu_pinning.stride_spec", sys.cpu_pinning.stride_spec.as_deref().unwrap_or("1")),
             ("seal", "seal", sys.seal.as_deref().unwrap_or("tmr")),
+            ("record", "record", sys.record.as_deref().unwrap_or("full")),
             ("seal-width", "seal_width", sys.seal_width.as_deref().unwrap_or("auto")),
             ("width", "width", sys.width.as_deref().unwrap_or("auto")),
             ("priority", "thread_priority", sys.thread_priority.as_deref().unwrap_or("high")),
@@ -1358,6 +1362,7 @@ impl ModernConfig {
                 memory_allocation: MemoryAllocationConfig::default(),
                 channels: 2,
                 seal: None,
+                record: None,
                 seal_width: None,
                 width: None,
                 thread_priority: None,
@@ -1505,6 +1510,7 @@ impl ModernConfig {
                 memory_allocation: MemoryAllocationConfig::default(),
                 channels: 2,
                 seal: None,
+                record: None,
                 seal_width: None,
                 width: None,
                 thread_priority: None,
@@ -1789,6 +1795,7 @@ impl LegacyConfig {
                 memory_allocation: MemoryAllocationConfig::default(),
                 channels: self.memory_setup.channels,
                 seal: Some(if sealed { "tmr" } else { "off" }.to_string()),
+                record: None,
                 seal_width: None,
                 width: None,
                 thread_priority: None,

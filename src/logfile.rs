@@ -29,6 +29,14 @@ pub fn close() {
     *file() = None;
 }
 
+/// The run's log file closed and deleted (`record=off` in a config, TODO 105): it holds only setup's first lines, and the run keeps
+/// none. Nothing when none is open.
+pub fn discard() {
+    if file().take().is_some() {
+        let _ = std::fs::remove_file(path());
+    }
+}
+
 /// How TMR logs, the same for every frontend (TODO 105, the owner 2026-11-04): the records the log file takes, and the ones a frontend
 /// shows where it shows the run (the console, the window's Log tab), each that level and the ones above it; `SHOWN_TARGET`'s at every
 /// level. `rust_log` is `RUST_LOG`'s value when it's set.
@@ -101,6 +109,8 @@ pub fn wanted(args: &[String]) -> bool {
     // Without the mode flags, as the session parses it (`session::MODE_FLAGS`): `tmr --quick-test --help` is `--help`
     let args: Vec<String> = args.iter().filter(|a| !crate::session::MODE_FLAGS.contains(&a.as_str())).cloned().collect();
     matches!(Command::parse(&args), None | Some(Command::SetupLargePages(_) | Command::RemoveLargePages(_) | Command::Calibrate(_)))
+        // record=off on the command line (TODO 105): no log file at all; a config's is the session's (`discard`)
+        && !args.iter().any(|a| a.trim().eq_ignore_ascii_case("record=off"))
 }
 
 /// Creates `logs\` in TMR's home, where the log file goes, if it isn't there.
@@ -231,6 +241,17 @@ pub fn prefixed(prefix: &str, text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// TODO 105: a session keeps a log file, record=off on its command line none, and a command that changes nothing none either
+    #[test]
+    fn record_off_keeps_no_log_file() {
+        let args = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        assert!(super::wanted(&args(&["tmr", "plan=stability"])));
+        assert!(!super::wanted(&args(&["tmr", "plan=stability", "record=off"])));
+        assert!(!super::wanted(&args(&["tmr", "RECORD=Off", "cycles=1"])));
+        assert!(super::wanted(&args(&["tmr", "record=compact"])));
+        assert!(!super::wanted(&args(&["tmr", "--version"])));
+    }
+
     /// TODO 105: a release build's frontend shows warnings and up, the log file takes info; the run's own lines (`SHOWN_TARGET`) go to
     /// both whatever the levels, shown as their time and text, not as a record; a file-only record is never shown; a logger lets through
     /// at least info, which the run's own lines are

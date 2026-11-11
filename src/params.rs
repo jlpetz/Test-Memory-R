@@ -203,6 +203,12 @@ impl ParamRegistry {
             parser: |v| crate::ErrorMode::parse(v).map(|_| ParamValue::String(v.to_string())),
         });
 
+        params.insert("record", ParamDef {
+            key: "record",
+            can_override_config: true,
+            parser: |v| crate::results::Record::parse(v).map(|_| ParamValue::String(v.to_string())),
+        });
+
         params.insert("channels", ParamDef {
             key: "channels",
             can_override_config: true,

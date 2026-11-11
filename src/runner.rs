@@ -105,6 +105,8 @@ pub struct TestRunOverrides<'a> {
     pub plan: Option<&'static crate::plans::Plan>,
     /// Override the seal (`seal=tmr|tm5|off`) and its width (`seal-width=`).
     pub seal_override: Option<&'a str>,
+    /// What the run records (`record=full|compact|off`, TODO 105)
+    pub record_override: Option<&'a str>,
     pub seal_width_override: Option<&'a str>,
     /// Override every mirror test's mode (`mirror=`).
     pub mirror_override: Option<crate::config::MirrorMode>,
@@ -757,6 +759,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         // `run_seal` reads them from `overrides`
         seal_override: _,
         seal_width_override: _,
+        record_override,
         mirror_override,
         load_levels_override,
         load_pairs_override,
@@ -771,6 +774,15 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         plan_only,
         command_line,
     } = overrides;
+
+    // What the run records (TODO 105): the command line's, else the config's; both validated. Under off the log file a config's setting
+    // finds open goes too (the command line's never opened it, `logfile::wanted`), and the run says so first.
+    let record = crate::results::Record::parse(record_override.or(config.and_then(|c| c.system.record.as_deref())).unwrap_or("full"))
+        .unwrap_or_default();
+    if record == crate::results::Record::Off {
+        log::info!(target: crate::logfile::SHOWN_TARGET, "📝 record=off: this run keeps no results file and no log file");
+        crate::logfile::discard();
+    }
 
     fe.event(Run::MemoryPlan(Box::new(layout.memory_plan())).into());
     layout.log_thread_layout();
@@ -1207,7 +1219,9 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
             cache_info,
             seal: seal_settings.on.then_some((seal_kernel, seal_width_source)),
         });
-        Arc::new(Mutex::new(TestRunResult::new(snapshot)))
+        let mut result = TestRunResult::new(snapshot);
+        result.metadata.record = record;
+        Arc::new(Mutex::new(result))
     };
 
     let cycle_ctx = CycleContext {
@@ -5065,7 +5079,11 @@ fn display_and_save_results(
     let report = crate::reporting::converters::create_overall_stats_summary_report(&result);
     fe.event(Run::FinalSummary(Box::new(report)).into());
 
-    // Save results to file
+    // Save results to file, unless the run records nothing (record=off)
+    if result.metadata.record == crate::results::Record::Off {
+        log::info!(target: crate::logfile::SHOWN_TARGET, "📝 record=off: no results file or log file was kept");
+        return;
+    }
     let path = result.save_path();
     match result.save_atomic(&path) {
         Ok(_) => fe.event(Run::ResultsSaved { path }.into()),
@@ -5108,6 +5126,10 @@ fn save_after_cycle(test_run_result: &Mutex<TestRunResult>, cycle: u32, elapsed:
         log::warn!("Couldn't lock the results to save them after cycle {cycle}");
         return;
     };
+    // record=off: nothing to save
+    if result.metadata.record == crate::results::Record::Off {
+        return;
+    }
     // Every overall figure again, from the cycles so far
     result.finalize(elapsed);
     result.set_whea_totals(whea.counts(), whea.is_active());

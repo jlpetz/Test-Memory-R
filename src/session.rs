@@ -660,6 +660,8 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     let seal_override = params::has_param(&validated_params, "seal").then(|| params::get_string(&validated_params, "seal", "tmr"));
     let seal_width_override =
         params::has_param(&validated_params, "seal-width").then(|| params::get_string(&validated_params, "seal-width", "auto"));
+    // What the run records (TODO 105), if given
+    let record_override = params::has_param(&validated_params, "record").then(|| params::get_string(&validated_params, "record", "full"));
 
     // Extract the mirror override if provided (the parser has validated it)
     let mirror_override = if params::has_param(&validated_params, "mirror") {
@@ -723,6 +725,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
                 plan,
                 seal_override: seal_override.as_deref(),
                 seal_width_override: seal_width_override.as_deref(),
+                record_override: record_override.as_deref(),
                 mirror_override,
                 load_levels_override: load_levels_override.as_deref(),
                 load_pairs_override,
