@@ -17,6 +17,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+if sys.version_info < (3, 11):
+    sys.exit("TMR's build tools require Python 3.11 or newer.")
+
 import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent

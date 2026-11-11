@@ -22,7 +22,7 @@ tools' installer asks for it.
 | Tool | For | From |
 |---|---|---|
 | Git, the GitHub CLI | the repository; CI's runs and the releases (`gh run watch`) | winget `Git.Git`, `GitHub.cli` |
-| Python 3 | `tools\*.py` (the standard library only) | winget `Python.Python.3.13`, or any Python 3 already there |
+| Python 3.11+ | `tools\*.py` (the standard library only, including `tomllib` for the build manifest) | winget `Python.Python.3.13`, or any Python 3.11+ already there |
 | The C++ build tools | the MSVC linker and the Windows SDK | any Visual Studio 2022 or later with the C++ tools; else winget `Microsoft.VisualStudio.BuildTools` with the VCTools workload |
 | Windows SDK 10.0.28000.2957 | the same SDK libraries locally and in CI; its directory is named 10.0.28000.0 | Microsoft's installer, with the version and checksum in `tools/windows_sdk.json`; `setup_dev.ps1` installs it when missing |
 | rustup, the nightly with rustfmt and clippy, as the default toolchain | the engine uses nightly features (`portable_simd`, the CLFLUSHOPT and AMX intrinsics); the nightly isn't pinned (CLAUDE.md), so CI builds with each new one | winget `Rustlang.Rustup` |

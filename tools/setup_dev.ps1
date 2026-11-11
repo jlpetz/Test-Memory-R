@@ -3,7 +3,7 @@
     Sets up a Windows machine to build, test and check TMR as CI does (doc/dev_setup.md).
 
 .DESCRIPTION
-    Installs only what is missing and leaves what is there: Git, the GitHub CLI, Python 3, the C++ build tools (the linker and the
+    Installs only what is missing and leaves what is there: Git, the GitHub CLI, Python 3.11+, the C++ build tools (the linker and the
     Windows SDK, from any Visual Studio 2022 or later with the C++ tools, else Build Tools 2026), rustup with the nightly (rustfmt,
     clippy) as the default toolchain, and the cargo tools CI uses (cargo-nextest, cargo-audit, cargo-about). System packages come from
     winget, the cargo tools from crates.io (--locked). -Check reports what is missing and changes nothing.
@@ -34,6 +34,13 @@ function Report([string]$what, [bool]$there, [string]$detail) {
 }
 
 function Have([string]$command) { [bool](Get-Command $command -ErrorAction SilentlyContinue) }
+
+function ToolReady([string]$command) {
+    if (-not (Have $command)) { return $false }
+    if ($command -ne 'python') { return $true }
+    & python -c "import sys; sys.exit(sys.version_info < (3, 11))" *> $null
+    return $LASTEXITCODE -eq 0
+}
 
 # A winget package installed, by its id: `winget list` exits non-zero when it finds none
 function WingetHas([string]$id) {
@@ -73,8 +80,8 @@ Write-Host 'Needed:'
 # Git, the GitHub CLI, Python: by command, so a copy installed another way counts
 foreach ($tool in @(@('git', 'Git.Git'), @('gh', 'GitHub.cli'), @('python', 'Python.Python.3.13'))) {
     $command, $id = $tool
-    $there = Have $command
-    if (-not $there -and -not $Check) { WingetInstall $id @(); RefreshPath; $there = Have $command }
+    $there = ToolReady $command
+    if (-not $there -and -not $Check) { WingetInstall $id @(); RefreshPath; $there = ToolReady $command }
     Report $command $there $(if ($there) { (Get-Command $command).Source } else { "winget $id" })
 }
 
