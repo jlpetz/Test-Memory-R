@@ -28,7 +28,8 @@
 //! failing and is reported as an error, not retried.
 //!
 //! `Replace` is kept whole for when the kernel is fixed: one call per slot and no VA hole. Do not select it on a build that still has the
-//! bug; any refusal takes the machine down.
+//! bug; any refusal takes the machine down. TMR reported this; Microsoft's fix shipped 2026-11-10 as CVE-2026-119965, and
+//! [`commit_method_for`] picks `Replace` once a run's own Windows reads at or past the fixed revision for its line (`REPLACE_FIXED`).
 //!
 //! # Fairness: commit-size ladders, least-filled first
 //!
@@ -125,10 +126,30 @@ struct Fixed {
     revision: u32,
 }
 
-/// The fixed builds: none known yet, so every Windows, server and client, is taken as having the bugcheck (the owner, 2026-11-09). A row
-/// goes in only once the fix is verified on a machine that can afford the bugcheck if it isn't, never on an announcement alone, one for
-/// each build and line; it is the one switch between the methods (TMR-APP CLAUDE.md).
-const REPLACE_FIXED: &[Fixed] = &[];
+/// The fixed builds (TODO 123): the earliest revision (UBR) of each line and build that carries Microsoft's fix for CVE-2026-119965,
+/// the vulnerability TMR reported (Elevation of Privilege, Important;
+/// <https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-119965>, published 2026-11-10). Taken from the CVE's own affected-
+/// product list, each row the lowest `fixedBuildNumber` among the KBs that apply to that line and build (a later KB's higher revision
+/// still has the fix, so only the lowest matters here); not from our own repro, the owner's call 2026-11-11, the CVE being Microsoft's
+/// confirmation of the exact issue reported rather than an unrelated announcement. It is the one switch between the methods (TMR-APP
+/// CLAUDE.md). A build or line the CVE doesn't name (28000/26H1; anything before 23H2 or Server 2022) stays free-then-allocate at any
+/// revision: absence here is "not proven fixed", not "not affected".
+const REPLACE_FIXED: &[Fixed] = &[
+    // Windows 11 24H2, client, build 26100: KB5132043 (26100.9911); KB5132061 (26100.9974) is the same fix, later.
+    Fixed { server: false, build: 26100, revision: 9911 },
+    // Windows 11 25H2, client, build 26200: KB5132043 (26200.9911).
+    Fixed { server: false, build: 26200, revision: 9911 },
+    // Windows 11 26H2, client, build 26300: KB5132043 (26300.9911).
+    Fixed { server: false, build: 26300, revision: 9911 },
+    // Windows 11 23H2, client, build 22631: KB5131087 (22631.7711).
+    Fixed { server: false, build: 22631, revision: 7711 },
+    // Windows Server 2025 (and its Server Core install, same InstallationType family), build 26100: KB5131077 (26100.33730); KB5131080
+    // (26100.33822) is the same fix, later. Independent of the client row above: this dev box read 26100.33650 on 2026-11-09, past any
+    // client revision but before this one, which is exactly why the line is kept apart (TODO 123's note on the two tracks).
+    Fixed { server: true, build: 26100, revision: 33730 },
+    // Windows Server 2022 (and its Server Core install), build 20348: KB5131090 (20348.5870).
+    Fixed { server: true, build: 20348, revision: 5870 },
+];
 
 /// How this Windows commits, and why (TODO 123): [`CommitMethod::Replace`] on a build, line and revision `REPLACE_FIXED` lists, else
 /// [`CommitMethod::FreeThenAllocate`].
@@ -1501,7 +1522,7 @@ mod tests {
 
     /// TODO 123: Replace only on a build the table lists for its own line, from its fixed revision on; free-then-allocate before it, on a
     /// build the table lists for the other line (a server's revisions run apart from a client's), on any other build, and when the build is
-    /// unknown. The real table is empty: every Windows is taken as having the bugcheck.
+    /// unknown. Against a synthetic table, so this stays true whatever `REPLACE_FIXED` holds.
     #[test]
     fn the_commit_method_follows_the_build_and_its_line() {
         let os = |server, build, revision| crate::windows_version::WindowsVersion {
@@ -1525,11 +1546,49 @@ mod tests {
         );
         assert_eq!(choose(Some(&os(false, 26200, 9818)), &fixed).0, CommitMethod::FreeThenAllocate, "another build");
         assert_eq!(choose(None, &fixed).0, CommitMethod::FreeThenAllocate, "an unknown build");
-        for (server, build) in
-            [(true, 26100), (true, 20348), (false, 26100), (false, 26200), (false, 26300), (false, 28000), (false, 22631)]
-        {
-            assert_eq!(commit_method_for(Some(&os(server, build, 99_999))).0, CommitMethod::FreeThenAllocate, "none verified: {build}");
+    }
+
+    /// TODO 123: `REPLACE_FIXED` against CVE-2026-119965's own affected-product list (checked 2026-11-11): Replace at and above each
+    /// line's earliest fixed revision, free-then-allocate one revision short of it; a build the CVE doesn't name (28000, Windows 11's
+    /// next feature update) stays free-then-allocate at any revision, as does a line the CVE fixed at a different build (22631's fix is
+    /// the client's only, so a server reading that build, which the CVE doesn't cover, is not "fixed" by it).
+    #[test]
+    fn the_real_fixed_builds_match_cve_2026_119965() {
+        let os = |server, build, revision| crate::windows_version::WindowsVersion {
+            name: if server { "Windows Server 2025 Datacenter" } else { "Windows 11 Pro" }.to_string(),
+            display_version: "24H2".to_string(),
+            build,
+            revision,
+            server,
+        };
+        for &(server, build, fixed_at) in &[
+            (false, 26100, 9911), // Windows 11 24H2, KB5132043
+            (false, 26200, 9911), // Windows 11 25H2, KB5132043
+            (false, 26300, 9911), // Windows 11 26H2, KB5132043
+            (false, 22631, 7711), // Windows 11 23H2, KB5131087
+            (true, 26100, 33730), // Windows Server 2025, KB5131077
+            (true, 20348, 5870),  // Windows Server 2022, KB5131090
+        ] {
+            assert_eq!(commit_method_for(Some(&os(server, build, fixed_at))).0, CommitMethod::Replace, "{server} {build}.{fixed_at}");
+            assert_eq!(
+                commit_method_for(Some(&os(server, build, fixed_at + 50))).0,
+                CommitMethod::Replace,
+                "a later revision keeps the fix: {server} {build}"
+            );
+            assert_eq!(
+                commit_method_for(Some(&os(server, build, fixed_at - 1))).0,
+                CommitMethod::FreeThenAllocate,
+                "one revision short: {server} {build}.{}",
+                fixed_at - 1
+            );
         }
+        assert_eq!(commit_method_for(Some(&os(false, 28000, 99_999))).0, CommitMethod::FreeThenAllocate, "28000 isn't in the CVE");
+        assert_eq!(
+            commit_method_for(Some(&os(true, 22631, 99_999))).0,
+            CommitMethod::FreeThenAllocate,
+            "22631's fix is the client's; no server line at that build is in the CVE"
+        );
+        assert_eq!(commit_method_for(None).0, CommitMethod::FreeThenAllocate, "an unknown build");
     }
 
     /// TODO 120: every call the arena makes is counted: one reservation; each commit, granted or refused, and each refused one's hole

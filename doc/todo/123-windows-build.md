@@ -30,7 +30,7 @@ needs the build and revision with every run, both to choose the method by it and
   unfixed server for fixed (33650 past any 9xxx) and picked Replace. `WindowsVersion::server` (from `InstallationType`) is in the
   results too.
 
-## The current revisions (the owner's list, 2026-11-09, as given; not verified here)
+## The current revisions (the owner's list, 2026-11-09, before the fix)
 
 | Windows | Build.revision | Update | Date |
 |---|---|---|---|
@@ -42,18 +42,44 @@ needs the build and revision with every run, both to choose the method by it and
 | Windows 10 22H2 (ESU; TMR doesn't support 10) | 19045.7811 | 2026-10 OOB | Oct 26, 2026 |
 | Server 2025 (this dev box, read) | 26100.33650 | | 2026-11-09 |
 
-Server 2022 (20348) isn't listed. Each gets its own row, once its own fix is verified.
+Server 2022 (20348) isn't listed there: it hadn't been checked yet.
 
-## Next: verifying the fix
+## The fix: CVE-2026-119965, Patch Tuesday 2026-11-10
 
-1. Find the update and its revision (Microsoft's release notes, the KB), and whether its notes name the bugcheck.
-2. Verify on a machine that can afford a 0x139: the US VM (Server 2025, build 26100), resized as needed, never this dev box. Install
-   the update, then reproduce the refused replace: a large-page `MEM_REPLACE_PLACEHOLDER` refused (memory short of the page size), then
-   `VirtualFree` of that placeholder. Before the fix it bugchecks; after, it returns. The probe exists: `../stitch-test/` (not in
-   git), its narrowing repro `trigger=` built but never run (its FINDINGS.md: E5 bugchecked Server 2025 26100.33438 with
-   `0x139_e_INVALID_REFERENCE_COUNT_nt!KiFastFailDispatch`, from `MiDeletePartialVad`). Each run the owner's go-ahead.
-3. Only then a row in `REPLACE_FIXED` (server or client, the build, the first fixed revision), and a check that Replace lays out as
-   free-then-allocate does on that machine (`commit_methods_lay_out_the_same` is the fake's). A server row needs a server verified, a
-   client row a client: the US VM verifies Server 2025's 26100 only.
-4. Other builds (Server 2022's 20348, Windows 11's 22000-26099): each a row of its own when its fix is verified; until then
-   free-then-allocate.
+Microsoft's fix shipped 2026-11-10 as a security update, Elevation of Privilege, Important, for the vulnerability TMR reported:
+<https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-119965>. Its affected-product list, read from MSRC's own API
+(`api.msrc.microsoft.com/sug/v2.0/.../affectedProduct`, 2026-11-11), gives the exact fixed build for each Windows line, which is a
+stronger source than an announcement: it is Microsoft's own confirmation of the specific issue reported, not a general release note.
+The owner's call (2026-11-11): bake these in directly, rather than waiting on an on-box repro, which stays optional (below).
+
+Two KBs cover several lines; only the lower revision of the two matters, since a later KB carrying the same fix reads higher:
+
+| Line | Build | Fixed from | Lower KB (used) | Higher KB (same fix, later) |
+|---|---|---|---|---|
+| Windows 11 24H2, client | 26100 | 9911 | KB5132043 | KB5132061 (9974) |
+| Windows 11 25H2, client | 26200 | 9911 | KB5132043 | KB5132061 (9974) |
+| Windows 11 26H2, client | 26300 | 9911 | KB5132043 | KB5132061 (9974) |
+| Windows 11 23H2, client | 22631 | 7711 | KB5131087 | — |
+| Windows Server 2025, server | 26100 | 33730 | KB5131077 | KB5131080 (33822) |
+| Windows Server 2022, server | 20348 | 5870 | KB5131090 | — |
+
+This dev box's 26100.33650 (above) sits 80 revisions short of the server fix (33730): still unpatched, by the owner's choice (patching
+paused on purpose, so the unfixed state could still be read here). `REPLACE_FIXED` now carries all six rows (`src/memory/stitched.rs`,
+2026-11-11); `the_real_fixed_builds_match_cve_2026_119965` pins each against the CVE's own numbers, one revision above and below.
+
+Not in the CVE, so still free-then-allocate at any revision: build 28000 (Windows 11's next feature update, 26H1, new hardware only),
+and any build before 23H2 (client) or Server 2022 (server) that the CVE doesn't name — absence here reads as "not proven fixed," not
+"not affected."
+
+Checked live on this box (2026-11-11, a disposable test, not kept): `WindowsVersion::detect()` read 26100.33650/server as above, and
+`commit_method_for` returned `FreeThenAllocate ("server build 26100.33650 predates the bugcheck's fix (26100.33730)")` — the wiring
+end to end, on the one build this box can prove, without needing the on-box repro below.
+
+## Optional: an on-box repro, not run
+
+The probe for one still exists and wasn't run: `../stitch-test/` (not in git), its narrowing repro `trigger=` built but never
+triggered (its FINDINGS.md: E5 bugchecked Server 2025 26100.33438 with `0x139_e_INVALID_REFERENCE_COUNT_nt!KiFastFailDispatch`, from
+`MiDeletePartialVad`). It would deliberately bugcheck whichever machine runs it (never this dev box), so it stays the owner's own call
+to run, not something to do from here. With the CVE's own fixed-build numbers now in `REPLACE_FIXED`, it would only be for extra
+confidence, not for the table to be trustworthy: a crash-then-patch-then-clean-run cycle on the US VM, if the owner wants it before
+trusting `Replace` on a freshly patched box.
