@@ -96,8 +96,29 @@ The only use for one would be forcing `Replace` on a build `REPLACE_FIXED` doesn
 bugcheck, no safer gated version of that makes sense. Decided instead: keep auto-selection as built, `FreeThenAllocate` the default
 when the build is below its line's fixed revision or isn't detected, and add a visible warning for that case (today's
 `stitched: commits by free-then-allocate: ...` line is `log::info!`, not shown on the console in a release build by default). Not
-built yet: the owner will crash a box with `../stitch-test/`'s `trigger=` manually first, before patching, then again after, to
-confirm the fix independently of the CVE reading before anything in the app leans on the table being right. Open when it's time:
-whether the warning covers both "build unknown" and "build known but unpatched" (the common, currently-universal case) or only the
-unknown case, since the latter is the normal, safe, no-slower-in-practice state for everyone until they patch, not obviously warning-
-worthy on every run.
+built yet: the owner would crash a box manually first, before patching, then again after, to confirm the fix independently of the
+CVE reading before anything in the app leans on the table being right. Open when it's time: whether the warning covers both "build
+unknown" and "build known but unpatched" (the common, currently-universal case) or only the unknown case, since the latter is the
+normal, safe, no-slower-in-practice state for everyone until they patch, not obviously warning-worthy on every run.
+
+### Done: the owner's own repro (2026-11-11)
+
+Not `../stitch-test/` — `../stitch-test2/`, the newer harness that mounts the real `src/memory/stitched.rs` directly (via a thin
+shim, `INTEGRATION.md`), with explicit `commit=free-alloc`/`commit=replace` modes, each OS call journalled to disk before it is made
+so a crash dump can be matched to the exact call. The owner crashed this dev box with it before patching, confirmed clean after,
+independent of the CVE reading. Patched build: **26100.33822** — the LCU revision, not the Hotpatch one (33730): a second
+confirmation point above the floor in `REPLACE_FIXED`, on the other servicing track from the one the table's row names.
+
+Then a live TMR run there, `(commits: replace)` on the allocation's start line, picked automatically:
+```
+[14:38:10] ⏳ Allocating 56.00 GiB for 4 threads with the stitched allocator (commits: replace)
+[14:38:10] ⏳ stitched: 1GB huge pages, 56.00 GiB to go
+[14:38:12] ✅ stitched: NUMA 0: 48 × 1 GiB granted (1GB huge)
+[14:38:12] ❌ stitched: NUMA 0: 1 GiB (1GB huge) for thread 0 refused: error 1450 ...
+[14:38:12] ⏳ stitched: 2MB large pages, 8.00 GiB to go
+[14:38:13] ✅ stitched: NUMA 0: 64 × 128 MiB granted (2MB large)
+[14:38:13] ✅ stitched: 56.00 GiB for 4 threads in 3.05 s, 225 calls to Windows: 113 commits (1 refused), 111 placeholder splits, 1 VA reservation
+```
+The refusal that would have bugchecked under the old workaround (a refused 1 GiB replace, then whatever freed or split that
+placeholder next) instead fell straight through to the 2 MiB pass and finished clean — the mechanism holds in production, not only
+in the probe. `REPLACE_FIXED`'s precondition is met; the warning (above) is still unbuilt, its scope still open.
