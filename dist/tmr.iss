@@ -66,6 +66,7 @@ Name: "{app}\logs"; Permissions: users-modify; Flags: uninsneveruninstall
 
 [Files]
 Source: "{#Stage}\tmr.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Stage}\tmr.build.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Stage}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs
 Source: "{#Stage}\configs\*"; DestDir: "{app}\configs"; Flags: onlyifdoesntexist uninsneveruninstall
 ; The calibrations save into it, beside the exe: an empty one, writable by users, which TMR reads as no settings

@@ -12,10 +12,12 @@ own checks, run here first.
 
 Runs the steps of `.github/workflows/Rust-nightly-build.yml` with its own commands, read from the
 file in its order, so a failure shows here before CI's (the owner, 2026-11-03: like for like). A step
-whose `run:` is one `cargo` command runs; the rest (the checkout, the toolchain, the cache, the tool
-installs, PowerShell blocks) are listed as skipped. It stops at the first failure, as CI does. A full run that
-passes keeps its release exe in `../builds/<commit>/`, for live checks and deploys (the owner,
-2026-11-03: build once a batch).
+whose `run:` is one `cargo` command runs, along with the shared `build_release.py` command and its
+unit checks; the rest (checkout, toolchain installation, cache, packaging) are listed as skipped.
+It selects the same SDK as CI and disables incremental compilation as the toolchain action does.
+It stops at the first failure. A full run that passes keeps its EXE, PDB and `tmr.build.json` in
+`../builds/<commit>[-dirty]-<exe-hash>/`, for live checks and deploys. A rebuild with another
+compiler or SDK gets its own directory; existing builds are not overwritten.
 
 ```
 python tools/ci_local.py              # fmt, clippy x3, the release build, nextest, audit
@@ -29,6 +31,37 @@ release.yml's notices, which it doesn't run). `setup_dev.ps1` installs them and 
 development machine, what's missing only (`-Check` reports; `doc/dev_setup.md`). nextest runs each test in a process of its own, where
 `cargo test` runs a crate's tests as threads of one process, so a test that leans on another's
 process state passes one way only: the like-for-like run is nextest's.
+
+## `build_release.py`: build provenance, without a CI round trip
+
+```
+python tools/build_release.py --locked       # target/release/tmr.exe, tmr.pdb and tmr.build.json
+python tools/build_release.py --describe     # inspect the selected tools; no TMR build or execution
+```
+
+Both workflows and `ci_local.py` use this wrapper. It runs the usual `cargo +nightly build
+--release` (with `--locked` when requested), with the SDK selected by `build_environment.ps1`.
+Nightly stays unpinned. `windows_sdk.json` selects SDK directory **10.0.28000.0**, servicing release
+**10.0.28000.2957**. CI installs that Microsoft-signed, SHA-256-checked installer when needed;
+local builds only check and select it. To install it locally, use `setup_dev.ps1`, or run
+`powershell -File tools/build_environment.ps1 -InstallSdk` elevated.
+
+The manifest records the checkout and lockfile hashes, exact Rust/Cargo versions, release
+settings, default app features, build overrides, selected MSVC linker and SDK, native library
+hashes, and EXE/PDB hashes. Native library entries identify key inputs, not a complete linker
+map. SDK selection is explicit through the Visual Studio environment and Cargo's linker.
+The bin build script watches the native-tool fingerprint so an SDK/linker update triggers a
+relink even with a warm Cargo cache. The wrapper refuses to label a build whose checkout changed
+during compilation. A failed build leaves no stale manifest.
+
+CI retains the manifest as an artifact; tagged releases also publish it beside the EXE/PDB,
+install it beside `tmr.exe`, and include it in `SHA256SUMS.txt`. The local archive checks the hashes before copying.
+`--release` still skips installer generation, uploads and publishing locally.
+
+The hash identifies an exact artifact; it is not a code-generation fingerprint. PE timestamps,
+PDB identities and build metadata can differ between equivalent rebuilds. The existing
+`asm_fingerprint.py` compares compiler output; it does not compare final linker placement.
+No timestamp stripping or reproducible-link flags are added.
 
 ## `hot_loop_spills.py`: what the hot loops do that they shouldn't
 

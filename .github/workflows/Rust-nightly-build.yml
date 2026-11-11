@@ -19,6 +19,10 @@ jobs:
       with:
         components: rustfmt, clippy
 
+    - name: Select the Windows SDK and C++ tools
+      shell: pwsh
+      run: ./tools/build_environment.ps1 -InstallSdk -GitHub
+
     - name: 🔧 Cache cargo dependencies
       uses: actions/cache@v6
       with:
@@ -32,6 +36,9 @@ jobs:
 
     - name: ✅ Check formatting
       run: cargo +nightly fmt --all -- --check
+
+    - name: Check the build tools
+      run: python -B -m unittest discover -s tools -p test_build_tools.py
 
     # The workspace (TODO 29): the engine, tmr.exe, the CLI and the window (a default feature), and
     # the engine's test-support, which only the CLI's tests turn on
@@ -50,7 +57,14 @@ jobs:
 
     # tmr.exe with both frontends, as release.yml builds it
     - name: 🚧 Build release version
-      run: cargo +nightly build --release
+      run: python tools/build_release.py
+
+    - name: Keep the build manifest
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-manifest
+        path: target/release/tmr.build.json
+        if-no-files-found: error
 
     - name: ⚙️ Install cargo-nextest and cargo-audit
       uses: taiki-e/install-action@v2

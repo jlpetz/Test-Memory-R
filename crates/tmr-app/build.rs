@@ -23,6 +23,9 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
+    // The shared release builder hashes its selected linker and SDK. A native-tool update must
+    // relink tmr.exe even when Cargo can reuse every Rust dependency.
+    println!("cargo::rerun-if-env-changed=TMR_NATIVE_BUILD_HASH");
     let dir = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
     // What the link takes from here is written to OUT_DIR, never named in the source tree: cargo moves a reused build's OUT_DIR with it,
     // and doesn't rewrite a source path (a moved checkout, or a worktree that shared the target dir, whose files have since gone)

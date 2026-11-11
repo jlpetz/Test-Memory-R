@@ -1,7 +1,7 @@
 """Run CI's steps here, with CI's own commands, so a failure shows before a push (the owner, 2026-11-03).
 
-The steps are read from the workflow file, not copied: every step whose `run:` is one `cargo` command
-runs, in the file's order, so the two can't drift. Steps that aren't one cargo command (the
+The steps are read from the workflow file, not copied: the single-line Cargo commands, build_release.py
+and build-tool unit checks run in the file's order. Other steps (the
 checkout, the toolchain, the cache, the tool installs, release.yml's PowerShell blocks) are listed
 as skipped. Like CI, it stops at the first step that fails (`--keep-going` runs the rest anyway).
 
@@ -10,8 +10,8 @@ as skipped. Like CI, it stops at the first step that fails (`--keep-going` runs 
     python tools/ci_local.py --list       # the steps, without running them
     python tools/ci_local.py --quick      # a change's check: fmt, clippy x3 and nextest only (about a minute)
 
-A full run that passes keeps its release exe in ../builds/<commit>/ (tmr.exe and tmr.pdb; `-dirty`
-when the tree had changes), so a live check or a deploy takes it from there instead of building again.
+A full run that passes keeps its EXE, PDB and manifest in ../builds/<commit>[-dirty]-<exe-hash>/,
+so a live check or deploy takes it from there and a new compiler cannot overwrite the old build.
 
 Needs what CI installs: the nightly with rustfmt and clippy, cargo-nextest and cargo-audit
 (`cargo install --locked cargo-nextest cargo-audit`; cargo-about too for release.yml's notices, which
@@ -20,36 +20,28 @@ this doesn't run). Exits 0 when every step passed.
 import argparse
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+from build_release import archive_build, native_environment
+
 REPO = Path(__file__).resolve().parent.parent
 WORKFLOWS = {False: REPO / ".github/workflows/Rust-nightly-build.yml", True: REPO / ".github/workflows/release.yml"}
 BUILDS = REPO.parent / "builds"
 # A change's check (--quick): what catches a code change, without the release build and the audit
-QUICK = (" fmt ", " clippy ", " nextest ")
+QUICK = (" fmt ", " clippy ", " nextest ", " unittest ")
 
 
 def keep_build():
-    """The release exe and its PDB, into BUILDS/<commit>[-dirty]/; the folder, or None when there's no exe."""
-    exe = REPO / "target/release/tmr.exe"
-    if not exe.exists():
-        return None
-    git = lambda *a: subprocess.run(["git", *a], cwd=REPO, capture_output=True, text=True).stdout.strip()
-    name = git("rev-parse", "--short", "HEAD") + ("-dirty" if git("status", "--porcelain", "--untracked-files=no") else "")
-    out = BUILDS / name
-    out.mkdir(parents=True, exist_ok=True)
-    for f in ("tmr.exe", "tmr.pdb"):
-        if (REPO / "target/release" / f).exists():
-            shutil.copy2(REPO / "target/release" / f, out / f)
-    return out
+    """Archive the exact EXE/PDB pair produced by the recorded release build."""
+    return archive_build(REPO / "target/release", BUILDS)
 
 
 def steps(path):
-    """(name, command or None) for each step of `path`'s first job, in order: the command when its `run:` is one cargo line."""
+    """The first job's Cargo, shared release-builder and build-tool check commands, in order."""
     out, name = [], None
     for line in path.read_text(encoding="utf-8").splitlines():
         if m := re.match(r"^\s*- name:\s*(.+?)\s*$", line):
@@ -58,7 +50,8 @@ def steps(path):
             name = m.group(1)
         elif name is not None and (m := re.match(r"^\s+run:\s*(.+?)\s*$", line)):
             command = m.group(1)
-            out.append((name, command if command.startswith("cargo ") else None))
+            supported = command.startswith(("cargo ", "python tools/build_release.py", "python -B -m unittest "))
+            out.append((name, command if supported else None))
             name = None
         elif re.match(r"^  [A-Za-z_-]+:\s*$", line) and out:
             # The next job (release.yml's crates-io, winget): its steps run only on a tag, not here
@@ -90,13 +83,15 @@ def main():
             print(f"  {'run ' if command else 'skip'}  {name}" + (f"\n          {command}" if command else ""))
         return 0
 
+    env, _ = native_environment()
+    env["CARGO_INCREMENTAL"] = "0"  # dtolnay/rust-toolchain does this in CI, including Clippy and tests.
     results = []
     for name, command in plan:
         if command is None:
             continue
         print(f"\n=== {name}\n$ {command}", flush=True)
         start = time.monotonic()
-        code = subprocess.run(shlex.split(command), cwd=REPO).returncode
+        code = subprocess.run(shlex.split(command), cwd=REPO, env=env).returncode
         results.append((name, code, time.monotonic() - start))
         if code != 0 and not args.keep_going:
             break
@@ -111,7 +106,7 @@ def main():
     failed = [r for r in results if r[1] != 0]
     if failed or ran < total:
         return 1
-    if not args.quick and not args.release and (kept := keep_build()):
+    if not args.quick and (kept := keep_build()):
         print(f"  kept: {kept}")
     return 0
 

@@ -24,6 +24,7 @@ tools' installer asks for it.
 | Git, the GitHub CLI | the repository; CI's runs and the releases (`gh run watch`) | winget `Git.Git`, `GitHub.cli` |
 | Python 3 | `tools\*.py` (the standard library only) | winget `Python.Python.3.13`, or any Python 3 already there |
 | The C++ build tools | the MSVC linker and the Windows SDK | any Visual Studio 2022 or later with the C++ tools; else winget `Microsoft.VisualStudio.BuildTools` with the VCTools workload |
+| Windows SDK 10.0.28000.2957 | the same SDK libraries locally and in CI; its directory is named 10.0.28000.0 | Microsoft's installer, with the version and checksum in `tools/windows_sdk.json`; `setup_dev.ps1` installs it when missing |
 | rustup, the nightly with rustfmt and clippy, as the default toolchain | the engine uses nightly features (`portable_simd`, the CLFLUSHOPT and AMX intrinsics); the nightly isn't pinned (CLAUDE.md), so CI builds with each new one | winget `Rustlang.Rustup` |
 | cargo-nextest, cargo-audit | CI's tests (a process a test) and its advisory check | `cargo install --locked` |
 | cargo-about | release.yml's third-party notices | `cargo install --locked` |
@@ -38,7 +39,9 @@ Windows Server 2022 doesn't ship winget: install App Installer first, or the lis
 - **Before a push:** `python tools\ci_local.py` runs CI's cargo steps with its commands, read from
   `.github/workflows/Rust-nightly-build.yml` (`--release`: release.yml's). What only CI does (the
   installer, the checksums, the upload, the crates.io and winget jobs) runs on a tag, in GitHub.
-- **Running it:** `cargo build --release -p test-memory-r`, then `.\target\release\tmr.exe`. A built
+- **Building for development testing:** `python tools/build_release.py --locked` builds locally and
+  records the compiler, SDK, settings and artifact hashes in `target/release/tmr.build.json`; it
+  does not wait for CI. Then `.\target\release\tmr.exe`. A built
   exe keeps its configs, results and logs beside itself; `$env:TMR_HOME = "$PWD"` keeps them in the
   repository's `results\` and `logs\`, which git ignores.
 - **Large pages:** `tmr.exe --setup-large-pages` from an elevated prompt once, then sign out and back in.
@@ -57,7 +60,8 @@ a lost machine loses them unless they are kept somewhere else:
   `..\*-test*\`;
 - `..\baselines\<date>\`, the hardware campaigns' results and logs, kept to compare a later build against (they
   carry machine IDs, so they stay out of git), with `..\hw-pass\`, the kit that runs a campaign (its `README.md`:
-  "Comparing a later run"), and `..\builds\<commit>\`, the exe and pdb of each passing `tools/ci_local.py` run;
+  "Comparing a later run"), and `..\builds\<commit>[-dirty]-<exe-hash>\`, the EXE, PDB and manifest of
+  each passing `tools/ci_local.py` run (older build directories remain where they were);
 - the agents' memory, in the user profile (`%USERPROFILE%\.claude\projects\<the repository's path>\memory\`).
 
 No secret is in the repository: the release's tokens are GitHub secrets.

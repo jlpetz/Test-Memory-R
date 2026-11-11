@@ -22,6 +22,13 @@ jobs:
       with:
         components: clippy
 
+    - name: Select the Windows SDK and C++ tools
+      shell: pwsh
+      run: ./tools/build_environment.ps1 -InstallSdk -GitHub
+
+    - name: Check the build tools
+      run: python -B -m unittest discover -s tools -p test_build_tools.py
+
     # A tag that isn't the workspace's version would ship a tmr.exe that names another (TODO 104)
     - name: 🏷️ Check the tag is the version
       shell: pwsh
@@ -59,7 +66,7 @@ jobs:
 
     # The one tmr.exe, the console and the window (a default feature, the owner's: one download, not two)
     - name: 🚧 Build release binary
-      run: cargo +nightly build --release --locked
+      run: python tools/build_release.py --locked
 
     # What the installer installs (dist/tmr.iss): tmr.exe; docs\, the guide, the licences and the third-party notices; configs\, its
     # README and the two demo configs, which tmr.exe writes into the home TMR_HOME names (the runner's CPU passes its startup check)
@@ -69,6 +76,7 @@ jobs:
         $stage = "target\stage"
         New-Item -ItemType Directory -Force "$stage\docs", "$stage\configs" | Out-Null
         Copy-Item target\release\tmr.exe $stage
+        Copy-Item target\release\tmr.build.json $stage
         Copy-Item dist\docs\* "$stage\docs" -Recurse
         Copy-Item LICENSE-MIT, LICENSE-APACHE "$stage\docs"
         cargo about generate --config dist\about.toml --manifest-path crates\tmr-app\Cargo.toml --output-file "$stage\docs\THIRD-PARTY-NOTICES.html" dist\about.hbs
@@ -102,7 +110,7 @@ jobs:
     - name: 🔢 Checksums
       shell: pwsh
       run: |
-        $files = "target\release\tmr.exe", "target\release\tmr.pdb", "target\installer\tmr-$env:VERSION-setup.exe", "target\stage\docs\THIRD-PARTY-NOTICES.html"
+        $files = "target\release\tmr.exe", "target\release\tmr.pdb", "target\release\tmr.build.json", "target\installer\tmr-$env:VERSION-setup.exe", "target\stage\docs\THIRD-PARTY-NOTICES.html"
         $files | ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $(Split-Path $_ -Leaf)" } | Set-Content target\SHA256SUMS.txt
         Get-Content target\SHA256SUMS.txt
         Get-Content target\SHA256SUMS.txt | Out-File -Append $env:GITHUB_STEP_SUMMARY
@@ -122,6 +130,7 @@ jobs:
           target/installer/tmr-${{ env.VERSION }}-setup.exe
           target/release/tmr.exe
           target/release/tmr.pdb
+          target/release/tmr.build.json
           target/stage/docs/THIRD-PARTY-NOTICES.html
           target/SHA256SUMS.txt
       env:

@@ -87,6 +87,19 @@ if (-not $cpp -and -not $Check) {
 }
 Report 'C++ build tools' ([bool]$cpp) $(if ($cpp) { $cpp } else { 'winget Microsoft.VisualStudio.BuildTools, the C++ workload' })
 
+# CI and local release builds select one serviced SDK; the C++ workload alone may install another.
+$sdk = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'windows_sdk.json') -Raw | ConvertFrom-Json
+$sdkRoot = Get-ItemPropertyValue -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -Name KitsRoot10 -ErrorAction SilentlyContinue
+$sdkRc = if ($sdkRoot) { Join-Path $sdkRoot "bin\$($sdk.directory_version)\x64\rc.exe" } else { '' }
+$sdkThere = $sdkRc -and (Test-Path -LiteralPath $sdkRc) -and
+    (Get-Item -LiteralPath $sdkRc).VersionInfo.FileVersion.Split(' ')[0] -eq $sdk.file_version
+if (-not $sdkThere -and -not $Check) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build_environment.ps1') -InstallSdk
+    if ($LASTEXITCODE -ne 0) { throw 'The matching Windows SDK could not be installed.' }
+    $sdkThere = $true
+}
+Report 'Windows SDK' ([bool]$sdkThere) $sdk.file_version
+
 # rustup and the nightly, the default toolchain: CLAUDE.md's commands call plain cargo, and the engine needs nightly features
 if (-not (Have 'rustup') -and -not $Check) { WingetInstall 'Rustlang.Rustup' @(); RefreshPath }
 $rustup = Have 'rustup'
