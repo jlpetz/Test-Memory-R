@@ -16,6 +16,18 @@ pub const FILE_ONLY_TARGET: &str = "tmr::file_only";
 /// Info level.
 pub const SHOWN_TARGET: &str = "tmr::shown";
 
+/// `SHOWN_TARGET`, but for a line that took no real time to produce (TODO 125, the owner 2026-11-11: the allocation plan's own two
+/// lines, computed before anything is asked of the OS). Shown with no `[HH:MM:SS]`, its text alone (`shown_line`): a stamp on an
+/// instant calculation says nothing a reader needs, unlike the allocator's own lines, which span real seconds and whose stamps let you
+/// read how long each OS call took. The log file still times it with every record there, as `write`'s header line already says.
+pub const INSTANT_TARGET: &str = "tmr::shown_instant";
+
+/// Whether `target` is one of the run's own lines, shown specially by a frontend (`shown_line`) rather than as a generic
+/// `[stamp LEVEL module] message` record: `SHOWN_TARGET`'s stamped, `INSTANT_TARGET`'s not.
+pub fn is_shown_target(target: &str) -> bool {
+    target == SHOWN_TARGET || target == INSTANT_TARGET
+}
+
 /// The run's log file, once `open` has created it, until `close` (TODO 109: a file a run, so a session after another has its own)
 static FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 
@@ -55,13 +67,13 @@ impl Levels {
 
     /// Whether `record` goes to the log file
     pub fn to_file(&self, record: &log::Record) -> bool {
-        record.level() <= self.file || record.target() == SHOWN_TARGET
+        record.level() <= self.file || is_shown_target(record.target())
     }
 
-    /// Whether a frontend shows `record` as a record (`[stamp LEVEL module] message`); `SHOWN_TARGET`'s it shows as `shown_line`, and
-    /// `FILE_ONLY_TARGET`'s not at all
+    /// Whether a frontend shows `record` as a record (`[stamp LEVEL module] message`); `SHOWN_TARGET`'s and `INSTANT_TARGET`'s it
+    /// shows as `shown_line` instead, and `FILE_ONLY_TARGET`'s not at all
     pub fn shows(&self, record: &log::Record) -> bool {
-        record.level() <= self.shown && record.target() != SHOWN_TARGET && record.target() != FILE_ONLY_TARGET
+        record.level() <= self.shown && !is_shown_target(record.target()) && record.target() != FILE_ONLY_TARGET
     }
 
     /// How the run's output says it, after the log file's path: `RUST_LOG`'s value, or what a frontend shows without it
@@ -90,9 +102,13 @@ pub fn levels() -> Levels {
     Levels { file: parsed.unwrap_or(log::LevelFilter::Info), shown: parsed.unwrap_or(shown_by_default), rust_log }
 }
 
-/// A `SHOWN_TARGET` record as a frontend shows it: its time and its text
+/// A `SHOWN_TARGET` or `INSTANT_TARGET` record as a frontend shows it: `SHOWN_TARGET`'s time and its text, `INSTANT_TARGET`'s text alone
 pub fn shown_line(record: &log::Record) -> String {
-    format!("[{}] {}", chrono::Local::now().format("%H:%M:%S"), record.args())
+    if record.target() == INSTANT_TARGET {
+        record.args().to_string()
+    } else {
+        format!("[{}] {}", chrono::Local::now().format("%H:%M:%S"), record.args())
+    }
 }
 
 /// Whether the run's log file is open, so a line naming it names a file that's there
@@ -252,9 +268,9 @@ mod tests {
         assert!(!super::wanted(&args(&["tmr", "--version"])));
     }
 
-    /// TODO 105: a release build's frontend shows warnings and up, the log file takes info; the run's own lines (`SHOWN_TARGET`) go to
-    /// both whatever the levels, shown as their time and text, not as a record; a file-only record is never shown; a logger lets through
-    /// at least info, which the run's own lines are
+    /// TODO 105: a release build's frontend shows warnings and up, the log file takes info; the run's own lines (`SHOWN_TARGET` and
+    /// `INSTANT_TARGET`) go to both whatever the levels, shown as a line, not as a record; a file-only record is never shown; a logger
+    /// lets through at least info, which the run's own lines are
     #[test]
     fn the_file_takes_info_and_a_frontend_shows_warnings_and_the_runs_own_lines() {
         use log::{Level, LevelFilter, Record};
@@ -267,12 +283,26 @@ mod tests {
         assert_eq!(check(Level::Warn, "tmr::runner"), (true, true), "a warning: both");
         assert_eq!(check(Level::Debug, "tmr::runner"), (false, false), "debug: neither");
         assert_eq!(check(Level::Info, super::SHOWN_TARGET), (false, true), "the run's own line: the file's, and shown as a line");
+        assert_eq!(check(Level::Info, super::INSTANT_TARGET), (false, true), "an instant one: the same, just no stamp when shown");
         assert_eq!(check(Level::Warn, super::FILE_ONLY_TARGET), (false, true), "file only");
         assert_eq!(levels.most(), LevelFilter::Info);
         let quiet = super::Levels { rust_log: Some("warn".to_string()), file: LevelFilter::Warn, shown: LevelFilter::Warn };
         assert_eq!((quiet.most(), quiet.described()), (LevelFilter::Info, "RUST_LOG=warn".to_string()), "still the run's own lines");
         let record = Record::builder().level(Level::Info).target(super::SHOWN_TARGET).args(format_args!("✅ granted")).build();
         assert!(super::shown_line(&record).ends_with("] ✅ granted"), "{}", super::shown_line(&record));
+    }
+
+    /// TODO 125: `INSTANT_TARGET`'s line is its text alone, no `[HH:MM:SS]` (the allocation plan's two lines, computed before anything
+    /// is asked of the OS, where a stamp would say nothing); `is_shown_target` catches both of the run's own targets, nothing else
+    #[test]
+    fn an_instant_line_has_no_stamp() {
+        use log::{Level, Record};
+        let record = Record::builder().level(Level::Info).target(super::INSTANT_TARGET).args(format_args!("Total allocation: ...")).build();
+        assert_eq!(super::shown_line(&record), "Total allocation: ...", "no leading [HH:MM:SS]");
+        assert!(super::is_shown_target(super::SHOWN_TARGET));
+        assert!(super::is_shown_target(super::INSTANT_TARGET));
+        assert!(!super::is_shown_target(super::FILE_ONLY_TARGET));
+        assert!(!super::is_shown_target("tmr::runner"));
     }
 
     /// The transcript leaves the console's colours out, and keeps the rest as it was, a line's emoji and its breaks

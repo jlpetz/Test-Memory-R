@@ -449,9 +449,10 @@ impl AllocationMode {
         let allocation_bytes = per_thread_bytes * thread_count as u64;
         let reserve_bytes = reference_bytes.saturating_sub(allocation_bytes);
 
-        // The run's own output (TODO 105): how the size came about matters to whoever reads the run
+        // The run's own output (TODO 105): how the size came about matters to whoever reads the run. INSTANT_TARGET, not SHOWN_TARGET
+        // (TODO 125): this is computed before anything is asked of the OS, so a [HH:MM:SS] stamp on it would say nothing.
         log::info!(
-            target: crate::logfile::SHOWN_TARGET,
+            target: crate::logfile::INSTANT_TARGET,
             "Thread-aware allocation: {} threads × {:.3} GiB → rounded {} to {:.3} GiB each ({} MiB step)",
             thread_count,
             bytes_to_gib_f64(per_thread_raw_bytes),
@@ -460,7 +461,7 @@ impl AllocationMode {
             used.step_bytes / BYTES_PER_MIB
         );
         log::info!(
-            target: crate::logfile::SHOWN_TARGET,
+            target: crate::logfile::INSTANT_TARGET,
             "Total allocation: {:.3} GiB → {:.3} GiB; reserve {:.3} GiB requested, {:.3} GiB left",
             bytes_to_gib_f64(base_allocation_bytes),
             bytes_to_gib_f64(allocation_bytes),

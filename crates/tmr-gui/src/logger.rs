@@ -138,7 +138,7 @@ impl Log for GuiLogger {
         let alarm = record.level() <= Level::Warn && record.target() != tmr::logfile::FILE_ONLY_TARGET;
         // The Log tab shows what the console would (TODO 105): the run's own lines as their time and text, the records at its level, a
         // warning in the errors list whatever the level
-        let text = if record.target() == tmr::logfile::SHOWN_TARGET {
+        let text = if tmr::logfile::is_shown_target(record.target()) {
             tmr::logfile::shown_line(record)
         // The file-only records too (the WHEA lines, which the console shows through its ticker): the window has no ticker
         } else if record.level() <= self.levels.shown || alarm {

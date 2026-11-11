@@ -188,7 +188,7 @@ fn setup_logging(log_file: bool) {
             // Write to console with original env_logger format. `LogSink` below prints it above the progress ticker, so the two never
             // merge. A record the console doesn't show writes nothing here, and `LogSink` drops an empty write; one of the run's own
             // lines shows as its time and its text (TODO 105).
-            let console_result = if record.target() == tmr::logfile::SHOWN_TARGET {
+            let console_result = if tmr::logfile::is_shown_target(record.target()) {
                 writeln!(buf, "{}", tmr::logfile::shown_line(record))
             } else if !shown.shows(record) {
                 Ok(())
