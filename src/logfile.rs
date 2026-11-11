@@ -198,19 +198,35 @@ pub fn without_colours(text: &str) -> String {
     out
 }
 
-/// Adds `record`'s line to the log file, without colours, when there is one.
+/// Adds `record`'s lines to the log file, without colours, when there is one: each its prefix (`prefixed`), in one write.
 pub fn write(record: &log::Record) {
     if let Some(file) = file().as_mut() {
-        let _ = writeln!(
-            file,
-            "[{} {} {}] {}",
+        let prefix = format!(
+            "[{} {} {}]",
             chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
             record.level(),
-            record.module_path().unwrap_or("unknown"),
-            record.args()
+            record.module_path().unwrap_or("unknown")
         );
+        let _ = file.write_all(prefixed(&prefix, &record.args().to_string()).as_bytes());
         let _ = file.flush();
     }
+}
+
+/// `text` with `prefix` and a space before each of its lines, each line ended: a record of several lines (a rescan's, TODO 105) reads
+/// as that many records did, one prefix a line, in the log file, on the console and in the window's Log tab. An empty text is one line.
+pub fn prefixed(prefix: &str, text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2 * (prefix.len() + 2));
+    for line in text.lines() {
+        out.push_str(prefix);
+        out.push(' ');
+        out.push_str(line);
+        out.push('\n');
+    }
+    if out.is_empty() {
+        out.push_str(prefix);
+        out.push_str(" \n");
+    }
+    out
 }
 
 #[cfg(test)]

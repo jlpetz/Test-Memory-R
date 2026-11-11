@@ -142,19 +142,18 @@ impl Log for GuiLogger {
             tmr::logfile::shown_line(record)
         // The file-only records too (the WHEA lines, which the console shows through its ticker): the window has no ticker
         } else if record.level() <= self.levels.shown || alarm {
-            format!(
-                "[{} {} {}] {}",
-                chrono::Local::now().format("%H:%M:%S"),
-                record.level(),
-                record.module_path().unwrap_or("unknown"),
-                record.args()
-            )
+            // Each line of a record its prefix (`tmr::logfile::prefixed`), and its own line in the tab: a rescan's lines are one record
+            let prefix =
+                format!("[{} {} {}]", chrono::Local::now().format("%H:%M:%S"), record.level(), record.module_path().unwrap_or("unknown"));
+            tmr::logfile::prefixed(&prefix, &record.args().to_string())
         } else {
             return;
         };
-        // Disconnected only once the window has gone, and then there is nothing to show
-        if let Err(TrySendError::Full(_)) = self.lines.try_send(LogLine { text, alarm }) {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+        for line in text.lines() {
+            // Disconnected only once the window has gone, and then there is nothing to show
+            if let Err(TrySendError::Full(_)) = self.lines.try_send(LogLine { text: line.to_string(), alarm }) {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 

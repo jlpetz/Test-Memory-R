@@ -193,9 +193,9 @@ fn setup_logging(log_file: bool) {
             } else if !shown.shows(record) {
                 Ok(())
             } else {
-                writeln!(
-                    buf,
-                    "\x1b[{}m[{} {} {}]\x1b[0m {}",
+                // Each line of a record its prefix (`tmr::logfile::prefixed`): a rescan's lines are one record (TODO 105)
+                let prefix = format!(
+                    "\x1b[{}m[{} {} {}]\x1b[0m",
                     match record.level() {
                         log::Level::Error => "31", // Red
                         log::Level::Warn => "33",  // Yellow
@@ -208,9 +208,9 @@ fn setup_logging(log_file: bool) {
                     // once in the log file's header for anything that gets archived. Matches the file format.
                     chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
                     record.level(),
-                    record.module_path().unwrap_or("unknown"),
-                    record.args()
-                )
+                    record.module_path().unwrap_or("unknown")
+                );
+                buf.write_all(tmr::logfile::prefixed(&prefix, &record.args().to_string()).as_bytes())
             };
 
             // Also write to file without colors

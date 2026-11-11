@@ -328,15 +328,16 @@ impl log::Log for Logger {
         };
         // As env_logger strips the escapes when stdout isn't a console (`WriteStyle::Never`)
         let (colour, reset) = if crate::console::is_console() { (format!("\x1b[{colour}m"), "\x1b[0m") } else { (String::new(), "") };
-        crate::console::print_above(&format!(
-            "{}[{} {} {}]{} {}\n",
+        // Each line of a record its prefix, as the CLI's logger gives it (`tmr::logfile::prefixed`): a rescan's lines are one record
+        let prefix = format!(
+            "{}[{} {} {}]{}",
             colour,
             chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
             record.level(),
             record.module_path().unwrap_or("unknown"),
-            reset,
-            record.args()
-        ));
+            reset
+        );
+        crate::console::print_above(&tmr::logfile::prefixed(&prefix, &record.args().to_string()));
     }
 
     fn flush(&self) {}

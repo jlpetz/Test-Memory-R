@@ -3675,6 +3675,19 @@ pub(crate) struct Rescan {
     suspects: [(usize, u64); REREAD_WORDS as usize],
     /// The bad words' bits, by the way each went
     words: crate::failing_bits::WordTally,
+    /// The rescan's lines, its bad words', its rereads' and its record's, logged as one record when it finishes (`finish`): one take of
+    /// the log file's lock and the console's a failed check, not one a line (TODO 105). Each line keeps its own prefix there
+    /// (`logfile::prefixed`), so the log reads as it did.
+    lines: String,
+}
+
+/// Adds a line to a rescan's `lines`
+fn push_line(lines: &mut String, line: std::fmt::Arguments) {
+    use std::fmt::Write;
+    if !lines.is_empty() {
+        lines.push('\n');
+    }
+    let _ = lines.write_fmt(line);
 }
 
 impl Rescan {
@@ -3701,6 +3714,7 @@ impl Rescan {
             count,
             suspects: [(0, 0); REREAD_WORDS as usize],
             words: Default::default(),
+            lines: String::new(),
         }
     }
 
@@ -3773,11 +3787,14 @@ impl Rescan {
         let at = self.ptr.add(idx);
         if self.found <= RESCAN_LOGGED {
             let diff = want ^ actual;
-            log::error!(
-                "{}, idx {idx} (address {:#x}): expected {want:#x}, got {actual:#x}, XOR {diff:#018x} ({} bits)",
-                self.lead,
-                at as usize,
-                diff.count_ones()
+            push_line(
+                &mut self.lines,
+                format_args!(
+                    "{}, idx {idx} (address {:#x}): expected {want:#x}, got {actual:#x}, XOR {diff:#018x} ({} bits)",
+                    self.lead,
+                    at as usize,
+                    diff.count_ones()
+                ),
             );
         }
         if self.reread && self.found <= REREAD_WORDS {
@@ -3787,7 +3804,7 @@ impl Rescan {
 
     /// Rereads the first bad words, after the scan: `REREADS` times each, then once after flushing its line. Neither tells where the fault
     /// is: a reread can hit a cached copy of a bad read, and the flush writes back a dirty line first.
-    unsafe fn reread(&self) {
+    unsafe fn reread(&mut self) {
         let suspects = &self.suspects[..self.found.min(REREAD_WORDS) as usize];
         RESCANS.with(|c| {
             let mut n = c.get();
@@ -3807,13 +3824,16 @@ impl Rescan {
         for (&(idx, want), still) in suspects.iter().zip(still) {
             let after = std::ptr::read_volatile(self.ptr.add(idx));
             let after = if after == want { "right".to_string() } else { format!("wrong ({after:#x})") };
-            log::error!("{}, idx {idx}: {still} of {REREADS} rereads still wrong; after flushing its line, {after}", self.lead);
+            push_line(
+                &mut self.lines,
+                format_args!("{}, idx {idx}: {still} of {REREADS} rereads still wrong; after flushing its line, {after}", self.lead),
+            );
         }
     }
 
     /// The bad words found, which the caller counts as errors; or one if none was, since the check saw a difference. `what` names the
     /// region and the pattern (`in idx 0..512 (random-~P, ...)`). Every failed check leaves this one record, whatever the rescan found.
-    pub(crate) fn finish(self, what: std::fmt::Arguments) -> u64 {
+    pub(crate) fn finish(mut self, what: std::fmt::Arguments) -> u64 {
         if self.reread && self.found > 0 {
             // SAFETY: the suspects are words of the region the scan just read
             unsafe { self.reread() };
@@ -3824,7 +3844,9 @@ impl Rescan {
         bits.add_check(if self.seen != 0 { self.seen } else { self.found_xor });
         bits.add_words(&self.words);
         note_bits(self.count, &bits);
-        log::error!("{} {what}: {}", self.lead, alarm_record(self.found, self.seen, self.found_xor));
+        push_line(&mut self.lines, format_args!("{} {what}: {}", self.lead, alarm_record(self.found, self.seen, self.found_xor)));
+        // The whole rescan, as one record (`lines`)
+        log::error!("{}", self.lines);
         if self.found > 0 {
             return self.found;
         }
