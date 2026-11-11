@@ -773,6 +773,10 @@ pub struct SweepProbe {
 /// (`loaded_reach`) both (TODO 116)
 const L3_CLIMB: f64 = 1.25;
 
+/// How far past the L3's plateau an L3 edge's latency before it may be and still be the L3's edge (`checked_l3_edge`, TODO 116): on the
+/// dev box the right edges read 1.17x, the one taken in the climb 2.55x
+const L3_EDGE_PAST: f64 = 2.0;
+
 /// Result from a fine-grain probe with multiple repeats at a single size
 #[derive(Clone, Debug)]
 pub struct FineProbe {
@@ -1485,13 +1489,9 @@ impl CalibrationTest {
             (!samples.is_empty()).then(|| StatisticsAnalyzer::analyze(&samples))
         };
         let sweep_results = self.run_sweep(&mut probe, (l1_size / 4).max(4096), (l3_size * 4).min(max_working_set), "Sweep, one thread");
-        let mut tipping_points = self.find_tipping_points(&sweep_results);
-        // The L1's and the L2's edges but no L3's: a gradual one, where no step reaches 1.4x over the three before it
-        if tipping_points.len() == 2
-            && let Some(edge) = Self::find_gradual_edge(&sweep_results, tipping_points[1].0)
-        {
-            tipping_points.push(edge);
-        }
+        // The L3's edge checked: a gradual one where no step reaches 1.4x over the three before it, or where the step found is already
+        // past the L3 (`checked_l3_edge`)
+        let tipping_points = Self::checked_l3_edge(&sweep_results, self.find_tipping_points(&sweep_results));
 
         for (size, lat_before, lat_after) in &tipping_points {
             log::info!(target: SHOWN_TARGET,
@@ -1878,6 +1878,43 @@ impl CalibrationTest {
 
         log::info!(target: SHOWN_TARGET, "Sweep complete: {} probes collected", results.len());
         results
+    }
+
+    /// Anchor A's L3 edge, checked (TODO 116): a found edge whose latency before it is already `L3_EDGE_PAST` times the L3's plateau
+    /// (`l3_plateau`) isn't the L3's but a step of the climb to DRAM after it, and is dropped; then, with no L3 edge, the gradual one
+    /// (`find_gradual_edge`). On the dev box (2026-11-10) the step test missed one run's edge by a hair, 1.398x against its 1.4x, and took
+    /// 158.5 MB at 80.9 ns for it, 2.55x the L3's 31.7 ns; the edges it found right read 1.17x.
+    fn checked_l3_edge(sweep: &[SweepProbe], mut tipping_points: Vec<(usize, f64, f64)>) -> Vec<(usize, f64, f64)> {
+        if let [_, l2, l3, ..] = tipping_points[..]
+            && let Some(plateau) = Self::l3_plateau(sweep, l2.0, l3.0)
+            && l3.1 >= L3_EDGE_PAST * plateau
+        {
+            log::info!(target: SHOWN_TARGET,
+                "  Tipping point at {}: {:.1}ns before it, {:.1}x the L3's {:.1}ns, is past the L3; its edge is a gradual one",
+                format_size(l3.0),
+                l3.1,
+                l3.1 / plateau,
+                plateau
+            );
+            tipping_points.truncate(2);
+        }
+        if tipping_points.len() == 2
+            && let Some(edge) = Self::find_gradual_edge(sweep, tipping_points[1].0)
+        {
+            tipping_points.push(edge);
+        }
+        tipping_points
+    }
+
+    /// The L3's plateau for A's edge check (TODO 116): the median latency of the sweep's probes from three times the L2's edge (where the
+    /// gradual rule starts) up to the L3 edge found; none with fewer than three
+    fn l3_plateau(sweep: &[SweepProbe], l2_edge: usize, l3_edge: usize) -> Option<f64> {
+        let mut inside: Vec<f64> = sweep.iter().filter(|p| p.size >= 3 * l2_edge && p.size < l3_edge).map(|p| p.median_ns).collect();
+        if inside.len() < 3 {
+            return None;
+        }
+        inside.sort_by(f64::total_cmp);
+        Some(inside[inside.len() / 2])
     }
 
     /// A gradual edge past `after` (the L2's), for anchor A when `find_tipping_points` finds no L3 edge (TODO 22): the first probe reading
@@ -2712,6 +2749,45 @@ mod tests {
         let unsteady_top = [(80, 37.0, true), (110, 37.5, true), (157, 38.0, false)];
         assert_eq!(pick(&unsteady_top), Some(110));
         assert_eq!(pick(&[]), None);
+    }
+
+    /// TODO 116: an L3 edge past the L3 is dropped, the gradual one taken. Two sweeps of the dev box (2026-11-10), each probe's size (MB)
+    /// and median (ns): the one whose step test missed the edge (68.5 MB, 1.398x) and took 158.5 MB in the climb, at 2.55x its plateau,
+    /// now takes the gradual edge, 45.1 MB, the last before the climb; the other's 59.6 MB, at 1.19x, stands
+    #[test]
+    fn an_l3_edge_past_the_l3_is_dropped() {
+        let sweep = |points: &[(f64, f64)]| -> Vec<SweepProbe> {
+            points
+                .iter()
+                .map(|&(mb, ns)| SweepProbe { size: (mb * 1048576.0) as usize, median_ns: ns, spread: 1.05, window_stddev: 0.0 })
+                .collect()
+        };
+        let mb = |mb: f64| (mb * 1048576.0) as usize;
+        #[rustfmt::skip]
+        let missed = sweep(&[
+            (1.8, 4.1), (2.1, 5.8), (2.4, 10.7), (2.8, 14.1), (3.2, 17.0), (3.6, 19.3), (4.2, 21.2), (4.8, 23.0), (5.5, 24.3), (6.4, 25.4),
+            (7.3, 26.4), (8.4, 27.3), (9.7, 28.0), (11.1, 28.8), (12.8, 29.4), (14.7, 29.8), (16.9, 30.3), (19.5, 30.9), (22.4, 31.1),
+            (25.8, 31.4), (29.6, 31.7), (34.1, 33.1), (39.2, 33.9), (45.1, 32.6), (51.8, 35.6), (59.6, 37.5), (68.5, 49.2), (78.8, 50.1),
+            (90.6, 62.8), (104.2, 62.0), (119.9, 68.5), (137.8, 80.2), (158.5, 93.9), (182.3, 114.0), (209.6, 128.4), (241.1, 116.0),
+        ]);
+        #[rustfmt::skip]
+        let found = sweep(&[
+            (1.8, 4.2), (2.1, 6.1), (2.4, 11.0), (2.8, 14.4), (3.2, 17.2), (3.6, 19.4), (4.2, 21.3), (4.8, 22.9), (5.5, 24.3), (6.4, 25.5),
+            (7.3, 26.5), (8.4, 27.4), (9.7, 28.1), (11.1, 28.7), (12.8, 29.3), (14.7, 29.8), (16.9, 30.3), (19.5, 30.7), (22.4, 31.0),
+            (25.8, 31.3), (29.6, 31.7), (34.1, 32.0), (39.2, 32.6), (45.1, 33.3), (51.8, 38.5), (59.6, 34.7), (68.5, 50.9), (78.8, 77.4),
+            (90.6, 75.1), (104.2, 91.9), (119.9, 118.6), (137.8, 116.4), (158.5, 117.8), (182.3, 116.3), (209.6, 118.7), (241.1, 126.1),
+        ]);
+        let tips = |l3: (f64, f64, f64)| vec![(56 << 10, 1.5, 2.2), (mb(1.8), 4.1, 5.8), (mb(l3.0), l3.1, l3.2)];
+        let l3_mb = |tips: Vec<(usize, f64, f64)>| tips.get(2).map(|&(size, ..)| (size as f64 / 1048576.0 * 10.0).round() / 10.0);
+        let plateau = CalibrationTest::l3_plateau(&missed, mb(1.8), mb(158.5)).expect("a plateau");
+        assert!((80.9 / plateau - 2.55).abs() < 0.01, "{plateau}");
+        assert_eq!(l3_mb(CalibrationTest::checked_l3_edge(&missed, tips((158.5, 80.9, 114.0)))), Some(45.1));
+        assert_eq!(l3_mb(CalibrationTest::checked_l3_edge(&found, tips((59.6, 35.5, 50.9)))), Some(59.6));
+        assert_eq!(
+            l3_mb(CalibrationTest::checked_l3_edge(&found, tips((59.6, 35.5, 50.9))[..2].to_vec())),
+            Some(45.1),
+            "none found: gradual"
+        );
     }
 
     /// TODO 22: a gradual L3 edge, from two sweeps of the m8i.metal-48xl (2026-11-05) past its L2 edge at 1.8 MB, each probe's size (MB)
