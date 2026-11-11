@@ -129,25 +129,28 @@ struct Fixed {
 /// The fixed builds (TODO 123): the earliest revision (UBR) of each line and build that carries Microsoft's fix for CVE-2026-119965,
 /// the vulnerability TMR reported (Elevation of Privilege, Important;
 /// <https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-119965>, published 2026-11-10). Taken from the CVE's own affected-
-/// product list, each row the lowest `fixedBuildNumber` among the KBs that apply to that line and build (a later KB's higher revision
-/// still has the fix, so only the lowest matters here); not from our own repro, the owner's call 2026-11-11, the CVE being Microsoft's
-/// confirmation of the exact issue reported rather than an unrelated announcement. It is the one switch between the methods (TMR-APP
-/// CLAUDE.md). A build or line the CVE doesn't name (28000/26H1; anything before 23H2 or Server 2022) stays free-then-allocate at any
-/// revision: absence here is "not proven fixed", not "not affected".
+/// product list, each row the lowest `fixedBuildNumber` among the KBs that apply to that line and build. Several lines list two KBs,
+/// both shipped the same day: a Hotpatch update (applies the fix without a reboot, needs a specific baseline already installed, a
+/// narrower opt-in track) at the lower revision, and the regular monthly cumulative update everyone else gets at a higher one. Both are
+/// in the CVE's own per-build fix list, so the lower number is still a correct floor: a box on either track reads at or past it once
+/// fixed, and the two tracks' revisions don't interleave, so there is no in-between number that is unpatched but looks fixed. Not from
+/// our own repro, the owner's call 2026-11-11: the CVE is Microsoft's confirmation of the exact issue reported, not an announcement. It
+/// is the one switch between the methods (TMR-APP CLAUDE.md). A build or line the CVE doesn't name (28000/26H1; anything before 23H2 or
+/// Server 2022) stays free-then-allocate at any revision: absence here is "not proven fixed", not "not affected".
 const REPLACE_FIXED: &[Fixed] = &[
-    // Windows 11 24H2, client, build 26100: KB5132043 (26100.9911); KB5132061 (26100.9974) is the same fix, later.
+    // Windows 11 24H2, client, build 26100: KB5132043 (26100.9911, Hotpatch); KB5132061 (26100.9974, the LCU) is the other track.
     Fixed { server: false, build: 26100, revision: 9911 },
-    // Windows 11 25H2, client, build 26200: KB5132043 (26200.9911).
+    // Windows 11 25H2, client, build 26200: KB5132043 (26200.9911, Hotpatch); KB5132061 (26200.9974, the LCU).
     Fixed { server: false, build: 26200, revision: 9911 },
-    // Windows 11 26H2, client, build 26300: KB5132043 (26300.9911).
+    // Windows 11 26H2, client, build 26300: KB5132043 (26300.9911, Hotpatch); KB5132061 (26300.9974, the LCU).
     Fixed { server: false, build: 26300, revision: 9911 },
-    // Windows 11 23H2, client, build 22631: KB5131087 (22631.7711).
+    // Windows 11 23H2, client, build 22631: KB5131087 (22631.7711). No Hotpatch track for this build.
     Fixed { server: false, build: 22631, revision: 7711 },
-    // Windows Server 2025 (and its Server Core install, same InstallationType family), build 26100: KB5131077 (26100.33730); KB5131080
-    // (26100.33822) is the same fix, later. Independent of the client row above: this dev box read 26100.33650 on 2026-11-09, past any
-    // client revision but before this one, which is exactly why the line is kept apart (TODO 123's note on the two tracks).
+    // Windows Server 2025 (and its Server Core install, same InstallationType family), build 26100: KB5131077 (26100.33730, Hotpatch);
+    // KB5131080 (26100.33822, the LCU) is the other track. Independent of the client row above: this dev box read 26100.33650 on
+    // 2026-11-09, past any client revision but before this one, which is exactly why the line is kept apart (TODO 123's two-track note).
     Fixed { server: true, build: 26100, revision: 33730 },
-    // Windows Server 2022 (and its Server Core install), build 20348: KB5131090 (20348.5870).
+    // Windows Server 2022 (and its Server Core install), build 20348: KB5131090 (20348.5870). No Hotpatch track for this build.
     Fixed { server: true, build: 20348, revision: 5870 },
 ];
 

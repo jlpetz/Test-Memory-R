@@ -52,16 +52,21 @@ Microsoft's fix shipped 2026-11-10 as a security update, Elevation of Privilege,
 stronger source than an announcement: it is Microsoft's own confirmation of the specific issue reported, not a general release note.
 The owner's call (2026-11-11): bake these in directly, rather than waiting on an on-box repro, which stays optional (below).
 
-Two KBs cover several lines; only the lower revision of the two matters, since a later KB carrying the same fix reads higher:
+Two KBs cover several lines — not one superseding the other, but two parallel servicing mechanisms shipped the same day, each
+confirmed (checked on their own KB pages, 2026-11-11) to fix this CVE: a **Hotpatch** update (applies the fix live, no reboot, needs
+baseline KB5127648 already installed — a narrower, opt-in track) at the lower revision, and the regular monthly **cumulative update
+(LCU)** everyone else gets at a higher one. Both are in the CVE's own per-build list, so the lower number is still the correct floor:
+a Hotpatch box settles at it, an LCU box passes through it on the way to the higher one, and the two tracks' numbers don't interleave,
+so there's no in-between revision that's unpatched but reads as fixed. 23H2 and Server 2022 have no Hotpatch track, hence one KB each.
 
-| Line | Build | Fixed from | Lower KB (used) | Higher KB (same fix, later) |
+| Line | Build | Fixed from | Hotpatch KB (used) | LCU KB (same fix, the default path) |
 |---|---|---|---|---|
 | Windows 11 24H2, client | 26100 | 9911 | KB5132043 | KB5132061 (9974) |
 | Windows 11 25H2, client | 26200 | 9911 | KB5132043 | KB5132061 (9974) |
 | Windows 11 26H2, client | 26300 | 9911 | KB5132043 | KB5132061 (9974) |
-| Windows 11 23H2, client | 22631 | 7711 | KB5131087 | — |
+| Windows 11 23H2, client | 22631 | 7711 | KB5131087 | — (no Hotpatch track for this build) |
 | Windows Server 2025, server | 26100 | 33730 | KB5131077 | KB5131080 (33822) |
-| Windows Server 2022, server | 20348 | 5870 | KB5131090 | — |
+| Windows Server 2022, server | 20348 | 5870 | KB5131090 | — (no Hotpatch track for this build) |
 
 This dev box's 26100.33650 (above) sits 80 revisions short of the server fix (33730): still unpatched, by the owner's choice (patching
 paused on purpose, so the unfixed state could still be read here). `REPLACE_FIXED` now carries all six rows (`src/memory/stitched.rs`,
@@ -83,3 +88,16 @@ triggered (its FINDINGS.md: E5 bugchecked Server 2025 26100.33438 with `0x139_e_
 to run, not something to do from here. With the CVE's own fixed-build numbers now in `REPLACE_FIXED`, it would only be for extra
 confidence, not for the table to be trustworthy: a crash-then-patch-then-clean-run cycle on the US VM, if the owner wants it before
 trusting `Replace` on a freshly patched box.
+
+## TODO 124: no override; a visible warning instead (the owner, 2026-11-11)
+
+Asked whether TMR should let someone force the commit method (`commitmethod=`, say): no such parameter exists, and none is wanted.
+The only use for one would be forcing `Replace` on a build `REPLACE_FIXED` doesn't clear — which is just choosing to reproduce the
+bugcheck, no safer gated version of that makes sense. Decided instead: keep auto-selection as built, `FreeThenAllocate` the default
+when the build is below its line's fixed revision or isn't detected, and add a visible warning for that case (today's
+`stitched: commits by free-then-allocate: ...` line is `log::info!`, not shown on the console in a release build by default). Not
+built yet: the owner will crash a box with `../stitch-test/`'s `trigger=` manually first, before patching, then again after, to
+confirm the fix independently of the CVE reading before anything in the app leans on the table being right. Open when it's time:
+whether the warning covers both "build unknown" and "build known but unpatched" (the common, currently-universal case) or only the
+unknown case, since the latter is the normal, safe, no-slower-in-practice state for everyone until they patch, not obviously warning-
+worthy on every run.
