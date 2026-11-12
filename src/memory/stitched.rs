@@ -161,19 +161,40 @@ pub fn commit_method_for(os: Option<&crate::windows_version::WindowsVersion>) ->
 }
 
 /// `commit_method_for` against `fixed`, which the tests give their own. A row counts only for its own line, server or client.
+///
+/// `FreeThenAllocate`'s `String` is the complete warning TMR shows (TODO 124): three distinct messages, not merged, since
+/// "couldn't be read at all" and "read fine but not in our table" are different failures and only the second is a build/revision
+/// TMR can name. `Replace`'s stays a short fragment; its call site still wraps it, since a confirmed fix isn't warning-worthy.
 fn choose(os: Option<&crate::windows_version::WindowsVersion>, fixed: &[Fixed]) -> (CommitMethod, String) {
     let Some(os) = os else {
         return (
             CommitMethod::FreeThenAllocate,
-            "Windows' build is unknown, so the refused-replace bugcheck's fix is not known".to_string(),
+            "Windows' version couldn't be read, so CVE-2026-119965's fix status is unknown: using the free-then-allocate workaround, \
+             to avoid an OS bugcheck."
+                .to_string(),
         );
     };
     let line = if os.server { "server" } else { "client" };
-    let build = format!("{line} build {}.{}", os.build, os.revision);
     match fixed.iter().find(|row| row.server == os.server && row.build == os.build) {
-        Some(row) if os.revision >= row.revision => (CommitMethod::Replace, format!("{build} has the refused-replace bugcheck's fix")),
-        Some(row) => (CommitMethod::FreeThenAllocate, format!("{build} predates the bugcheck's fix ({}.{})", row.build, row.revision)),
-        None => (CommitMethod::FreeThenAllocate, format!("no fix for the refused-replace bugcheck is known for {build}")),
+        Some(row) if os.revision >= row.revision => {
+            (CommitMethod::Replace, format!("{line} build {}.{} has the refused-replace bugcheck's fix", os.build, os.revision))
+        }
+        Some(row) => (
+            CommitMethod::FreeThenAllocate,
+            format!(
+                "Windows build {}.{} predates CVE-2026-119965's fix (needs {}.{}+): using the free-then-allocate workaround, to avoid \
+                 an OS bugcheck.",
+                os.build, os.revision, row.build, row.revision
+            ),
+        ),
+        None => (
+            CommitMethod::FreeThenAllocate,
+            format!(
+                "Windows build {}.{} isn't in TMR's list for CVE-2026-119965 (a newer release?): using the free-then-allocate \
+                 workaround, to avoid an OS bugcheck.",
+                os.build, os.revision
+            ),
+        ),
     }
 }
 
@@ -1247,7 +1268,10 @@ pub fn chunk_allocate_stitched(
     request.large_floor = sizing.large_floor;
     let (method, why) = commit_method_for(crate::windows_version::WindowsVersion::detect());
     request.commit_method = method;
-    log::info!("stitched: commits by {}: {why}", method.label());
+    match method {
+        CommitMethod::Replace => log::info!("stitched: commits by {}: {why}", method.label()),
+        CommitMethod::FreeThenAllocate => log::warn!("{why}"),
+    }
     log::debug!(
         "Stitched: commits start at {} of 1 GiB pages and {} of 2 MiB pages, down to {}",
         size_label(request.huge_chunk),
@@ -1540,15 +1564,34 @@ mod tests {
         assert_eq!(choose(Some(&os(false, 26100, 9801)), &fixed).0, CommitMethod::Replace);
         assert_eq!(
             choose(Some(&os(false, 26100, 9725)), &fixed),
-            (CommitMethod::FreeThenAllocate, "client build 26100.9725 predates the bugcheck's fix (26100.9800)".to_string())
+            (
+                CommitMethod::FreeThenAllocate,
+                "Windows build 26100.9725 predates CVE-2026-119965's fix (needs 26100.9800+): using the free-then-allocate workaround, \
+                 to avoid an OS bugcheck."
+                    .to_string()
+            )
         );
         assert_eq!(
             choose(Some(&os(true, 26100, 33650)), &fixed),
-            (CommitMethod::FreeThenAllocate, "no fix for the refused-replace bugcheck is known for server build 26100.33650".to_string()),
+            (
+                CommitMethod::FreeThenAllocate,
+                "Windows build 26100.33650 isn't in TMR's list for CVE-2026-119965 (a newer release?): using the free-then-allocate \
+                 workaround, to avoid an OS bugcheck."
+                    .to_string()
+            ),
             "a client's fixed revision says nothing of a server's, though the server's number is higher"
         );
         assert_eq!(choose(Some(&os(false, 26200, 9818)), &fixed).0, CommitMethod::FreeThenAllocate, "another build");
-        assert_eq!(choose(None, &fixed).0, CommitMethod::FreeThenAllocate, "an unknown build");
+        assert_eq!(
+            choose(None, &fixed),
+            (
+                CommitMethod::FreeThenAllocate,
+                "Windows' version couldn't be read, so CVE-2026-119965's fix status is unknown: using the free-then-allocate \
+                 workaround, to avoid an OS bugcheck."
+                    .to_string()
+            ),
+            "an unknown build"
+        );
     }
 
     /// TODO 123: `REPLACE_FIXED` against CVE-2026-119965's own affected-product list (checked 2026-11-11): Replace at and above each

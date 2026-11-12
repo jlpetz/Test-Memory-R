@@ -95,11 +95,35 @@ Asked whether TMR should let someone force the commit method (`commitmethod=`, s
 The only use for one would be forcing `Replace` on a build `REPLACE_FIXED` doesn't clear — which is just choosing to reproduce the
 bugcheck, no safer gated version of that makes sense. Decided instead: keep auto-selection as built, `FreeThenAllocate` the default
 when the build is below its line's fixed revision or isn't detected, and add a visible warning for that case (today's
-`stitched: commits by free-then-allocate: ...` line is `log::info!`, not shown on the console in a release build by default). Not
-built yet: the owner would crash a box manually first, before patching, then again after, to confirm the fix independently of the
-CVE reading before anything in the app leans on the table being right. Open when it's time: whether the warning covers both "build
-unknown" and "build known but unpatched" (the common, currently-universal case) or only the unknown case, since the latter is the
-normal, safe, no-slower-in-practice state for everyone until they patch, not obviously warning-worthy on every run.
+`stitched: commits by free-then-allocate: ...` line was `log::info!`, not shown on the console in a release build by default).
+
+Built, once the owner's own repro (below) had confirmed the table independently of the CVE reading: three distinct `log::warn!`
+messages, not two and not merged, since "Windows' version couldn't be read at all" and "it read fine but isn't in `REPLACE_FIXED`"
+are different failures and only the second names a build/revision —
+
+```
+Windows' version couldn't be read, so CVE-2026-119965's fix status is unknown: using the free-then-allocate workaround, to avoid
+an OS bugcheck.
+
+Windows build 28400.100 isn't in TMR's list for CVE-2026-119965 (a newer release?): using the free-then-allocate workaround, to
+avoid an OS bugcheck.
+
+Windows build 26100.33650 predates CVE-2026-119965's fix (needs 26100.33730+): using the free-then-allocate workaround, to avoid
+an OS bugcheck.
+```
+
+— each a single line, no URL (the CVE number is searchable), "bugcheck" only (not "panic", which this file's own vocabulary already
+gives a different, narrower meaning: `errors=panic`, `panic=abort`). The confirmed-fixed case is unchanged: `log::info!`, not a
+warning, since nothing is affected. `choose()`'s `FreeThenAllocate` return is now the complete message, not a fragment; `Replace`'s
+stays a fragment its call site wraps, as before (`src/memory/stitched.rs`).
+
+A date-based secondary check (the owner asked: does Windows' build info carry a release date TMR could use as a fallback) was
+considered and dropped. Checked live on this box: `BuildLab`/`BuildLabEx` carry build 26100's own original compile date
+(`240331` = 2024-03-31), fixed for every revision of that build, patched or not; `InstallDate` (`1764635835` → 2025-12-02) is this
+machine's own provisioning date, not any revision's release date, and doesn't move when a later cumulative update is applied in
+place. Worse than merely useless: a box imaged from an old, pre-fix ISO after any cutoff date, not yet Windows-Updated, would read
+as "good" on an install-date check while still unpatched — the wrong direction for a safety feature. The UBR itself is already the
+precise signal (a build's cumulative-update guarantee: a higher UBR always carries every earlier fix), which a date never improves on.
 
 ### Done: the owner's own repro (2026-11-11)
 
