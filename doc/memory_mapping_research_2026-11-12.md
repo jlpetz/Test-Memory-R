@@ -119,19 +119,24 @@ Remaining qualifications:
 1. **Missing whole sections are still a compatibility gap.** The parser processes only present `[TestN]` sections. TM5 loads
    defaults for slots governed by `Tests=` even without those sections. In particular, omitting `[Test0]` leaves TMR's
    `sealed=false`; TM5's default slot 0 is enabled RefreshStable. A referenced missing nonzero test instead causes TMR to
-   reject the sequence. This predates the commit but prevents calling default handling complete.
+   reject the sequence. This predates the commit but prevents calling default handling complete. A present, enabled `[Test0]`
+   works correctly even when 0 is absent from the sequence, as in ABSOLUT. Its declaration sets the run's seal independently
+   of the sequence; an explicit 0 would add a separate `Seal-Check` step.
 2. **The complete ABSOLUT regression fixture is still absent.** The new focused tests do not substitute for importing the real
    file and pinning its complete execution plan.
-3. **Documentation needs correction.** `doc/test_parameters.md` says the usual reserve applies beside its TM5 count example;
-   it must distinguish ordinary JSON from imports. The validation report repeats the incorrect external-northbridge explanation
-   of ganged mode. AMD Family 10h integrated controllers supported it
+3. **Documentation corrected in the follow-up.** `doc/test_parameters.md` now distinguishes ordinary JSON's reserve from imports'
+   `skip-cores=0`. The validation report's incorrect external-northbridge explanation of ganged mode has been replaced.
+   AMD Family 10h integrated controllers supported it
    ([AMD BKDG 31116](https://www.amd.com/content/dam/amd/en/documents/archived-tech-docs/programmer-references/31116.pdf),
    section 2.8); modern CPUs can execute a two-line access group regardless of their channel organization. The decision to defer
    the legacy importer option stands without that explanation.
-4. **The rounding change exceeded the later stated scope.** The owner's later message explicitly declined it. Its implementation
-   is not an error-finding defect, but “already implemented” does not establish approval. It can be removed independently of
-   the useful importer fixes. Its effect is not limited to Ollie: it also changes code-0 chunks when the available extent caps
-   an otherwise divisible window to a nonmultiple of lock granularity. The amended 500 MiB test demonstrates 500 -> 496 MiB.
+4. **The rounding change can nearly double traversal work.** It exceeded the later stated scope and can be removed independently
+   of the useful importer fixes. Its effect is not limited to Ollie: it also changes code-0 chunks when the available extent caps
+   an otherwise divisible window to a nonmultiple of lock granularity. At a 500 MiB extent, the amended test changes a 500 MiB
+   chunk into 496 MiB. `ChunkSpread` then produces two chunks, at offsets 0 and 4 MiB: 992 MiB traversed per sweep, with 492 MiB
+   overlap, rather than 500 MiB with no overlap. Coverage is complete in both cases; traversal work increases 98.4%.
+   The earlier description as a minor alignment adjustment understated this consequence. Recommendation: restore the previous
+   code-0 rule, rather than expanding a TM5 flooring detail into almost twice the work under TMR's overlapping-chunk policy.
 
 The CPU-selection, key-matching and present-field default fixes should be retained. No new functional blocker was found in
 their implementation. The remaining default-section gap and missing full-file fixture should stay explicit rather than being

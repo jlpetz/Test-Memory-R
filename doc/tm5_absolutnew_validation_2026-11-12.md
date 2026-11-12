@@ -4,13 +4,13 @@ Source review, 2026-11-12, TMR HEAD `d6b3279`, plus a live run of this exact fil
 cpus=100% skip-cores=0`; stopped by the host's own background-task memory guard at cycle 2/3, test 27/31, 1:34:17 runtime, 0 errors
 on every step run — not a TMR crash).
 
-**Decided and built** (the owner, 2026-11-12): case-insensitive INI section/key matching; `Cores=N` preserved as an explicit worker
+**Implemented in `8675f6c`, reviewed 2026-11-12:** case-insensitive INI section/key matching; `Cores=N` preserved as an explicit worker
 count (`CpuConfig.count`); every TM5 import clears the responsiveness reserve (`skip_spec="0"`, not just for `Cores=0`: TM5 never
 reserves a core, for any count); TM5's own per-slot defaults for an omitted test field (function, parameter, pattern mode/params,
-block size; `Enable` defaults to on); the block-code-0 lock-granularity floor. Interleave Type and DLL Name: explicitly declined —
-every real sample config uses MT0.dll and Interleave Type=1, and the hardware mode Interleave Type=0 names (ganged channel
-interleaving) is extinct on every platform TMR targets, so there is no real config this would change behaviour for. Native patterns
-kept as designed; no parameter-specific mode-2 revival. Still open: a complete-file import regression fixture (below).
+block size; `Enable` defaults to on). Missing whole test sections remain a compatibility gap, including the default seal.
+The commit also includes the block-code-0 floor despite the owner's later instruction to leave it out; its overlap-work effect
+is described below. Interleave Type and DLL Name remain outside the approved importer work. Native patterns stay as designed;
+no parameter-specific mode-2 revival. A complete-file import regression fixture is still open.
 
 Input: `../TM5_Source/Check_absolutnew.cfg`, named `ABSOLUT(01102021)` by anta777.
 Reference: `../TM5/` assembly, cross-checked with `../TM5_Source/MT0.cxx`.
@@ -60,6 +60,11 @@ All imported tests cover their thread's full allocation by visiting chunks; a 4 
 There are 31 explicit steps per cycle: 23 SimpleTest steps and eight mirror steps, over three suite cycles (93 explicit steps).
 Repeated IDs remain repeated steps; they are not deduplicated. The seal is additional work.
 
+**Test 0 need not appear in the sequence.** ABSOLUT declares `[Test0]` with `Enable=1` and `Function=RefreshStable`, but omits
+0 from `Test Sequence`. TMR correctly enables the run's seal independently of that sequence. Seal checks remain part of the
+harness and cycle boundaries, with errors recorded separately as seal errors. Listing 0 would add an explicit `Seal-Check` step.
+The missing-section defect below concerns deleting the entire `[Test0]` section, not leaving 0 out of the sequence.
+
 Test 15's `Channels=2, Parameter=256` means a 511-line skip after each 64 B access, hence a **512-line / 32 KiB period**.
 The passes start at offsets 511 down to 0 and each walks that period to the chunk's end. Both write and verify visit every line.
 511 is the skip, not the distance from one accessed line to the next.
@@ -77,32 +82,45 @@ Sources:
 
 ### Fixed: Case-sensitive INI keys can silently remove stress
 
-TMR stores sections and keys in case-sensitive HashMaps and looks up exact strings. TM5 uses Windows
+Before the fix, TMR stored sections and keys in case-sensitive HashMaps and looked up exact strings. TM5 uses Windows
 `GetPrivateProfileString`, whose section/key matching is case-insensitive.
 
-Concrete change to this file: spell Test 15's key `parameter=256`. TM5 still reads its stride. TMR does not find `Parameter`, defaults it
-to zero, and runs the test sequentially. The existing malformed-number check never sees the value.
+Concrete change to this file: spell Test 15's key `parameter=256`. TM5 still reads its stride. Before the fix, TMR did not find
+`Parameter`, defaulted it to zero, and ran the test sequentially. The malformed-number check never saw the value.
 
 Fixed: section and key names are matched case-insensitively (`.to_ascii_lowercase()` at both insertion and lookup); stored values,
 including function names, keep their case, matching `GetPrivateProfileString`'s own asymmetry.
 
 Sources: `src/config.rs:1574-1601`, `:1638-1642`. The original ABSOLUT file uses the expected capitalization, so it was not affected.
 
-### Fixed: Missing fields do not use TM5's defaults
+### Fixed for present sections: Missing fields did not use TM5's defaults
 
-TMR defaults an omitted `Enable` to zero. TM5 initializes each test's enable flag from `TableEnableTst`, whose entries are all one.
-Deleting `Enable=1` from Test 15 therefore leaves the TM5 test enabled but causes TMR to skip all eight occurrences.
+Before the fix, TMR defaulted an omitted `Enable` to zero. TM5 initializes each test's enable flag from `TableEnableTst`, whose
+entries are all one. Deleting `Enable=1` from Test 15 left the TM5 test enabled but caused TMR to skip all eight occurrences.
 
 Other missing values also differ: TM5 has per-test defaults for Function, Parameter, Pattern Mode, pattern parameters and block size.
-For example, TM5's default Parameter for Test 2 is 254; TMR defaults it to zero. Missing Function becomes `Unknown` rather than the
-indexed TM5 default. Missing test sections are not synthesized by TMR as they are by TM5's configuration-loading loop.
+For example, TM5's default Parameter for Test 2 is 254; TMR previously defaulted it to zero. Missing Function became `Unknown`
+rather than the indexed TM5 default. Missing whole test sections are still not synthesized by TMR as they are by TM5's loading loop.
 
 Fixed: TM5's own 16-entry-per-slot default tables (`TM5/bin/DefTestParam.inc`: function, Parameter/Jump, Pattern Mode, Pattern
 Param0/1, Test Block Size) are ported directly as `TM5_DEFAULT_*` consts and applied when a present `[TestN]` section omits that
-field; `Enable`'s own default flips from off to on (`TableEnableTst` is all 1). An entirely absent `[TestN]` section is still left
-out, not synthesized — TM5's `Tests=` governs which slots are in play, and no shipped `.cfg` both uses a slot and omits its section.
+field; `Enable`'s own default flips from off to on (`TableEnableTst` is all 1).
 Cross-checked against the TM5 author's own notes (`TM5_Author_website_notes.txt`): the default Test1 `Pattern Param0=0x1E5F` is
 exactly the table's 7775 decimal.
+
+Still open: an entirely absent `[TestN]` section is left out. TM5 loads the default slots governed by `Tests=`; TMR does not yet
+reproduce this. With `Test Sequence=1,2` and valid sections for Tests 1 and 2, these Test 0 cases differ:
+
+| Test 0 declaration | Current TMR import | TM5 behaviour |
+|---|---|---|
+| `[Test0]`, `Enable=1`, `Function=RefreshStable` | Seal enabled despite 0 being absent from the sequence | Seal enabled |
+| `[Test0]` present, Enable and Function omitted | Seal enabled using the new per-field defaults | Seal enabled |
+| `[Test0]`, `Enable=0` | Seal disabled | Seal disabled |
+| Entire `[Test0]` section absent | Seal disabled: no parsed slot sets `sealed=true` | Default enabled RefreshStable slot supplies the seal |
+
+The last row is the defect. If the sequence explicitly names a missing section, TMR instead rejects that reference. A fix should
+restore default-slot loading, preserve an explicit `Enable=0`, and keep command-line `seal=` overrides effective. This is separate
+from filtering ordinary test steps by the sequence; that filtering correctly leaves ABSOLUT's seal enabled.
 
 Sources: `src/config.rs` (the `TM5_DEFAULT_*` consts and the test-parsing loop); test `omitted_test_fields_take_tm5s_own_per_slot_defaults`.
 ABSOLUT specifies every field itself, so this defect never applied to this file; it affects other/edited configs.
@@ -124,12 +142,17 @@ available" (skip-cores=1 default) to "100% of 8 available", using all 8 logical 
 
 ### Declined: Interleave Type and DLL Name are silently ignored
 
-`DLL Name` is `bin\MT0.dll` in all 163 occurrences across every real sample config — dead weight. `Interleave Type` is `=1` in all
-11 — the hardware mode `=0` names (ganged channel interleaving, pre-integrated-memory-controller northbridges) is extinct on every
-platform TMR targets; DDR5 has no equivalent mode to opt into. The owner's call (2026-11-12): not worth building, even as a loud
-failure on an unsupported value, since no real config exercises it. `Channels=` (which TMR does read) and `Interleave Type` are
-different fields: the first is already mapped (the SimpleTest stride), the second only ever changed operation-block width on
-hardware nobody runs TMR on.
+`DLL Name` is `bin\MT0.dll` in the 163 sampled entries; TMR implements the supported functions directly. `Interleave Type=1`
+appears in all 11 sampled configs. The owner deferred additional importer handling for these fields.
+
+`Interleave Type` affects TM5's access grouping and pass decomposition. In the reviewed two-channel case, the alternatives make
+64 B or 128 B visits at the same period. Modern CPUs can execute either software access shape. The earlier explanation that
+ganged controllers required an external northbridge was wrong: AMD Family 10h integrated controllers supported ganged and
+unganged operation ([AMD BKDG 31116](https://www.amd.com/content/dam/amd/en/documents/archived-tech-docs/programmer-references/31116.pdf),
+section 2.8). Neither the historical mode name nor channel count supplies a modern controller's full address mapping.
+
+The separate [access-geometry proposal](access_geometry_proposal_2026-11-12.md) evaluates grouped visits as native stress
+variation. It does not require reviving the legacy importer option.
 
 ## Pattern intent: preserved properties and lost specificity
 
@@ -211,10 +234,14 @@ Sources: `src/config.rs:1693-1735`; `src/pattern.rs:161-240`, `:518-554`; `src/r
   necessary. TM5 releases and reacquires memory between cycles and works through AWE windows. The TMR walk covers the entire
   extent; it need not duplicate TM5's tail omission or allocation churn. Uneven sizes can add overlap work, and a fixed VA does not
   imply known physical rows. Sources: `src/test_memory.rs:19-80`; TM5 `MainThread.asm:458`, `:737-744`.
-- **Block-code rounding:** fixed — `tm5_block_size` floors code 0 (divisor 1) to the lock granularity too, matching
-  `MainThread.asm:627-660`. For the ordinary 1536 MiB window (divisible by its 64 MiB lock granularity) this file's own chunks are
-  unchanged; the only shipped config this ever visibly affects is `Ollie.cfg` (1236 MiB window, 16 MiB granularity, not divisible:
-  1236 → 1232). Covered by `tm5_block_size_code_0_floors_to_the_lock_granularity_too`.
+- **Block-code rounding:** `8675f6c` makes `tm5_block_size` floor code 0 (divisor 1) to lock granularity, matching
+  `MainThread.asm:627-660`, despite the owner's later instruction to leave it out. A 1536 MiB window and 64 MiB granularity are
+  unchanged when the available extent is at least that window. Ollie's 1236 MiB window becomes 1232 MiB. Other configs also change
+  when the available extent caps the window to a nonmultiple of granularity. The 500 MiB test with 16 MiB granularity becomes
+  496 MiB per chunk. Because `ChunkSpread` uses complete overlapping chunks, that means two chunks at offsets 0 and 4 MiB,
+  traversing 992 MiB per sweep instead of one 500 MiB chunk. No memory is omitted, but overlap is 492 MiB and traversal work
+  increases 98.4%. The earlier description of this as merely a small alignment difference understated the possible effect.
+  Recommendation: restore the previous code-0 rule independently of the useful importer fixes; retain TMR's complete coverage.
 
 ## Verification and seal assessment
 
@@ -246,8 +273,9 @@ and the assembly checker; the source snapshots should not be advertised as one r
 
 ## Status
 
-1. ~~Fix INI key normalization, TM5 defaults and the explicit Cores count.~~ Done 2026-11-12 (above). DLL/interleave semantics:
-   declined, not built — no real config needs it.
+1. Fixed: INI key normalization, defaults for fields of present sections, the explicit Cores count and the imported reserve.
+   **Still open:** synthesize omitted test sections using TM5's default-slot rules, especially the default Test 0 seal.
+   DLL/interleave importer additions remain deferred.
 2. **Still open:** a complete-file import regression fixture asserting the 31-step order, omitted Test 13, pass counts, chunks,
    stride, mirror modes and three-cycle pattern schedule for this exact file. Small targeted fixtures for the fixed parser defects
    exist (`omitted_test_fields_take_tm5s_own_per_slot_defaults`, `tm5_ini_case_keeps_the_same_workload`,
