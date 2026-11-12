@@ -86,12 +86,26 @@ Retain Sequential, Spaced 512/1, Offset variation 513/1 and Paired 512/2 as the 
 available. Their purpose is complementary access structure over the same allocation, not a claim that 512 is optimal.
 
 Before choosing permanent defaults, evaluate short periods such as 2, 4, 8 and 16 and their nearby odd alternatives against
-the published examples. Also evaluate groups of 4 and 8 offline; these vary more low bits than group 2. This does not require
-adding those group sizes to the first implementation. Prefer a small selection with distinct behaviours over dozens of presets.
+the published examples. The expanded proposal evaluates groups of 2, 4, 8 and 16: these vary different low bits within each
+visit. A two-channel selector that changes at eight-line boundaries needs a 16-line aligned group to reach both destinations
+within one visit. Thus two lines are not a sufficient universal grouped option. Which groups ship depends on kernel cost and
+measurements; prefer a small selection with distinct behaviours over dozens of presets.
 
 For each model, distinguish channel/subchannel distribution, bank-group distribution and repeated-bank accesses. Use several
 base addresses and page layouts; count complete sweeps, not just their offset-zero pass. Such analysis can remove redundant
 candidates and identify differences, but cannot rank real error detection.
+
+The retained [offline script](../research/access_geometry/models.py) checks 364 complete-walk cases and six illustrative channel
+selectors at five aligned bases. It confirms that changing geometry preserves destination totals on the same allocation while
+changing their sequence and the destinations within each visit. This first model assumes contiguous physical lines; it does
+not yet simulate stitched page layouts, bank/row state or timing. It is explanatory evidence for considering larger groups,
+not a controller emulator or proof of improved detection.
+
+The [expanded proposal](access_geometry_proposal_2026-11-12.md#tm5s-names-intended-target-and-the-current-translation) also separates
+the TM5 author's stated intent from modern hardware claims. His SimpleTest notes explicitly describe checking one DIMM before
+the next. His MirrorMove128 notes describe a two-line access as involving both DIMMs under a particular 64-byte interleaving
+model. These are complementary historical workload intentions: concentrated offset passes and grouped adjacent transfers.
+Neither `Interleave Type` value programs the controller or universally identifies ganged/unganged operation.
 
 Do not select one workload from a BGS toggle or automatically double a stride for DDR5. Test the BIOS configuration the user
 intends to run; changing BGS is a separate system comparison that also changes the test environment.
