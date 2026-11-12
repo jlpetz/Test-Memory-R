@@ -1,6 +1,10 @@
 """Build provenance and archive checks; temporary ordinary files only, no compilation or installation."""
 import json
+import os
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -87,7 +91,84 @@ class BuildToolsTests(unittest.TestCase):
             self.assertIn("python -B -m unittest discover -s tools -p test_build_tools.py", commands)
             self.assertFalse(any("no-verify" in command for command in commands))
             self.assertFalse(any(command.startswith("cargo +nightly build ") for command in commands))
-            self.assertIn("./tools/build_environment.ps1 -InstallSdk -GitHub", workflow.read_text(encoding="utf-8"))
+            text = workflow.read_text(encoding="utf-8")
+            self.assertIn("./tools/build_environment.ps1 -InstallSdk -GitHub", text)
+            self.assertIn("python-version: '>=3.11 <4'", text)
+            self.assertLess(text.index("uses: actions/setup-python@"), text.index("./tools/build_environment.ps1"))
+            self.assertLess(text.index("./tools/build_environment.ps1"), text.index("run: python "))
+
+    def export_github_environment(self, selected):
+        """Run the actual PowerShell exporter, with ordinary temporary files in place of GitHub's command files."""
+        source = self.root / "environment.json"
+        source.write_text(json.dumps(selected), encoding="utf-8")
+        environment_file, path_file = self.root / "github_env", self.root / "github_path"
+        for path in (environment_file, path_file):
+            path.write_text("", encoding="utf-8")
+        script = self.root / "export.ps1"
+        script.write_text(
+            "param($Helper, $InputFile, $EnvironmentFile, $PathFile)\n"
+            "$ErrorActionPreference = 'Stop'\n"
+            ". $Helper\n"
+            "$inputData = Get-Content -LiteralPath $InputFile -Raw -Encoding UTF8 | ConvertFrom-Json\n"
+            "$selected = [ordered]@{}\n"
+            "foreach ($property in $inputData.PSObject.Properties) { $selected[$property.Name] = $property.Value }\n"
+            "Export-GitHubBuildEnvironment -Environment $selected -EnvironmentFile $EnvironmentFile -PathFile $PathFile\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script),
+             str(build_release.ROOT / "tools/github_environment.ps1"), str(source), str(environment_file), str(path_file)],
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return environment_file.read_text(encoding="utf-8"), path_file.read_text(encoding="utf-8").splitlines()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows build environment")
+    def test_github_path_keeps_python_and_msvc_ahead_of_other_executables(self):
+        directories = [self.root / name for name in ("MSVC", "SDK", "Python", "WindowsApps", "Git")]
+        for directory in directories:
+            directory.mkdir()
+        msvc, sdk, python, store, git = directories
+        for directory, executable in ((msvc, "link.exe"), (sdk, "rc.exe"), (python, "python.exe"),
+                                      (store, "python.exe"), (git, "link.exe")):
+            (directory / executable).write_bytes(b"test-only placeholder; never executed")
+        # Empty and duplicate entries can occur in the selected PATH. Earlier actions have already added Python and Cargo.
+        selected_path = ";".join(map(str, [*directories, python])) + ";;"
+        exported_env, additions = self.export_github_environment({"Path": selected_path, "LIB": "SDK libs;MSVC libs"})
+        self.assertEqual(exported_env, "LIB=SDK libs;MSVC libs\n")
+        prepend = [str(python), str(self.root / "Cargo")]
+        # Independent replay of actions/runner v2.338.2: AddPathFileCommand removes an exact duplicate then appends;
+        # Handler.AddPrependPathToEnvironment reverses that list before searching it.
+        for entry in additions:
+            prepend = [old for old in prepend if old != entry]
+            prepend.append(entry)
+        effective = list(reversed(prepend))
+        self.assertEqual(effective[:len(directories)], list(map(str, directories)))
+        path = os.pathsep.join(effective)
+        for executable, directory in (("python.exe", python), ("link.exe", msvc), ("rc.exe", sdk)):
+            self.assertEqual(shutil.which(executable, path=path), str(directory / executable))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows build environment")
+    def test_github_path_handles_empty_and_single_directory(self):
+        for selected, expected in [("", []), (";;", []), (";C:\\one directory;;", ["C:\\one directory"])]:
+            with self.subTest(selected=selected):
+                exported_env, additions = self.export_github_environment({"Path": selected, "WindowsSDKVersion": "test"})
+                self.assertEqual(additions, expected)
+                self.assertEqual(exported_env, "WindowsSDKVersion=test\n")
+
+    @unittest.skipUnless(os.environ.get("GITHUB_ACTIONS") == "true", "Checks the real environment after CI's SDK setup")
+    def test_ci_resolves_the_selected_python_linker_and_resource_compiler(self):
+        expected_python = Path(os.environ["pythonLocation"]) / "python.exe"
+        self.assertEqual(Path(sys.executable).resolve(), expected_python.resolve())
+        expected_tools = {
+            "python.exe": expected_python,
+            "link.exe": Path(os.environ["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"]),
+            "rc.exe": Path(os.environ["WindowsSdkVerBinPath"]) / "x64" / "rc.exe",
+        }
+        for executable, expected in expected_tools.items():
+            resolved = shutil.which(executable)
+            self.assertIsNotNone(resolved, executable)
+            self.assertEqual(Path(resolved).resolve(), expected.resolve(), executable)
 
     def test_interrupted_archive_can_finish_without_replacing_exe(self):
         destination = build_release.archive_build(self.build, self.archive)

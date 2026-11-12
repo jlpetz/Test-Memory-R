@@ -91,15 +91,7 @@ if ($Output) {
     [IO.File]::WriteAllText($Output, $json, (New-Object Text.UTF8Encoding($false)))
 }
 if ($GitHub) {
-    if (-not $env:GITHUB_ENV -or -not $env:GITHUB_PATH) { throw '-GitHub requires a GitHub Actions job.' }
-    foreach ($name in $selected.Keys) {
-        if ($name -eq 'Path') {
-            foreach ($entry in $selected[$name].Split(';') | Where-Object { $_ }) {
-                [IO.File]::AppendAllText($env:GITHUB_PATH, "$entry`n", (New-Object Text.UTF8Encoding($false)))
-            }
-        } else {
-            [IO.File]::AppendAllText($env:GITHUB_ENV, "$name=$($selected[$name])`n", (New-Object Text.UTF8Encoding($false)))
-        }
-    }
+    . (Join-Path $PSScriptRoot 'github_environment.ps1')
+    Export-GitHubBuildEnvironment -Environment $selected -EnvironmentFile $env:GITHUB_ENV -PathFile $env:GITHUB_PATH
 }
 Write-Host "Build tools: MSVC $($env:VCToolsVersion), Windows SDK $($sdk.file_version) ($($sdk.directory_version))"

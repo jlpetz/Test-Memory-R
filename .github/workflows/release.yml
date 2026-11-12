@@ -17,6 +17,13 @@ jobs:
     - name: 📥 Checkout code
       uses: actions/checkout@v7
 
+    # The shared local/CI build and manifest tools need Python's standard library, including 3.11's tomllib.
+    # Select it explicitly; build_environment.ps1 must preserve this PATH precedence when adding the SDK tools.
+    - name: 🐍 Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: '>=3.11 <4'
+
     - name: 🦀 Install Rust Nightly
       uses: dtolnay/rust-toolchain@nightly
       with:

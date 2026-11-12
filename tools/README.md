@@ -41,6 +41,11 @@ python tools/build_release.py --describe     # inspect the selected tools; no TM
 
 Both workflows and `ci_local.py` use this wrapper. It runs the usual `cargo +nightly build
 --release` (with `--locked` when requested), with the SDK selected by `build_environment.ps1`.
+These build tools require Python 3.11 or newer and use only its standard library; the TMR
+application does not require Python. GitHub Actions selects Python explicitly before SDK setup.
+`github_environment.ps1` exports PATH entries in reverse because GitHub prepends each entry;
+this preserves the selected Python, MSVC and SDK search order. The build-tool checks exercise
+that export and, in CI, verify which Python, linker and resource compiler actually resolve.
 Nightly stays unpinned. `windows_sdk.json` selects SDK directory **10.0.28000.0**, servicing release
 **10.0.28000.2957**. CI installs that Microsoft-signed, SHA-256-checked installer when needed;
 local builds only check and select it. To install it locally, use `setup_dev.ps1`, or run
