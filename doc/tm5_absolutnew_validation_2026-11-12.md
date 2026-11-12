@@ -292,22 +292,22 @@ and the assembly checker; the source snapshots should not be advertised as one r
    **Decided:** omitted ordinary sections are not synthesized; retain the error for an explicit reference to one.
    DLL/interleave importer additions remain deferred.
 2. **Declined:** the complete-file ABSOLUT regression fixture (owner, 2026-11-12). No further fixture work is planned.
-3. **Proposed next improvement:** show original-to-effective pattern substitutions at import and retain their source metadata
-   in saved results. The owner supports making this visible; the proposed presentation is below.
+3. **Implemented:** show original-to-effective pattern substitutions at startup and retain their source metadata in exported
+   configs, the run log and saved results. The presentation is below.
 4. Decided: keep the native pattern redesign and full verification of each written polarity. Parameter-specific mode-2
    reproduction is not required; revisit only on concrete coverage evidence.
 5. Decided: hardware error-sensitivity and fresh assembly validation stay outside this source-review verdict.
 
-## Proposed presentation of imported patterns
+## Reporting imported patterns
 
-TMR already shows the effective program in each step's Config report (`runner::step_config_line`) and records it, the pattern
-version, run seed and transfer profile in `run_context`. The missing information is which TM5 pattern it replaced.
+TMR shows the effective program in each step's Config report (`runner::step_config_line`) and records it, the pattern version,
+run seed and transfer profile in `run_context`. It now also reports which TM5 pattern it replaced.
 
-Use the existing startup plan/report area, shared by console and window, for an informational note:
+The existing startup plan/report area, shared by console and window, carries an informational note:
 
 > TM5 import: SimpleTest data patterns converted to TMR native programs.
 
-Under it, group tests sharing the same source mode and effective program. For unmodified native ABSOLUT:
+Under it, tests sharing the same source mode and effective program are grouped. For unmodified native ABSOLUT:
 
 | Tests | TM5 mode | TMR program |
 |---|---|---|
@@ -316,18 +316,19 @@ Under it, group tests sharing the same source mode and effective program. For un
 | 6–12, 14–15 | 0 | ident → switch → random → switch |
 
 These are programs, not a claim that all four families run in one suite cycle. Each family uses a verified P/~P pair; with
-ABSOLUT's four rounds a step consumes two families per cycle. Keep the exact schedule in the existing pattern explanation
-rather than implying that a program row describes four individual write rounds.
+ABSOLUT's four rounds a step consumes two families per cycle. A note explains the P/~P pairs and continuation across suite cycles,
+including the verify-only case where the pair spans two suite cycles.
 
-Produce the note from the effective plan after CLI overrides, and include only tests selected to run. Overrides such as
-`pattern-mode=` must show what will actually run. With `patterns=legacy`, label the choice as TMR's legacy adaptation;
-never describe it as exact TM5 reproduction. Mirror tests do not consume these pattern-mode fields and should not appear
-as converted SimpleTests.
+The note comes from the effective plan after CLI overrides and includes only selected tests, once per test ID. Overrides such as
+`pattern-mode=` show what will actually run. With `patterns=legacy`, the note labels numbered modes as TMR's adaptations, never
+exact TM5 reproduction. Mirror tests do not consume these pattern-mode fields and do not appear as converted SimpleTests.
 
-Keep original mode, Param0/Param1 and their replacement status in optional import metadata alongside the already recorded
-effective program. Details for Test 1 can say `Param0=0x77777777, Param1=0x33333333: replaced by native program`; these are
-provenance, not new generator inputs. Preserve this metadata through config export and result saving, with absent fields
-accepted for older files. Share the same conversion information with the detailed log/report so it remains available later.
+Original mode and Param0/Param1 survive JSON config export in optional per-test `tm5_pattern` metadata; they never feed native
+generators. Saved results keep that source, its disposition and (for numbered modes) the effective numeric inputs alongside the
+effective program. The log gives the same detail, e.g. `Param0=0x77777777, Param1=0x33333333: replaced by native program`.
+Older files without the metadata remain accepted, without inventing a source mapping.
 
-This needs no new prompt, repeated per-chunk logging, or hot-loop bookkeeping. The default view should communicate the
-substitution in a few grouped lines; raw hexadecimal parameters belong in details and saved metadata.
+Implementation: `reporting/tm5_patterns.rs`, fed by `config.rs` through the resolved `TestDefinition`, with capture in `run_context.rs`.
+Focused tests cover config export, result round-tripping, selection/repetition, overrides and absence in older files.
+The change adds no per-chunk logging or hot-loop bookkeeping. The default view communicates substitutions in grouped lines;
+raw hexadecimal parameters stay in the log and saved metadata.

@@ -9,6 +9,7 @@ pub mod formatters;
 pub mod models;
 pub mod renderers;
 pub mod system_info_builder;
+pub mod tm5_patterns;
 
 use self::formatters::{DefaultFormatter, ReportFormatter};
 use self::models::*;

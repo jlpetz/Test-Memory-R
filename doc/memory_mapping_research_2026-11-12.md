@@ -141,5 +141,6 @@ Remaining qualifications:
    restores the previous code-0 rule and tests that the 500 MiB case stays one chunk, traverses 500 MiB and has no overlap.
 
 The approved importer fixes are complete. The ordinary missing-section compatibility difference does not affect the supplied
-configs, and the owner declined the full-file fixture. The proposed next improvement is visible pattern-conversion information,
-described in [the validation report](tm5_absolutnew_validation_2026-11-12.md#proposed-presentation-of-imported-patterns).
+configs, and the owner declined the full-file fixture. Pattern-conversion reporting is implemented in the shared startup plan,
+with source metadata retained in exported configs, the log and saved results; see
+[the validation report](tm5_absolutnew_validation_2026-11-12.md#reporting-imported-patterns).

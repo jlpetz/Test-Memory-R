@@ -182,6 +182,7 @@ pub fn create_test_configuration_report_v2(
                             {lock} MiB Lock Memory Granularity only size Test Block Size codes 0-3 and cap larger blocks."
         ));
     }
+    notes.extend(super::tm5_patterns::notes(test_definitions));
 
     let suite_timing_str = match (suite_timing.global_cycles, suite_timing.global_duration_secs) {
         (Some(cycles), Some(duration)) => format!("{} cycles or {}s max", cycles, duration),

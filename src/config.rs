@@ -48,6 +48,15 @@ pub struct LegacyMetadata {
     pub tm5_lock_mb: u32,
 }
 
+/// The original SimpleTest fields, retained only for import reporting. They never supply a native generator's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tm5PatternSource {
+    pub mode: u32,
+    pub param0: u64,
+    pub param1: u64,
+}
+
 fn default_channels() -> u32 {
     2
 }
@@ -700,6 +709,9 @@ pub struct TestConfig {
     pub pattern_mode: Option<u32>,
     pub pattern_param0: Option<u64>,
     pub pattern_param1: Option<u64>,
+    /// Original TM5 SimpleTest fields, independent of the effective program/mode above; survives exporting an import to JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tm5_pattern: Option<Tm5PatternSource>,
     pub parameter: Option<u32>, // Raw TM5 parameter — interpreted via TestParameterContext
 }
 
@@ -923,6 +935,7 @@ pub struct ConfigTest<'a> {
     pub id: Option<&'a str>,
     /// `seal: false` on the test.
     pub seal_opt_out: bool,
+    pub tm5_pattern: Option<Tm5PatternSource>,
 }
 
 /// What one cycle of a config runs (TODO 74).
@@ -1057,6 +1070,7 @@ impl ModernConfig {
                 config: self.build_test(i, test)?,
                 id: test.id.as_deref(),
                 seal_opt_out: test.seal == Some(false),
+                tm5_pattern: test.tm5_pattern,
             });
         }
         let Some(order) = &self.cycle_order else {
@@ -1575,7 +1589,7 @@ impl LegacyConfig {
         Self::parse_legacy_format(&content)
     }
 
-    fn parse_legacy_format(content: &str) -> Result<Self, String> {
+    pub(crate) fn parse_legacy_format(content: &str) -> Result<Self, String> {
         let mut sections: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut current_section = String::new();
 
@@ -1733,6 +1747,11 @@ impl LegacyConfig {
                 // (`width=`, else the widest the CPU has, TODO 99), every width writing one image.
                 // With patterns=legacy it keeps TMR's numbered mode (spec 1), to compare, on the same test (there is no scalar test). No
                 // other function reads the pattern fields, so they get none.
+                let tm5_pattern = (function == "Mem-SimpleV2-Auto").then_some(Tm5PatternSource {
+                    mode: test.pattern_mode,
+                    param0: test.pattern_param0,
+                    param1: test.pattern_param1,
+                });
                 let (function, program, pattern) = match function.as_str() {
                     "Mem-SimpleV2-Auto" if crate::pattern::legacy_import() => {
                         (function, None, Some((test.pattern_mode, test.pattern_param0, test.pattern_param1)))
@@ -1770,6 +1789,7 @@ impl LegacyConfig {
                     pattern_mode: pattern.map(|p| p.0),
                     pattern_param0: pattern.map(|p| p.1),
                     pattern_param1: pattern.map(|p| p.2),
+                    tm5_pattern,
                     // A mirror test's Parameter becomes its mode
                     mirror,
                     parameter: if mirror.is_some() { None } else { Some(test.parameter) },

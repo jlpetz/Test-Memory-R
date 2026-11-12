@@ -549,6 +549,8 @@ pub struct TestDefinition {
     pub seal_use: SealUse,
     /// `seal: false` on the test in the config.
     pub seal_opt_out: bool,
+    /// Source fields for reporting a TM5 SimpleTest conversion; not part of the workers' memory configuration.
+    pub tm5_pattern: Option<crate::config::Tm5PatternSource>,
 }
 
 impl TestDefinition {
@@ -710,6 +712,7 @@ fn test_plan(
     let report = crate::reporting::converters::create_test_configuration_report_v2(
         test_definitions, suite_timing, cache_info, thread_memory, tm5, sequence,
     );
+    crate::reporting::tm5_patterns::log_details(test_definitions);
     Run::TestPlan(Box::new(report))
 }
 
@@ -4521,6 +4524,7 @@ pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinit
                 id: None,
                 seal_use: seal_use(resolved_name),
                 seal_opt_out: false,
+                tm5_pattern: None,
             });
         } else {
             let effect = derive_memory_effect(test_name, &config);
@@ -4535,6 +4539,7 @@ pub(crate) fn create_test_definitions(cache_info: &CacheInfo) -> Vec<TestDefinit
                 id: None,
                 seal_use: seal_use(test_name),
                 seal_opt_out: false,
+                tm5_pattern: None,
             });
         }
     }
@@ -4595,6 +4600,7 @@ fn create_test_definitions_from_config(
                 id,
                 seal_use: seal_use(resolved_name),
                 seal_opt_out: test.seal_opt_out,
+                tm5_pattern: test.tm5_pattern,
             }
         } else {
             // Convert to 'static str by leaking (safe for test names, small and finite set)
@@ -4611,6 +4617,7 @@ fn create_test_definitions_from_config(
                 id,
                 seal_use: seal_use(test_name),
                 seal_opt_out: test.seal_opt_out,
+                tm5_pattern: test.tm5_pattern,
             }
         };
         tests.push(def);
@@ -6914,6 +6921,72 @@ mod tests {
         let mut defs = vec![bench];
         apply_pattern_mode(&mut defs, 31);
         assert_eq!(modes(&defs), [(Some(30), None)]);
+    }
+
+    /// Imported provenance survives JSON export, selection/repeats and CLI overrides without becoming a native generator input.
+    #[test]
+    fn imported_pattern_reporting_follows_the_effective_plan() {
+        use crate::config::{LegacyConfig, ModernConfig, Tm5PatternSource};
+        use crate::reporting::tm5_patterns::{Conversion, Disposition, notes};
+
+        let imported = LegacyConfig::parse_legacy_format(
+            "[Main Section]\nTest Sequence=1,2,3,1,5\n[Global Memory Setup]\n\
+             [Test1]\nFunction=SimpleTest\nPattern Mode=2\nPattern Param0=0x77777777\nPattern Param1=0x33333333\n\
+             [Test2]\nFunction=SimpleTest\nPattern Mode=2\nPattern Param0=1\nPattern Param1=2\n\
+             [Test3]\nFunction=MirrorMove\n\
+             [Test4]\nFunction=SimpleTest\nPattern Mode=1\n\
+             [Test5]\nFunction=SimpleTest\nEnable=0\n",
+        )
+        .unwrap()
+        .to_modern_config()
+        .unwrap();
+        let mut exported = serde_json::to_value(imported).unwrap();
+        let modern: ModernConfig = serde_json::from_value(exported.clone()).unwrap();
+        let cache_info = crate::tests::get_cache_info();
+        let (mut defs, _) = create_test_definitions_from_config(&modern, cache_info).unwrap();
+        assert_eq!(defs.iter().map(|d| d.id.as_deref().unwrap()).collect::<Vec<_>>(), ["1", "2", "3", "1"]);
+        let source = Tm5PatternSource { mode: 2, param0: 0x77777777, param1: 0x33333333 };
+        assert_eq!(defs[0].tm5_pattern, Some(source));
+        assert_eq!((defs[0].config.pattern_param0, defs[0].config.pattern_param1), (None, None));
+        assert!(defs[2].tm5_pattern.is_none(), "a mirror's fields are not a SimpleTest conversion");
+        let sequence =
+            crate::reporting::converters::PlanSequence { order: None, seal: None, seal_off_reason: "test", tm5: true, width: None };
+        let report = crate::reporting::converters::create_test_configuration_report_v2(
+            &defs,
+            &Default::default(),
+            cache_info,
+            &[64 << 20],
+            None,
+            &sequence,
+        );
+        let rows: Vec<_> = report.notes.iter().filter(|s| s.contains("TM5 Pattern Mode")).map(String::as_str).collect();
+        assert_eq!(rows, ["   Tests 1, 2: TM5 Pattern Mode 2 → TMR program: lines → switch → random → switch"]);
+        assert_eq!(Conversion::capture(&defs[0]).unwrap().disposition, Disposition::ReplacedByNativeProgram);
+        assert!(Conversion::capture(&defs[2]).is_none());
+
+        // Filtering and overrides operate on the resolved steps, not on all definitions or the initial import mapping.
+        defs.retain(|d| d.id.as_deref() == Some("2"));
+        apply_pattern_mode(&mut defs, crate::pattern::Family::Switch.number());
+        assert!(notes(&defs).iter().any(|s| s == "   Test 2: TM5 Pattern Mode 2 → TMR program: switch"));
+        apply_pattern_mode(&mut defs, 0);
+        assert!(notes(&defs).iter().any(|s| s == "   Test 2: TM5 Pattern Mode 2 → TMR legacy adaptation (mode 0)"));
+        let conversion = Conversion::capture(&defs[0]).unwrap();
+        assert_eq!(conversion.disposition, Disposition::OverriddenForNumberedMode);
+        assert_eq!(conversion.effective_numbered.unwrap().mode, 0);
+
+        // The same reporting path for a retained legacy adaptation; source params remain inputs only to a numbered mode.
+        defs[0].config.pattern_mode = Some(2);
+        defs[0].config.pattern_param0 = Some(1);
+        defs[0].config.pattern_param1 = Some(2);
+        assert_eq!(Conversion::capture(&defs[0]).unwrap().disposition, Disposition::RetainedForNumberedMode);
+
+        // Older exported imports have no provenance: load them without inventing source values or a conversion note.
+        for entry in exported["test_sequence"].as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("tm5_pattern");
+        }
+        let older: ModernConfig = serde_json::from_value(exported).unwrap();
+        let (defs, _) = create_test_definitions_from_config(&older, cache_info).unwrap();
+        assert!(notes(&defs).is_empty());
     }
 
     /// A dependent native Bench-Verify follows its own family's Bench-Init and no other (Astra's review: the Verify's identity was its

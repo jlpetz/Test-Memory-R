@@ -247,6 +247,16 @@ restarts every loader at a random 4 KiB block, so it is a fresh instance of the 
 | command line | `rescan=on\|off` | Whether a failed check is rescanned to name each bad word (on); off counts one error a failed check |
 | command line | `patterns=native\|legacy` | How a TM5 `.cfg`'s SimpleTests import: native programs on `Mem-SimpleV2-Auto` (the default), or the numbered modes on the same test |
 
+**Imported patterns are shown beneath the startup plan**, in the console and window. Tests sharing a source mode and an effective
+program are grouped, for example `Tests 1, 2: TM5 Pattern Mode 2 → TMR program: lines → switch → random → switch`. Only selected
+SimpleTests appear, once per test ID even when the sequence repeats it. The summary follows command-line overrides; numbered modes
+are labelled as TMR adaptations, not exact TM5 reproduction.
+
+The import retains each SimpleTest's original mode and Param0/Param1 in optional `tm5_pattern` metadata when exported to JSON.
+This metadata does not control generation. The run log records those original fields, and saved results retain them with a
+disposition: replaced by a native program, retained for a numbered mode, or overridden. Numbered-mode results also record the
+effective parameters. Older configs/results without this metadata still load; TMR does not guess their original fields.
+
 **Repetition must test something** (checked when the config loads): `verify_reps` 0 on a SimpleTest
 or mirror test, `write_read_cycles` 0 on any `run_phased_test` test, and `test_reps` 0 on a mirror
 are refused; so is `test_reps` 0 with a mode that keys its image by the cycle (0, 1, 2, 20, 30),

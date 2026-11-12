@@ -528,6 +528,9 @@ pub struct TestConfigSnapshot {
     /// The native program a SimpleTest or Mem-Sequence ran (pattern spec v2), when no `pattern_mode` was set.
     #[serde(default)]
     pub program: Option<Vec<String>>,
+    /// Original TM5 fields and how the effective plan uses/replaces them, after CLI overrides. Absent in older results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tm5_pattern: Option<crate::reporting::tm5_patterns::Conversion>,
     /// Mem-Sequence's passes, and the order of the steps that name none
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sequence: Option<String>,
@@ -757,6 +760,7 @@ impl TestConfigSnapshot {
             program: (def.actual_name.starts_with("Mem-SimpleV2") || def.actual_name == "Mem-Sequence")
                 .then(|| def.config.native_program().map(|p| p.names()))
                 .flatten(),
+            tm5_pattern: crate::reporting::tm5_patterns::Conversion::capture(def),
             sequence: (def.actual_name == "Mem-Sequence")
                 .then(|| def.config.sequence())
                 .map(|s| format!("{} (order {})", s.name(), s.order.name())),
@@ -1508,6 +1512,30 @@ mod tests {
         let named = TestConfigSnapshot::capture(&def("Mem-StuckBit128"), false, cache_info, 1, 64 << 20);
         assert_eq!((named.test.as_str(), named.name.as_str()), ("Mem-StuckBit128", "Mem-StuckBit128"));
         assert!(!serde_json::to_string(&named).unwrap().contains("\"id\""), "no id, no key");
+    }
+
+    #[test]
+    fn saved_pattern_conversion_preserves_source_and_accepts_older_results() {
+        use crate::config::Tm5PatternSource;
+        use crate::reporting::tm5_patterns::Disposition;
+
+        let cache_info = crate::tests::get_cache_info();
+        let mut def =
+            crate::runner::create_test_definitions(cache_info).into_iter().find(|d| d.actual_name.starts_with("Mem-SimpleV2")).unwrap();
+        def.tm5_pattern = Some(Tm5PatternSource { mode: 2, param0: 0x77777777, param1: 0x33333333 });
+        def.config.pattern_mode = None;
+        def.config.program = crate::pattern::Program::from_tm5_mode(2);
+        let captured = TestConfigSnapshot::capture(&def, true, cache_info, 1, 64 << 20);
+        let mut json = serde_json::to_value(&captured).unwrap();
+        let loaded: TestConfigSnapshot = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(loaded.tm5_pattern, captured.tm5_pattern);
+        assert_eq!(loaded.program, Some(vec!["lines".into(), "switch".into(), "random".into(), "switch".into()]));
+        let conversion = loaded.tm5_pattern.unwrap();
+        assert_eq!(conversion.source, def.tm5_pattern.unwrap());
+        assert_eq!(conversion.disposition, Disposition::ReplacedByNativeProgram);
+        assert!(conversion.effective_numbered.is_none());
+        json.as_object_mut().unwrap().remove("tm5_pattern");
+        assert!(serde_json::from_value::<TestConfigSnapshot>(json).unwrap().tm5_pattern.is_none());
     }
 
     /// TODO 72: another config, plan or test filter is a run difference, which warns: the tests both runs have still compare like for
