@@ -7,7 +7,8 @@ on every step run — not a TMR crash).
 **Implemented in `8675f6c`, reviewed 2026-11-12:** case-insensitive INI section/key matching; `Cores=N` preserved as an explicit worker
 count (`CpuConfig.count`); every TM5 import clears the responsiveness reserve (`skip_spec="0"`, not just for `Cores=0`: TM5 never
 reserves a core, for any count); TM5's own per-slot defaults for an omitted test field (function, parameter, pattern mode/params,
-block size; `Enable` defaults to on). Missing whole test sections remain a compatibility gap, including the default seal.
+block size; `Enable` defaults to on). The 2026-11-12 follow-up now also supplies the default enabled Test0 when its section is
+absent. Missing whole ordinary test sections remain a compatibility gap.
 The commit also includes the block-code-0 floor despite the owner's later instruction to leave it out; its overlap-work effect
 is described below. Interleave Type and DLL Name remain outside the approved importer work. Native patterns stay as designed;
 no parameter-specific mode-2 revival. A complete-file import regression fixture is still open.
@@ -63,7 +64,7 @@ Repeated IDs remain repeated steps; they are not deduplicated. The seal is addit
 **Test 0 need not appear in the sequence.** ABSOLUT declares `[Test0]` with `Enable=1` and `Function=RefreshStable`, but omits
 0 from `Test Sequence`. TMR correctly enables the run's seal independently of that sequence. Seal checks remain part of the
 harness and cycle boundaries, with errors recorded separately as seal errors. Listing 0 would add an explicit `Seal-Check` step.
-The missing-section defect below concerns deleting the entire `[Test0]` section, not leaving 0 out of the sequence.
+The missing-section defect described below concerned deleting the entire `[Test0]` section and is now fixed.
 
 Test 15's `Channels=2, Parameter=256` means a 511-line skip after each 64 B access, hence a **512-line / 32 KiB period**.
 The passes start at offsets 511 down to 0 and each walks that period to the chunk's end. Both write and verify visit every line.
@@ -100,7 +101,8 @@ entries are all one. Deleting `Enable=1` from Test 15 left the TM5 test enabled 
 
 Other missing values also differ: TM5 has per-test defaults for Function, Parameter, Pattern Mode, pattern parameters and block size.
 For example, TM5's default Parameter for Test 2 is 254; TMR previously defaulted it to zero. Missing Function became `Unknown`
-rather than the indexed TM5 default. Missing whole test sections are still not synthesized by TMR as they are by TM5's loading loop.
+rather than the indexed TM5 default. Missing whole ordinary test sections are still not synthesized as they are by TM5's loading loop;
+the special Test0 seal now is.
 
 Fixed: TM5's own 16-entry-per-slot default tables (`TM5/bin/DefTestParam.inc`: function, Parameter/Jump, Pattern Mode, Pattern
 Param0/1, Test Block Size) are ported directly as `TM5_DEFAULT_*` consts and applied when a present `[TestN]` section omits that
@@ -108,22 +110,28 @@ field; `Enable`'s own default flips from off to on (`TableEnableTst` is all 1).
 Cross-checked against the TM5 author's own notes (`TM5_Author_website_notes.txt`): the default Test1 `Pattern Param0=0x1E5F` is
 exactly the table's 7775 decimal.
 
-Still open: an entirely absent `[TestN]` section is left out. TM5 loads the default slots governed by `Tests=`; TMR does not yet
-reproduce this. With `Test Sequence=1,2` and valid sections for Tests 1 and 2, these Test 0 cases differ:
+The follow-up fixes missing Test0 by supplying an empty section to the existing per-slot defaults. With `Test Sequence=1,2`
+and valid sections for Tests 1 and 2, these cases now all match TM5:
 
 | Test 0 declaration | Current TMR import | TM5 behaviour |
 |---|---|---|
 | `[Test0]`, `Enable=1`, `Function=RefreshStable` | Seal enabled despite 0 being absent from the sequence | Seal enabled |
 | `[Test0]` present, Enable and Function omitted | Seal enabled using the new per-field defaults | Seal enabled |
 | `[Test0]`, `Enable=0` | Seal disabled | Seal disabled |
-| Entire `[Test0]` section absent | Seal disabled: no parsed slot sets `sealed=true` | Default enabled RefreshStable slot supplies the seal |
+| Entire `[Test0]` section absent | Default enabled RefreshStable slot supplies the seal | Default enabled RefreshStable slot supplies the seal |
 
-The last row is the defect. If the sequence explicitly names a missing section, TMR instead rejects that reference. A fix should
-restore default-slot loading, preserve an explicit `Enable=0`, and keep command-line `seal=` overrides effective. This is separate
-from filtering ordinary test steps by the sequence; that filtering correctly leaves ABSOLUT's seal enabled.
+Previously the last row disabled sealing, and explicitly listing 0 without its section was rejected. Both are fixed. An explicit
+`Enable=0` is preserved and command-line `seal=` overrides still win. The regression test covers absent, empty, enabled and disabled
+Test0 sections, with 0 absent from the sequence, explicitly listed, and with no explicit sequence.
 
-Sources: `src/config.rs` (the `TM5_DEFAULT_*` consts and the test-parsing loop); test `omitted_test_fields_take_tm5s_own_per_slot_defaults`.
-ABSOLUT specifies every field itself, so this defect never applied to this file; it affects other/edited configs.
+Checked all 11 `.cfg` files in `../TM5_configs/bin`: each declares Test0 as enabled RefreshStable. None has the missing-section
+defect. ABSOLUT, Extreme1, Ollie and SuperLight2 omit 0 from their sequences; their implicit seals already worked.
+
+Still open: entirely absent slots 1-15 are left out, and a sequence reference to one is rejected. TM5 loads its ordinary default
+slots according to `Tests=`; that broader default-loading behaviour is outside this seal fix.
+
+Sources: `src/config.rs` (the `TM5_DEFAULT_*` consts and the test-parsing loop); tests `omitted_test_fields_take_tm5s_own_per_slot_defaults`
+and `tm5_test0_defaults_preserve_the_seal_and_explicit_disable`.
 
 ### Fixed: A nonzero Cores value loses its count
 
@@ -273,8 +281,9 @@ and the assembly checker; the source snapshots should not be advertised as one r
 
 ## Status
 
-1. Fixed: INI key normalization, defaults for fields of present sections, the explicit Cores count and the imported reserve.
-   **Still open:** synthesize omitted test sections using TM5's default-slot rules, especially the default Test 0 seal.
+1. Fixed: INI key normalization, defaults for fields of present sections, the default Test0 seal when its whole section is absent,
+   the explicit Cores count and the imported reserve.
+   **Still open:** synthesize omitted ordinary test sections using TM5's default-slot rules.
    DLL/interleave importer additions remain deferred.
 2. **Still open:** a complete-file import regression fixture asserting the 31-step order, omitted Test 13, pass counts, chunks,
    stride, mirror modes and three-cycle pattern schedule for this exact file. Small targeted fixtures for the fixed parser defects

@@ -1650,10 +1650,14 @@ impl LegacyConfig {
             lock_granularity_mb: num::<u32>(memory, gms, "Lock Memory Granularity (Mb)", 16)?.clamp(1, 512),
         };
 
+        // TM5 loads its default enabled RefreshStable slot even when [Test0] is absent. Feed an empty section through the same
+        // field defaults; an explicit section (including Enable=0) wins. The seal is independent of Test Sequence.
+        sections.entry("test0".to_string()).or_default();
+
         // Parse tests. A field a present `[TestN]` omits takes TM5's own per-slot default (`DefTestParam.inc`), not TMR's generic
         // 0/"Unknown": deleting `Enable=1` from a declared test leaves it enabled in TM5 (`TableEnableTst` is all 1), and e.g. Test2's
-        // own default `Parameter` is 254, not 0. An entirely undeclared `[TestN]` is still left out: TM5's `Tests=` governs which
-        // slots are in play, and no shipped `.cfg` both uses a slot and omits its whole section.
+        // own default `Parameter` is 254, not 0. Entirely undeclared slots 1-15 are still left out: TM5's `Tests=` governs which
+        // ordinary slots are in play, and no shipped `.cfg` both uses one and omits its whole section.
         let mut tests = Vec::new();
         for i in 0..=15 {
             let test_section = format!("Test{}", i);
@@ -2417,6 +2421,35 @@ mod tests {
         assert_eq!(t3.parameter, 1);
     }
 
+    /// Missing Test0 means TM5's default seal, independently of its presence in the sequence. An explicit disable still wins.
+    #[test]
+    fn tm5_test0_defaults_preserve_the_seal_and_explicit_disable() {
+        for (section, enabled) in
+            [("", true), ("[Test0]\n", true), ("[Test0]\nEnable=1\nFunction=RefreshStable\n", true), ("[Test0]\nEnable=0\n", false)]
+        {
+            for sequence in ["1", "1,0,1", ""] {
+                let cfg = format!(
+                    "[Main Section]\nTests=2\nTest Sequence={sequence}\n[Global Memory Setup]\n\
+                    [Test1]\nFunction=SimpleTest\n{section}"
+                );
+                let legacy = LegacyConfig::parse_legacy_format(&cfg).unwrap();
+                let t0 = legacy.tests.iter().find(|t| t.id == 0).expect("the default slot must be loaded");
+                assert_eq!((t0.enabled, t0.function.as_str()), (enabled, "RefreshStable"));
+                let modern = legacy.to_modern_config().unwrap();
+                assert_eq!(modern.system.seal.as_deref(), Some(if enabled { "tmr" } else { "off" }), "{cfg}");
+                let plan = modern.plan().unwrap();
+                let steps: Vec<_> = plan.steps.iter().map(|&i| plan.tests[i].id.unwrap()).collect();
+                let expected: &[&str] = match (sequence, enabled) {
+                    ("1,0,1", true) => &["1", "0", "1"],
+                    ("1,0,1", false) => &["1", "1"],
+                    ("", true) => &["0", "1"],
+                    _ => &["1"],
+                };
+                assert_eq!(steps, expected, "{cfg}");
+            }
+        }
+    }
+
     /// INI names are case-insensitive as in TM5: changing their spelling must not turn a strided test into a sequential one.
     #[test]
     fn tm5_ini_case_keeps_the_same_workload() {
@@ -2439,13 +2472,15 @@ mod tests {
             let parsed = LegacyConfig::parse_legacy_format(&variant).unwrap();
             assert_eq!(parsed.main_section.config_name, "Case Check", "values keep their case");
             assert_eq!(parsed.main_section.config_author, "anta777");
-            assert_eq!(parsed.tests[0].function, "SimpleTest");
-            assert_eq!((parsed.tests[0].pattern_param0, parsed.tests[0].pattern_param1), (0x77777777, 0x33333333));
+            let t15 = parsed.tests.iter().find(|t| t.id == 15).unwrap();
+            assert_eq!(t15.function, "SimpleTest");
+            assert_eq!((t15.pattern_param0, t15.pattern_param1), (0x77777777, 0x33333333));
             let modern = parsed.to_modern_config().unwrap();
             assert_eq!(serde_json::to_value(&modern).unwrap(), serde_json::to_value(&expected).unwrap());
             let plan = modern.plan().unwrap();
-            assert_eq!(plan.steps, [0, 0], "both occurrences remain");
-            let test = &plan.tests[0].config;
+            let ids: Vec<_> = plan.steps.iter().map(|&i| plan.tests[i].id).collect();
+            assert_eq!(ids, [Some("15"), Some("15")], "both occurrences remain");
+            let test = &plan.tests[plan.steps[0]].config;
             assert_eq!(test.parameter_context.as_ref().unwrap().stride_cachelines, Some(511));
             assert_eq!((test.verify_reps, test.write_read_cycles), (5, 4));
         }

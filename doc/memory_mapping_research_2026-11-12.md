@@ -101,8 +101,9 @@ generations. Knowing the DQ width does not determine bank or channel address sel
 
 ## Review of importer commit 8675f6c
 
-Source review against its parent, plus comparison with `../TM5/`. No Rust build, CI rerun or live TMR test was performed in this
-review. Opus reports 570 passing quick-CI tests; that result was not independently rerun here.
+The original review compared the commit with its parent and `../TM5/`, without a build or live TMR test. The missing-Test0
+follow-up passed `python tools/ci_local.py --quick`: formatting, build-tool checks, all three Clippy configurations and 571 Rust
+tests (six skipped). No live memory test was run.
 
 Confirmed:
 
@@ -116,12 +117,11 @@ Confirmed:
 
 Remaining qualifications:
 
-1. **Missing whole sections are still a compatibility gap.** The parser processes only present `[TestN]` sections. TM5 loads
-   defaults for slots governed by `Tests=` even without those sections. In particular, omitting `[Test0]` leaves TMR's
-   `sealed=false`; TM5's default slot 0 is enabled RefreshStable. A referenced missing nonzero test instead causes TMR to
-   reject the sequence. This predates the commit but prevents calling default handling complete. A present, enabled `[Test0]`
-   works correctly even when 0 is absent from the sequence, as in ABSOLUT. Its declaration sets the run's seal independently
-   of the sequence; an explicit 0 would add a separate `Seal-Check` step.
+1. **Missing Test0 fixed in the follow-up; ordinary missing slots remain open.** Omitting `[Test0]` previously left TMR's seal
+   off. The importer now supplies that slot's enabled RefreshStable defaults, independent of `Test Sequence`, preserving explicit
+   `Enable=0` and CLI `seal=` overrides. All 11 configs in `../TM5_configs/bin` already declare enabled RefreshStable Test0, so none
+   had this defect. Four omit 0 from their sequences; those seals already worked. Entirely missing nonzero slots still cause
+   rejection when referenced, whereas TM5 loads defaults governed by `Tests=`. That broader compatibility gap remains open.
 2. **The complete ABSOLUT regression fixture is still absent.** The new focused tests do not substitute for importing the real
    file and pinning its complete execution plan.
 3. **Documentation corrected in the follow-up.** `doc/test_parameters.md` now distinguishes ordinary JSON's reserve from imports'

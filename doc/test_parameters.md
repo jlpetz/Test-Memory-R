@@ -385,6 +385,10 @@ These sit beside the per-test parameters above:
 | `system` | `"seal": "tmr"` | The seal (`seal.rs`, `doc/test_harness_tiers.md` §3a): `tmr` (the default), `tm5` (TM5's test 0 pattern, bit for bit) or `off`. A TM5 import takes `tmr` when its Test0 (RefreshStable) is enabled, else `off` |
 | `system` | `"seal_width": "auto"` | The seal kernels' SIMD width: `auto` (this machine's seal calibration, else the rule: 256 with AVX2; below), `128`, `256` or `512`; unset, `width`'s when that is set, else `auto`. A width the CPU lacks is a load error |
 
+A TM5 import supplies the default enabled `RefreshStable` Test0 if its whole section is absent, just as if `[Test0]` were empty.
+The seal does not depend on 0 appearing in `Test Sequence`; listing 0 adds an explicit `Seal-Check` step. `[Test0] Enable=0`
+disables the imported seal, and the command-line `seal=` setting still overrides that choice.
+
 The command line overrides the last two: `seal=tmr|tm5|off`, `seal-width=auto|128|256|512`. A TM5
 `Cycles = 0` runs until stopped. A dependent step (`skip_init`) must directly follow the step that
 wrote its data, with no step that takes the seal in between; otherwise the plan is refused. A
