@@ -11,7 +11,8 @@ block size; `Enable` defaults to on). The 2026-11-12 follow-up now also supplies
 absent. Missing whole ordinary test sections remain a compatibility gap.
 The follow-up also reverts `8675f6c`'s block-code-0 floor at the owner's request; its overlap-work effect is described below.
 Interleave Type and DLL Name remain outside the approved importer work. Native patterns stay as designed;
-no parameter-specific mode-2 revival. A complete-file import regression fixture is still open.
+no parameter-specific mode-2 revival. The owner declined a complete-file import regression fixture on 2026-11-12; existing
+focused regression tests remain.
 
 Input: `../TM5_Source/Check_absolutnew.cfg`, named `ABSOLUT(01102021)` by anta777.
 Reference: `../TM5/` assembly, cross-checked with `../TM5_Source/MT0.cxx`.
@@ -127,8 +128,11 @@ Test0 sections, with 0 absent from the sequence, explicitly listed, and with no 
 Checked all 11 `.cfg` files in `../TM5_configs/bin`: each declares Test0 as enabled RefreshStable. None has the missing-section
 defect. ABSOLUT, Extreme1, Ollie and SuperLight2 omit 0 from their sequences; their implicit seals already worked.
 
-Still open: entirely absent slots 1-15 are left out, and a sequence reference to one is rejected. TM5 loads its ordinary default
-slots according to `Tests=`; that broader default-loading behaviour is outside this seal fix.
+Known compatibility difference: entirely absent slots 1-15 are left out, and a sequence reference to one is rejected. TM5 loads
+its ordinary default slots according to `Tests=`: sections override built-in definitions rather than create tests from scratch.
+For example, `Tests=4`, `Test Sequence=1,2,3` and no `[Test2]` uses default Test2 in TM5; TMR reports an undefined test.
+This does not justify adding unrequested tests to a sequence. No supplied config relies on missing ordinary sections, and
+implementing that default-loading behaviour is outside the completed importer batch.
 
 Sources: `src/config.rs` (the `TM5_DEFAULT_*` consts and the test-parsing loop); tests `omitted_test_fields_take_tm5s_own_per_slot_defaults`
 and `tm5_test0_defaults_preserve_the_seal_and_explicit_disable`.
@@ -274,7 +278,8 @@ Sources: `src/tests.rs:6449-6508`, `:6515`, `:3834-3858`, `:4687-4695`; `src/tes
 `src/seal.rs:243-248`, `:304-318`, `:438-486`; TM5 `MainThread.asm:355-446`, `:671-732`.
 
 The existing source tests cover synthetic conversion cases, sequence repetition, mirror modes, pattern phase scheduling, SIMD images,
-guard regions and injected word errors. I found no test fixture exercising this complete ABSOLUT file through parsing and planning.
+guard regions and injected word errors. The owner declined an additional fixture pinning the complete ABSOLUT execution plan;
+the existing focused regression tests remain.
 Those tests were inspected, not run. The local TM5 assembly and decompiled source also differ in RS_Set: assembly lines 76-79 omit
 the third store that MT0.cxx lines 532-535 contain. The sensible complete 48 B seal motif is supported by the decompiled implementation
 and the assembly checker; the source snapshots should not be advertised as one reproducibly matched TM5 executable.
@@ -283,15 +288,45 @@ and the assembly checker; the source snapshots should not be advertised as one r
 
 1. Fixed: INI key normalization, defaults for fields of present sections, the default Test0 seal when its whole section is absent,
    the explicit Cores count and the imported reserve.
-   **Still open:** synthesize omitted ordinary test sections using TM5's default-slot rules.
+   **Known compatibility difference:** omitted ordinary sections are not synthesized; an explicit sequence reference is rejected.
    DLL/interleave importer additions remain deferred.
-2. **Still open:** a complete-file import regression fixture asserting the 31-step order, omitted Test 13, pass counts, chunks,
-   stride, mirror modes and three-cycle pattern schedule for this exact file. Small targeted fixtures for the fixed parser defects
-   exist (`omitted_test_fields_take_tm5s_own_per_slot_defaults`, `tm5_ini_case_keeps_the_same_workload`,
-   `tm5_cores_count_reaches_cpu_selection`, `tm5_test0_defaults_preserve_the_seal_and_explicit_disable`,
-   `tm5_block_size_code_0_keeps_a_capped_extent_as_one_chunk`); none exercises the whole file end to end.
-3. **Still open:** recording original pattern inputs/substitutions, the CPU reserve and the effective pattern schedule in the
-   results when converting.
+2. **Declined:** the complete-file ABSOLUT regression fixture (owner, 2026-11-12). No further fixture work is planned.
+3. **Proposed next improvement:** show original-to-effective pattern substitutions at import and retain their source metadata
+   in saved results. The owner supports making this visible; the proposed presentation is below.
 4. Decided: keep the native pattern redesign and full verification of each written polarity. Parameter-specific mode-2
    reproduction is not required; revisit only on concrete coverage evidence.
 5. Decided: hardware error-sensitivity and fresh assembly validation stay outside this source-review verdict.
+
+## Proposed presentation of imported patterns
+
+TMR already shows the effective program in each step's Config report (`runner::step_config_line`) and records it, the pattern
+version, run seed and transfer profile in `run_context`. The missing information is which TM5 pattern it replaced.
+
+Use the existing startup plan/report area, shared by console and window, for an informational note:
+
+> TM5 import: SimpleTest data patterns converted to TMR native programs.
+
+Under it, group tests sharing the same source mode and effective program. For unmodified native ABSOLUT:
+
+| Tests | TM5 mode | TMR program |
+|---|---|---|
+| 1 | 2 | lines → switch → random → switch |
+| 2 | 1 | linepair → switch → random → switch |
+| 6–12, 14–15 | 0 | ident → switch → random → switch |
+
+These are programs, not a claim that all four families run in one suite cycle. Each family uses a verified P/~P pair; with
+ABSOLUT's four rounds a step consumes two families per cycle. Keep the exact schedule in the existing pattern explanation
+rather than implying that a program row describes four individual write rounds.
+
+Produce the note from the effective plan after CLI overrides, and include only tests selected to run. Overrides such as
+`pattern-mode=` must show what will actually run. With `patterns=legacy`, label the choice as TMR's legacy adaptation;
+never describe it as exact TM5 reproduction. Mirror tests do not consume these pattern-mode fields and should not appear
+as converted SimpleTests.
+
+Keep original mode, Param0/Param1 and their replacement status in optional import metadata alongside the already recorded
+effective program. Details for Test 1 can say `Param0=0x77777777, Param1=0x33333333: replaced by native program`; these are
+provenance, not new generator inputs. Preserve this metadata through config export and result saving, with absent fields
+accepted for older files. Share the same conversion information with the detailed log/report so it remains available later.
+
+This needs no new prompt, repeated per-chunk logging, or hot-loop bookkeeping. The default view should communicate the
+substitution in a few grouped lines; raw hexadecimal parameters belong in details and saved metadata.

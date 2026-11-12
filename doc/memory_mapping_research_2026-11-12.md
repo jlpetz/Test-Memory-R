@@ -118,13 +118,14 @@ Confirmed:
 
 Remaining qualifications:
 
-1. **Missing Test0 fixed in the follow-up; ordinary missing slots remain open.** Omitting `[Test0]` previously left TMR's seal
+1. **Missing Test0 fixed; ordinary missing slots are a known compatibility difference.** Omitting `[Test0]` previously left TMR's seal
    off. The importer now supplies that slot's enabled RefreshStable defaults, independent of `Test Sequence`, preserving explicit
    `Enable=0` and CLI `seal=` overrides. All 11 configs in `../TM5_configs/bin` already declare enabled RefreshStable Test0, so none
    had this defect. Four omit 0 from their sequences; those seals already worked. Entirely missing nonzero slots still cause
-   rejection when referenced, whereas TM5 loads defaults governed by `Tests=`. That broader compatibility gap remains open.
-2. **The complete ABSOLUT regression fixture is still absent.** The new focused tests do not substitute for importing the real
-   file and pinning its complete execution plan.
+   rejection when referenced, whereas TM5 loads defaults governed by `Tests=`: its sections override built-in test slots.
+   None of the supplied configs relies on missing ordinary slots; that behaviour is outside the completed importer batch.
+2. **The complete ABSOLUT regression fixture was declined by the owner on 2026-11-12.** Existing focused regression tests remain;
+   an additional full-file fixture is no longer proposed work.
 3. **Documentation corrected in the follow-up.** `doc/test_parameters.md` now distinguishes ordinary JSON's reserve from imports'
    `skip-cores=0`. The validation report's incorrect external-northbridge explanation of ganged mode has been replaced.
    AMD Family 10h integrated controllers supported it
@@ -138,6 +139,6 @@ Remaining qualifications:
    The earlier description as a minor alignment adjustment understated this consequence. At the owner's request the follow-up
    restores the previous code-0 rule and tests that the 500 MiB case stays one chunk, traverses 500 MiB and has no overlap.
 
-The CPU-selection, key-matching and present-field default fixes should be retained. No new functional blocker was found in
-their implementation. The remaining default-section gap and missing full-file fixture should stay explicit rather than being
-reported as completed.
+The approved importer fixes are complete. The ordinary missing-section compatibility difference does not affect the supplied
+configs, and the owner declined the full-file fixture. The proposed next improvement is visible pattern-conversion information,
+described in [the validation report](tm5_absolutnew_validation_2026-11-12.md#proposed-presentation-of-imported-patterns).
