@@ -2,7 +2,8 @@
 
 **Status:** proposal for the owner and Opus to critique before implementation. Written 2026-11-12.
 This document adds no configuration fields or kernels. It leaves the importer fixes to the separate work already in progress.
-The owner has declined the block-code-0 rounding change; it is outside this proposal.
+Block-code-0 rounding is outside this proposal. The owner declined it; the later importer commit `8675f6c` nevertheless includes it.
+The source review and that scope discrepancy are recorded in [the follow-up research note](memory_mapping_research_2026-11-12.md#review-of-importer-commit-8675f6c).
 
 ## 1. Recommendation
 
@@ -62,6 +63,18 @@ hardware guarantee. An odd period only guarantees coprimality with power-of-two 
 
 Knowing C therefore does not make another user-facing channel-count knob necessary for native geometry. Preserve TM5's
 `Channels` as an input to its chosen workload; do not automatically replace it with detected channels or DDR5 subchannel counts.
+
+### Public mappings and BIOS controls
+
+Follow-up research covers AMD BGS/BGS Alt, published Ryzen DDR5 mappings, and Intel's documented channel and bank-group hash
+controls: [AMD and Intel memory mapping research](memory_mapping_research_2026-11-12.md).
+The mapping is partly documented and configurable, not wholly opaque. Use these sources to evaluate candidate access shapes
+offline; a CPU name, channel count or BGS setting alone does not establish the active mapping.
+
+Page translation preserves the low 12 address bits in an ordinary 4 KiB mapping. This gives short strides and adjacent-line
+groups useful structure even without physical addresses. Larger pages preserve more offset bits within each page, but stitching
+pages does not make their physical placement contiguous. These facts refine the rationale; they do not change the proposed fields
+or prove a particular preset's error sensitivity.
 
 ## 3. The user-facing presets
 
