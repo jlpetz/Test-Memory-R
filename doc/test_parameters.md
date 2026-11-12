@@ -319,6 +319,7 @@ write-and-check tests; `width=` is there to compare widths or to step down.
 |---|---|---|
 | command line | `cpus=50%`, `cpus=4` | The threads: a share of what `skip-cores=` leaves (rounded to the nearest) or a count, at least 1 and at most all: `0` and `0%` are one thread, over 100% every one. A share of the logical CPUs, or under `cputype=cores` of the cores |
 | `system.cpu_config` | `"usage_percent": 100` | The same share, from a config |
+| `system.cpu_config` | `"count": 4` | An absolute count, taking precedence over `usage_percent`; must be at least 1. TM5's `Cores=4` imports as this count with type `threads`; `Cores=0` uses 100%. The usual core reserve still applies, and a count above the available CPUs is capped with a warning. `cpus=` overrides either config field |
 | command line | `skip-cores=1` (the default), `skip-cores=25%`, `skip-cores=0-7` | The cores left out: the last N in the core order (the weakest), a share of the cores from the end too (rounded, never every core; of the cores under either `cputype=`), or the cores numbered A to B wherever they rank. A count that leaves no core, or a range over them all, stops the run |
 | `system.cpu_pinning` | `"skip_spec": "1"` | The same |
 | command line | `cpu-stride=2`, `cpu-stride=even`, `cpu-stride=1` | Given, the cores by number instead of the core order, spaced by position as before TODO 108: every Nth, the count spread over them (`cores / threads` apart, in whole steps), or packed. With core types too. A count the stride can't place stops the run |

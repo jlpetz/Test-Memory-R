@@ -398,13 +398,10 @@ pub enum ChunkMode {
 }
 
 /// TM5's block for a `Test Block Size` code over `base` bytes: `base / divisor` floored to `granularity`, at least one granule
-/// (`MainThread.asm:627-661`). Code 0 (divisor 1) is `base`.
+/// (`MainThread.asm:627-661`), including code 0 (divisor 1): TM5 floors the whole window too, not just a fraction of it.
 pub fn tm5_block_size(base: usize, divisor: u32, granularity: usize) -> usize {
-    if divisor <= 1 {
-        return base;
-    }
     let granularity = granularity.max(1);
-    (base / divisor as usize / granularity).max(1) * granularity
+    (base / divisor.max(1) as usize / granularity).max(1) * granularity
 }
 
 /// What a test's chunk spec asks for and the chunk it runs (TODO 76).

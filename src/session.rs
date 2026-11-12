@@ -292,7 +292,7 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
             config.to_error_mode(),
             config.to_test_suite_timing(),
             config.system.cpu_config.cpu_type.clone(),
-            format!("{}%", config.system.cpu_config.usage_percent),
+            config.system.cpu_config.cpus(),
             config.system.cpu_pinning.clone(),
             config.system.memory_allocation.clone(), // Use the config's allocation settings
             Some(config),                            // Keep the full config for test sequence
@@ -489,6 +489,15 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
         // Never silently right-size the request: tell the user and stop
         Err(e) => return Ok(SessionEnd::Stopped(Stopped::CpuSelection(e))),
     };
+    if let Ok(count) = cpus.parse::<usize>()
+        && count > choice.available
+    {
+        log::warn!(
+            "CPU count {count} exceeds the {} CPU(s) available after cputype={cputype} and skip-cores={skip}; using {} threads",
+            choice.available,
+            choice.cpu_list.len()
+        );
+    }
     let (order, skipped) = (&choice.order, &choice.skipped);
     match request.stride {
         None => log::info!("Core order: {order:?}, the threads from the front; skip-cores={skip} leaves out {skipped:?}"),

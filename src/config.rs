@@ -579,6 +579,16 @@ pub struct CpuConfig {
     #[serde(rename = "type")]
     pub cpu_type: String, // "threads", "cores"
     pub usage_percent: u32, // 1-100
+    /// An absolute count instead of `usage_percent`, subject to the same available-CPU limit as `cpus=N`. TM5's nonzero Cores imports here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
+}
+
+impl CpuConfig {
+    /// The config's CPU request, before a command-line `cpus=` override.
+    pub(crate) fn cpus(&self) -> String {
+        self.count.map_or_else(|| format!("{}%", self.usage_percent), |count| count.to_string())
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -890,6 +900,21 @@ pub struct LegacyTest {
     pub test_chunk_size_mb: u32,
 }
 
+// TM5's own per-slot defaults (`TM5/bin/DefTestParam.inc`), applied to a field a present `[TestN]` omits. `Enable` has no table
+// (every slot's `TableEnableTst` entry is 1) and `Time (%)` has no per-slot table either (TM5's own default is a flat 100 for every
+// test, `DefTestingLength`, which TMR already used); both are handled directly at the call site instead of a 16-entry table of one
+// repeated value. Cross-checked against the TM5 author's own notes (`TM5/TM5_Author_website_notes.txt`): Test1's default Pattern
+// Param0 0x1E5F is exactly this table's 7775 decimal.
+const TM5_DEFAULT_FUNCTION: [&str; 16] = [
+    "RefreshStable", "SimpleTest", "SimpleTest", "MirrorMove", "MirrorMove128", "MirrorMove", "SimpleTest", "SimpleTest", "SimpleTest",
+    "SimpleTest", "SimpleTest", "SimpleTest", "SimpleTest", "SimpleTest", "SimpleTest", "SimpleTest",
+];
+const TM5_DEFAULT_PARAMETER: [u32; 16] = [0, 0, 254, 1, 510, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const TM5_DEFAULT_PATTERN_MODE: [u32; 16] = [0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const TM5_DEFAULT_PATTERN_PARAM0: [u64; 16] = [0, 7775, 1_354_423, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const TM5_DEFAULT_PATTERN_PARAM1: [u64; 16] = [0, 0x4535_7354, 0x6E72_A941, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const TM5_DEFAULT_BLOCK_SIZE_MB: [u32; 16] = [0, 16, 32, 0, 0, 0, 1, 2, 0, 16, 16, 16, 16, 16, 16, 16];
+
 /// One enabled test of a config, as a cycle plan holds it (TODO 74).
 pub struct ConfigTest<'a> {
     pub function: &'a str,
@@ -931,6 +956,9 @@ impl ModernConfig {
         ];
         for (cli_key, json_key, value) in checks {
             registry.parse_arg(&format!("{cli_key}={value}")).map_err(|e| format!("system.{json_key}: {e}"))?;
+        }
+        if sys.cpu_config.count == Some(0) {
+            return Err("system.cpu_config.count: must be at least 1; omit it to use usage_percent".to_string());
         }
         match sys.memory_strategy.allocation_mode.as_str() {
             "max_available" | "percentage_reserve" | "fixed_reserve" => Ok(()),
@@ -1349,7 +1377,7 @@ impl ModernConfig {
                     default_extent: ExtentSpec::full_allocation(),
                     default_chunk: ChunkSpec::auto(),
                 },
-                cpu_config: CpuConfig { cpu_type: "cores".to_string(), usage_percent: 100 },
+                cpu_config: CpuConfig { cpu_type: "cores".to_string(), usage_percent: 100, count: None },
                 error_mode: "log".to_string(),
                 timing: TimingConfig {
                     global_cycles: Some(1), // Just 1 global cycle for demo
@@ -1497,7 +1525,7 @@ impl ModernConfig {
                     default_extent: ExtentSpec::full_allocation(), // as a TM5 .cfg import
                     default_chunk: ChunkSpec::auto(),
                 },
-                cpu_config: CpuConfig { cpu_type: "cores".to_string(), usage_percent: 100 },
+                cpu_config: CpuConfig { cpu_type: "cores".to_string(), usage_percent: 100, count: None },
                 error_mode: "log".to_string(),
                 timing: TimingConfig {
                     global_cycles: Some(3),
@@ -1558,10 +1586,11 @@ impl LegacyConfig {
             }
 
             if line.starts_with('[') && line.ends_with(']') {
-                current_section = line[1..line.len() - 1].to_string();
+                // TM5 uses GetPrivateProfileString: section and key names ignore case; values (including function names) do not.
+                current_section = line[1..line.len() - 1].to_ascii_lowercase();
                 sections.insert(current_section.clone(), HashMap::new());
             } else if let Some(eq_pos) = line.find('=') {
-                let key = line[..eq_pos].trim().to_string();
+                let key = line[..eq_pos].trim().to_ascii_lowercase();
                 let value = line[eq_pos + 1..].trim().to_string();
                 if let Some(section) = sections.get_mut(&current_section) {
                     section.insert(key, value);
@@ -1572,15 +1601,15 @@ impl LegacyConfig {
         // A key that is there must parse: an unparsable value used to become its default silently (an unreadable Parameter made a strided
         // test sequential)
         fn num<T: std::str::FromStr>(section: &HashMap<String, String>, name: &str, key: &str, default: T) -> Result<T, String> {
-            match section.get(key) {
+            match section.get(&key.to_ascii_lowercase()) {
                 None => Ok(default),
                 Some(s) => s.parse().map_err(|_| format!("TM5 config [{name}] {key}={s}: not a number")),
             }
         }
         // TM5 writes the pattern parameters in hex, with or without 0x
-        fn hex(section: &HashMap<String, String>, name: &str, key: &str) -> Result<u64, String> {
-            match section.get(key) {
-                None => Ok(0),
+        fn hex(section: &HashMap<String, String>, name: &str, key: &str, default: u64) -> Result<u64, String> {
+            match section.get(&key.to_ascii_lowercase()) {
+                None => Ok(default),
                 Some(s) => {
                     let digits = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
                     u64::from_str_radix(digits, 16).map_err(|_| format!("TM5 config [{name}] {key}={s}: not a 64-bit hex number"))
@@ -1589,9 +1618,9 @@ impl LegacyConfig {
         }
 
         // Parse main section
-        let main = sections.get("Main Section").ok_or("Missing [Main Section]")?;
+        let main = sections.get("main section").ok_or("Missing [Main Section]")?;
 
-        let test_sequence = match main.get("Test Sequence") {
+        let test_sequence = match main.get("test sequence") {
             None => Vec::new(),
             Some(s) => s
                 .split(',')
@@ -1602,8 +1631,8 @@ impl LegacyConfig {
         };
 
         let main_section = LegacyMainSection {
-            config_name: main.get("Config Name").unwrap_or(&"Unknown".to_string()).clone(),
-            config_author: main.get("Config Author").unwrap_or(&"Unknown".to_string()).clone(),
+            config_name: main.get("config name").unwrap_or(&"Unknown".to_string()).clone(),
+            config_author: main.get("config author").unwrap_or(&"Unknown".to_string()).clone(),
             cores: num(main, "Main Section", "Cores", 0)?,
             time_percent: num(main, "Main Section", "Time (%)", 100)?,
             cycles: num(main, "Main Section", "Cycles", 1)?,
@@ -1611,7 +1640,7 @@ impl LegacyConfig {
         };
 
         // Parse memory setup
-        let memory = sections.get("Global Memory Setup").ok_or("Missing [Global Memory Setup]")?;
+        let memory = sections.get("global memory setup").ok_or("Missing [Global Memory Setup]")?;
         let gms = "Global Memory Setup";
 
         let memory_setup = LegacyMemorySetup {
@@ -1621,22 +1650,26 @@ impl LegacyConfig {
             lock_granularity_mb: num::<u32>(memory, gms, "Lock Memory Granularity (Mb)", 16)?.clamp(1, 512),
         };
 
-        // Parse tests
+        // Parse tests. A field a present `[TestN]` omits takes TM5's own per-slot default (`DefTestParam.inc`), not TMR's generic
+        // 0/"Unknown": deleting `Enable=1` from a declared test leaves it enabled in TM5 (`TableEnableTst` is all 1), and e.g. Test2's
+        // own default `Parameter` is 254, not 0. An entirely undeclared `[TestN]` is still left out: TM5's `Tests=` governs which
+        // slots are in play, and no shipped `.cfg` both uses a slot and omits its whole section.
         let mut tests = Vec::new();
         for i in 0..=15 {
             let test_section = format!("Test{}", i);
-            if let Some(test) = sections.get(&test_section) {
+            if let Some(test) = sections.get(&test_section.to_ascii_lowercase()) {
                 let name = test_section.as_str();
+                let d = i as usize;
                 let legacy_test = LegacyTest {
                     id: i,
-                    enabled: num::<u32>(test, name, "Enable", 0)? == 1,
+                    enabled: num::<u32>(test, name, "Enable", 1)? == 1,
                     time_percent: num(test, name, "Time (%)", 100)?,
-                    function: test.get("Function").unwrap_or(&"Unknown".to_string()).clone(),
-                    pattern_mode: num(test, name, "Pattern Mode", 0)?,
-                    pattern_param0: hex(test, name, "Pattern Param0")?,
-                    pattern_param1: hex(test, name, "Pattern Param1")?,
-                    parameter: num(test, name, "Parameter", 0)?,
-                    test_chunk_size_mb: num(test, name, "Test Block Size (Mb)", 0)?,
+                    function: test.get("function").cloned().unwrap_or_else(|| TM5_DEFAULT_FUNCTION[d].to_string()),
+                    pattern_mode: num(test, name, "Pattern Mode", TM5_DEFAULT_PATTERN_MODE[d])?,
+                    pattern_param0: hex(test, name, "Pattern Param0", TM5_DEFAULT_PATTERN_PARAM0[d])?,
+                    pattern_param1: hex(test, name, "Pattern Param1", TM5_DEFAULT_PATTERN_PARAM1[d])?,
+                    parameter: num(test, name, "Parameter", TM5_DEFAULT_PARAMETER[d])?,
+                    test_chunk_size_mb: num(test, name, "Test Block Size (Mb)", TM5_DEFAULT_BLOCK_SIZE_MB[d])?,
                 };
                 tests.push(legacy_test);
             }
@@ -1779,8 +1812,10 @@ impl LegacyConfig {
                     default_chunk: ChunkSpec::auto(),
                 },
                 cpu_config: CpuConfig {
-                    cpu_type: if self.main_section.cores > 0 { "cores" } else { "threads" }.to_string(),
+                    // TM5's Cores is a worker count, not a request to exclude SMT siblings. Keep TMR's usual CPU ranking.
+                    cpu_type: "threads".to_string(),
                     usage_percent: 100,
+                    count: (self.main_section.cores > 0).then_some(self.main_section.cores),
                 },
                 error_mode: "log".to_string(),
                 timing: TimingConfig {
@@ -1791,7 +1826,10 @@ impl LegacyConfig {
                     default_test_duration_secs: None,
                 },
                 large_pages: true,
-                cpu_pinning: CpuPinningConfig::default(),
+                // TM5 never reserves a core for responsiveness, for Cores=0 ("ALL") or any positive count: it's TMR's own default
+                // (`default_skip_spec`), not TM5's. Without this, Cores=0 would still leave out the weakest core, and a positive
+                // Cores at or above the machine's full count would be capped one short of it for no TM5 reason.
+                cpu_pinning: CpuPinningConfig { skip_spec: "0".to_string(), ..CpuPinningConfig::default() },
                 memory_allocation: MemoryAllocationConfig::default(),
                 channels: self.memory_setup.channels,
                 seal: Some(if sealed { "tmr" } else { "off" }.to_string()),
@@ -2030,14 +2068,27 @@ mod tests {
         // The 880 MiB window; window/2 = 440 -> 432, window/3 = 293.33 -> 288, window/4 = 220 -> 208 (each floored to 16 MiB, as TM5 does);
         // 4 MiB; 1536 MiB clamped to the window.
         assert_eq!(chunks(5 * 1024 * MIB), [880, 432, 288, 208, 4, 880]);
-        // 500 MiB of memory: 500, 250 -> 240, 166.67 -> 160, 125 -> 112; 4; and 880 capped at 500
-        assert_eq!(chunks(500 * MIB), [500, 240, 160, 112, 4, 500]);
+        // 500 MiB of memory: 500 -> 496 (floored to 16 MiB too, code 0 included), 250 -> 240, 166.67 -> 160, 125 -> 112; 4; and a
+        // literal 1536 MiB simply capped to 500 (its own 4 KiB floor, unreached here, not the lock granularity's)
+        assert_eq!(chunks(500 * MIB), [496, 240, 160, 112, 4, 500]);
         let shrunk: Vec<bool> = configs.iter().map(|(name, c)| c.resolve_chunk(name, 500 * MIB).shrunk_by_memory()).collect();
         assert_eq!(shrunk, [true, true, true, true, false, true]);
         assert!(!configs.iter().any(|(name, c)| c.resolve_chunk(name, 5 * 1024 * MIB).shrunk_by_memory()));
         assert_eq!(modern.system.memory_strategy.default_extent.mode, "full_allocation");
         let meta = modern.legacy_metadata.as_ref().unwrap();
         assert_eq!((meta.tm5_window_mb, meta.tm5_lock_mb), (880, 16));
+    }
+
+    /// Code 0 floors to the Lock Memory Granularity too, as TM5 does (`MainThread.asm:627-661`), not just codes 1-3: a window not a
+    /// multiple of it (`Ollie.cfg`'s real 1236 MiB window, 16 MiB granularity) still gives a floored chunk.
+    #[test]
+    fn tm5_block_size_code_0_floors_to_the_lock_granularity_too() {
+        let mut cfg = legacy(100, vec![test(1, "SimpleTest", 100, 0)]);
+        cfg.memory_setup.testing_window_size_mb = 1236;
+        let modern = cfg.to_modern_config().unwrap();
+        let configs = modern.get_test_configs().unwrap();
+        let (name, config) = &configs[0];
+        assert_eq!(config.calculate_chunk_size(name, 5 * 1024 * MIB) / MIB, 1232, "floor(1236 / 16) * 16");
     }
 
     /// TODO 76: an imported RefreshStable covers the full allocation too, and as TM5's test 0 it is the seal check (TODO 74). TODO 99:
@@ -2333,7 +2384,9 @@ mod tests {
         assert!(LegacyConfig::parse_legacy_format(&cfg("Parameter=8")).is_ok());
         for (line, key) in [
             ("Parameter=eight", "Parameter"),
+            ("parameter=eight", "Parameter"),
             ("Pattern Param0=0xZZ", "Pattern Param0"),
+            ("PATTERN PARAM0=0xZZ", "Pattern Param0"),
             ("Pattern Mode=two", "Pattern Mode"),
             ("Time (%)=lots", "Time (%)"),
         ] {
@@ -2342,6 +2395,110 @@ mod tests {
         }
         let seq = "[Main Section]\nTest Sequence=1,x\n[Global Memory Setup]\n";
         assert!(LegacyConfig::parse_legacy_format(seq).unwrap_err().contains("'x'"));
+    }
+
+    /// A field a present `[TestN]` omits takes TM5's own per-slot default (`DefTestParam.inc`), not TMR's generic 0/"Unknown":
+    /// `Enable` defaults to on everywhere (`TableEnableTst`), and each other field's default is slot 2's own
+    /// (`SimpleTest`, `Parameter` 254, `Pattern Mode` 2, `Pattern Param0` 1354423, `Pattern Param1` 0x6E72A941, 32 MiB blocks).
+    #[test]
+    fn omitted_test_fields_take_tm5s_own_per_slot_defaults() {
+        let cfg = "[Main Section]\nTest Sequence=2,3\n[Global Memory Setup]\n[Test2]\n[Test3]\nEnable=1\nFunction=MirrorMove\n";
+        let legacy = LegacyConfig::parse_legacy_format(cfg).unwrap();
+        let t2 = legacy.tests.iter().find(|t| t.id == 2).unwrap();
+        assert!(t2.enabled, "Enable omitted entirely: TM5's own default is on, not off");
+        assert_eq!(t2.function, "SimpleTest");
+        assert_eq!(t2.parameter, 254);
+        assert_eq!(t2.pattern_mode, 2);
+        assert_eq!(t2.pattern_param0, 1_354_423);
+        assert_eq!(t2.pattern_param1, 0x6E72_A941);
+        assert_eq!(t2.test_chunk_size_mb, 32);
+        // Test3's own default (MirrorMove's slot) is Parameter 1, unaffected by Test2's being 254.
+        let t3 = legacy.tests.iter().find(|t| t.id == 3).unwrap();
+        assert_eq!(t3.parameter, 1);
+    }
+
+    /// INI names are case-insensitive as in TM5: changing their spelling must not turn a strided test into a sequential one.
+    #[test]
+    fn tm5_ini_case_keeps_the_same_workload() {
+        let cfg = "[Main Section]\nConfig Name=Case Check\nConfig Author=anta777\nCores=4\nTime (%)=1250\nCycles=3\n\
+            Test Sequence=15,15\n[Global Memory Setup]\nChannels=2\nTesting Window Size (Mb)=1536\n\
+            Reserved Memory for Windows (Mb)=512\nLock Memory Granularity (Mb)=64\n[Test15]\nEnable=1\n\
+            Function=SimpleTest\nPattern Mode=0\nPattern Param0=0x77777777\nPattern Param1=0x33333333\n\
+            Parameter=256\nTest Block Size (Mb)=0\nTime (%)=8\n";
+        let expected = LegacyConfig::parse_legacy_format(cfg).unwrap().to_modern_config().unwrap();
+        for uppercase in [false, true] {
+            let change_case = |s: &str| if uppercase { s.to_ascii_uppercase() } else { s.to_ascii_lowercase() };
+            let variant = cfg
+                .lines()
+                .map(|line| match line.split_once('=') {
+                    Some((key, value)) => format!("{}={value}", change_case(key)),
+                    None => change_case(line),
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let parsed = LegacyConfig::parse_legacy_format(&variant).unwrap();
+            assert_eq!(parsed.main_section.config_name, "Case Check", "values keep their case");
+            assert_eq!(parsed.main_section.config_author, "anta777");
+            assert_eq!(parsed.tests[0].function, "SimpleTest");
+            assert_eq!((parsed.tests[0].pattern_param0, parsed.tests[0].pattern_param1), (0x77777777, 0x33333333));
+            let modern = parsed.to_modern_config().unwrap();
+            assert_eq!(serde_json::to_value(&modern).unwrap(), serde_json::to_value(&expected).unwrap());
+            let plan = modern.plan().unwrap();
+            assert_eq!(plan.steps, [0, 0], "both occurrences remain");
+            let test = &plan.tests[0].config;
+            assert_eq!(test.parameter_context.as_ref().unwrap().stride_cachelines, Some(511));
+            assert_eq!((test.verify_reps, test.write_read_cycles), (5, 4));
+        }
+    }
+
+    /// TM5's Cores is an absolute worker count, including SMT when needed. A config round trip must preserve it to CPU selection.
+    #[test]
+    fn tm5_cores_count_reaches_cpu_selection() {
+        use crate::cpu_selection::{Request, SkipSpec, choose, synthetic};
+
+        // Eight two-way SMT cores, no reserve (a TM5 import always clears it, TODO 124): 16 eligible CPUs.
+        let topology = synthetic(&[0; 8], 8, 8, true);
+        for (requested, expected) in [(0, 16), (1, 1), (4, 4), (9, 9), (100, 16)] {
+            let cfg = format!(
+                "[Main Section]\nCores={requested}\nTest Sequence=1\n[Global Memory Setup]\n\
+                [Test1]\nEnable=1\nFunction=SimpleTest\n"
+            );
+            let modern = LegacyConfig::parse_legacy_format(&cfg).unwrap().to_modern_config().unwrap();
+            let json = serde_json::to_string(&modern).unwrap();
+            let restored: ModernConfig = serde_json::from_str(&json).unwrap();
+            restored.validate_system().unwrap();
+            assert_eq!(restored.system.cpu_pinning.skip_spec, "0", "Cores={requested}: a TM5 import never reserves a core");
+            let cpu = &restored.system.cpu_config;
+            assert_eq!(cpu.cpu_type, "threads");
+            assert_eq!(cpu.count, (requested > 0).then_some(requested));
+            let cpus = cpu.cpus();
+            let count_cores = cpu.cpu_type == "cores";
+            let choice = choose(&topology, &Request {
+                skip: SkipSpec::parse(&restored.system.cpu_pinning.skip_spec).unwrap(),
+                cpus: &cpus,
+                stride: None,
+                count_cores,
+                one_per_core: count_cores || restored.system.cpu_pinning.avoid_smt_doubling,
+            })
+            .unwrap();
+            assert_eq!(choice.cpu_list.len(), expected, "Cores={requested}");
+            assert_eq!(choice.percent, (requested == 0).then_some(100));
+        }
+    }
+
+    /// Older JSON configs keep their percentage; the optional absolute count takes precedence and cannot be zero.
+    #[test]
+    fn cpu_config_count_is_optional_and_positive() {
+        let cpu: CpuConfig = serde_json::from_str(r#"{"type":"threads","usage_percent":50}"#).unwrap();
+        assert_eq!(cpu.cpus(), "50%");
+        assert!(serde_json::to_value(&cpu).unwrap().get("count").is_none());
+        let mut modern = ModernConfig::create_demo_config();
+        modern.system.cpu_config = cpu;
+        modern.system.cpu_config.count = Some(4);
+        assert_eq!(modern.system.cpu_config.cpus(), "4");
+        modern.validate_system().unwrap();
+        modern.system.cpu_config.count = Some(0);
+        assert!(modern.validate_system().unwrap_err().contains("cpu_config.count"));
     }
 
     /// patterns=native (the default) imports a SimpleTest's mode as a native program on
