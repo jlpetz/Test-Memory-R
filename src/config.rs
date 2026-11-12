@@ -528,7 +528,7 @@ pub struct ExtentSpec {
 /// - `cache_total` — coarse cache fraction; requires `fraction`
 /// - `absolute` — hard byte size; requires `size`
 /// - `tm5_block` — a TM5 block code 0-3 (what a `.cfg` import makes): the smaller of `size` (the `.cfg`'s Testing Window Size) and the
-///   extent, / `divisor`, floored to `granularity`
+///   extent, / `divisor`; divisors 2-4 floor to `granularity`, while divisor 1 keeps the whole size
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ChunkSpec {
@@ -1855,11 +1855,11 @@ impl LegacyConfig {
         })
     }
 
-    /// TM5 `Test Block Size (Mb)` as a TMR chunk (TODO 79 B1), sized exactly as TM5 sizes it (`mt_ini.asm:287-303`,
-    /// `MainThread.asm:627-661`). 0-3 are fraction codes, resolved at run time against the thread's memory (`ChunkMode::Tm5Block`): the
-    /// smaller of tm5_window and the extent, / (V + 1), floored to the `.cfg`'s Lock Memory Granularity. 4 and up are binary megabytes,
-    /// clamped to tm5_window and floored to 4 KiB. tm5_window is the `.cfg`'s own `Testing Window Size`, not TMR's extent, which for an
-    /// import is the full allocation. A size that differs from the plain fraction or value is logged.
+    /// TM5 `Test Block Size (Mb)` as a TMR chunk (TODO 79 B1), based on `mt_ini.asm:287-303` and `MainThread.asm:627-661`.
+    /// Codes 0-3 resolve against the thread's memory (`ChunkMode::Tm5Block`): the smaller of tm5_window and the extent, / (V + 1).
+    /// Codes 1-3 floor to Lock Memory Granularity; code 0 keeps the whole size to avoid almost doubling work through overlap.
+    /// 4 and up are binary megabytes, clamped to tm5_window and floored to 4 KiB. tm5_window is the `.cfg`'s own `Testing Window Size`,
+    /// not TMR's extent, which for an import is the full allocation. A size that differs from the plain fraction or value is logged.
     fn chunk_spec(&self, test: &LegacyTest) -> ChunkSpec {
         let tm5_window = self.memory_setup.testing_window_size_mb as u64 * BYTES_PER_MIB;
         let granule = crate::test_memory::GRANULE as u64;
@@ -2072,9 +2072,9 @@ mod tests {
         // The 880 MiB window; window/2 = 440 -> 432, window/3 = 293.33 -> 288, window/4 = 220 -> 208 (each floored to 16 MiB, as TM5 does);
         // 4 MiB; 1536 MiB clamped to the window.
         assert_eq!(chunks(5 * 1024 * MIB), [880, 432, 288, 208, 4, 880]);
-        // 500 MiB of memory: 500 -> 496 (floored to 16 MiB too, code 0 included), 250 -> 240, 166.67 -> 160, 125 -> 112; 4; and a
+        // 500 MiB of memory: code 0 keeps all 500; 250 -> 240, 166.67 -> 160, 125 -> 112; 4; and a
         // literal 1536 MiB simply capped to 500 (its own 4 KiB floor, unreached here, not the lock granularity's)
-        assert_eq!(chunks(500 * MIB), [496, 240, 160, 112, 4, 500]);
+        assert_eq!(chunks(500 * MIB), [500, 240, 160, 112, 4, 500]);
         let shrunk: Vec<bool> = configs.iter().map(|(name, c)| c.resolve_chunk(name, 500 * MIB).shrunk_by_memory()).collect();
         assert_eq!(shrunk, [true, true, true, true, false, true]);
         assert!(!configs.iter().any(|(name, c)| c.resolve_chunk(name, 5 * 1024 * MIB).shrunk_by_memory()));
@@ -2083,16 +2083,30 @@ mod tests {
         assert_eq!((meta.tm5_window_mb, meta.tm5_lock_mb), (880, 16));
     }
 
-    /// Code 0 floors to the Lock Memory Granularity too, as TM5 does (`MainThread.asm:627-661`), not just codes 1-3: a window not a
-    /// multiple of it (`Ollie.cfg`'s real 1236 MiB window, 16 MiB granularity) still gives a floored chunk.
+    /// Code 0 keeps the window size even when it is not a multiple of lock granularity (`Ollie.cfg`: 1236 MiB, lock 16 MiB).
     #[test]
-    fn tm5_block_size_code_0_floors_to_the_lock_granularity_too() {
+    fn tm5_block_size_code_0_keeps_the_window_without_lock_rounding() {
         let mut cfg = legacy(100, vec![test(1, "SimpleTest", 100, 0)]);
         cfg.memory_setup.testing_window_size_mb = 1236;
         let modern = cfg.to_modern_config().unwrap();
         let configs = modern.get_test_configs().unwrap();
         let (name, config) = &configs[0];
-        assert_eq!(config.calculate_chunk_size(name, 5 * 1024 * MIB) / MIB, 1232, "floor(1236 / 16) * 16");
+        assert_eq!(config.calculate_chunk_size(name, 5 * 1024 * MIB) / MIB, 1236);
+    }
+
+    /// Flooring code 0 from 500 to 496 MiB makes two overlapping chunks and 992 MiB of work. Keep a capped extent as one chunk.
+    #[test]
+    fn tm5_block_size_code_0_keeps_a_capped_extent_as_one_chunk() {
+        for (window_mb, extent_mb) in [(880, 500), (1236, 1236)] {
+            let mut cfg = legacy(100, vec![test(1, "SimpleTest", 100, 0)]);
+            cfg.memory_setup.testing_window_size_mb = window_mb;
+            let modern = cfg.to_modern_config().unwrap();
+            let configs = modern.get_test_configs().unwrap();
+            let (name, config) = &configs[0];
+            let (extent, spread) = crate::test_memory::resolve_layout(config, name, extent_mb * MIB).unwrap();
+            assert_eq!(extent, extent_mb * MIB);
+            assert_eq!((spread.chunk(), spread.count(), spread.walked(), spread.overlap()), (extent, 1, extent, 0));
+        }
     }
 
     /// TODO 76: an imported RefreshStable covers the full allocation too, and as TM5's test 0 it is the seal check (TODO 74). TODO 99:

@@ -101,9 +101,9 @@ generations. Knowing the DQ width does not determine bank or channel address sel
 
 ## Review of importer commit 8675f6c
 
-The original review compared the commit with its parent and `../TM5/`, without a build or live TMR test. The missing-Test0
-follow-up passed `python tools/ci_local.py --quick`: formatting, build-tool checks, all three Clippy configurations and 571 Rust
-tests (six skipped). No live memory test was run.
+The original review compared the commit with its parent and `../TM5/`, without a build or live TMR test. The missing-Test0 fix
+and code-0 rounding revert passed `python tools/ci_local.py --quick`: formatting, build-tool checks, all three Clippy
+configurations and 572 Rust tests (six skipped). No live memory test was run.
 
 Confirmed:
 
@@ -113,7 +113,8 @@ Confirmed:
 - Section/key case is normalized while values retain their case.
 - All 96 entries in the six per-slot default arrays match the assembly tables. An independent text comparison checked this;
   `DefTstBlkSizeMb` is 16. The per-test time default is 100 (`DefTestLength`).
-- The code-0 floor matches the assembly's divide/floor/clamp sequence. The final chunk remains bounded by the extent.
+- The code-0 floor matched the assembly's divide/floor/clamp sequence and kept chunks bounded by the extent. It is now reverted
+  for the traversal-work reason below; codes 1-3 retain their existing flooring.
 
 Remaining qualifications:
 
@@ -130,13 +131,12 @@ Remaining qualifications:
    ([AMD BKDG 31116](https://www.amd.com/content/dam/amd/en/documents/archived-tech-docs/programmer-references/31116.pdf),
    section 2.8); modern CPUs can execute a two-line access group regardless of their channel organization. The decision to defer
    the legacy importer option stands without that explanation.
-4. **The rounding change can nearly double traversal work.** It exceeded the later stated scope and can be removed independently
-   of the useful importer fixes. Its effect is not limited to Ollie: it also changes code-0 chunks when the available extent caps
-   an otherwise divisible window to a nonmultiple of lock granularity. At a 500 MiB extent, the amended test changes a 500 MiB
-   chunk into 496 MiB. `ChunkSpread` then produces two chunks, at offsets 0 and 4 MiB: 992 MiB traversed per sweep, with 492 MiB
-   overlap, rather than 500 MiB with no overlap. Coverage is complete in both cases; traversal work increases 98.4%.
-   The earlier description as a minor alignment adjustment understated this consequence. Recommendation: restore the previous
-   code-0 rule, rather than expanding a TM5 flooring detail into almost twice the work under TMR's overlapping-chunk policy.
+4. **The rounding change is reverted.** Its effect was not limited to Ollie: it also changed code-0 chunks when the available
+   extent capped an otherwise divisible window to a nonmultiple of lock granularity. At a 500 MiB extent it changed a 500 MiB
+   chunk into 496 MiB. `ChunkSpread` then produced two chunks at offsets 0 and 4 MiB: 992 MiB traversed per sweep, with 492 MiB
+   overlap, rather than 500 MiB with no overlap. Coverage was complete in both cases; traversal work increased 98.4%.
+   The earlier description as a minor alignment adjustment understated this consequence. At the owner's request the follow-up
+   restores the previous code-0 rule and tests that the 500 MiB case stays one chunk, traverses 500 MiB and has no overlap.
 
 The CPU-selection, key-matching and present-field default fixes should be retained. No new functional blocker was found in
 their implementation. The remaining default-section gap and missing full-file fixture should stay explicit rather than being

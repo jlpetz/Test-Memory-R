@@ -2,8 +2,8 @@
 
 **Status:** proposal for the owner and Opus to critique before implementation. Written 2026-11-12.
 This document adds no configuration fields or kernels. It leaves the importer fixes to the separate work already in progress.
-Block-code-0 rounding is outside this proposal. The owner declined it; the later importer commit `8675f6c` nevertheless includes it.
-The source review and that scope discrepancy are recorded in [the follow-up research note](memory_mapping_research_2026-11-12.md#review-of-importer-commit-8675f6c).
+Block-code-0 rounding is outside this proposal. The change in importer commit `8675f6c` is reverted at the owner's request because
+it could nearly double traversal work. The source review is in [the follow-up research note](memory_mapping_research_2026-11-12.md#review-of-importer-commit-8675f6c).
 
 ## 1. Recommendation
 

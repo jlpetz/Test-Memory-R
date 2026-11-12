@@ -392,16 +392,19 @@ pub enum ChunkMode {
     /// Hard-coded byte size. Replaces former FixedSize (MB).
     Absolute { size_bytes: usize },
     /// A TM5 `Test Block Size` code 0-3 (TODO 76): the smaller of the `.cfg`'s Testing Window Size and the extent, divided by `divisor`
-    /// (code + 1), floored to `granularity` (the `.cfg`'s Lock Memory Granularity). Resolved against the extent, as TM5 resolves it against
-    /// the memory it maps (`function.asm:497-506`, `MainThread.asm:624-661`).
+    /// (code + 1). Codes 1-3 floor to `granularity` (the `.cfg`'s Lock Memory Granularity); code 0 keeps the whole size to avoid turning
+    /// one full-extent chunk into two overlapping chunks. TM5's mapped-window sizing: `function.asm:497-506`, `MainThread.asm:624-661`.
     Tm5Block { window: usize, divisor: u32, granularity: usize },
 }
 
-/// TM5's block for a `Test Block Size` code over `base` bytes: `base / divisor` floored to `granularity`, at least one granule
-/// (`MainThread.asm:627-661`), including code 0 (divisor 1): TM5 floors the whole window too, not just a fraction of it.
+/// A TM5 block over `base` bytes: fractions floor to `granularity`, at least one granule (`MainThread.asm:627-661`).
+/// Code 0 (divisor 1) keeps `base`: flooring it can almost double traversal under TMR's full-sized overlapping chunks.
 pub fn tm5_block_size(base: usize, divisor: u32, granularity: usize) -> usize {
+    if divisor <= 1 {
+        return base;
+    }
     let granularity = granularity.max(1);
-    (base / divisor.max(1) as usize / granularity).max(1) * granularity
+    (base / divisor as usize / granularity).max(1) * granularity
 }
 
 /// What a test's chunk spec asks for and the chunk it runs (TODO 76).

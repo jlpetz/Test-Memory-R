@@ -9,8 +9,8 @@ count (`CpuConfig.count`); every TM5 import clears the responsiveness reserve (`
 reserves a core, for any count); TM5's own per-slot defaults for an omitted test field (function, parameter, pattern mode/params,
 block size; `Enable` defaults to on). The 2026-11-12 follow-up now also supplies the default enabled Test0 when its section is
 absent. Missing whole ordinary test sections remain a compatibility gap.
-The commit also includes the block-code-0 floor despite the owner's later instruction to leave it out; its overlap-work effect
-is described below. Interleave Type and DLL Name remain outside the approved importer work. Native patterns stay as designed;
+The follow-up also reverts `8675f6c`'s block-code-0 floor at the owner's request; its overlap-work effect is described below.
+Interleave Type and DLL Name remain outside the approved importer work. Native patterns stay as designed;
 no parameter-specific mode-2 revival. A complete-file import regression fixture is still open.
 
 Input: `../TM5_Source/Check_absolutnew.cfg`, named `ABSOLUT(01102021)` by anta777.
@@ -242,14 +242,14 @@ Sources: `src/config.rs:1693-1735`; `src/pattern.rs:161-240`, `:518-554`; `src/r
   necessary. TM5 releases and reacquires memory between cycles and works through AWE windows. The TMR walk covers the entire
   extent; it need not duplicate TM5's tail omission or allocation churn. Uneven sizes can add overlap work, and a fixed VA does not
   imply known physical rows. Sources: `src/test_memory.rs:19-80`; TM5 `MainThread.asm:458`, `:737-744`.
-- **Block-code rounding:** `8675f6c` makes `tm5_block_size` floor code 0 (divisor 1) to lock granularity, matching
-  `MainThread.asm:627-660`, despite the owner's later instruction to leave it out. A 1536 MiB window and 64 MiB granularity are
-  unchanged when the available extent is at least that window. Ollie's 1236 MiB window becomes 1232 MiB. Other configs also change
-  when the available extent caps the window to a nonmultiple of granularity. The 500 MiB test with 16 MiB granularity becomes
-  496 MiB per chunk. Because `ChunkSpread` uses complete overlapping chunks, that means two chunks at offsets 0 and 4 MiB,
-  traversing 992 MiB per sweep instead of one 500 MiB chunk. No memory is omitted, but overlap is 492 MiB and traversal work
-  increases 98.4%. The earlier description of this as merely a small alignment difference understated the possible effect.
-  Recommendation: restore the previous code-0 rule independently of the useful importer fixes; retain TMR's complete coverage.
+- **Block-code rounding reverted:** `8675f6c` made `tm5_block_size` floor code 0 (divisor 1) to lock granularity, matching
+  `MainThread.asm:627-660`. That is now reverted at the owner's request. Ollie's 1236 MiB window had become 1232 MiB. Other
+  configs also changed when the available extent capped the window to a nonmultiple of granularity: 500 MiB became 496 MiB.
+  Because `ChunkSpread` uses complete overlapping chunks, that produced two chunks at offsets 0 and 4 MiB, traversing 992 MiB
+  per sweep instead of one 500 MiB chunk. No memory was omitted, but overlap was 492 MiB and traversal work increased 98.4%.
+  The earlier description as merely a small alignment difference understated the effect. Code 0 now keeps the smaller of the
+  window and extent, subject to TMR's ordinary 4 KiB granules; codes 1-3 retain lock-granularity flooring. Regression tests cover
+  Ollie's window and the one-chunk layout when the extent caps the window, including total traversal and overlap.
 
 ## Verification and seal assessment
 
@@ -288,8 +288,8 @@ and the assembly checker; the source snapshots should not be advertised as one r
 2. **Still open:** a complete-file import regression fixture asserting the 31-step order, omitted Test 13, pass counts, chunks,
    stride, mirror modes and three-cycle pattern schedule for this exact file. Small targeted fixtures for the fixed parser defects
    exist (`omitted_test_fields_take_tm5s_own_per_slot_defaults`, `tm5_ini_case_keeps_the_same_workload`,
-   `tm5_cores_count_reaches_cpu_selection`, `tm5_block_size_code_0_floors_to_the_lock_granularity_too`); none exercises the whole
-   file end to end.
+   `tm5_cores_count_reaches_cpu_selection`, `tm5_test0_defaults_preserve_the_seal_and_explicit_disable`,
+   `tm5_block_size_code_0_keeps_a_capped_extent_as_one_chunk`); none exercises the whole file end to end.
 3. **Still open:** recording original pattern inputs/substitutions, the CPU reserve and the effective pattern schedule in the
    results when converting.
 4. Decided: keep the native pattern redesign and full verification of each written polarity. Parameter-specific mode-2
