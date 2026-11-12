@@ -131,8 +131,9 @@ defect. ABSOLUT, Extreme1, Ollie and SuperLight2 omit 0 from their sequences; th
 Known compatibility difference: entirely absent slots 1-15 are left out, and a sequence reference to one is rejected. TM5 loads
 its ordinary default slots according to `Tests=`: sections override built-in definitions rather than create tests from scratch.
 For example, `Tests=4`, `Test Sequence=1,2,3` and no `[Test2]` uses default Test2 in TM5; TMR reports an undefined test.
-This does not justify adding unrequested tests to a sequence. No supplied config relies on missing ordinary sections, and
-implementing that default-loading behaviour is outside the completed importer batch.
+This does not justify adding unrequested tests to a sequence. No supplied config relies on missing ordinary sections.
+Decision (owner, 2026-11-12): retain the explicit error for a referenced missing ordinary test; do not implement ordinary-slot
+default loading. Test0 remains the special case because it controls the implicit seal.
 
 Sources: `src/config.rs` (the `TM5_DEFAULT_*` consts and the test-parsing loop); tests `omitted_test_fields_take_tm5s_own_per_slot_defaults`
 and `tm5_test0_defaults_preserve_the_seal_and_explicit_disable`.
@@ -288,7 +289,7 @@ and the assembly checker; the source snapshots should not be advertised as one r
 
 1. Fixed: INI key normalization, defaults for fields of present sections, the default Test0 seal when its whole section is absent,
    the explicit Cores count and the imported reserve.
-   **Known compatibility difference:** omitted ordinary sections are not synthesized; an explicit sequence reference is rejected.
+   **Decided:** omitted ordinary sections are not synthesized; retain the error for an explicit reference to one.
    DLL/interleave importer additions remain deferred.
 2. **Declined:** the complete-file ABSOLUT regression fixture (owner, 2026-11-12). No further fixture work is planned.
 3. **Proposed next improvement:** show original-to-effective pattern substitutions at import and retain their source metadata

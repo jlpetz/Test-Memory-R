@@ -123,7 +123,8 @@ Remaining qualifications:
    `Enable=0` and CLI `seal=` overrides. All 11 configs in `../TM5_configs/bin` already declare enabled RefreshStable Test0, so none
    had this defect. Four omit 0 from their sequences; those seals already worked. Entirely missing nonzero slots still cause
    rejection when referenced, whereas TM5 loads defaults governed by `Tests=`: its sections override built-in test slots.
-   None of the supplied configs relies on missing ordinary slots; that behaviour is outside the completed importer batch.
+   None of the supplied configs relies on missing ordinary slots. The owner agreed on 2026-11-12 to retain the explicit error
+   and not implement ordinary-slot default loading.
 2. **The complete ABSOLUT regression fixture was declined by the owner on 2026-11-12.** Existing focused regression tests remain;
    an additional full-file fixture is no longer proposed work.
 3. **Documentation corrected in the follow-up.** `doc/test_parameters.md` now distinguishes ordinary JSON's reserve from imports'
