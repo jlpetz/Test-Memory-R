@@ -2,11 +2,11 @@
 
 ![A DDR5 memory module with its heat spreader off, its traces lit red like neon, TMR on its last chip](tools/icon/svg/dimm-burn.svg)
 
-**TMR** is short for **Test Memory R**, the R for Rust. It's a remake of TM5 (TestMem5 by Serj,
-<https://testmem.tz.ru>), the memory tester highly acclaimed by memory overclockers. I contacted Serj,
-who was kind enough to fix a broken link on his website that gave me TM5's original assembly source.
-I then used Claude AI (with a little bit of Astra/Codex) to reimplement TM5 in Rust for modern Windows
-and hardware, with DDR5 systems in mind.
+**TMR** is short for **Test Memory R**, the R for Rust. It aims to be a modern, high-performance
+memory tester, and was inspired by [TM5](#credits) (TestMem5 by Serj). I used TM5's original assembly
+source to model a similar test structure, then used Claude AI (with a little bit of Astra/Codex) to
+reimplement it in Rust for modern 64-bit Windows (11 or Server 2022+) and today's hardware (AVX2, DDR4
+or DDR5).
 
 **Status: 0.1.1, an early release.** TMR works, but it is young: its settings and files may
 change between versions until 1.0. **An unstable overclock can freeze, crash or restart your PC
@@ -213,8 +213,10 @@ additional terms or conditions.
 
 ## Credits
 
-TMR was inspired by TM5, and wouldn't exist without it. Many thanks to Serj for his kind donation of
-TM5 to the community.
+TMR was inspired by TM5, and wouldn't exist without it; it's highly regarded among memory overclockers.
+Many thanks to Serj for his kind donation of TM5 to the community, and for what I imagine was many days
+of work crafting its test kernels in assembly. I contacted Serj, who was kind enough to fix a broken link
+on his website that gave me TM5's original assembly source.
 
 - Serj's work: <https://testmem.tz.ru>
 - TM5 page: <https://testmem.tz.ru/testmem5.htm>
