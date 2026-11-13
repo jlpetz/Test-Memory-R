@@ -12,6 +12,18 @@ and hardware, with DDR5 systems in mind.
 change between versions until 1.0. **An unstable overclock can freeze, crash or restart your PC
 while TMR runs**, as any memory test can: save your work and close other programs first.
 
+## Contents
+
+- [Screenshots](#screenshots)
+- [Install and run](#install-and-run) · [User guide](dist/docs/guide.md) · [Test reference](dist/docs/tests/README.md)
+- [Key changes from TM5](#key-changes-from-tm5)
+- [Design tradeoffs](#design-tradeoffs)
+- [Supported Windows OSes](#supported-windows-oses)
+- [Supported hardware](#supported-hardware)
+- [Requirements](#requirements)
+- [Building from source](#building-from-source)
+- [License](#license) · [Credits](#credits)
+
 ## Screenshots
 
 The window, during a stability run: the throughput chart, each finished step, and a step's report.
@@ -87,6 +99,18 @@ and serial numbers) and the motherboard's system UUID, so mind that before you p
 - **Built-in test plans** (`plan=`; `stability` by default), **results as JSON** saved during the
   run and comparable between runs, and a console (CLI) and a window (GUI) in one `tmr.exe`.
 
+## Design tradeoffs
+
+TMR focuses on testing overclock stability:
+
+- **User mode, no driver.** Easy to install, but no direct access to privileged memory-controller
+  or on-die ECC counters. TMR monitors the hardware errors Windows exposes through WHEA.
+- **No physical address mapping.** Tests work across controllers without decoding their address
+  maps, but cannot guarantee access to a particular channel, bank or row. TMR has no targeted
+  Rowhammer tests.
+- **Allocated memory only.** A run tests the memory Windows grants it; memory used by Windows and
+  other programs is outside that allocation.
+
 ## Supported Windows OSes
 
 `tmr.exe` opens its window when double-clicked, and runs in the console when started from a shell,
@@ -124,7 +148,7 @@ bus width (see Key changes):
 
 | Memory type | Bus width the switching patterns flip at |
 |---|---|
-| DDR4 (and DDR3L, on some 6th and 7th gen Core boards) | 64-bit: one channel per DIMM |
+| DDR4 (and DDR3L, on some 6th and 7th gen Core boards) | 64-bit per channel; multiple DIMMs can share a channel |
 | DDR5 | 32-bit: two subchannels per DIMM |
 | LPDDR3 | 32-bit |
 | LPDDR4, LPDDR5 | 16-bit |
@@ -132,6 +156,9 @@ bus width (see Key changes):
 
 When SMBIOS reports no type TMR knows (a VM often reports none), TMR says so and the switching
 patterns alternate their 64- and 32-bit forms; `beat=` sets the type.
+
+`width=` selects the CPU's SIMD instruction width; `beat=` selects the switching pattern's
+transfer profile. Neither setting selects how many memory channels the system uses.
 
 **Caches.** TMR reads the size of each cache tier (L1, L2, L3) from the CPU. The cache bandwidth
 and latency tests are sized to fit their tier, and tests aimed at DRAM size their blocks past the
@@ -166,19 +193,10 @@ L3, so they reach it.
   Without it TMR warns, and asks before running on regular 4 KB pages, which are slower: it runs
   on them only when you say so, or with `minpage=regular maxpage=regular`, and no answer quits.
 
-**Building from source** takes Rust nightly (`rustup toolchain install nightly`) and Microsoft's
-C++ build tools for the linker (Visual Studio Build Tools, "Desktop development with C++").
-`cargo +nightly build --release` builds both frontends into the one `target\release\tmr.exe`, as
-each release is; `--no-default-features` leaves the window out. A built `tmr.exe` keeps its
-configs, results and logs beside itself, in `target\release\`, which `cargo clean` empties: set
-`TMR_HOME` to another folder to keep them there (`$env:TMR_HOME = "$PWD"` in the repository keeps
-them in its `results\` and `logs\`, which git ignores). A development machine, with the tests and
-checks as CI runs them: [doc/dev_setup.md](doc/dev_setup.md) (`tools\setup_dev.ps1` installs what's
-missing). The crates are on crates.io too: [`test-memory-r`](https://crates.io/crates/test-memory-r),
-the exe, and its parts, [`test-memory-r-engine`](https://crates.io/crates/test-memory-r-engine),
-[`-cli`](https://crates.io/crates/test-memory-r-cli) (the console) and
-[`-gui`](https://crates.io/crates/test-memory-r-gui) (the window). The exe's page shows how to
-`cargo install` it built as the releases are.
+## Building from source
+
+See the [development setup guide](doc/dev_setup.md) for prerequisites, the setup script, local
+builds, CI checks and the published crates.
 
 ## License
 

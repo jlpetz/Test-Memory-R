@@ -1,7 +1,7 @@
 # TMR user guide
 
-TMR (Test Memory R) tests whether your memory, and its overclock, is stable. It remakes TM5
-(TestMem5) for today's Windows and hardware, and runs TM5's `.cfg` files. This guide is for TMR
+TMR (Test Memory R) tests whether your memory, and its overclock, is stable. It is inspired by TM5
+(TestMem5), built for today's Windows and hardware, and runs TM5's `.cfg` files. This guide is for TMR
 0.1, its first public release: it works, but it is young, and its options and files may still
 change between versions. The project's page has the details:
 <https://github.com/jlpetz/Test-Memory-R>.
@@ -83,6 +83,18 @@ takes the privilege away again (from you, or from the `Group:` or `User:` named)
 
 ## Running a test
 
+After installation and the large-page setup, these commands cover the usual starting points:
+
+| Command | What it runs |
+|---|---|
+| `tmr plan=quick` | the stability tests once |
+| `tmr plan=stability` | the stability tests for three cycles |
+| `tmr config=my_tm5.cfg` | the tests and cycles from a config; see [Configurations](#configurations) |
+
+The built-in plans leave 10% of available memory free by default and test the rest. `memory=`
+changes that; a config can supply its own allocation settings. The first run on a machine also
+measures the cache calibration, which takes about two minutes before testing starts.
+
 - **Double-click TMR** (or its Start menu entry) for its window. Type any settings in its box, or
   pick a config with Load config, and press Start; once the run is over, Run again starts another.
   A finished step's row opens its report, and the final summary opens itself as the run ends. The
@@ -117,14 +129,46 @@ takes the privilege away again (from you, or from the `Group:` or `User:` named)
 
   `tmr --help` explains every setting.
 
-The run ends with a verdict: no errors, or the errors found and where. A script can read it from
-the exit code: 0 passed, 1 failed or found errors, 2 stopped before testing, 3 interrupted.
+## Reading a result
+
+The console and window report the same three error sources:
+
+| Source | What it means |
+|---|---|
+| Test | the test read data that differed from what it expected |
+| Seal | a check found changed data left sealed between tests or chunks; see [the seal](tests/seal-and-bench.md) |
+| WHEA | Windows reported a hardware error during the run; its event details identify the reported component |
+
+Any of these fails the step or run. A failed check marked **"not reproduced on rescan"** still
+counts: the first check saw a mismatch, even though a later read did not. Error counts can
+include repeated observations of the same word; they are not a count of distinct damaged cells.
+The [stability test guide](tests/stability.md#how-they-check) explains the checks and rescans.
+
+A completed run with no errors passed the work it performed. An interrupted or crashed run has
+only partial results, even if no errors were recorded. `errors=halt` stops on the first failed
+check before TMR overwrites the failing chunk again.
+
+A script can read the exit code: 0 passed, 1 failed or found errors, 2 stopped before testing,
+3 interrupted. Errors still give code 1 if the run was also interrupted.
 
 ## What each test does
 
-`docs\tests\` beside this guide (on GitHub, `dist/docs/tests/`) has a page for each family of tests:
-what it catches or measures, how it runs, which plans run it, and how to read its report.
-[README.md](tests/README.md) there lists every test.
+The [test reference](tests/README.md) lists the plans and every test, with its defaults. Each
+family has a guide explaining its purpose, how it runs and how to read its report:
+
+| Guide | What it covers |
+|---|---|
+| [Stability tests](tests/stability.md) | data patterns, moving inversions, strides, random accesses and block moves |
+| [Refresh and exchange](tests/refresh-and-exchange.md) | data left waiting, data passed between cores and shared-line traffic |
+| [The seal and Bench tests](tests/seal-and-bench.md) | checking data between steps and measuring pattern generation and verification |
+| [AMX tile test](tests/amx.md) | the experimental matrix-unit test on CPUs with AMX |
+| [Latency](tests/latency.md) | access latency in each cache tier and DRAM |
+| [Latency under load](tests/loaded-latency.md) | read latency while other cores read or write |
+| [Bandwidth](tests/bandwidth.md) | read, write and copy throughput at each memory tier |
+
+Use `plan=stability` or `plan=quick` to look for errors. `plan=perf` measures performance; its
+latency and bandwidth tests do not verify data. See [choosing tests yourself](tests/README.md#choosing-tests-yourself)
+to run individual tests or compare SIMD widths.
 
 ## Latency under load
 
@@ -155,12 +199,54 @@ figures compare only between runs on the same page size (large pages, which TMR 
 can). They also compare only at the same `cpus=` and `skip-cores=`, as any bandwidth figure does:
 those set how many cores load, which the report shows.
 
-## TM5 configs
+## Configurations
 
-TMR loads TM5's `.cfg` files and runs the equivalent tests: `tmr config=path\to\file.cfg`. Put the
-ones you use in TMR's `configs\` folder (below) and run them by name, `tmr config=file.cfg`: a
-config that isn't in the folder you're in is looked for there. `configs\` also has two examples
-of TMR's own `.json` format.
+`config=` loads either a TM5 `.cfg` or a TMR `.json` file. A relative path is looked for in the
+current folder, then in TMR's `configs\` folder. Put the configs you use there and run them by
+name:
+
+```
+tmr config=my_tm5.cfg
+tmr config=my_tm5.cfg cycles=1 errors=halt
+tmr config=my_tm5.cfg --startup-debug
+```
+
+Explicit command-line settings override the config. The last command validates the settings
+and prints the startup plan without allocating test memory or running tests. A config supplies
+its own test list, so `config=` cannot be combined with `plan=`.
+
+### Importing a TM5 config
+
+TMR keeps the test numbers, sequence and repeated entries, and translates the timing and chunk
+settings. There are deliberate differences:
+
+- **Memory coverage.** Every imported test covers the full allocation. TM5's Testing Window
+  sizes chunks; it does not limit the amount of memory the test covers in TMR.
+- **Test 0.** An enabled RefreshStable test 0 becomes the seal around the tests, even when 0 is
+  absent from Test Sequence. A 0 in the sequence also adds an explicit Seal-Check step.
+- **Patterns.** SimpleTest modes 0, 1 and 2 become native pattern programs:
+
+  | TM5 mode | TMR program |
+  |---|---|
+  | 0 | `ident, switch, random, switch` |
+  | 1 | `linepair, switch, random, switch` |
+  | 2 | `lines, switch, random, switch` |
+
+  Each family runs as a pattern/inverse pair. The pairs advance through the program over write
+  rounds and suite cycles, with new keys as the run progresses. The original Pattern Param0/1
+  values are reported, but do not feed the native generators.
+
+The startup report shows the pattern substitutions; the log has the original fields and the
+effective settings. `patterns=legacy` selects TMR's older numbered adaptations for comparison,
+not exact TM5 reproduction.
+
+### TMR JSON configs
+
+The installer includes `demo_comprehensive_test.json` and `demo_tm5_compatible.json` in
+`configs\`. They show TMR's system settings and per-test settings, and make starting points for
+your own plans. `tmr --create-demo-configs` writes the examples there too. Run one with
+`tmr config=demo_tm5_compatible.json`, and use `--startup-debug` to inspect an edited config
+before running it.
 
 ## Where TMR keeps its files
 
@@ -186,7 +272,10 @@ another version of TMR is shown in this version's layout, and TMR says so above 
 
 A results file describes the system it came from, so runs can be told apart: the CPU, the BIOS,
 the memory modules (their part numbers and serial numbers) and the motherboard's system UUID.
-Bear that in mind before you post one.
+Use `--no-serials` when starting a run whose results you intend to share, for example
+`tmr plan=stability --no-serials`. It leaves DIMM serial numbers and the system UUID out of the
+output, log and results. In the window, turn off serial numbers in Settings before starting.
+This does not remove identifiers from older files.
 
 To keep the files somewhere else, set the `TMR_HOME` environment variable to that folder
 (`setx TMR_HOME D:\tmr`, then open a new console).

@@ -43,8 +43,22 @@ Windows Server 2022 doesn't ship winget: install App Installer first, or the lis
   records the compiler, SDK, settings and artifact hashes in `target/release/tmr.build.json`; it
   does not wait for CI. Then `.\target\release\tmr.exe`. A built
   exe keeps its configs, results and logs beside itself; `$env:TMR_HOME = "$PWD"` keeps them in the
-  repository's `results\` and `logs\`, which git ignores.
+  repository's `results\` and `logs\`, which git ignores, instead of under `target\release\`,
+  which `cargo clean` empties.
 - **Large pages:** `tmr.exe --setup-large-pages` from an elevated prompt once, then sign out and back in.
+
+## Build outputs and published crates
+
+The default build puts the console and window in one `target\release\tmr.exe`. Cargo's
+`--no-default-features` option leaves the window out for a console-only development build.
+Use `python tools/build_release.py --locked` for the standard release build with the SDK selection
+and build manifest used by CI.
+
+The crates are published on crates.io: [`test-memory-r`](https://crates.io/crates/test-memory-r),
+the exe, and its parts, [`test-memory-r-engine`](https://crates.io/crates/test-memory-r-engine),
+[`test-memory-r-cli`](https://crates.io/crates/test-memory-r-cli) and
+[`test-memory-r-gui`](https://crates.io/crates/test-memory-r-gui). Build from the repository for
+its release settings; the exe's crate page explains the limitations of `cargo install`.
 
 ## Not in the repository
 

@@ -4,8 +4,8 @@ These tests look for memory errors: a bit that reads back different from what wa
 writes patterns, reads them back and counts every word that differs. Stable memory makes no
 errors at all, so one error fails the run.
 
-A plain `tmr` runs them: `plan=stability`, 3 cycles of about 5 minutes each. Three more tests in
-the plan, Mem-PageExchange, Mem-PageExchange-Rewrite and Mem-RefreshAuto, are on
+`tmr plan=stability` runs them for 3 cycles of about 5 minutes each; `tmr` alone displays help.
+Three more tests in the plan, Mem-PageExchange, Mem-PageExchange-Rewrite and Mem-RefreshAuto, are on
 [their own page](refresh-and-exchange.md).
 
 ## At a glance

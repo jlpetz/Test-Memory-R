@@ -9,9 +9,9 @@ TMR are in the [user guide](../guide.md).
 ## The plans
 
 A plan picks which of TMR's built-in tests a run takes, and in what order. Give it as `plan=` on
-the command line, or in the window's box. A plain `tmr` runs `plan=stability`. A test keeps its
-own settings in every plan, so `plan=stability` and `test=Mem-MovingInv` run the same
-Mem-MovingInv.
+the command line, or in the window's box. `tmr plan=stability` starts the default plan; a plain
+`tmr` displays help and runs nothing. A test keeps its own settings in every plan, so
+`plan=stability` and `test=Mem-MovingInv` run the same Mem-MovingInv.
 
 | Plan | What it runs | Cycles | How long |
 |---|---|---|---|
