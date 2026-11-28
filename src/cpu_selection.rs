@@ -238,20 +238,24 @@ pub fn apply_cpu_stride(pool: &[usize], count: usize, stride_spec: &str) -> Resu
         stride_spec.trim().parse::<usize>().unwrap_or(1).max(1)
     };
 
-    // Required span of the pool: the last pick sits at index (count-1)*stride.
-    let needed_span = (count - 1) * stride + 1;
-    if needed_span > pool.len() {
+    // Required span of the pool: the last pick sits at index (count-1)*stride. Checked, not wrapping: a stride of `usize::MAX`
+    // with two CPUs used to wrap the span to 0, pass this check, and panic on the index (`release` aborts).
+    let Some(needed_span) = (count - 1).checked_mul(stride).and_then(|last| last.checked_add(1)) else {
         return Err(format!(
-            "cpu-stride={} cannot place {} threads in {} available CPU(s): needs a span of {} \
-             (last thread would land at index {}). Reduce cpus= or lower the stride.",
-            stride_spec,
-            count,
-            pool.len(),
-            needed_span,
-            (count - 1) * stride
+            "cpu-stride={stride_spec} cannot place {count} threads in {} available CPU(s): the span overflows. Reduce cpus= or lower the stride.",
+            pool.len()
+        ));
+    };
+    if needed_span > pool.len() {
+        let last = needed_span - 1;
+        return Err(format!(
+            "cpu-stride={stride_spec} cannot place {count} threads in {} available CPU(s): needs a span of {needed_span} \
+             (last thread would land at index {last}). Reduce cpus= or lower the stride.",
+            pool.len()
         ));
     }
 
+    // `i <= count - 1` and `(count - 1) * stride` did not overflow, so `i * stride` does not either.
     Ok((0..count).map(|i| pool[i * stride]).collect())
 }
 
@@ -714,6 +718,12 @@ mod tests {
         assert_eq!(pick(&r8600g, "1", "3", Some("2"), true).cpu_list, [0, 2, 5], "core 4, the weakest, left out");
         let e = choose(&cores, &request("0", "8", Some("4"), true)).unwrap_err();
         assert!(e.contains("cannot place 8 threads"), "{e}");
+        let stride = usize::MAX.to_string();
+        for count in [2, 3] {
+            let overflow = apply_cpu_stride(&[0, 1, 2], count, &stride).unwrap_err();
+            assert!(overflow.contains("overflows"), "{overflow}");
+        }
+        assert_eq!(apply_cpu_stride(&[7], 1, &stride).unwrap(), [7]);
     }
 
     /// Bug 3 (TODO 108): with core types, `cpu-stride=` was ignored without a word. It now spaces the cores by number the same way.
