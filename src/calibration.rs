@@ -1090,10 +1090,14 @@ const LOADED_PROBE_TIME: std::time::Duration = std::time::Duration::from_millis(
 /// A stop asked for (a first Ctrl+C, the window's Stop: `runner::request_stop`), which a run's calibration, before its tests, would
 /// otherwise sit through, about 2 minutes: each sweep checks it before each probe and ends there, and a stopped calibration is an
 /// error, `STOPPED`, so nothing partial is saved
-fn stopped() -> bool {
+pub(crate) fn stopped() -> bool {
     crate::runner::SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
 }
-const STOPPED: &str = "stopped before it finished; nothing saved";
+pub(crate) const STOPPED: &str = "stopped before it finished; nothing saved";
+
+fn check_running() -> Result<(), String> {
+    if stopped() { Err(STOPPED.to_string()) } else { Ok(()) }
+}
 
 /// Main calibration test that orchestrates tier calibration
 pub struct CalibrationTest {
@@ -1272,9 +1276,7 @@ impl CalibrationTest {
         // The engine's memory, `bytes` long, which nothing else uses, and which it keeps until after
         results.shared = Some(self.run_shared(&results, cpus, base, bytes));
         // A stop during B or C (A's ends `run_calibration`)
-        if stopped() {
-            return Err(STOPPED.to_string());
-        }
+        check_running()?;
         Ok(results)
     }
 
@@ -1540,9 +1542,7 @@ impl CalibrationTest {
         let fine_l2 = self.run_fine_sweep(&mut probe, l2_cap / 2, l2_cap, fine_step, repeats, "L2→L3");
         let fine_l3 = self.run_fine_sweep(&mut probe, l3_cap / 2, l3_cap, fine_step, repeats, "L3→DRAM");
         // A stop ended the sweeps early: no tier from them, nor their warnings, nor B and C after
-        if stopped() {
-            return Err(STOPPED.to_string());
-        }
+        check_running()?;
 
         // The tiers from the finer sweeps
         let cpu_signature = CpuSignature::from_cache_info(&self.cache_info);
@@ -2282,6 +2282,7 @@ fn quantile(values: &[f64], p: f64) -> f64 {
 /// load) falls on every width alike; the first round warms up (faults in 4 KiB pages, settles clocks) and isn't timed.
 pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCalibration, String> {
     use crate::seal::{SealKernel, SealPattern, SealWidth};
+    check_running()?;
     let page = calibration_page_size(page_size);
     let bytes = (cache_info.l3_cache * SEAL_L3_MULTIPLE).max(SEAL_MIN_BYTES).next_multiple_of(page.bytes());
     let kernels: Vec<SealKernel> = [SealWidth::W128, SealWidth::W256, SealWidth::W512]
@@ -2302,8 +2303,11 @@ pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCal
     // Per kernel, the seconds of each timed fill and each timed check
     let mut times: Vec<(Vec<f64>, Vec<f64>)> = vec![(Vec::new(), Vec::new()); kernels.len()];
     let mut bad = 0;
-    for round in 0..=SEAL_RUNS {
+    'rounds: for round in 0..=SEAL_RUNS {
         for k in 0..kernels.len() {
+            if stopped() {
+                break 'rounds;
+            }
             let i = (round + k) % kernels.len();
             // SAFETY: the buffer is `words` long and page aligned, and each kernel's width is one this CPU has (`resolve` above)
             let (fill, check) = unsafe {
@@ -2323,9 +2327,10 @@ pub fn calibrate_seal(cache_info: &CacheInfo, page_size: &str) -> Result<SealCal
     if bad > 0 {
         return Err(format!(
             "the seal's check found {bad} bad words in memory it had just written: memory errors, so \
-                            the timings aren't the seal's own; stabilize the memory, then calibrate"
+             the timings aren't the seal's own; stabilize the memory, then calibrate"
         ));
     }
+    check_running()?;
 
     let mib = bytes as f64 / crate::constants::MB_F64;
     let widths: Vec<SealWidthTiming> = kernels
@@ -2719,8 +2724,10 @@ mod tests {
         crate::runner::request_stop();
         // SAFETY: the test's own memory, 64-byte aligned
         let stopped = unsafe { test.run_on(memory.as_mut_ptr() as *mut u64, 16 << 20, PageSizeLevel::Regular) };
+        let seal = calibrate_seal(&CacheInfo::default(), "reg-page");
         crate::runner::clear_stop();
         assert_eq!(stopped.unwrap_err(), STOPPED);
+        assert_eq!(seal.unwrap_err(), STOPPED);
     }
 
     /// The pointer chase is one cycle through every slot, back at the first after `len` steps, laid in place

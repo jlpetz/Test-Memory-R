@@ -766,10 +766,7 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
                 crate::calibration::display_curve(&results, &points, out)?;
                 Ok(RunStatus::Passed)
             }
-            Err(e) => {
-                writeln!(out, "Calibration failed: {e}")?;
-                Ok(RunStatus::NotRun)
-            }
+            Err(e) => calibration_error(out, "Calibration", &e),
         };
     }
     let (cache, seal) = match command {
@@ -809,13 +806,26 @@ fn calibrate(args: &[String], out: &mut dyn Write, confirm: &mut dyn FnMut(&str)
     }
     let page_size = config.page_size.clone();
 
-    if cache && calibrate_cache(args, config, &system_info, smbios, out, &mut save)? == RunStatus::NotRun {
-        return Ok(RunStatus::NotRun);
+    if cache {
+        let status = calibrate_cache(args, config, &system_info, smbios, out, &mut save)?;
+        if status != RunStatus::Passed {
+            return Ok(status);
+        }
     }
     if seal {
         return calibrate_seal(&page_size, &system_info, smbios, out, &mut save);
     }
     Ok(RunStatus::Passed)
+}
+
+fn calibration_error(out: &mut dyn Write, stage: &str, error: &str) -> io::Result<RunStatus> {
+    if error == crate::calibration::STOPPED {
+        writeln!(out, "{stage} {error}.")?;
+        Ok(RunStatus::Interrupted)
+    } else {
+        writeln!(out, "{stage} failed: {error}")?;
+        Ok(RunStatus::NotRun)
+    }
 }
 
 /// tmr-cfg.json at `path`, which a calibration is compared with and may be saved into (`AppConfig::load_to_save`): one that can't be read
@@ -851,6 +861,9 @@ fn calibrate_cache(
             };
             let stored = app_config.calibration.is_some();
             let should_save = prompt_calibration_save(&app_config.calibration, &results, "cache", out, save)?;
+            if crate::calibration::stopped() {
+                return calibration_error(out, what, crate::calibration::STOPPED);
+            }
             if should_save {
                 if let Err(e) = crate::app_config::AppConfig::update(&cfg_path, |stored| {
                     stored.update_machine_id(system_info, smbios);
@@ -882,10 +895,7 @@ fn calibrate_cache(
             }
             Ok(RunStatus::Passed)
         }
-        Err(e) => {
-            writeln!(out, "{} failed: {}", what, e)?;
-            Ok(RunStatus::NotRun)
-        }
+        Err(e) => calibration_error(out, what, &e),
     }
 }
 
@@ -907,7 +917,11 @@ fn calibrate_seal(
                 }
             };
             let stored = app_config.seal_calibration.is_some();
-            if prompt_seal_calibration_save(&app_config.seal_calibration, &seal, out, save)? {
+            let should_save = prompt_seal_calibration_save(&app_config.seal_calibration, &seal, out, save)?;
+            if crate::calibration::stopped() {
+                return calibration_error(out, "Seal calibration", crate::calibration::STOPPED);
+            }
+            if should_save {
                 if let Err(e) =
                     crate::app_config::AppConfig::update(&cfg_path, |stored| stored.set_seal_calibration(seal, system_info, smbios))
                 {
@@ -922,10 +936,7 @@ fn calibrate_seal(
             }
             Ok(RunStatus::Passed)
         }
-        Err(e) => {
-            writeln!(out, "Seal calibration failed: {}", e)?;
-            Ok(RunStatus::NotRun)
-        }
+        Err(e) => calibration_error(out, "Seal calibration", &e),
     }
 }
 
