@@ -13,7 +13,7 @@
 //! |                   | the chart's stage lines and their labels                             |
 //! | `error`           | error bullets, a non-zero error count, the chart's error marks       |
 //! | `critical`        | the "Failed" badge fill, the Stop button                             |
-//! | `success`         | the "Running" and "Passed" badge fill                                |
+//! | `success`         | the "Passed" badge fill                                              |
 //! | `neutral`         | the other badges' fill: Ready, Stopping, Interrupted, Not run        |
 //! | `on_status`       | badge text, the Stop button's text                                   |
 //! | `accent`          | the chart's throughput line                                          |
@@ -203,7 +203,7 @@ const ABOUT: [&str; 16] = [
     "info line, table headings, empty-state lines, chart axis labels, the chart's stage lines and labels",
     "error bullets, a non-zero error count, the chart's error marks",
     "the 'Failed' badge fill, the Stop button",
-    "the 'Running' and 'Passed' badge fill",
+    "the 'Passed' badge fill",
     "the other badges' fill: 'Ready', 'Stopping', 'Interrupted', 'Not run'",
     "badge text, the Stop button's text",
     "the chart's throughput line",

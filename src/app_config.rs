@@ -2,8 +2,7 @@
 //!
 //! Persistent configuration file (`tmr-cfg.json`) stored in the `settings\` folder of TMR's home (`settings_file.rs`, `home.rs`).
 //! Holds machine identity and calibration results; the window's settings are window.json's (tmr-gui's `settings.rs`).
-//! All fields are optional: missing fields use defaults. Unknown fields are read past and not kept: `AppConfig` has no catch-all, so the
-//! next save drops them.
+//! All fields are optional: missing fields use defaults and unknown top-level fields are preserved.
 //!
 //! Written whole (`atomic_file`), as a crash while it was written left half of one (forum feedback, 2026-11-23), and each save then
 //! as its last good copy, `tmr-cfg.json.bak` (`settings_file::save`). One that is there but isn't a config, or can't be read, is the
@@ -15,6 +14,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::cache::SystemInfo;
 use crate::calibration::{CalibrationResults, SealCalibration};
@@ -208,6 +208,9 @@ pub struct AppConfig {
     pub seal_calibration: Option<SealCalibration>,
     // What the window keeps between sessions (its last parameters, the chart shown or not, starting on open, its size) is window.json's
     // (tmr-gui's settings.rs, TODO 109), not this file's: this one is the engine's record of the machine (TODO 7, the owner, 2026-11-04)
+    /// Top-level settings this version does not recognise.
+    #[serde(flatten)]
+    pub(crate) retained: Map<String, Value>,
 }
 
 const CONFIG_FILENAME: &str = "tmr-cfg.json";
@@ -506,13 +509,12 @@ mod tests {
         assert_eq!(loaded.machine_id.as_deref(), Some("abc123"));
     }
 
-    /// An unknown field is read past, and not kept: the next save drops it (the module's doc)
     #[test]
-    fn unknown_fields_are_read_past_and_dropped() {
+    fn unknown_fields_survive_serialization() {
         let json = r#"{"machine_id": "test", "some_future_field": 42}"#;
         let config: AppConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.machine_id.as_deref(), Some("test"));
-        assert!(!serde_json::to_string(&config).unwrap().contains("some_future_field"));
+        assert_eq!(serde_json::to_value(&config).unwrap()["some_future_field"], 42);
     }
 
     #[test]

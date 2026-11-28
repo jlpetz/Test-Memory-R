@@ -1366,6 +1366,7 @@ pub fn run_tests_with_layout_and_timing_filtered(setup: RunSetup, fe: &Arc<dyn F
         });
         let mut result = TestRunResult::new(snapshot);
         result.metadata.record = record;
+        result.external = crate::external::sample();
         Arc::new(Mutex::new(result))
     };
 

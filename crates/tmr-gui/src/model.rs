@@ -132,18 +132,6 @@ pub enum Status {
 }
 
 impl Status {
-    pub fn label(self) -> &'static str {
-        match self {
-            Status::Ready => "Ready",
-            Status::Running => "Running",
-            Status::Stopping => "Stopping",
-            Status::Passed => "Passed",
-            Status::Failed => "Failed",
-            Status::Interrupted => "Interrupted",
-            Status::NotRun => "Not run",
-        }
-    }
-
     fn of(status: RunStatus) -> Self {
         match status {
             RunStatus::Passed => Status::Passed,
@@ -534,6 +522,9 @@ pub struct Model {
     facts: Facts,
     /// The large-page question, while it waits for the dialog's answer: the session's thread waits on the reply
     reply: Option<SyncSender<LargePageAnswer>>,
+    /// A stored calibration is there: replace it, or keep it (TODO 110). The calibrate thread waits on the reply.
+    save_reply: Option<SyncSender<bool>>,
+    save_question: Option<String>,
     /// What the last large-page question asked, kept after its answer, so the dialog's words hold while it closes
     question: Option<LargePageQuestion>,
     /// The grant's candidate chosen, as its radio buttons have it (`choose_target`): none chosen disables the grant
@@ -564,6 +555,8 @@ pub struct Model {
     /// The cache calibration tmr-cfg.json holds, as the info line says it before a run (TODO 110); the window reads it as it opens, at Run
     /// again and after its own calibration
     pub stored_calibration: Option<String>,
+    /// Bits that failed this run, test and seal, for the strip under the errors list. Empty until a step reports one.
+    pub failing_mask: u64,
 }
 
 impl Model {
@@ -611,12 +604,23 @@ impl Model {
             calibrating: false,
             rechecking: false,
             stored_calibration: None,
+            failing_mask: 0,
+            save_reply: None,
+            save_question: None,
         }
     }
 
     /// The command line Start runs: the exe's name, then the parameters box's
     pub fn command(&self) -> Vec<String> {
         std::iter::once(self.program.clone()).chain(args_of(&self.args)).collect()
+    }
+
+    /// Replace `key=` in the parameters box, or append it. Other keys stay. The box remains the only parser the run sees.
+    pub fn set_setting(&mut self, key: &str, value: &str) {
+        let prefix = format!("{key}=");
+        let mut args: Vec<String> = args_of(&self.args).into_iter().filter(|arg| !arg.starts_with(&prefix)).collect();
+        args.push(format!("{prefix}{value}"));
+        self.args = args_text(&args);
     }
 
     /// An elevated window may reopen in a different working folder. Replay the same config file it selected this time.
@@ -823,6 +827,27 @@ impl Model {
     /// The large-page question is waiting for its answer, in either dialog: no other dialog opens meanwhile
     pub fn large_pages_pending(&self) -> bool {
         self.reply.is_some()
+    }
+
+    /// A stored calibration is there (TODO 110): the dialog asks, and `answer_save` replies. Esc and Keep leave what is stored.
+    pub fn ask_save(&mut self, question: String, reply: SyncSender<bool>) {
+        self.save_question = Some(question);
+        self.save_reply = Some(reply);
+    }
+
+    pub fn save_pending(&self) -> bool {
+        self.save_reply.is_some()
+    }
+
+    pub fn save_question(&self) -> String {
+        self.save_question.clone().unwrap_or_default()
+    }
+
+    pub fn answer_save(&mut self, save: bool) {
+        if let Some(reply) = self.save_reply.take() {
+            let _ = reply.send(save);
+        }
+        self.save_question = None;
     }
 
     /// The large-page dialog is open
@@ -1121,11 +1146,13 @@ impl Model {
             Run::CycleStarted { cycle, .. } => self.cycle = cycle,
             Run::CycleFinished { cycle, partial } => (self.cycles_finished, self.last_partial) = (cycle, partial),
             Run::SealStage { op, errors, bits, .. } => {
+                self.failing_mask |= bits.mask();
                 if op == SealOp::FinalCheck && errors > 0 {
                     self.errors.push(format!("Cycle {} · final seal check: {errors} errors{}", self.cycle, bits.brief()));
                 }
             }
             Run::StepFinished(report) => {
+                self.failing_mask |= report.summary.failing_bits.mask() | report.summary.seal_failing_bits.mask();
                 if let Some(error) = step_errors(&report) {
                     self.errors.push(error);
                 }
@@ -1217,8 +1244,16 @@ impl Model {
         self.calibrating = false;
         self.position = match result {
             Ok(RunStatus::Passed) => "Calibrated: the next run sizes its tests from it".to_string(),
-            Ok(_) => "The calibration failed: the Log tab says why".to_string(),
-            Err(e) => format!("The calibration failed: {e}"),
+            Ok(_) => {
+                let line = "The calibration failed: the Log tab says why".to_string();
+                self.errors.push(line.clone());
+                line
+            }
+            Err(e) => {
+                let line = format!("The calibration failed: {e}");
+                self.errors.push(line.clone());
+                line
+            }
         };
     }
 

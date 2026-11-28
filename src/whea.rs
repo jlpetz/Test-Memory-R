@@ -42,7 +42,7 @@
 //! the ID is reported raw for lookup instead.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, ERROR_EVT_MAX_INSERTS_REACHED, ERROR_EVT_UNRESOLVED_PARAMETER_INSERT,
@@ -217,8 +217,9 @@ fn level_name(level: u32) -> &'static str {
 /// to error detection, never a precondition for testing.
 pub struct WheaMonitor {
     sub: Mutex<Option<Subscription>>,
-    total: AtomicU64,
-    corrected: AtomicU64,
+    /// Both counts, updated and read together. Two atomics let a boundary see `total` already bumped and `corrected` not yet, so a
+    /// corrected event was reported as uncorrected for that step.
+    counts: Mutex<WheaCounts>,
     active: AtomicBool,
     /// Set once we have logged an unexpected drain error, so a persistent failure cannot spam the log every poll.
     drain_error_logged: AtomicBool,
@@ -239,8 +240,7 @@ impl WheaMonitor {
     pub fn new() -> Self {
         Self {
             sub: Mutex::new(None),
-            total: AtomicU64::new(0),
-            corrected: AtomicU64::new(0),
+            counts: Mutex::new(WheaCounts::default()),
             active: AtomicBool::new(false),
             drain_error_logged: AtomicBool::new(false),
             pending: Mutex::new(Vec::new()),
@@ -415,10 +415,14 @@ impl WheaMonitor {
 
     /// Folds one event into the counters and queues its description for the console + log.
     fn record(&self, record: WheaRecord) {
-        let seq = self.total.fetch_add(1, Ordering::Relaxed) + 1;
-        if record.corrected {
-            self.corrected.fetch_add(1, Ordering::Relaxed);
-        }
+        let seq = {
+            let mut counts = self.counts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            counts.total += 1;
+            if record.corrected {
+                counts.corrected += 1;
+            }
+            counts.total
+        };
 
         // Past the cap, keep counting but stop describing — see `MAX_DESCRIBED`.
         if seq > MAX_DESCRIBED {
@@ -446,7 +450,7 @@ impl WheaMonitor {
 
     /// Cumulative counts for the run so far.
     pub fn counts(&self) -> WheaCounts {
-        WheaCounts { total: self.total.load(Ordering::Relaxed), corrected: self.corrected.load(Ordering::Relaxed) }
+        *self.counts.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Removes and returns descriptions not yet shown on the console.

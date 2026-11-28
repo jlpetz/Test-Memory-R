@@ -180,14 +180,8 @@ impl ReserveAmount {
         } else if s.ends_with("mib") || s.ends_with("mb") {
             let num_str = if s.ends_with("mib") { &s[..s.len() - 3] } else { &s[..s.len() - 2] };
             match num_str.parse::<f64>() {
-                Ok(mib) => {
-                    let bytes = if s.ends_with("mib") {
-                        (mib * 1024.0 * 1024.0) as u64 // MiB (binary)
-                    } else {
-                        (mib * 1000.0 * 1000.0) as u64 // MB (decimal)
-                    };
-                    Ok(ReserveAmount::Bytes(bytes))
-                }
+                // Match the legacy TM5 memory setting: MB and MiB both use 1024 × 1024 bytes.
+                Ok(mib) => Ok(ReserveAmount::Bytes((mib * BYTES_PER_MIB as f64) as u64)),
                 Err(_) => Err(format!("Invalid MiB/MB format: {}", s)),
             }
         } else {
@@ -612,6 +606,14 @@ mod tests {
         assert!(matches!(AllocationMode::parse("20%-from-available"), Ok(AllocationMode::ReserveFromAvailable { .. })));
         assert!(matches!(AllocationMode::parse("16GiB-target"), Ok(AllocationMode::AllocateTarget { .. })));
         assert!(matches!(AllocationMode::parse("2048MB"), Ok(AllocationMode::LegacyTM5 { reserve_mb: 2048 })));
+        // The same bytes with or without -from-available: both are 1024×1024, TM5's Mb, not 1000×1000 on one path only.
+        let reserved = |spec: &str| match AllocationMode::parse(spec).unwrap() {
+            AllocationMode::LegacyTM5 { reserve_mb } => reserve_mb as u64 * BYTES_PER_MIB,
+            AllocationMode::ReserveFromAvailable { reserve: ReserveAmount::Bytes(bytes) } => bytes,
+            other => panic!("{spec} is not a reserve: {other:?}"),
+        };
+        assert_eq!(reserved("2048MB"), reserved("2048MB-from-available"));
+        assert_eq!(reserved("2048MiB"), 2048 * BYTES_PER_MIB);
         // A bare share reserves it from the memory available now, as --help says
         assert!(matches!(
             AllocationMode::parse("20%"),

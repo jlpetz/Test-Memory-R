@@ -22,14 +22,18 @@
 
 mod chart;
 mod dialogs;
+mod journal;
+mod lang;
 mod logger;
 mod model;
 mod palette;
 mod placement;
+mod readings;
 mod report;
 mod sections;
 mod settings;
 mod sysinfo;
+mod update;
 mod window;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,6 +58,11 @@ enum Feed {
     Ended(Result<SessionEnd, String>),
     /// The window's own calibration ended (the ••• menu's, TODO 110): how it did, or the error that stopped it
     Calibrated(Result<RunStatus, String>),
+    /// A stored calibration is there: replace it, or keep it. The calibrate thread waits on `reply`.
+    SaveAsk {
+        question: String,
+        reply: SyncSender<bool>,
+    },
     AskAdmin(SyncSender<bool>),
 }
 
@@ -109,8 +118,16 @@ fn wait_answer<T>(answer: mpsc::Receiver<T>) -> Option<T> {
     }
 }
 
+/// Ask before replacing a stored calibration. Closing the window keeps the stored calibration.
+pub(crate) fn ask_save(feed: &Sender<Feed>, question: &str) -> bool {
+    let (reply, answer) = mpsc::sync_channel(1);
+    feed.send(Feed::SaveAsk { question: question.to_string(), reply }).is_ok() && wait_answer(answer).unwrap_or(false)
+}
+
 /// The session's thread, from Start (Run again's the next's), and the exit status the last one ended with
 static SESSION: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+/// The window's own calibration, apart from a run: close and Stop have to reach it, and the handle was dropped (`window::calibrate`)
+static CALIBRATE: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 static EXIT_CODE: Mutex<Option<i32>> = Mutex::new(None);
 
 /// Set when the window has opened, for the wording of its error, and when it has closed, for the large-page question
@@ -128,6 +145,25 @@ fn window_opened() {
 }
 
 /// A session's thread started: the window's first, or Run again's after the last had ended (TODO 109), whose handle it replaces
+pub(crate) fn calibrate_started(handle: JoinHandle<()>) {
+    *CALIBRATE.lock().unwrap_or_else(PoisonError::into_inner) = Some(handle);
+}
+
+/// Stop a calibration still measuring, and wait a few seconds for its sweep to notice. A finished one is joined and dropped.
+fn stop_calibration() {
+    let handle = CALIBRATE.lock().unwrap_or_else(PoisonError::into_inner).take();
+    if let Some(handle) = handle {
+        if !handle.is_finished() {
+            tmr::request_stop();
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !handle.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = handle.join();
+    }
+}
+
 fn session_started(session: JoinHandle<()>) {
     *SESSION.lock().unwrap_or_else(PoisonError::into_inner) = Some(session);
     *EXIT_CODE.lock().unwrap_or_else(PoisonError::into_inner) = None;
@@ -183,6 +219,7 @@ pub fn main(args: Vec<String>, icon: &'static [u8]) -> Closed {
     let _ = ICON.set(icon);
     let shown = windows_reactor::App::run_component::<window::Window>(args);
     WINDOW_CLOSED.store(true, Ordering::Relaxed);
+    stop_calibration();
     let session = SESSION.lock().unwrap_or_else(PoisonError::into_inner).take();
     let started = session.is_some();
     if let Some(session) = session {

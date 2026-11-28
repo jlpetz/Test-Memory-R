@@ -32,6 +32,10 @@ pub struct TestRunResult {
     pub run_config: crate::run_context::RunConfigSnapshot,
     pub cycles: Vec<CycleResult>,
     pub overall_stats: OverallStats,
+    /// Timings and a DIMM temperature from a tool already running, taken as the results file is opened. Absent when neither source had a
+    /// fresh reading, and from files written before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<crate::external::ExternalReading>,
 }
 
 /// What a run records (`record=`, TODO 105): its results file and its log file, the console and the window showing the run either way
@@ -578,6 +582,8 @@ impl TestRunResult {
             identity: crate::run_context::RunIdentity::detect(),
             run_config,
             cycles: Vec::new(),
+            // Not sampled here: `new` is what the tests build, and a miss is a connect timeout. The runner takes it once, as the file opens.
+            external: None,
             overall_stats: OverallStats {
                 in_progress: false,
                 outcome: None,
@@ -1023,6 +1029,12 @@ impl TestComparison {
         }
         run_differences.extend(crate::run_context::compare_identity(&baseline.identity, &current.identity));
         run_differences.extend(crate::run_context::compare_config(&baseline.run_config, &current.run_config));
+        if let (Some(was), Some(now)) = (&baseline.external, &current.external)
+            && let (Some(was), Some(now)) = (&was.timings, &now.timings)
+            && was != now
+        {
+            run_differences.push(crate::run_context::RunDifference::new("Memory timings", was.clone(), now.clone(), false));
+        }
 
         TestComparison {
             baseline: baseline.metadata,
@@ -1522,6 +1534,28 @@ mod tests {
         assert!(report.find("Results file").unwrap() < report.find("Overall Performance Changes").unwrap(), "{report}");
         let both_finished = compare_test_results(&baseline, &baseline).unwrap();
         assert!(both_finished.run_differences.iter().all(|d| d.field != "Results file"));
+    }
+
+    /// Timings taken from a tool already running are named when two runs differ, and left out when a file has none.
+    #[test]
+    fn timings_that_differ_are_named() {
+        let reading = |primaries: &str| {
+            Some(crate::external::ExternalReading {
+                line: format!("Timings {primaries}"),
+                timings: Some(primaries.to_string()),
+                dimm_c: None,
+            })
+        };
+        let mut baseline = run_of("baseline", &[planned("Mem-StuckBitAuto", 1000.0)], &[]);
+        let mut current = run_of("current", &[planned("Mem-StuckBitAuto", 1000.0)], &[]);
+        baseline.external = reading("30-38-38-56");
+        current.external = reading("32-38-38-56");
+        let text = TestComparison::of(baseline, current).head_text();
+        assert!(text.contains("Memory timings"), "{text}");
+        assert!(text.contains("30-38-38-56") && text.contains("32-38-38-56"), "{text}");
+
+        let same = run_of("same", &[planned("Mem-StuckBitAuto", 1000.0)], &[]);
+        assert!(!TestComparison::of(same.clone(), same).head_text().contains("Memory timings"));
     }
 
     /// A finished run that stopped before its end, halted in its first cycle or interrupted after it, compared with one that ran to its

@@ -35,6 +35,8 @@ USAGE:
   tmr --calibrate-cache --yes         #   any calibration: --yes saves without asking, --no-save keeps what is
                                       #   stored; with neither it asks, and saves if no answer can come
   tmr --calibrate-all --output x.json #   --calibrate-cache or -all: also writes the cache tiers it measured to x.json, here
+  tmr --get-readings                  # Download ZenTimings and LibreHardwareMonitor into companions\ (official releases)
+                                      #   no drivers installed; --launch starts them, and each asks before a driver
   tmr --show-calibration              # What the calibrations stored (the cache tiers, the seal's widths), and whether
                                       #   each is this machine's, which a run takes
   tmr plan=stability                  # The stability tests at the widest width (or width=): the default plan
@@ -55,7 +57,7 @@ USAGE:
 COMMAND LINE PARAMETERS:
   memory=20%                          # Reserve 20% of the memory available now (as 20%-from-available)
   memory=2GiB                         # Reserve 2 GiB
-  memory=2048MB                       # TM5-compatible allocation (2048MB from available)
+  memory=2048MB                       # Reserve 2048 MiB from available, and test the rest (TM5's Mb; MB is 1024×1024)
   memory=10%-from-available           # Reserve 10% from currently available memory
   memory=8GiB-from-total              # Reserve 8 GiB from total system memory
   memory=64GiB-target                 # Target 64 GiB allocation (may fail if unavailable)
@@ -183,7 +185,7 @@ EXIT STATUS, for scripts:
 
 Quick Usage Examples:
   tmr memory=10%-from-available       # Standard: Reserve 10% from currently available memory
-  tmr memory=2048MB                   # TM5 compatible: Reserve 2048MB from available memory
+  tmr memory=2048MB                   # TM5 compatible: reserve 2048 MiB from available, test the rest
   tmr memory=8GiB-from-total          # Failure test: Reserve 8 GiB from total (unrealistic)
   tmr memory=64GiB-target             # Failure test: Target 64 GiB allocation (may fail)
   tmr cycles=5 duration=600           # 5 cycles OR 10 minutes max

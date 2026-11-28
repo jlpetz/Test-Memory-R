@@ -51,6 +51,8 @@ pub enum Command {
     Help(String),
     /// `--version`
     Version,
+    /// `--get-readings [--launch]`: download ZenTimings and LibreHardwareMonitor into companions\
+    GetReadings(Vec<String>),
 }
 
 impl Command {
@@ -77,6 +79,7 @@ impl Command {
                 "--show-calibration" => return Some(Command::ShowCalibration(args.to_vec())),
                 "--help" | "-h" | "/?" | "-?" => return Some(Command::Help(args[0].clone())),
                 "--version" | "-v" => return Some(Command::Version),
+                "--get-readings" => return Some(Command::GetReadings(args.to_vec())),
                 _ => {}
             }
         }
@@ -122,6 +125,9 @@ pub fn run(
         Command::Calibrate(args) => return calibrate(args, out, confirm),
         Command::ShowCalibration(args) => show_calibration(args, out)?,
         Command::Help(program_name) => help(out, program_name)?,
+        Command::GetReadings(args) => {
+            return crate::companions::get_readings(args.iter().any(|arg| arg == "--launch"), out);
+        }
         Command::Version => {
             writeln!(out, "Test Memory R (TMR) version {}", crate::BUILD.version)?;
             writeln!(out, "High-Performance Memory Testing Tool with TM5 Compatibility")?;
@@ -168,6 +174,8 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     cmd(out, "--calibrate-cache --yes", "  any calibration: --yes saves without asking, --no-save keeps what is")?;
     more(out, "  stored; with neither it asks, and saves if no answer can come")?;
     cmd(out, "--calibrate-all --output x.json", "  --calibrate-cache or -all: also writes the cache tiers it measured to x.json, here")?;
+    cmd(out, "--get-readings", "Download ZenTimings and LibreHardwareMonitor into companions\\ (official releases)")?;
+    more(out, "  no drivers installed; --launch starts them, and each asks before a driver")?;
     cmd(out, "--show-calibration", "What the calibrations stored (the cache tiers, the seal's widths), and whether")?;
     more(out, "  each is this machine's, which a run takes")?;
     cmd(out, "plan=stability", "The stability tests at the widest width (or width=): the default plan")?;
@@ -188,7 +196,7 @@ pub fn help(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     writeln!(out, "COMMAND LINE PARAMETERS:")?;
     entry(out, "memory=20%", "Reserve 20% of the memory available now (as 20%-from-available)")?;
     entry(out, "memory=2GiB", "Reserve 2 GiB")?;
-    entry(out, "memory=2048MB", "TM5-compatible allocation (2048MB from available)")?;
+    entry(out, "memory=2048MB", "Reserve 2048 MiB from available, and test the rest (TM5's Mb; MB is 1024×1024)")?;
     entry(out, "memory=10%-from-available", "Reserve 10% from currently available memory")?;
     entry(out, "memory=8GiB-from-total", "Reserve 8 GiB from total system memory")?;
     entry(out, "memory=64GiB-target", "Target 64 GiB allocation (may fail if unavailable)")?;
@@ -352,7 +360,7 @@ fn usage(out: &mut dyn Write, program_name: &str) -> io::Result<()> {
     let cmd = |out: &mut dyn Write, args: &str, comment: &str| entry(out, format!("{program_name} {args}").trim_end(), comment);
     writeln!(out, "Quick Usage Examples:")?;
     cmd(out, "memory=10%-from-available", "Standard: Reserve 10% from currently available memory")?;
-    cmd(out, "memory=2048MB", "TM5 compatible: Reserve 2048MB from available memory")?;
+    cmd(out, "memory=2048MB", "TM5 compatible: reserve 2048 MiB from available, test the rest")?;
     cmd(out, "memory=8GiB-from-total", "Failure test: Reserve 8 GiB from total (unrealistic)")?;
     cmd(out, "memory=64GiB-target", "Failure test: Target 64 GiB allocation (may fail)")?;
     cmd(out, "cycles=5 duration=600", "5 cycles OR 10 minutes max")?;
@@ -1219,7 +1227,7 @@ mod tests {
         // And every flag a session takes, and the frontends' (`--gui` and `--cli`, tmr-app's launch.rs; `--start`, the window's), each named
         // on a line, but --help itself and the short forms of it and of --version
         let words: Vec<&str> = text.split(|c: char| c.is_whitespace() || ",;:()".contains(c)).collect();
-        let flags: Vec<&str> = crate::session::KNOWN_FLAGS.into_iter().chain(["--gui", "--cli", "--start"]).collect();
+        let flags: Vec<&str> = crate::session::KNOWN_FLAGS.into_iter().chain(["--gui", "--cli", "--start", "--launch"]).collect();
         for flag in flags.iter().filter(|flag| !["--help", "-h", "-?", "-v"].contains(flag)) {
             assert!(words.contains(flag), "--help names no {flag}");
         }
@@ -1434,6 +1442,9 @@ mod tests {
         assert!(crate::logfile::wanted(&args(&line)), "--remove-large-pages keeps a log file");
         let line = ["tmr.exe", "--calibrate-all", "maxpage=reg-page"];
         assert!(matches!(parse(&line), Some(Command::Calibrate(given)) if given == args(&line)));
+        let line = ["tmr.exe", "--get-readings", "--launch"];
+        assert!(matches!(parse(&line), Some(Command::GetReadings(given)) if given == args(&line)));
+        assert!(!crate::logfile::wanted(&args(&line)), "--get-readings keeps no log file: it is not a run");
         let line = ["tmr.exe", "--show-calibration", "--serials"];
         assert!(matches!(parse(&line), Some(Command::ShowCalibration(given)) if given == args(&line)));
         assert!(!crate::logfile::wanted(&args(&line)), "--show-calibration keeps no log file: it changes nothing");

@@ -139,17 +139,17 @@ The Memory report's 4 KB column says which kind a run took.
   pick a config with Load config, and press Start; once the run is over, Run again starts another.
   A finished step's row opens its report, and the final summary opens itself as the run ends. The
   Log tab has what the console would show; Plan, System, Threads and Memory what it prints as it
-  starts; Compare compares two runs' results files. The window keeps its settings in
-  `settings\window.json` in TMR's home (beside tmr.exe, or as [below](#where-tmr-keeps-its-files);
-  run as administrator, one for each Windows account): the chart shown or hidden, the theme,
-  whether a run starts as it opens (`tmr --gui --start` does that once), whether serial numbers are kept, the last run's
-  parameters, its colours, and its size and place on the screen as it closed, maximized or not
-  (it opens there again only if that is still on a screen). Settings, in its `•••` menu, sets the
-  theme, starting on open and the serial numbers, and, run as administrator, whether it asks
-  before testing. The line above the box, the header's last, says
-  before a run what cache calibration it finds; the first run on a machine measures one before its
-  tests (about 2 minutes), or Calibrate the caches and the seal, in the same menu, measures it
-  now, with the seal's fastest width.
+  starts; Compare compares two runs' results files.
+  The window saves its preferences in `settings\window.json` in [TMR's home](#where-tmr-keeps-its-files).
+  Settings controls the theme, language, automatic start, optional sounds and whether to include
+  hardware identifiers. The log and results stay in English. If the window was run as
+  administrator, Settings also controls whether to ask before testing. TMR remembers the last
+  parameters and the window position and size, including whether it was maximized.
+  The menu beside Start provides file actions, calibration, Settings and About.
+  Settings can check GitHub for a newer release and open its page.
+  When a previous run did not finish, the window can show the last saved progress, errors and
+  readings. Dismiss that message, then choose Start when ready. The line above the parameters shows whether this machine has a cache calibration.
+  The first run measures one when needed, and the menu can measure it separately.
 - **From a console**, type `tmr plan=stability` for the stability plan, 3 cycles of it: any
   setting starts a run, and `tmr` alone lists every setting and starts nothing. Press Ctrl+C to
   stop a run sooner, and it stops at its next checkpoint and writes its report. In the classic
@@ -243,6 +243,22 @@ explains each. Each thread tests 1 GiB of its memory (more on a CPU with a large
 figures compare only between runs on the same page size (large pages, which TMR takes when it
 can). They also compare only at the same `cpus=` and `skip-cores=`, as any bandwidth figure does:
 those set how many cores load, which the report shows.
+
+## Optional timings and temperatures
+
+TMR can read memory timings and DIMM temperatures from ZenTimings and LibreHardwareMonitor.
+Install the tools from the window's **Timings tools** menu item or run `tmr --get-readings`
+from a standard-user session. TMR checks the downloaded archives against pinned SHA-256 hashes.
+They are unpacked under `%LOCALAPPDATA%\TMR\companions`, or under `companions` in an explicit
+`TMR_HOME`. Use `tmr --get-readings --launch` to start the tools and handle their Windows prompts.
+
+- In ZenTimings, enable **Live Snapshot** and auto refresh. TMR checks the snapshot beside the
+  downloaded copy. Set `TMR_TIMINGS` to the JSON file for a different installation.
+- In LibreHardwareMonitor, enable its web server on this PC on port `8085`.
+
+When a source is available, a run stores its startup sample in the optional `external` field of the
+results JSON. Existing results remain readable. Compare shows changes in the primary timings.
+The window refreshes its readout during a run. Timing changes and temperatures are informational.
 
 ## Configurations
 

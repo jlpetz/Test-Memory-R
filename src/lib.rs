@@ -47,6 +47,7 @@ compile_error!(
 // reported (TODO 69 E).
 pub mod atomic_file; // files written whole, a temp put in their place: the results, tmr-cfg.json and the window's window.json
 pub mod commands; // the one-shot commands, writing to their caller's writer (TODO 29)
+mod companions; // ZenTimings and LibreHardwareMonitor, downloaded on request (TODO 122)
 pub mod cpu_check; // whether this CPU has the features TMR is built for (TODO 104)
 pub mod frontend; // the engine's interface to whoever shows a session: its events (TODO 29)
 pub mod home; // the folder TMR keeps its configs, results, logs and settings in: beside the exe, or TMR_HOME (TODO 104)
@@ -55,7 +56,9 @@ pub mod sanitize; // copies of a run's results file and log without its serials,
 pub mod session; // a command line's setup, then its run, through a frontend (TODO 29)
 pub mod settings_file; // tmr-cfg.json and window.json in the home's settings\: taken from the old place, saved with a last good copy
 pub use build_info::BUILD;
-pub use runner::request_stop;
+pub use companions::dir as companions_dir;
+pub use external::{ExternalReading, line as external_line, sample as external_sample};
+pub use runner::{memory_status, request_stop};
 // What the CLI's tests drive the engine with, under the `test-support` feature (TODO 29)
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -72,6 +75,7 @@ mod cpu_selection; // two-stage CPU selection: skip-cores filter + cpu-stride sp
 mod cpu_topology;
 mod error_context; // where a worker is in the run, for its error lines (TODO 74)
 mod exchange; // the page exchange: tiles that cross threads, CCDs and NUMA nodes, copied, inverted or rewritten (TODO 28)
+mod external; // timings and temperatures from tools already running (TODO 122)
 mod failing_bits; // which bit positions failed checks, from the verifies' cold path (TODO 97)
 mod formatting;
 mod latency_histogram; // TODO 105 (1): the latency tests' percentiles from a histogram a thread

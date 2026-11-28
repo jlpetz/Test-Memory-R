@@ -31,11 +31,11 @@ pub(crate) const CACHE_LATENCY_FILTER: &str =
 /// The flags that pick a mode's defaults, which `run` takes out before it looks for a one-shot command (`logfile::wanted` too)
 pub(crate) const MODE_FLAGS: [&str; 3] = ["--ram-latency", "--cache-latency", "--quick-test"];
 /// Every flag a session takes, exactly: any other is refused before anything runs (`Stopped::UnknownFlags`); `--help` names each
-pub(crate) const KNOWN_FLAGS: [&str; 29] = [
+pub(crate) const KNOWN_FLAGS: [&str; 30] = [
     "--ram-latency", "--cache-latency", "--quick-test", "--calibrate-cache", "--calibrate-curve", "--calibrate-seal", "--calibrate-all",
-    "--show-calibration", "--output", "--yes", "--no-save", "--create-demo-configs", "--compare-results", "--show-results", "--sanitize",
-    "--sanitize-single", "--debug-topology", "--show-topology", "--setup-large-pages", "--remove-large-pages", "--startup-debug",
-    "--allow-admin", "--disable-pinning", "--serials", "--help", "-h", "-?", "--version", "-v",
+    "--show-calibration", "--get-readings", "--output", "--yes", "--no-save", "--create-demo-configs", "--compare-results",
+    "--show-results", "--sanitize", "--sanitize-single", "--debug-topology", "--show-topology", "--setup-large-pages",
+    "--remove-large-pages", "--startup-debug", "--allow-admin", "--disable-pinning", "--serials", "--help", "-h", "-?", "--version", "-v",
 ];
 
 /// How a session ended. An error that stops it is `run`'s `Err`.
@@ -285,6 +285,10 @@ pub fn run(command_line: Vec<String>, fe: Arc<dyn Frontend>) -> crate::Result<Se
     // allocates, rather than at the end with no results file
     crate::home::prepare()?;
     if let Some(e) = calibration_flag_without_calibration(&args) {
+        return Ok(SessionEnd::Stopped(Stopped::Invalid(e)));
+    }
+    // `--launch` starts the timings tools. Alone it is not a run: a known flag that nothing else takes would start the tests.
+    if let Some(e) = launch_flag_without_readings(&args) {
         return Ok(SessionEnd::Stopped(Stopped::Invalid(e)));
     }
 
@@ -812,6 +816,16 @@ fn default_cycles(args: &mut Vec<String>, cycles: u32) {
     }
 }
 
+/// Why `args` can't be run, if they give `--launch` to anything but `--get-readings`: it starts the timings tools that command downloaded.
+fn launch_flag_without_readings(args: &[String]) -> Option<String> {
+    if args.iter().any(|arg| arg == "--get-readings") {
+        return None;
+    }
+    args.iter()
+        .any(|arg| arg == "--launch")
+        .then(|| "--launch starts the timings tools after they are downloaded: give it with --get-readings".to_string())
+}
+
 /// Why `args` can't be run, if they give `--yes` or `--no-save` to anything but a calibration (`commands::Command::Calibrate` takes them
 /// first): they answer its save question, which nothing else asks.
 fn calibration_flag_without_calibration(args: &[String]) -> Option<String> {
@@ -899,6 +913,8 @@ fn show_the_machine(fe: &dyn Frontend, system: Setup, topology: Setup) {
     fe.event(topology.into());
 }
 
+/// `errors=` as the run will use it. The parameter registry already rejected a value `ErrorMode::parse` does not accept, so a failure
+/// here is a default of `log`, the same as a missing `errors=`.
 /// Parsed configuration bundle produced from validated CLI parameters:
 /// `(memory_strategy, error_mode, suite_timing, cputype, cpus, pinning, alloc)`.
 type ParsedRunConfig = (EnhancedMemoryStrategy, ErrorMode, TestSuiteTiming, String, String, CpuPinningConfig, MemoryAllocationConfig);
@@ -1055,6 +1071,15 @@ mod tests {
         assert!(matches!(Command::parse(&args(&["tmr", "--calibrate-seal", "--yes"])), Some(Command::Calibrate(_))));
     }
 
+    /// `--launch` starts the timings tools. With anything else it is refused, so a known flag does not start the tests.
+    #[test]
+    fn launch_goes_only_with_get_readings() {
+        let args = |line: &[&str]| line.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(launch_flag_without_readings(&args(&["tmr", "--get-readings", "--launch"])), None);
+        let refused = launch_flag_without_readings(&args(&["tmr", "--launch"])).expect("refused");
+        assert!(refused.contains("--get-readings"), "{refused}");
+    }
+
     /// A frontend that shows nothing and answers the large-page question with quit
     struct Quiet;
     impl Frontend for Quiet {
@@ -1112,6 +1137,17 @@ mod tests {
         assert_eq!(timing(&["duration=60"]), (None, Some(60)), "the clock alone");
         assert_eq!(timing(&["cycles=2"]), (Some(2), None), "cycles alone");
         assert_eq!(timing(&[]), (Some(3), None), "neither");
+
+        let mode = |line: &[&str]| {
+            let (_, mode, ..) = build_config_from_validated_params(&params::parse_and_validate_args(&args(line)).unwrap(), &Quiet);
+            mode
+        };
+        assert_eq!(mode(&["errors=halt:5"]), ErrorMode::HaltAfter(5), "the count the monitor stops at");
+        assert_eq!(mode(&["errors=halt"]), ErrorMode::Halt);
+        assert_eq!(mode(&["errors=stop"]), ErrorMode::Halt);
+        assert_eq!(mode(&["errors=log"]), ErrorMode::Log);
+        assert_eq!(mode(&[]), ErrorMode::Log);
+        assert!(params::parse_and_validate_args(&args(&["errors=halt:0"])).is_err(), "N at least 1");
 
         let defaulted = |line: &[&str]| {
             let mut line = args(line);

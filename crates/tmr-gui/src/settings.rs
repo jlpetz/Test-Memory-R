@@ -9,6 +9,8 @@
 //! | `start_on_open` | the run starts as the window opens, as `--start` does                          | `false`   |
 //! | `keep_serials`  | the DIMMs' serials, the system's UUID and fingerprints in the run's output, log | `false`   |
 //! |                 | and results, as `--serials` keeps them                                         |           |
+//! | `notify`        | a sound at the first error, and when the run ends                                | `false`   |
+//! | `language`      | the window's language: `en`, `it`, `ru`, `zh`, `ja`, `es`                         | `en`      |
 //! | `parameters`    | the parameters box's text when tmr.exe is given none: the last run's           | none      |
 //! | `size`          | the window's size, `[width, height]`, as it last closed                         | 860 × 960 |
 //! | `position`      | its frame's top-left, `[x, y]` in screen pixels, as it last closed             | Windows'  |
@@ -17,7 +19,7 @@
 //!
 //! `position` and `maximized` are put back only onto the screens there now: mostly off them, the window opens where Windows puts it
 //! (`placement.rs`). The window writes `chart` as it changes, `parameters` at Start, `size`, `position` and `maximized` as it closes (and
-//! with any other save), and its Settings dialog's (`start_on_open`, `keep_serials`, `theme`) as they change, keeping the rest of the file
+//! with any other save), and its Settings dialog's (`start_on_open`, `keep_serials`, `notify`, `theme`) as they change, keeping the rest of the file
 //! (the colours, any notes) as it was, but for `serials`, which windows before `keep_serials` wrote (on, their default), dropped unread.
 //! Keys starting with `_` are notes. A missing file is the defaults; a bad key or value goes in the errors list and keeps its default. A
 //! save is written whole, then as the file's last good copy, `window.json.bak` (`tmr::settings_file::save`), so a PC that goes down
@@ -30,6 +32,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use crate::lang::Language;
 use crate::palette::Palettes;
 
 /// The window's theme: Windows', or always light or dark
@@ -43,10 +46,7 @@ pub enum Theme {
 impl Theme {
     const NAMES: [(&str, Theme); 3] = [("system", Theme::System), ("light", Theme::Light), ("dark", Theme::Dark)];
 
-    /// The Settings dialog's choices, in the order of `NAMES`
-    pub const LABELS: [&str; 3] = ["As Windows", "Light", "Dark"];
-
-    /// Its place in `NAMES` and `LABELS`
+    /// Its place in `NAMES`. The dialog's words are `lang`'s, in this order.
     pub fn index(self) -> usize {
         Self::NAMES.iter().position(|(_, theme)| *theme == self).unwrap_or(0)
     }
@@ -71,6 +71,10 @@ pub struct Settings {
     /// The run's output, log and results keep the DIMMs' serials, the system's UUID and the machine's fingerprints: the window runs with
     /// `--serials`. Off by default, as a run without `--serials` leaves them out (the owner, 2026-11-23)
     pub keep_serials: bool,
+    /// A sound at the first error of a run, and when the run ends. Off: a long soak stays quiet.
+    pub notify: bool,
+    /// The window's language. English unless the user picks another. Not Windows' language: a test must not change with the machine.
+    pub language: Language,
     pub parameters: Option<String>,
     pub size: Option<(f64, f64)>,
     /// Its frame's top-left in screen pixels, and whether it was maximized, as it last closed (`placement.rs`)
@@ -90,6 +94,8 @@ impl Default for Settings {
             start_on_open: false,
             allow_admin: false,
             keep_serials: false,
+            notify: false,
+            language: Language::En,
             parameters: None,
             size: None,
             position: None,
@@ -203,6 +209,14 @@ impl Settings {
                     Some(keep) => settings.keep_serials = keep,
                     None => problems.push(wrong("true or false")),
                 },
+                "notify" => match value.as_bool() {
+                    Some(notify) => settings.notify = notify,
+                    None => problems.push(wrong("true or false")),
+                },
+                "language" => match value.as_str().and_then(Language::parse) {
+                    Some(language) => settings.language = language,
+                    None => problems.push(wrong("\"en\", \"it\", \"ru\", \"zh\", \"ja\" or \"es\"")),
+                },
                 "theme" => match Theme::NAMES.iter().find(|(name, _)| value.as_str() == Some(name)) {
                     Some((_, theme)) => settings.theme = *theme,
                     None => problems.push(wrong("\"system\", \"light\" or \"dark\"")),
@@ -239,6 +253,8 @@ impl Settings {
         file.insert("theme".to_string(), Value::String(self.theme.name().to_string()));
         file.insert("start_on_open".to_string(), Value::Bool(self.start_on_open));
         file.insert("keep_serials".to_string(), Value::Bool(self.keep_serials));
+        file.insert("notify".to_string(), Value::Bool(self.notify));
+        file.insert("language".to_string(), Value::String(self.language.code().to_string()));
         file.insert("parameters".to_string(), self.parameters.clone().map_or(Value::Null, Value::String));
         if let Some((width, height)) = self.size {
             file.insert("size".to_string(), serde_json::json!([width.round(), height.round()]));
@@ -282,13 +298,15 @@ mod tests {
              \"start_on_open: the run starts as the window opens, as --start does.\",\n    \
              \"keep_serials: the DIMMs' serials, the system's UUID and fingerprints in the run's output, log and results, as --serials \
              keeps them; false, the default, leaves them out.\",\n    \
+             \"notify: a sound at the first error, and when the run ends. Off by default.\",\n    \
+             \"language: the window's language, en, it, ru, zh, ja or es. The log and the results stay English.\",\n    \
              \"parameters: the parameters box's text when tmr.exe is given none; the window keeps the last run's.\",\n    \
              \"size: [width, height], as it last closed.\",\n    \
              \"position: [x, y], its top-left in screen pixels, as it last closed; off the screens now, Windows places it.\",\n    \
              \"maximized: it closed maximized, and opens so; size and position are what it restores to.\",\n    \
              \"colours: #RRGGBB or #AARRGGBB (alpha first). Leave a key out to keep its default.\"\n  ],\n  \
              \"chart\": true,\n  \"theme\": \"system\",\n  \"start_on_open\": false,\n  \"keep_serials\": false,\n  \
-             \"parameters\": null,\n  \
+             \"notify\": false,\n  \"language\": \"en\",\n  \"parameters\": null,\n  \
              \"maximized\": false,\n  \"colours\": {colours}\n}}\n"
         )
     }
@@ -311,7 +329,10 @@ mod tests {
         );
         let mut problems = Vec::new();
         let (settings, palettes) = Settings::parse(&text, &mut problems).expect("an object");
-        assert_eq!((settings.chart, settings.theme, settings.start_on_open, settings.parameters), (true, Theme::System, false, None));
+        assert_eq!(
+            (settings.chart, settings.theme, settings.start_on_open, settings.language, settings.parameters),
+            (true, Theme::System, false, Language::En, None)
+        );
         assert_eq!((settings.position, settings.maximized), (None, false));
         assert_eq!((palettes.dark, palettes.light, problems.len()), (Palettes::DEFAULT.dark, Palettes::DEFAULT.light, 0), "{problems:?}");
     }

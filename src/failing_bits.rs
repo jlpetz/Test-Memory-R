@@ -34,6 +34,11 @@ impl FailingBits {
         self.0.is_empty()
     }
 
+    /// The failed positions as a 64-bit mask, for a strip. Bit 0 is the least significant data bit.
+    pub fn mask(&self) -> u64 {
+        self.0.iter().fold(0, |mask, bit| mask | (1u64 << bit.bit))
+    }
+
     fn at(&mut self, bit: u32) -> &mut BitFailures {
         let at = match self.0.binary_search_by_key(&bit, |b| u32::from(b.bit)) {
             Ok(at) => at,

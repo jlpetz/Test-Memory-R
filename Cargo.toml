@@ -56,6 +56,7 @@ windows = { version = "0.62", features = [
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
     "Win32_System_Com",
     "Win32_Security_Authentication_Identity", # The large-page right through LSA (TODO 113): LsaAddAccountRights and its lookups
     "Win32_Storage_FileSystem",
