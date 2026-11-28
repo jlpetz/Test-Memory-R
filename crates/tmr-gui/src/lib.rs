@@ -54,6 +54,10 @@ enum Feed {
     Ended(Result<SessionEnd, String>),
     /// The window's own calibration ended (the ••• menu's, TODO 110): how it did, or the error that stopped it
     Calibrated(Result<RunStatus, String>),
+    SaveCalibration {
+        question: String,
+        reply: SyncSender<bool>,
+    },
     AskAdmin(SyncSender<bool>),
 }
 
@@ -99,6 +103,13 @@ impl Frontend for GuiFrontend {
     }
 }
 
+impl GuiFrontend {
+    fn confirm_calibration(&self, question: &str) -> bool {
+        let (reply, answer) = mpsc::sync_channel(1);
+        self.feed.send(Feed::SaveCalibration { question: question.to_owned(), reply }).is_ok() && wait_answer(answer).unwrap_or(false)
+    }
+}
+
 fn wait_answer<T>(answer: mpsc::Receiver<T>) -> Option<T> {
     loop {
         match answer.recv_timeout(ANSWER_WAIT) {
@@ -111,6 +122,8 @@ fn wait_answer<T>(answer: mpsc::Receiver<T>) -> Option<T> {
 
 /// The session's thread, from Start (Run again's the next's), and the exit status the last one ended with
 static SESSION: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+/// The menu's calibration uses the same bounded shutdown as a session. Its result is separate from the last test run's exit code.
+static CALIBRATION: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 static EXIT_CODE: Mutex<Option<i32>> = Mutex::new(None);
 
 /// Set when the window has opened, for the wording of its error, and when it has closed, for the large-page question
@@ -183,6 +196,9 @@ pub fn main(args: Vec<String>, icon: &'static [u8]) -> Closed {
     let _ = ICON.set(icon);
     let shown = windows_reactor::App::run_component::<window::Window>(args);
     WINDOW_CLOSED.store(true, Ordering::Relaxed);
+    if let Some(worker) = CALIBRATION.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        end_session(worker);
+    }
     let session = SESSION.lock().unwrap_or_else(PoisonError::into_inner).take();
     let started = session.is_some();
     if let Some(session) = session {
@@ -215,6 +231,22 @@ fn closed(error: Option<String>, opened: bool, started: bool, exit_code: Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacing_a_stored_calibration_requires_a_yes_from_the_window() {
+        for choice in [Some(true), Some(false), None] {
+            let (feed, window) = mpsc::channel();
+            let worker =
+                std::thread::spawn(move || GuiFrontend { feed, transcript: None }.confirm_calibration("Save new seal calibration?"));
+            let Feed::SaveCalibration { question, reply } = window.recv().unwrap() else { panic!("expected the save question") };
+            assert_eq!(question, "Save new seal calibration?");
+            if let Some(answer) = choice {
+                reply.send(answer).unwrap();
+            }
+            drop(reply);
+            assert_eq!(worker.join().unwrap(), choice.unwrap_or(false));
+        }
+    }
 
     /// The large-page question (TODO 29 S6, TODO 113): the session's thread waits for the window's answer, and once nobody can answer (the
     /// question dropped, no window, or the window closed with it open), the answer to every question is Quit, so nothing is granted and

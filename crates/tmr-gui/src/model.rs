@@ -1216,7 +1216,8 @@ impl Model {
     pub fn calibration_ended(&mut self, result: Result<RunStatus, String>) {
         self.calibrating = false;
         self.position = match result {
-            Ok(RunStatus::Passed) => "Calibrated: the next run sizes its tests from it".to_string(),
+            Ok(RunStatus::Passed) => "Calibration complete. See Log for the values saved or kept.".to_string(),
+            Ok(RunStatus::Interrupted) => "Calibration stopped. See Log for any completed saves.".to_string(),
             Ok(_) => "The calibration failed: the Log tab says why".to_string(),
             Err(e) => format!("The calibration failed: {e}"),
         };
@@ -1736,7 +1737,9 @@ mod tests {
         m.calibration_started();
         assert!(m.calibrating() && m.position.starts_with("Calibrating the caches"));
         m.calibration_ended(Ok(RunStatus::Passed));
-        assert_eq!((m.calibrating(), m.position.as_str()), (false, "Calibrated: the next run sizes its tests from it"));
+        assert_eq!((m.calibrating(), m.position.as_str()), (false, "Calibration complete. See Log for the values saved or kept."));
+        m.calibration_ended(Ok(RunStatus::Interrupted));
+        assert_eq!(m.position, "Calibration stopped. See Log for any completed saves.");
         m.calibration_ended(Ok(RunStatus::NotRun));
         assert_eq!(m.position, "The calibration failed: the Log tab says why");
 

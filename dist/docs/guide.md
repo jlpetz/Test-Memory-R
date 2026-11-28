@@ -149,7 +149,9 @@ The Memory report's 4 KB column says which kind a run took.
   before testing. The line above the box, the header's last, says
   before a run what cache calibration it finds; the first run on a machine measures one before its
   tests (about 2 minutes), or Calibrate the caches and the seal, in the same menu, measures it
-  now, with the seal's fastest width.
+  now, with the seal's fastest width. The menu saves a first calibration automatically. For an existing
+  cache or seal calibration, choose **Keep existing** or **Replace** for that measurement. **Stop**
+  ends calibration at its next checkpoint. The Log tab shows which completed measurements were saved.
 - **From a console**, type `tmr plan=stability` for the stability plan, 3 cycles of it: any
   setting starts a run, and `tmr` alone lists every setting and starts nothing. Press Ctrl+C to
   stop a run sooner, and it stops at its next checkpoint and writes its report. In the classic

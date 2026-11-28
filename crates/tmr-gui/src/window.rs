@@ -111,6 +111,7 @@ pub(crate) enum Message {
     StartOnOpen(bool),
     AllowAdmin(bool),
     AdminAnswer(ContentDialogResult),
+    SaveCalibration(ContentDialogResult),
     KeepSerials(bool),
     Theme(Option<usize>),
     Scheme(ColorScheme),
@@ -157,6 +158,8 @@ pub(crate) struct Window {
     settings_open: bool,
     launch_allows_admin: bool,
     admin_answer: Option<mpsc::SyncSender<bool>>,
+    calibration_question: Option<(String, mpsc::SyncSender<bool>)>,
+    calibration_stopping: bool,
     /// The ••• menu's Sanitize came back: its dialog is open with what it wrote, or why it wrote nothing, until it closes
     sanitized: Option<Result<String, String>>,
     /// `window.json`'s (TODO 109): the chart shown or hidden, the theme, the parameters, the size and where the window is
@@ -292,9 +295,9 @@ impl Window {
         }
     }
 
-    /// The ••• menu's Calibrate (TODO 110): `--calibrate-all --yes` on a thread of its own, the caches then the seal's width (the fastest
+    /// The ••• menu's Calibrate (TODO 110): `--calibrate-all` on a thread of its own, the caches then the seal's width (the fastest
     /// here, which `seal-width=auto` takes), as the console runs it, what it writes and logs in the Log tab and a log file of its own; it
-    /// saves what it measured (the menu item was the request), and the position line says how it did. Before a run the info line says
+    /// asks before replacing either stored measurement, and the position line says how it did. Before a run the info line says
     /// the new one once it ends; after one it keeps that run's facts, and Run again reads the new one. Start waits for it.
     fn calibrate(&mut self, context: &ComponentContext<Self>) {
         tmr::session::reset_run();
@@ -304,7 +307,7 @@ impl Window {
         let (tx, rx) = mpsc::channel();
         let transcript = log.transcript();
         let exe = self.model.command().first().cloned().unwrap_or_else(|| "tmr.exe".to_string());
-        let mut line = vec![exe, "--calibrate-all".to_string(), "--yes".to_string()];
+        let mut line = vec![exe, "--calibrate-all".to_string()];
         // Serials kept in the Settings dialog: in what it shows and logs, as start()'s run has them (TODO 105)
         if self.settings.keep_serials {
             line.push("--serials".to_string());
@@ -318,12 +321,15 @@ impl Window {
             }
             let command = tmr::commands::Command::Calibrate(line);
             let mut out = logger::TranscriptWriter::new(transcript);
-            let result = tmr::commands::run(&command, &mut out, &mut |_| true, &|_| String::new()).map_err(|e| e.to_string());
+            let result = tmr::commands::run(&command, &mut out, &mut |q| frontend.confirm_calibration(q), &|_| String::new())
+                .map_err(|e| e.to_string());
             out.finish();
             let _ = tx.send(Feed::Calibrated(result));
         });
         match calibration {
-            Ok(_) => {
+            Ok(worker) => {
+                *crate::CALIBRATION.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(worker);
+                self.calibration_stopping = false;
                 self.model.calibration_started();
                 listen(Feeds { events: rx, log }, None, self.priority, context);
             }
@@ -343,6 +349,13 @@ impl Window {
                 Feed::Event(event) => self.model.apply(event),
                 Feed::Ask { question, reply } => self.model.ask_large_pages(question, reply),
                 Feed::AskAdmin(reply) => self.admin_answer = Some(reply),
+                Feed::SaveCalibration { question, reply } => {
+                    if self.calibration_stopping {
+                        let _ = reply.send(false);
+                    } else {
+                        self.calibration_question = Some((question, reply));
+                    }
+                }
                 Feed::Ended(result) => {
                     self.model.ended(result);
                     ended = true;
@@ -495,6 +508,9 @@ const MENU_ABOUT: &str = "About TMR";
 /// The window's size and place, as it closes, into `window.json` (TODO 109): the next window opens as this one was
 impl Drop for Window {
     fn drop(&mut self) {
+        if self.model.calibrating() {
+            tmr::request_stop();
+        }
         self.keep_placement();
         let _ = self.settings.save();
     }
@@ -532,6 +548,8 @@ impl Component for Window {
             settings_open: false,
             launch_allows_admin,
             admin_answer: None,
+            calibration_question: None,
+            calibration_stopping: false,
             sanitized: None,
             settings,
             dark,
@@ -567,9 +585,21 @@ impl Component for Window {
             }
             Message::RunAgain => {}
             Message::Stop => {
-                if self.model.status == Status::Running {
+                if self.model.calibrating() && self.model.takes_parameters() {
+                    tmr::request_stop();
+                    self.calibration_stopping = true;
+                    self.model.position = "Stopping the calibration…".to_string();
+                    if let Some((_, reply)) = self.calibration_question.take() {
+                        let _ = reply.send(false);
+                    }
+                } else if self.model.status == Status::Running {
                     tmr::request_stop();
                     self.model.stop();
+                }
+            }
+            Message::SaveCalibration(answer) => {
+                if let Some((_, reply)) = self.calibration_question.take() {
+                    let _ = reply.send(answer == ContentDialogResult::Secondary);
                 }
             }
             Message::Args(text) => self.model.args = text,
@@ -761,6 +791,7 @@ impl Component for Window {
                 self.large_page_dialog(context),
                 self.broad_dialog(context),
                 self.admin_dialog(context),
+                self.calibration_dialog(context),
                 self.about_dialog(context),
                 self.settings_dialog(context),
                 self.sanitized_dialog(context),
@@ -1038,7 +1069,13 @@ impl Window {
         let button = Button::new().width(RUN_BUTTON).grid_column(column);
         match self.model.status {
             // A calibration of the window's own first (TODO 110)
-            _ if self.model.calibrating() && self.model.takes_parameters() => button.is_enabled(false).content("Calibrating…"),
+            _ if self.model.calibrating() && self.model.takes_parameters() => {
+                if self.calibration_stopping {
+                    button.is_enabled(false).content("Stopping…")
+                } else {
+                    button.resource_overrides(stop_colours(p)).on_click(context.callback(|()| Message::Stop)).content("Stop")
+                }
+            }
             Status::Ready => button.style(ButtonStyle::Accent).on_click(context.callback(|()| Message::Start)).content("Start"),
             Status::Running => button.resource_overrides(stop_colours(p)).on_click(context.callback(|()| Message::Stop)).content("Stop"),
             Status::Stopping => button.is_enabled(false).content("Stopping…"),
@@ -1321,6 +1358,17 @@ impl Window {
             )
     }
 
+    fn calibration_dialog(&self, context: &ViewContext<Self>) -> View {
+        let question = self.calibration_question.as_ref().map_or("", |(text, _)| text.as_str());
+        ContentDialog::new()
+            .title(question)
+            .primary_button_text("Keep existing")
+            .secondary_button_text("Replace")
+            .is_open(self.calibration_question.is_some())
+            .on_closed(context.callback(Message::SaveCalibration))
+            .content(TextBlock::new().text("The Log tab shows the existing and newly measured values.").text_wrapping(TextWrapping::Wrap))
+    }
+
     /// The second dialog after a broad pick in the first (TODO 113): what the group reaches and risks, its secondary button the grant,
     /// its primary button No, as Esc is, which goes back to the first. The first button is No because WinUI focuses it when the text has
     /// nothing to focus, so Enter or Space pressed on, and a double-click's second click, which lands where the first dialog's grant was,
@@ -1341,7 +1389,8 @@ impl Window {
     /// Settings (TODO 105, the owner 2026-11-04): what the window keeps in window.json that a user sets, each saved as it changes; not open
     /// while the large-page question is, as WinUI opens one dialog at a time
     fn settings_dialog(&self, context: &ViewContext<Self>) -> View {
-        let open = self.settings_open && !self.model.large_pages_pending() && self.admin_answer.is_none();
+        let open =
+            self.settings_open && !self.model.large_pages_pending() && self.admin_answer.is_none() && self.calibration_question.is_none();
         let dialog = ContentDialog::new()
             .title("Settings")
             .close_button_text("Close")
@@ -1367,6 +1416,7 @@ impl Window {
         let open = self.sanitized.is_some()
             && !self.model.large_pages_pending()
             && self.admin_answer.is_none()
+            && self.calibration_question.is_none()
             && !self.about
             && !self.settings_open;
         let (title, text) = match &self.sanitized {
@@ -1386,7 +1436,7 @@ impl Window {
     /// is open, so the logo isn't decoded at each redraw; and it isn't open while the large-page question is, as WinUI opens one dialog at
     /// a time. In the dialog's own colours, as the large-page dialog's.
     fn about_dialog(&self, context: &ViewContext<Self>) -> View {
-        let open = self.about && !self.model.large_pages_pending() && self.admin_answer.is_none();
+        let open = self.about && !self.model.large_pages_pending() && self.admin_answer.is_none() && self.calibration_question.is_none();
         let dialog = ContentDialog::new()
             .title("About TMR")
             .close_button_text("Close")
