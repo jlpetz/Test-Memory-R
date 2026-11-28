@@ -1095,6 +1095,7 @@ mod tests {
         assert_eq!(mode(&["errors=panic"]), ErrorMode::Panic);
         assert_eq!(mode(&["errors=log"]), ErrorMode::Log);
         assert_eq!(mode(&[]), ErrorMode::Log, "the default");
+        assert!(params::parse_and_validate_args(&["errors=halt:0".into()]).is_err(), "zero cannot be a halt threshold");
     }
 
     /// cycles= and duration= together limit a run to whichever is reached first, as a config's timing does (`cycles=5 duration=600` ran
