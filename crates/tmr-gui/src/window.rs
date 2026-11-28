@@ -771,11 +771,16 @@ impl Component for Window {
 // ---- view pieces -------------------------------------------------------------------------
 
 impl Window {
-    /// The badge's fill: success while running and for a pass, critical for a fail
+    /// Green is a completed pass. A running test changes from the accent to the error colour as soon as a count arrives.
     fn status_fill(&self) -> Color {
         let p = self.palette();
+        if self.model.calibrating() {
+            return p.accent;
+        }
         match self.model.status {
-            Status::Running | Status::Passed => p.success,
+            Status::Passed => p.success,
+            Status::Running if self.model.error_count.as_ref().is_some_and(|count| count.alarm) => p.critical,
+            Status::Running => p.accent,
             Status::Failed => p.critical,
             Status::Ready | Status::Stopping | Status::Interrupted | Status::NotRun => p.neutral,
         }
@@ -811,7 +816,7 @@ impl Window {
                     .background(brush(self.status_fill()))
                     .content(
                         TextBlock::new()
-                            .text(self.model.status.label())
+                            .text(if self.model.calibrating() { "Calibrating" } else { self.model.status.label() })
                             .font_size(12.0)
                             .font_weight(FontWeight::SEMI_BOLD)
                             .foreground(brush(p.on_status)),
@@ -828,9 +833,15 @@ impl Window {
                     // A tooltip wraps its target: the target's grid placement goes first
                     .tooltip("The suite's runtime, from its first cycle, as the console's ticker counts it"),
             ));
-        // The time left on the right, under the runtime, from the suite's start. The run's errors are with the other figures that change as
-        // it runs, beside the cycle (`position`, TODO 109).
+        // Put errors first, under the title, so their count stays visible on every tab. The tooltip keeps the full split on narrow windows.
         let mut counts: Vec<(u64, View)> = Vec::new();
+        if let Some(count) = &self.model.error_count {
+            let (weight, colour) = if count.alarm { (FontWeight::SEMI_BOLD, p.error) } else { (FontWeight::NORMAL, p.text_secondary) };
+            let about =
+                format!("{}\nIncludes test, seal and hardware errors. WHEA reports C for corrected and UC for uncorrected.", count.text);
+            let text = TextBlock::new().text(count.text.clone()).font_weight(weight).foreground(brush(colour));
+            counts.push((0, text.text_trimming(TextTrimming::CharacterEllipsis).grid_column(0).tooltip(about)));
+        }
         if let Some(time_left) = &self.model.time_left {
             let text = TextBlock::new()
                 .text(time_left.clone())
@@ -843,7 +854,7 @@ impl Window {
         let left = Grid::new().grid_column(0).vertical_alignment(VerticalAlignment::Center).row_spacing(2.0).rows([GridLength::Auto; 3]);
         let left = left.children((
             top,
-            Grid::new().grid_row(1).column_spacing(12.0).columns([GridLength::Auto, GridLength::STAR]).keyed_children(counts),
+            Grid::new().grid_row(1).column_spacing(12.0).columns([GridLength::STAR, GridLength::Auto]).keyed_children(counts),
             TextBlock::new()
                 .text(info.clone())
                 .foreground(brush(p.text_secondary))
@@ -956,18 +967,9 @@ impl Window {
             text.vertical_alignment(VerticalAlignment::Center).grid_column(1).tooltip(about)
         };
         let position = &self.model.position;
-        let errors = self.model.error_count.as_ref().map(|count| {
-            let (weight, colour) = if count.alarm { (FontWeight::SEMI_BOLD, p.error) } else { (FontWeight::NORMAL, p.text_secondary) };
-            let about = format!(
-                "{}\nThe run's errors, the running test's so far included: the tests' bad words, the seal's, and the hardware errors WHEA \
-                 reported, C corrected and UC uncorrected. Any of them fails the run.",
-                count.text
-            );
-            right(TextBlock::new().text(count.text.clone()).font_weight(weight).foreground(brush(colour)), about)
-        });
         let cycle =
             TextBlock::new().text(position.clone()).font_size(16.0).font_weight(FontWeight::SEMI_BOLD).foreground(brush(p.text_primary));
-        let mut lines: Vec<(u64, View)> = vec![(0, line(cycle, position.clone(), errors))];
+        let mut lines: Vec<(u64, View)> = vec![(0, line(cycle, position.clone(), None))];
         if let Some(test) = &self.model.test_position {
             let figures = self
                 .model
